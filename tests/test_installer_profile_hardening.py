@@ -1593,3 +1593,124 @@ def test_the_installer_serializes_the_handoff_through_the_builtin():
     assert "Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress" in installer
     prologue = _extract_prologue()
     assert "| ConvertTo-Json" not in prologue
+
+
+def test_disjoint_wildcard_families_from_two_hosts_both_survive(monkeypatch):
+    """Assuming every wildcard pair overlaps threw away entries that provably cannot: a
+    higher-priority Start-Bits* dropped the other host's Invoke-Web*, so setup was left without
+    the proxy Invoke-WebRequest needs on a locked-down box."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": _framed('{"Start-Bits*:Proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed('{"Invoke-Web*:Proxy": "http://five.corp:8080"}'),
+    }
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
+
+    assert merged == {
+        "Start-Bits*:Proxy": "http://seven.corp:8080",
+        "Invoke-Web*:Proxy": "http://five.corp:8080",
+    }
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "overlaps"),
+    [
+        ("invoke-web*", "*-webrequest", True),
+        ("invoke-web*", "invoke-webrequest", True),
+        ("*", "invoke-webrequest", True),
+        ("invoke-?ebrequest", "invoke-webrequest", True),
+        ("invoke-web*", "invoke-restmethod", False),
+        ("start-bits*", "invoke-web*", False),
+        ("*-webrequest", "*-restmethod", False),
+        # A character class is assumed to overlap rather than decided: the conservative answer.
+        ("invoke-[wr]*", "start-bits*", True),
+    ],
+)
+def test_two_command_patterns_overlap_exactly_when_a_name_matches_both(left, right, overlaps):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    assert studio_cmd._patterns_can_overlap(left, right) is overlaps
+    assert studio_cmd._patterns_can_overlap(right, left) is overlaps
+
+
+def _windows_probe_env(monkeypatch, host, module_path):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", module_path)
+    return studio_cmd._profile_probe_env(host)
+
+
+_PS7_MODULE_PATH = (
+    r"C:\Users\me\Documents\PowerShell\Modules;"
+    r"C:\Program Files\PowerShell\7\Modules;"
+    r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+)
+_WINDOWS_PS_MODULES = r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+
+
+def test_the_windows_powershell_probe_is_given_its_own_modules_first(monkeypatch):
+    """PowerShell 7 strips its module paths only when IT launches powershell.exe. Through this
+    Python process the child kept them in front and loaded PS7 copies of 5.1's own modules, so a
+    profile importing one threw while it was dot-sourced and its proxy never reached setup."""
+    env = _windows_probe_env(monkeypatch, "powershell.exe", _PS7_MODULE_PATH)
+
+    entries = env["PSModulePath"].split(";")
+    assert entries[0] == _WINDOWS_PS_MODULES
+    # Reordered, not pruned: everything the caller had is still reachable, just second.
+    assert entries[1:] == _PS7_MODULE_PATH.split(";")[:2]
+    assert entries.count(_WINDOWS_PS_MODULES) == 1
+
+
+def test_a_module_path_already_led_by_windows_powershell_is_left_alone(monkeypatch):
+    already = _WINDOWS_PS_MODULES + r";C:\Program Files\PowerShell\7\Modules"
+    env = _windows_probe_env(monkeypatch, "powershell.exe", already)
+
+    assert env["PSModulePath"] == already
+
+
+def test_the_pwsh_probe_keeps_the_inherited_module_path(monkeypatch):
+    # PowerShell 7 prefixes its own paths at startup, so reordering here would only demote them.
+    env = _windows_probe_env(monkeypatch, "pwsh.exe", _PS7_MODULE_PATH)
+
+    assert env["PSModulePath"] == _PS7_MODULE_PATH
+
+
+def test_the_module_path_is_untouched_off_windows(monkeypatch):
+    from unsloth_cli.commands import studio as studio_cmd
+
+    monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("PSModulePath", _PS7_MODULE_PATH)
+
+    assert studio_cmd._profile_probe_env("powershell.exe")["PSModulePath"] == _PS7_MODULE_PATH
+
+
+def test_each_probed_host_gets_its_own_module_path(monkeypatch):
+    # The wiring: the repair is per host, so the env has to be built from the host being run.
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    seen: dict = {}
+
+    def _run(argv, **kwargs):
+        seen[argv[0]] = kwargs["env"]["PSModulePath"]
+        return _Result(_framed('{"Invoke-WebRequest:Proxy": "http://corp:8080"}'))
+
+    monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("PSModulePath", _PS7_MODULE_PATH)
+    monkeypatch.setattr(studio_cmd.subprocess, "run", _run)
+    studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"])
+
+    assert seen["pwsh.exe"] == _PS7_MODULE_PATH
+    assert seen["powershell.exe"].split(";")[0] == _WINDOWS_PS_MODULES

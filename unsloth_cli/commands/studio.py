@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
-import fnmatch
+import functools
 import importlib.util
 import hashlib
 import hmac
@@ -2911,14 +2911,50 @@ def _caller_host_profile_name() -> Optional[str]:
     return _HOST_PROFILE_BY_TERM_PROGRAM.get(term_program)
 
 
-def _profile_probe_env() -> dict:
-    """The probe child's environment, naming the caller's host profile when it is known."""
+# Windows PowerShell's own module directory, under %SystemRoot%.
+_WINDOWS_PS_MODULE_DIR = r"System32\WindowsPowerShell\v1.0\Modules"
+_WINDOWS_PS_HOSTS = frozenset({"powershell.exe", "powershell", "powershell_ise.exe"})
+
+
+def _fold_module_entry(entry: str) -> str:
+    """A PSModulePath entry reduced to a comparable form (separator and case insensitive)."""
+    return entry.replace("/", "\\").rstrip("\\").casefold()
+
+
+def _windows_powershell_module_path(current: str) -> Optional[str]:
+    """``current`` with Windows PowerShell's own module directory first, or None to leave it be.
+
+    PowerShell 7 strips its module paths only when IT launches powershell.exe, so reached through
+    this Python process the child keeps them in FRONT and resolves 5.1's own modules to the
+    PowerShell 7 copies. A profile that imports one then throws while it is dot-sourced and the
+    proxy it was going to publish is lost. Same repair as install.ps1, applied per probed host:
+    pwsh needs none, because PowerShell 7 prefixes its own paths on startup."""
+    root = os.environ.get("SystemRoot")
+    if not root:
+        return None
+    own = root.rstrip("\\/") + "\\" + _WINDOWS_PS_MODULE_DIR
+    entries = [entry for entry in current.split(";") if entry.strip()]
+    if entries and _fold_module_entry(entries[0]) == _fold_module_entry(own):
+        return None
+    kept = [e for e in entries if _fold_module_entry(e) != _fold_module_entry(own)]
+    return ";".join([own] + kept)
+
+
+def _profile_probe_env(host: str = "") -> dict:
+    """The probe child's environment: the caller's host profile when it is known, and the probed
+    host's own module precedence."""
     env = dict(os.environ)
     name = _caller_host_profile_name()
     if name:
         env["_UNSLOTH_PS_HOST_PROFILE"] = name
     else:
         env.pop("_UNSLOTH_PS_HOST_PROFILE", None)
+    if platform.system() == "Windows" and _fold_module_entry(host).rsplit("\\", 1)[-1] in (
+        _WINDOWS_PS_HOSTS
+    ):
+        reordered = _windows_powershell_module_path(env.get("PSModulePath", ""))
+        if reordered:
+            env["PSModulePath"] = reordered
     return env
 
 
@@ -3000,7 +3036,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                     "-Command",
                     _PS_PROXY_PROBE,
                 ],
-                env = _profile_probe_env(),
+                env = _profile_probe_env(host),
                 capture_output = True,
                 text = True,
                 # text=True alone decodes with the locale codec and STRICT errors, so a UTF-8
@@ -3046,9 +3082,6 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     return json.dumps(merged)
 
 
-_WILDCARD_CHARS = frozenset("*?[")
-
-
 def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> bool:
     """Whether another host already owns the cmdlet family ``cmdlet`` belongs to.
 
@@ -3056,20 +3089,45 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
     be a wildcard, and PowerShell applies such an entry to every cmdlet it matches. Overlap in
     either direction claims the family.
     """
-    wild = _WILDCARD_CHARS.intersection(cmdlet)
     for owned, owner in claimed.items():
         if owner is source:
             continue
-        if owned == cmdlet:
-            return True
-        # Two patterns can share matches without either matching the other AS A STRING
-        # (Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest), so overlap is assumed
-        # rather than intersecting two glob languages.
-        if wild and _WILDCARD_CHARS.intersection(owned):
-            return True
-        if fnmatch.fnmatchcase(cmdlet, owned) or fnmatch.fnmatchcase(owned, cmdlet):
+        if owned == cmdlet or _patterns_can_overlap(cmdlet, owned):
             return True
     return False
+
+
+@functools.lru_cache(maxsize = 512)
+def _patterns_can_overlap(left: str, right: str) -> bool:
+    """Whether any command name matches BOTH wildcard patterns.
+
+    Two patterns can share matches without either matching the other as a STRING (Invoke-Web* and
+    *-WebRequest both apply to Invoke-WebRequest), so the languages are intersected rather than
+    string-matched -- otherwise a host's Start-Bits* entry swallowed the other host's unrelated
+    Invoke-Web* one. A character class is not decided, only assumed to overlap: that is the
+    conservative answer, and no cmdlet name is written that way.
+    """
+    if "[" in left or "[" in right:
+        return True
+
+    @functools.lru_cache(maxsize = None)
+    def walk(i: int, j: int) -> bool:
+        # Both patterns are consumed in step, except at a '*', which may absorb one more
+        # character from the other side or match nothing at all.
+        if i == len(left):
+            return all(char == "*" for char in right[j:])
+        if j == len(right):
+            return all(char == "*" for char in left[i:])
+        here, there = left[i], right[j]
+        if here == "*":
+            return walk(i + 1, j) or walk(i, j + 1)
+        if there == "*":
+            return walk(i, j + 1) or walk(i + 1, j)
+        if here == "?" or there == "?" or here == there:
+            return walk(i + 1, j + 1)
+        return False
+
+    return walk(0, 0)
 
 
 _PS_PROXY_DEFAULTS_PRELUDE = (
