@@ -60,7 +60,7 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Keep in sync with the DiT trainer's own specs.
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
+    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
 )
 
 # VIDEO families (from the separate ``video_families`` registry) Studio can train a LoRA on.
@@ -69,7 +69,7 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
 # families ``diffusion_dit_trainer._SPECS`` implements. A video base outside this set is
 # refused by name in ``resolve_trainable_family`` rather than falling through to a trainer
 # that cannot run it.
-TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2"})
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
 
 # Families whose ``flow_shift`` default is "auto" (reproduce the family's INFERENCE sigma
 # distribution) rather than the historical identity 1.0. Both schedulers set
@@ -373,6 +373,11 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"):
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
+    # MiniMax-H3 has its own loop: it denoises video and audio jointly over one packed
+    # sequence on two coupled schedules, which is outside the DiT trainer's _FamilySpec seams.
+    if key == "minimax-h3":
+        from core.training.diffusion_h3_trainer import run_h3_lora_training
+        return run_h3_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
 
 
@@ -412,6 +417,18 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "resolution": 512,
         "lr_warmup_steps": 20,
     },
+    # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
+    # checkpoint generates on, so a training clip's spatial statistics land exactly on the
+    # distribution the sampler works in. rank 16 rather than LTX-2's 32: the adapter is applied
+    # to the audio rows as well as the video ones (one shared block stack), so a smaller
+    # adapter is the conservative default. Batch size is pinned to 1 by the trainer.
+    "minimax-h3": {
+        "lora_rank": 16,
+        "learning_rate": 1e-4,
+        "resolution": 768,
+        "lr_warmup_steps": 20,
+        "train_batch_size": 1,
+    },
 }
 
 
@@ -430,6 +447,7 @@ _FAMILY_LABELS = {
     "flux.2-klein": "FLUX.2 Klein",
     "flux.2-dev": "FLUX.2-dev",
     "ltx-2": "LTX-2",
+    "minimax-h3": "MiniMax-H3",
 }
 # Per-family training facts as fields, so the UI can chip them instead of parsing prose.
 # ``params`` is the transformer size (SDXL is not quoted that way), ``note`` is the rest.
@@ -463,6 +481,18 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
+    # Video + audio. Measured on a B200 at the released 768 short edge, 22-frame clips,
+    # rank 16, batch 1, gradient checkpointing: the training LOOP peaks around 44 GB (nf4 with
+    # the dtype-reading modules kept dense, see _H3_NF4_SKIP_MODULES), but the RUN peaks far
+    # higher while the 63 GiB Qwen3-VL conditioner is resident and captions are encoded --
+    # before it is freed and the transformer loads. The quoted figure covers the whole run,
+    # since that is what a card has to hold.
+    "minimax-h3": {
+        "params": "31B",
+        "qlora_vram_gb": 72,
+        "gated": False,
+        "note": "Video with sound: trains on clips that have a soundtrack.",
+    },
 }
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
@@ -482,6 +512,10 @@ def _family_vram_note(name: str) -> str:
 _DIT_TRAIN_FAMILIES = frozenset(
     {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
 )
+# Families with a flow-matching trainer that is NOT diffusion_dit_trainer, but which still
+# expose base_precision and need bf16 on CUDA. Kept separate so the DiT-specific levers
+# (compile, the shared sigma table) do not follow.
+_FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3"}
 
 
 def native_bf16_supported() -> bool:
@@ -512,8 +546,12 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
     live GPU cannot provide, else None. The DiT trainer requires a bf16-capable GPU (Ampere
     or newer) and otherwise raises deep in model load; the start route uses this to fail fast
     BEFORE evicting resident GPU workloads. CPU-only hosts (which fall back to fp32 for
-    import/unit tests) and SDXL (its own mixed_precision path) are exempt. Never raises."""
-    if (resolved_family or "").strip().lower() not in _DIT_TRAIN_FAMILIES:
+    import/unit tests) and SDXL (its own mixed_precision path) are exempt. Never raises.
+
+    Covers every FLOW-matching trainer, not just the DiT one: MiniMax-H3 has the same bf16
+    requirement (its checkpoint keeps the patch projections and output heads in fp32) and the
+    same eviction ordering to protect."""
+    if (resolved_family or "").strip().lower() not in _FLOW_TRAIN_FAMILIES:
         return None
     try:
         import torch
@@ -535,8 +573,11 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     quantization." unless CUDA, XPU or MPS is present. Without this gate a GPU-less host
     accepts the default nf4 start, evicts the resident Images pipeline, downloads the text
     encoders, and only then dies in the child. SDXL keeps its own fp32-on-CPU path.
+
+    Covers MiniMax-H3 too, for the same reason: it loads its denoiser through the same 4-bit
+    quantizer.
     """
-    if (resolved_family or "").strip().lower() not in _DIT_TRAIN_FAMILIES:
+    if (resolved_family or "").strip().lower() not in _FLOW_TRAIN_FAMILIES:
         return None
     try:
         import torch
@@ -581,7 +622,7 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
         return reason
     fam = (resolved_family or "").strip().lower()
     mode = (base_precision or "").strip().lower()
-    if fam in _DIT_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
+    if fam in _FLOW_TRAIN_FAMILIES and mode in ("bf16", "int8", "fp8", "mxfp8"):
         # The DiT trainer's dense precisions all require CUDA, and bf16_unsupported_reason exempts a CPU-only host, so without this a dense request would evict residents then raise in the child.
         try:
             import torch
@@ -816,6 +857,16 @@ class DiffusionLoraConfig:
                 )
             # Some DiT families are corrupted by fp8 activation range: outliers exceed even per-row fp8, so the frozen linears
             # learn against a garbage forward. The inference path denies these too; mirror it so the run fails fast. int8 is unaffected.
+            # MiniMax-H3 runs all three modalities through one set of linears, so the
+            # per-family activation range the fp8 module filter was measured against does not
+            # describe it. Refuse the float8 modes rather than train against a clipped forward.
+            if resolved_family == "minimax-h3" and base_precision in ("fp8", "mxfp8"):
+                raise ValueError(
+                    f"base_precision={base_precision!r} is not supported for minimax-h3: its "
+                    f"packed sequence mixes video, audio and text through one set of linears, "
+                    f"so the activation range fp8 was measured against does not apply. Use "
+                    f"'nf4', 'int8', 'bf16', or 'auto'."
+                )
             from core.inference.diffusion_transformer_quant import _family_denied
 
             if _family_denied(resolved_family, base_precision):
@@ -1186,6 +1237,8 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         # LTX-2's official base. It is a video family, so the image-side inference allowlist
         # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
+        # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
+        "minimaxai/minimax-h3",
     }
 )
 
