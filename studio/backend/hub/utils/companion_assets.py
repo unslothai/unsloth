@@ -274,7 +274,6 @@ def _detect_family(repo_id: str, gguf_filename: Optional[str]):
     """``detect_family_for_pick`` that never raises and never imports at module scope."""
     try:
         from core.inference.diffusion_families import detect_family_for_pick
-
         return detect_family_for_pick(repo_id, gguf_filename)
     except Exception:  # noqa: BLE001
         return None

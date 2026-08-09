@@ -133,7 +133,6 @@ def companion_dependents(
 def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
     """The deletion guard's predicate, shared so the preview and the refusal cannot disagree."""
     from hub.services.models.deletion import _variant_is_a_required_companion_asset as _impl
-
     return _impl(repo_id, variant)
 
 
