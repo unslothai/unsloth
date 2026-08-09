@@ -668,15 +668,18 @@ def _apply_group_offload(
             module = getattr(pipe, extra, None)
             if isinstance(module, torch.nn.Module):
                 streamed[extra] = module
+        # The text encoders are streamed SEPARATELY from the DiTs, and tolerantly (see the apply
+        # loop below). Kept in their own dict so the resident placement loop still skips them.
+        streamed_encoders: dict[str, Any] = {}
         if stream_text_encoders:
             # A text encoder runs ONCE, before step 0, so residency buys it nothing while it costs
-            # its bytes for every step of the denoise. Adding it to `streamed` does two things: the
-            # resident loop below skips it (it is no longer placed with comp.to(onload)), and group
-            # hooks page it in for that single encode. Component names, not attributes, so a family
-            # with text_encoder / text_encoder_2 / text_encoder_3 is covered without a per-family list.
+            # its bytes for every step of the denoise. Streaming it does two things: the resident
+            # loop below skips it (it is no longer placed with comp.to(onload)), and group hooks
+            # page it in for that single encode. Component names, not attributes, so a family with
+            # text_encoder / text_encoder_2 / text_encoder_3 is covered without a per-family list.
             for name, comp in getattr(pipe, "components", {}).items():
                 if name.startswith("text_encoder") and isinstance(comp, torch.nn.Module):
-                    streamed[name] = comp
+                    streamed_encoders[name] = comp
 
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute
@@ -707,13 +710,35 @@ def _apply_group_offload(
             gkwargs["low_cpu_mem_usage"] = True
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to() OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group hooks exist.
         for name, comp in getattr(pipe, "components", {}).items():
-            if name in streamed:
+            if name in streamed or name in streamed_encoders:
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
         for module in streamed.values():
             apply_group_offloading(module, **gkwargs)
             installed += 1
+        # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A
+        # text encoder is a far less well-trodden target for block-level group offloading than a
+        # DiT (a family whose encoder exposes no recognisable block list can simply refuse), and
+        # this tier is a rescue: the alternative to streaming an encoder is keeping it resident,
+        # which is what happened before this tier existed. Letting one refusal join the all-or-
+        # nothing DiT loop would turn a slow-but-working load into a hard failure, because by then
+        # hooks are installed and whole-module offload can no longer be used as a fallback. So a
+        # refusal places that encoder resident instead: the plan's floor becomes optimistic by
+        # that encoder's bytes, and the load still runs.
+        for name, module in streamed_encoders.items():
+            try:
+                apply_group_offloading(module, **gkwargs)
+                installed += 1
+            except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.memory: group offload unavailable for %s (%s); "
+                        "keeping it resident",
+                        name,
+                        exc,
+                    )
+                module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if installed:

@@ -1004,6 +1004,98 @@ def test_the_unchanged_group_tier_still_pins_for_speed(monkeypatch):
     assert all(kw["use_stream"] and kw["non_blocking"] for kw in seen.values()), seen
 
 
+def _swap_group_offloading(monkeypatch, apply_group_offloading):
+    """Replace apply_group_offloading on the ALREADY-installed fake diffusers.hooks.
+
+    _install_fake_torch_and_hooks mints a fresh stand-in Module class each call, so calling it a
+    second time would leave the components built by the first call failing isinstance."""
+    import sys
+
+    monkeypatch.setattr(
+        sys.modules["diffusers.hooks"], "apply_group_offloading", apply_group_offloading
+    )
+
+
+def test_a_text_encoder_that_refuses_group_offload_stays_resident(monkeypatch):
+    # A text encoder is a far less well-trodden target for block-level group offloading than a
+    # DiT. Before this tier existed the encoders were simply resident, so a refusal must degrade
+    # back to that, not fail the load: by the time the encoders are reached the transformer already
+    # carries hooks, and whole-module offload is no longer available as a fallback, so joining the
+    # all-or-nothing DiT loop would turn a slow-but-working load into a hard failure.
+    import core.inference.diffusion_memory as mem
+
+    applied: list[Any] = []
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "").startswith("text_encoder"):
+            raise ValueError("no block list on this text encoder")
+        applied.append(module)
+
+    pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
+    # Swap only the hook: re-installing the fake torch would mint a NEW Module class and every
+    # isinstance check against the already-built components would go false.
+    _swap_group_offloading(monkeypatch, _apply)
+
+    assert (
+        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
+    )
+    # The transformer still streams, and the refusing encoders are placed resident instead.
+    assert applied == [transformer]
+    assert te.placed is not None and te2.placed is not None
+    assert vae.placed is not None
+
+
+def test_one_refusing_text_encoder_does_not_cost_the_other_its_streaming(monkeypatch):
+    # Each encoder is decided on its own: a family where one encoder refuses and another does not
+    # must still stream the one that works, or a single awkward component silently reverts the
+    # whole rescue.
+    import core.inference.diffusion_memory as mem
+
+    applied: list[Any] = []
+
+    def _apply(module, **kw):
+        if getattr(module, "name", "") == "text_encoder":
+            raise ValueError("no block list on this text encoder")
+        applied.append(module)
+
+    pipe, _unused, transformer, te, te2, _vae = _stream_te_pipe(monkeypatch)
+    _swap_group_offloading(monkeypatch, _apply)
+
+    assert (
+        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
+    )
+    assert applied == [transformer, te2]
+    assert te.placed is not None  # the refusing one is resident
+    assert te2.placed is None  # the working one still streams
+
+
+def test_a_failing_dit_keeps_its_all_or_nothing_semantics(monkeypatch):
+    # The tolerance is scoped to the encoders. A DiT that fails AFTER another installed hooks
+    # still propagates, because a partially hooked denoiser is not something the pipeline can run
+    # or fall back from. This is the pre-existing contract and the new tier must not soften it.
+    import core.inference.diffusion_memory as mem
+
+    calls = {"n": 0}
+
+    def _apply(module, **kw):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise RuntimeError("OOM on the second DiT")
+
+    Mod = _install_fake_torch_and_hooks(monkeypatch, _apply)
+
+    class _DualPipe:
+        pass
+
+    pipe = _DualPipe()
+    pipe.transformer = Mod()
+    pipe.transformer_2 = Mod()
+    pipe.components = {"transformer": pipe.transformer, "transformer_2": pipe.transformer_2}
+
+    with pytest.raises(RuntimeError, match = "OOM on the second DiT"):
+        mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True)
+
+
 def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypatch):
     # End of the wire: the planner's decision has to reach _apply_group_offload, or the plan says
     # group-with-streamed-encoders while the pipeline still places them resident and OOMs.
