@@ -460,6 +460,33 @@ def test_generate_happy_path_persists_and_reports_record(client):
     assert fetched.content == b"MP4-FAKE-BYTES"
 
 
+def test_generate_accepts_a_half_specified_size_without_a_keyframe(client):
+    """Half a canvas is only ambiguous next to a keyframe, so the route must still take it.
+
+    validate_video_request_shape has always resolved a missing axis against the family's default
+    preset (768 alone means 768x512 on LTX-2) and that behaviour is pinned at the family level, so
+    a request-model XOR that fires with no keyframe present makes the two layers disagree and
+    breaks the half-spec case for every video family through the API.
+    """
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    video = _generate_and_wait(client, {"prompt": "a cat", "width": 768})
+    assert (video["width"], video["height"]) == (768, 512)
+
+    # With a keyframe the ambiguity is real and the refusal stands.
+    resp = client.post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a cat",
+            "width": 768,
+            "first_frame": "data:image/png;base64,AAAA",
+        },
+    )
+    assert resp.status_code == 422
+    assert "width and height must be sent together" in str(resp.json())
+
+
 def test_generate_without_load_returns_409(client):
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
     assert resp.status_code == 409
