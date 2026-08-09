@@ -1468,9 +1468,7 @@ def latest_valid_checkpoint(
     return None
 
 
-def iter_valid_checkpoints(
-    output_dir: str | os.PathLike[str],
-) -> "list[tuple[Path, dict]]":
+def iter_valid_checkpoints(output_dir: str | os.PathLike[str]) -> "list[tuple[Path, dict]]":
     """Every structurally complete bundle under ``output_dir``, newest first.
 
     ``latest_valid_checkpoint`` answers with the first one; the resume preflight needs the rest,

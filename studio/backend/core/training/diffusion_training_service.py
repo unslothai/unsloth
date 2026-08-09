@@ -630,7 +630,6 @@ class DiffusionTrainingService:
             return
         try:
             from core.training.diffusion_checkpoint import discard_named_checkpoints
-
             discard_named_checkpoints(own)
         except Exception:  # noqa: BLE001 -- cleanup must never break the terminal transition
             pass

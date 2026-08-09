@@ -591,7 +591,9 @@ def test_an_epoch_mode_target_does_not_fall_back_to_the_unused_step_count():
     as 600/500 and refused the resume."""
     from core.training.diffusion_training_service import _resolved_total_steps
 
-    assert _resolved_total_steps({"total_steps": 1000}, {"num_epochs": 4, "train_steps": 500}) == 1000
+    assert (
+        _resolved_total_steps({"total_steps": 1000}, {"num_epochs": 4, "train_steps": 500}) == 1000
+    )
     assert _resolved_total_steps({}, {"num_epochs": 4, "train_steps": 500}) == 0
     # Step mode is unchanged: the configured count is the target.
     assert _resolved_total_steps({}, {"num_epochs": 0, "train_steps": 500}) == 500

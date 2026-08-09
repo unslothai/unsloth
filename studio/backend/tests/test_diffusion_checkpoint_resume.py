@@ -2626,9 +2626,7 @@ def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
 
     base = _Run(run_dir)
     for requested in ("fp16", "no", "bf16"):
-        cfg = dataclasses.replace(
-            base.cfg, resolved_family = "flux.1", mixed_precision = requested
-        )
+        cfg = dataclasses.replace(base.cfg, resolved_family = "flux.1", mixed_precision = requested)
         expected = "bf16" if torch.cuda.is_available() else "no"
         assert dc.identity_for_config(cfg).precision == expected, requested
     # SDXL keeps its own resolution: the request is what that trainer honours.
