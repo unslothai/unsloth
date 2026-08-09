@@ -4264,7 +4264,6 @@ def _stub_dense_candidate(monkeypatch, *, prequant: bool):
     ``resolve_dense_quant_candidate`` is the resolver both the plan and the load re-plan against,
     so pinning it here pins the same answer for both."""
     from core.inference import diffusion as dmod
-
     monkeypatch.setattr(
         dmod,
         "resolve_dense_quant_candidate",
@@ -4642,9 +4641,7 @@ def test_the_load_declines_when_the_prefetch_skipped_the_dense_shards(
     assert len(_dense_calls(calls, backend2)) == 1
 
 
-def test_an_unstaged_transformer_still_takes_a_CACHED_prequant(
-    fake_runtime, tmp_path, monkeypatch
-):
+def test_an_unstaged_transformer_still_takes_a_CACHED_prequant(fake_runtime, tmp_path, monkeypatch):
     # A cached pre-quant stages no transformer/ shards either, because the small quantised
     # checkpoint REPLACES them, not because a download was refused. Reading the empty stage as a
     # decline dropped a fast path that costs nothing: unsloth/Z-Image-Turbo-GGUF at Q8_0 with
