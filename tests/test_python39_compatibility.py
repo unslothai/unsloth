@@ -41,10 +41,19 @@ def declared_floor():
 
 
 def package_files(root = PACKAGE_ROOT, minimum = 50):
+    """Our own packaged sources. Vendored third-party trees are excluded.
+
+    `studio/backend/vendor/` is checked in byte-identical to upstream, with a sha256
+    manifest and the linters configured to leave it alone, so the floor cannot be
+    fixed there by editing it. Those packages carry their own floor anyway -- vendored
+    truststore is `requires-python >=3.10` -- and their import sites guard for it.
+    """
     files = sorted(
         p
         for p in root.rglob("*.py")
-        if "__pycache__" not in p.parts and "node_modules" not in p.parts
+        if "__pycache__" not in p.parts
+        and "node_modules" not in p.parts
+        and "vendor" not in p.parts
     )
     assert len(files) >= minimum, f"only found {len(files)} files under {root}, glob is wrong"
     return files
@@ -276,6 +285,26 @@ def test_every_packaged_module_compiles():
             except SyntaxError as error:
                 broken.append(f"{path.relative_to(REPO_ROOT)}:{error.lineno}: {error.msg}")
     assert not broken, "these modules do not compile:\n  " + "\n  ".join(broken)
+
+
+def test_vendored_third_party_source_is_outside_the_floor_scan():
+    """Vendored trees are upstream's code on upstream's floor, so the scan skips them.
+
+    truststore is checked in byte-identical to the wheel and hash-pinned by
+    `vendor/truststore_manifest.json`, so converting its PEP 604 aliases would break the
+    invariant the vendor README exists to defend. It is `requires-python >=3.10` upstream
+    and its import site swallows the failure, so the floor holds without editing it.
+    """
+    vendor = REPO_ROOT / "studio" / "backend" / "vendor"
+    if not vendor.is_dir():
+        pytest.skip("no vendored third-party source in this checkout")
+    # The tree really would be flagged: these aliases are values, not annotations,
+    # so `from __future__ import annotations` would not defer them either.
+    assert "typing.TypeAlias = str | bytes" in (
+        vendor / "truststore" / "_api.py"
+    ).read_text(encoding = "utf-8")
+    scanned = [p for root in packaged_roots() for p in package_files(root, minimum = 1)]
+    assert not [p for p in scanned if "vendor" in p.parts]
 
 
 def test_studio_evaluated_unions_do_not_grow():
