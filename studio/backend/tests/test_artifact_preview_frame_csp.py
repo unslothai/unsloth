@@ -44,3 +44,14 @@ def test_the_sandbox_holds_in_both_variants():
         assert "base-uri 'none';" in csp
         assert "form-action 'none';" in csp
         assert "frame-ancestors 'self'" in csp
+
+
+def test_the_shell_reports_blocked_resources():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert '"unsloth:artifact-blocked"' in shell
+    # Bound after document.close(), which drops listeners registered before it.
+    # Binding earlier silently reports nothing and the banner never appears.
+    write, listen = shell.index("document.close();"), shell.index(
+        'document.addEventListener("securitypolicyviolation"'
+    )
+    assert write < listen
