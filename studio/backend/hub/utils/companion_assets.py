@@ -274,9 +274,23 @@ def required_companion_bases(
         recorded = links.get(key)
         if recorded:
             bases |= _with_mirrors(recorded)
+        # Canonical, not literal: a cached MIRROR of a base resolves its own family back to the
+        # UPSTREAM id, which would make each identity a dependent of the other and leave a cache
+        # holding both unable to delete either. They are copies of one repo, not a pair that
+        # needs each other.
+        self_keys = {key, _normalise(_canonical(repo_id))}
         for base in bases:
             base_key = _normalise(base)
-            if not base_key or base_key == key:
+            if not base_key or base_key in self_keys or _normalise(_canonical(base)) in self_keys:
                 continue
             required.setdefault(base_key, set()).add(repo_id)
     return required
+
+
+def _canonical(repo_id: str) -> str:
+    """``canonical_base``, degrading to the id itself when the family tables are unavailable."""
+    try:
+        from core.inference.diffusion_families import canonical_base
+        return canonical_base(repo_id)
+    except Exception:  # noqa: BLE001
+        return repo_id

@@ -313,3 +313,20 @@ def test_orphan_listing_reports_one_row_per_cache(monkeypatch):
     ]
     assert [c["size_bytes"] for c in result["companions"]] == [COMPANION_BYTES, 900_460]
     assert result["total_bytes"] == COMPANION_BYTES + 900_460
+
+
+def test_a_cached_mirror_and_its_upstream_do_not_pin_each_other(monkeypatch):
+    """Both identities of one base resolve their own family back to the upstream id. Treating
+    that as a dependency would make a cache holding both unable to delete either, forever."""
+    _install(
+        monkeypatch,
+        _base_repo("unsloth/FLUX.1-schnell"),
+        _base_repo("black-forest-labs/FLUX.1-schnell"),
+    )
+    assert companion_cleanup.companion_dependents("unsloth/FLUX.1-schnell") == []
+    assert companion_cleanup.companion_dependents("black-forest-labs/FLUX.1-schnell") == []
+    offered = [
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    ]
+    assert offered == ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
