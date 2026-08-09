@@ -247,9 +247,7 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
         # A built-in path needs no marker, so it needs no restoring either,
         # unless it is a link: the clear resolved it and removed the target,
         # which leaves the link dangling and every later write failing.
-        if dedicated and (
-            str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()
-        ):
+        if dedicated and (str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()):
             try:
                 restored = Path(os.path.realpath(cache_dir))
                 restored.mkdir(parents = True, exist_ok = True)
