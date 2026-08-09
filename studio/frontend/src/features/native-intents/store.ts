@@ -23,6 +23,7 @@ interface NativeIntentState {
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
+  audioDropFailures: Record<string, number>;
   // Owner of a queued image batch, by composer identity. A remount means the
   // outgoing instance cannot hand the batch over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
@@ -41,6 +42,7 @@ interface NativeIntentState {
   beginAudioDropRegistration: () => void;
   endAudioDropRegistration: () => void;
   failImageDropRegistration: (targetKey: string) => void;
+  failAudioDropRegistration: (targetKey: string) => void;
   noteImageDropOwner: (targetKey: string, identity: string) => void;
   claimImageAttachments: (identity: string, targetKey: string) => void;
   noteAudioDropOwner: (targetKey: string, identity: string) => void;
@@ -56,6 +58,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   registeringImageDrops: 0,
   registeringAudioDrops: 0,
   imageDropFailures: {},
+  audioDropFailures: {},
   imageDropOwners: {},
   audioDropOwners: {},
   addAttachments: (targetKey, intents) => {
@@ -140,6 +143,15 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     const current = get().imageDropFailures;
     set({
       imageDropFailures: {
+        ...current,
+        [targetKey]: (current[targetKey] ?? 0) + 1,
+      },
+    });
+  },
+  failAudioDropRegistration: (targetKey) => {
+    const current = get().audioDropFailures;
+    set({
+      audioDropFailures: {
         ...current,
         [targetKey]: (current[targetKey] ?? 0) + 1,
       },

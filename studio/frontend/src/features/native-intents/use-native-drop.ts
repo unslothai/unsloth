@@ -265,6 +265,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             if (registered.imagesFailed > 0 && failureKey) {
               store.failImageDropRegistration(failureKey);
             }
+            if (registered.audioFailed > 0 && failureKey) {
+              store.failAudioDropRegistration(failureKey);
+            }
             if (registered.audio.length > 0) {
               await attachOptions.onAttachAudio?.(registered.audio);
             }
@@ -282,6 +285,9 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             const failureKey = currentOptions.attachmentTargetKey;
             if (needsImages && failureKey) {
               store.failImageDropRegistration(failureKey);
+            }
+            if (needsAudio && failureKey) {
+              store.failAudioDropRegistration(failureKey);
             }
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),

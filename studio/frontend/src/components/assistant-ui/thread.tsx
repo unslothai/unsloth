@@ -2195,6 +2195,17 @@ const Composer: FC<{
     seenImageDropFailuresRef.current = imageDropFailures;
     cancelQueuedSendRef.current?.();
   }, [imageDropFailures]);
+  const audioDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.audioDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenAudioDropFailuresRef = useRef(audioDropFailures);
+  // Same for audio: the registration holds the gate, so a failure there has to
+  // cancel the parked send before `endAudioDropRegistration` reopens it.
+  useEffect(() => {
+    if (seenAudioDropFailuresRef.current === audioDropFailures) return;
+    seenAudioDropFailuresRef.current = audioDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [audioDropFailures]);
   // Audio rides the same composer adapter as an uploaded file, but the drop
   // still has to hold the send gate: registering and reading the clip is async,
   // and the composer sees nothing until `addAttachment` lands.
@@ -3193,7 +3204,10 @@ const Composer: FC<{
   // a pending send when the composer changes under it after the press.
   const dictationBlocked = dictationSendBlocked({
     composerDisabled: Boolean(disabled),
-    uploading: hasPendingAttachments || hasMaterializingImageAttachments,
+    uploading:
+      hasPendingAttachments ||
+      hasMaterializingImageAttachments ||
+      hasMaterializingAudioAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
