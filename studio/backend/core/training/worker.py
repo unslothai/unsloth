@@ -3767,7 +3767,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
                     except Exception:
                         _driver_total = 0
-                    if _driver_total > 0 and abs(_driver_total - _total_bytes) > _total_bytes // 100:
+                    if (
+                        _driver_total > 0
+                        and abs(_driver_total - _total_bytes) > _total_bytes // 100
+                    ):
                         logger.info(
                             "ROCm OOM guard: props.total_memory is %.1f GiB but the driver "
                             "reports %.1f GiB. Before torch 2.10 the cap is enforced against "
