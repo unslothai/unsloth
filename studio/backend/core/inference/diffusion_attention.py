@@ -602,6 +602,11 @@ def apply_attention_backend(
         if callable(s)
     ]
     if not setters:
+        # A U-Net pipeline (SDXL) exposes no dispatcher setter, so there is no backend to set --
+        # but its attention still runs through torch SDPA, so the math-only diagnosis applies
+        # exactly as it does to a DiT. Report it here or an SDXL load gets no warning at all.
+        if target is not None:
+            warn_if_sdpa_math_only(target, logger)
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)

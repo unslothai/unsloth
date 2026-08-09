@@ -937,6 +937,22 @@ def test_apply_native_reports_a_math_only_device(monkeypatch):
     assert len(logged) == 1 and "math_only" in logged[0]
 
 
+def test_apply_reports_a_math_only_device_for_a_unet_pipeline(monkeypatch):
+    # SDXL denoises with pipe.unet, which carries no dispatcher setter, so there is no backend to
+    # set -- but its attention runs on the same torch SDPA and has the same quadratic blow-up, so
+    # the diagnosis has to be reported for it too.
+    _stub_probe(monkeypatch, ("math",))
+    logged: list = []
+    logger = types.SimpleNamespace(
+        warning = lambda fmt, *a: logged.append(fmt % a),
+        info = lambda *a, **k: None,
+    )
+    unet_pipe = types.SimpleNamespace(unet = object())
+
+    assert apply_attention_backend(unet_pipe, None, logger = logger, target = _target()) is None
+    assert len(logged) == 1 and "math_only" in logged[0]
+
+
 def test_apply_without_a_target_probes_nothing(monkeypatch):
     # The parameter is optional, so every existing caller keeps its exact behaviour.
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
