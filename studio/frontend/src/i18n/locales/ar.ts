@@ -1083,20 +1083,6 @@ export const ar = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
-      python: "Python",
-      accelerator: {
-        sectionTitle: "النوى المُحسَّنة",
-        sectionDescription:
-          "نوى انتباه وتكميم أسرع. تُبنى كل نواة مقابل إصدار واحد من PyTorch، لذا عند اختلاف الإصدار لا يُحمَّل أي منها ويعود Unsloth بهدوء إلى المسارات الأبطأ.",
-        working: "تعمل",
-        notLoading: "لا تُحمَّل",
-        notInstalled: "غير مثبَّتة",
-        notChecked: "لم يتم الفحص",
-        builtFor: "مبنية من أجل {build}",
-        bannerTitle: "النوى المُحسَّنة مثبَّتة لكنها لا تُحمَّل",
-        bannerBody:
-          "لا يمكن تحميل {packages} هنا، لذا فإن نواته المُحسَّنة غير متاحة. تعرض القائمة أعلاه ما لا يزال يعمل.",
-      },
       updates: "التحديث",
       help: "مساعدة",
       documentation: "الوثائق",

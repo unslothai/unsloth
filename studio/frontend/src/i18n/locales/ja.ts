@@ -1058,20 +1058,6 @@ export const ja = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
-      python: "Python",
-      accelerator: {
-        sectionTitle: "最適化カーネル",
-        sectionDescription:
-          "高速なアテンションおよび量子化カーネルです。それぞれ特定の PyTorch ビルド向けにコンパイルされているため、バージョンが一致しないと 1 つも読み込まれず、Unsloth は静かに低速な既定の処理へ切り替わります。",
-        working: "動作中",
-        notLoading: "読み込めません",
-        notInstalled: "未インストール",
-        notChecked: "未確認",
-        builtFor: "{build} 向けにビルド",
-        bannerTitle: "最適化カーネルはインストール済みですが読み込めません",
-        bannerBody:
-          "{packages} をここで読み込めないため、その最適化カーネルは利用できません。上の一覧に、現在も動作しているものが表示されます。",
-      },
       updates: "アップデート",
       help: "ヘルプ",
       documentation: "ドキュメント",

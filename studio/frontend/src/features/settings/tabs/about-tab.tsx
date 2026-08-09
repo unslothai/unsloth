@@ -18,7 +18,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
-import { AcceleratorSection } from "../components/accelerator-status";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -176,9 +175,7 @@ export function AboutTab() {
         </SettingsSection>
       </div>
 
-      {/* hw.python keeps the section alive on a CPU-only host, where there is no GPU
-          and no accelerator runtime but the Python version still belongs in a report. */}
-      {hw.gpus.length > 0 || runtimes.length > 0 || hw.python ? (
+      {hw.gpus.length > 0 || runtimes.length > 0 ? (
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
@@ -206,19 +203,8 @@ export function AboutTab() {
               </code>
             </SettingsRow>
           ))}
-          {/* The other half of every "built for Python 3.10, running 3.13" report. It
-              was nowhere in the app, so bug reports never carried it. */}
-          {hw.python ? (
-            <SettingsRow label={t("settings.about.python")}>
-              <code className="font-mono text-xs text-muted-foreground">
-                {hw.python}
-              </code>
-            </SettingsRow>
-          ) : null}
         </SettingsSection>
       ) : null}
-
-      <AcceleratorSection />
 
       <SettingsSection title={t("settings.about.help")}>
         <SettingsRow label={t("settings.about.documentation")}>

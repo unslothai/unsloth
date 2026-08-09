@@ -1114,20 +1114,6 @@ export const es = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
-      python: "Python",
-      accelerator: {
-        sectionTitle: "Kernels optimizados",
-        sectionDescription:
-          "Kernels de atención y cuantización más rápidos. Cada uno se compila contra una única compilación de PyTorch, así que si las versiones no coinciden no se carga ninguno y Unsloth vuelve en silencio a las rutas más lentas.",
-        working: "Funcionando",
-        notLoading: "No se carga",
-        notInstalled: "No instalado",
-        notChecked: "Sin comprobar",
-        builtFor: "Compilado para {build}",
-        bannerTitle: "Los kernels optimizados están instalados pero no se cargan",
-        bannerBody:
-          "{packages} no se puede cargar aquí, así que sus kernels optimizados no están disponibles. La lista de arriba muestra lo que sigue funcionando.",
-      },
       updates: "Actualización",
       help: "Ayuda",
       documentation: "Documentación",
