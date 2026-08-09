@@ -1875,7 +1875,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
                                 _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
                                 # Guard: check if model returned hidden states or logits
-                                if _pk_out.shape[-1] == lm_head.shape[1]:
+                                if _unsloth_grpo_returns_hidden_states(
+                                    unwrapped_model, _pk_out, lm_head
+                                ):
                                     _pk_sel = chunked_hidden_states_selective_log_softmax(
                                         _pk_out,
                                         lm_head,
@@ -1941,7 +1943,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                         ).logits
                                         _pk_rout = _pk_rh[:, :-1, :]
                                         # Guard: check if model returned hidden states or logits
-                                        if _pk_rout.shape[-1] == lm_head.shape[1]:
+                                        if _unsloth_grpo_returns_hidden_states(
+                                            unwrapped_model, _pk_rout, lm_head
+                                        ):
                                             _pk_rsel = chunked_hidden_states_selective_log_softmax(
                                                 _pk_rout,
                                                 lm_head,
@@ -2131,7 +2135,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
                             # Guard: check if model returned hidden states or logits
-                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
                                 logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                                     logits_chunk,
                                     lm_head,
@@ -2170,7 +2176,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
                             # Guard: check if model returned hidden states or logits
-                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
                                 logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                                     logits_chunk,
                                     lm_head,
@@ -2279,6 +2287,86 @@ def _unsloth_get_final_logit_softcapping(model):
     return 0 if softcap is None else softcap
 
 
+def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
+    """Does ``tensor`` (a forward's ``.logits``) carry hidden states or real logits?
+
+    ``_get_per_token_logps_and_entropies`` sets ``UNSLOTH_RETURN_HIDDEN_STATES=1``,
+    but only a forward that honours the name hands hidden states back as
+    ``.logits``; any other forward returns a real ``[.., vocab]`` tensor that must
+    not reach the ``lm_head`` matmul.
+
+    Primary test is an explicit signal that the forward honours the flag. Two
+    exist, both set outside this file:
+
+    * ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` on the generated class,
+      written by ``unsloth_zoo.compiler.create_standalone_class`` exactly when
+      ``apply_fused_lm_head`` gave that forward its own ``RETURN_HIDDEN_STATES``
+      branch.
+    * ``_unsloth_grpo_hidden_states_forward_wrapped``, set by
+      ``_install_grpo_hidden_states_forward_wrapper`` in ``unsloth/models/rl.py``
+      for models the compiler did not rewrite. That wrapper degrades to real
+      logits when the model cannot produce hidden states, and records the
+      degradation as ``_unsloth_grpo_hidden_states_warning_issued`` before it
+      returns, so reading the pair after a forward describes the call that just
+      finished.
+
+    The width comparison stays as the fallback, for an ``unsloth_zoo`` old enough
+    that it never writes the marker. It is decisive on its own whenever
+    ``vocab_size != hidden_size``, and the signal is only allowed to overrule it
+    when it is not: a model with ``vocab_size == hidden_size`` produces real
+    logits that are the same width as its hidden states, which is the one case
+    the shape cannot answer.
+    """
+    if tensor.shape[-1] != lm_head.shape[1]:
+        return False  # vocab-wide: real logits, whatever any signal claims
+    if lm_head.shape[0] != lm_head.shape[1]:
+        return True  # hidden-wide and vocab_size != hidden_size: hidden states
+    return _unsloth_grpo_hidden_states_signal(model) is not False
+
+
+def _unsloth_grpo_hidden_states_signal(model):
+    """``True``/``False`` if the forward honours ``UNSLOTH_RETURN_HIDDEN_STATES``.
+
+    ``None`` when neither marker is present, i.e. there is no signal to read.
+    See ``_unsloth_grpo_returns_hidden_states`` for where each marker is set.
+    Walks the wrapper chain because the markers are set on whichever object the
+    trainer saw, which may be the DDP module or the PEFT base model rather than
+    the object handed to the logprob loop.
+    """
+    candidates = []
+    pending = [model]
+    while pending and len(candidates) < 8:
+        candidate = pending.pop(0)
+        if candidate is None or any(candidate is seen for seen in candidates):
+            continue
+        candidates.append(candidate)
+        get_base_model = getattr(candidate, "get_base_model", None)
+        if callable(get_base_model):
+            try:
+                pending.append(get_base_model())
+            except Exception:
+                pass
+        for _attr in ("module", "base_model", "model"):
+            child = getattr(candidate, _attr, None)
+            if child is not None and hasattr(child, "forward"):
+                pending.append(child)
+    for candidate in candidates:
+        if getattr(candidate, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False):
+            return True
+        if getattr(type(candidate), "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False):
+            return True
+    if any(
+        getattr(candidate, "_unsloth_grpo_hidden_states_forward_wrapped", False)
+        for candidate in candidates
+    ):
+        # the wrapper honours the flag unless it recorded that it could not
+        return not any(
+            getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
+            for candidate in candidates
+        )
+    return None
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -2286,6 +2374,8 @@ grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))

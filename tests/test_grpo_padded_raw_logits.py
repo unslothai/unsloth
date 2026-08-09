@@ -29,6 +29,7 @@ import ast
 import builtins
 import contextlib
 import os
+import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,11 @@ import pytest
 
 
 torch = pytest.importorskip("torch")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
+
+_DISPATCH_HELPERS = load_dispatch_helpers()
 
 
 # ── The block under test, lifted structurally out of the live source ─────────
@@ -288,6 +294,7 @@ def _build_namespace(
     return {
         "torch": torch,
         "os": os,
+        **_DISPATCH_HELPERS,
         "chunked_hidden_states_selective_log_softmax": _HELPER_HIDDEN,
         "chunked_selective_log_softmax": _HELPER_RAW,
         "device_synchronize": lambda *a, **k: None,
@@ -352,27 +359,21 @@ def test_extracted_block_is_the_padded_loop():
     assert len(loops) == 1
     assert isinstance(loops[0].iter, ast.Name) and loops[0].iter.id == _LOOP_ITERABLE
 
-    # Both arms of the branch inside the loop must dispatch on width, i.e. compare
-    # one `.shape[...]` against another. Counted structurally, never by text search.
-    def _is_shape_subscript(node):
-        return (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "shape"
-        )
-
-    width_tests = [
+    # Both arms of the branch inside the loop must dispatch through the shared
+    # helper, which is what compares the width and consults the explicit
+    # UNSLOTH_RETURN_HIDDEN_STATES signal. Counted structurally, never by text
+    # search.
+    dispatch_tests = [
         node
         for node in ast.walk(loops[0])
-        if isinstance(node, ast.Compare)
-        and len(node.ops) == 1
-        and isinstance(node.ops[0], ast.Eq)
-        and _is_shape_subscript(node.left)
-        and _is_shape_subscript(node.comparators[0])
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Call)
+        and isinstance(node.test.func, ast.Name)
+        and node.test.func.id == "_unsloth_grpo_returns_hidden_states"
     ]
     assert (
-        len(width_tests) >= 2
-    ), f"expected a shape-vs-shape width dispatch in both the text and the VLM arm, found {len(width_tests)}"
+        len(dispatch_tests) >= 2
+    ), f"expected a hidden-states dispatch in both the text and the VLM arm, found {len(dispatch_tests)}"
 
 
 def test_block_free_variables_are_all_stubbed():

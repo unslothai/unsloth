@@ -24,6 +24,7 @@ all. Runs on CPU with tiny shapes and never skips.
 from __future__ import annotations
 
 import ast
+import sys
 import textwrap
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +33,11 @@ import pytest
 
 
 torch = pytest.importorskip("torch")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _grpo_dispatch_source import load_dispatch_helpers  # noqa: E402
+
+_DISPATCH_HELPERS = load_dispatch_helpers()
 
 _REPO = Path(__file__).resolve().parents[1]
 _SOURCE = _REPO / "unsloth" / "models" / "rl_replacements.py"
@@ -162,13 +168,24 @@ class _Model(torch.nn.Module):
     test. Every call is recorded so a test can pin which sites actually ran.
     """
 
-    def __init__(self, hidden_states = False):
+    def __init__(
+        self,
+        hidden_states = False,
+        vocab = VOCAB,
+        hidden = HIDDEN,
+        degraded = False,
+    ):
         super().__init__()
         torch.manual_seed(0)
-        self.emb = torch.nn.Embedding(VOCAB, HIDDEN)
-        self.head = torch.nn.Linear(HIDDEN, VOCAB, bias = False)
+        self.emb = torch.nn.Embedding(vocab, hidden)
+        self.head = torch.nn.Linear(hidden, vocab, bias = False)
         self.hidden_states = hidden_states
         self.calls = []
+        if degraded:
+            # what _install_grpo_hidden_states_forward_wrapper in unsloth/models/rl.py
+            # leaves behind when it could not get hidden states out of the model
+            self._unsloth_grpo_hidden_states_forward_wrapped = True
+            self._unsloth_grpo_hidden_states_warning_issued = True
 
     def forward(
         self,
@@ -281,9 +298,10 @@ def _batch():
     )
 
 
-def _run_packed_block(hidden_states = False):
+def _run_packed_block(hidden_states = False, model = None):
     """Exec the real packed + verify block and hand back its locals."""
-    model = _Model(hidden_states = hidden_states)
+    if model is None:
+        model = _Model(hidden_states = hidden_states)
     lm_head = model.head.weight  # [vocab, hidden]
     input_ids = _batch()
     left_pad = _left_pad_of(input_ids, KEEP, PAD_ID)
@@ -292,6 +310,7 @@ def _run_packed_block(hidden_states = False):
     namespace = {
         "os": __import__("os"),
         "torch": torch,
+        **_DISPATCH_HELPERS,
         "chunked_hidden_states_selective_log_softmax": HELPERS[
             "chunked_hidden_states_selective_log_softmax"
         ],
@@ -384,6 +403,49 @@ def test_packed_result_matches_the_per_row_logprobs(hidden_states):
     assert torch.allclose(got * mask, reference * mask, atol = 1e-5), (
         got * mask,
         reference * mask,
+    )
+
+
+def test_square_lm_head_raw_logits_are_routed_by_the_explicit_signal():
+    """vocab_size == hidden_size: the width comparison cannot tell them apart.
+
+    Real logits are then hidden-width, so a width-only guard sends them through
+    the lm_head a second time. The packed matmul is square, so nothing raises,
+    and the per-row verifier misreads the width in exactly the same way, agrees
+    with the corrupted packed result and marks the shape trusted. Both call
+    sites therefore have to defer to the explicit
+    UNSLOTH_RETURN_HIDDEN_STATES signal instead.
+    """
+    model = _Model(hidden_states = False, vocab = VOCAB, hidden = VOCAB, degraded = True)
+    namespace, model, input_ids, max_left_pad = _run_packed_block(model = model)
+
+    assert namespace["_pk_use"] is True
+    assert namespace["_pk_ref"] is not None, "the per-row verifier never ran"
+    mask = _completion_mask_of(
+        input_ids[:, -(KEEP + max_left_pad) :],
+        _left_pad_of(input_ids, KEEP, PAD_ID),
+        max_left_pad,
+        PAD_ID,
+    ).float()
+    reference = _reference_logprobs(model, input_ids, max_left_pad)
+    got = namespace["_pk_result"].detach().float()
+    assert torch.allclose(got * mask, reference * mask, atol = 1e-5), (
+        got * mask,
+        reference * mask,
+    )
+
+
+def test_square_lm_head_double_application_is_actually_detectable():
+    """Guard against the assertion above passing vacuously."""
+    model = _Model(hidden_states = False, vocab = VOCAB, hidden = VOCAB)
+    input_ids = _batch()
+    with torch.no_grad():
+        logits = model(input_ids = input_ids).logits.float()
+        doubled = logits @ model.head.weight.t().float()
+    assert not torch.allclose(
+        torch.log_softmax(logits, dim = -1),
+        torch.log_softmax(doubled, dim = -1),
+        atol = 1e-2,
     )
 
 
