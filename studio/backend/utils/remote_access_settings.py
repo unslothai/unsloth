@@ -41,7 +41,7 @@ _custom_worker: threading.Thread | None = None
 _custom_cancel: threading.Event | None = None
 _custom_operation = "idle"
 _custom_login_url: str | None = None
-_custom_error: tuple[str, str] | None = None
+_custom_error: tuple[str, str, str, bool] | None = None
 
 
 class RemoteAccessStopResponseMiddleware:
@@ -250,6 +250,8 @@ def _custom_status() -> dict:
         "login_url": login_url if running else None,
         "custom_error": failure[0] if failure else None,
         "custom_error_detail": failure[1] if failure else None,
+        "custom_error_phase": failure[2] if failure else None,
+        "custom_error_settled": failure[3] if failure else False,
         "orphaned_hostnames": orphaned_hostnames(),
     }
 
@@ -508,12 +510,18 @@ def _set_custom_operation(
     *,
     login_url: str | None = None,
     error: tuple[str, str] | None = None,
+    error_phase: str | None = None,
+    error_settled: bool = False,
 ) -> None:
     global _custom_operation, _custom_login_url, _custom_error
     with _worker_lock:
         _custom_operation = operation
         _custom_login_url = login_url
-        _custom_error = error
+        _custom_error = (
+            (error[0], error[1], error_phase, error_settled)
+            if error is not None and error_phase is not None
+            else None
+        )
 
 
 def _custom_login_callback(url: str) -> None:
@@ -554,10 +562,14 @@ def provision_custom_remote_access(app_state, hostname: str) -> dict:
                 cancelled = cancel.is_set,
             )
         except ProvisioningError as exc:
-            _set_custom_operation("error", error = (exc.code, exc.detail))
+            _set_custom_operation("error", error = (exc.code, exc.detail), error_phase = "provision")
         except Exception:
             logger.warning("Custom Cloudflare setup failed.", exc_info = True)
-            _set_custom_operation("error", error = ("setup_failed", "Cloudflare setup failed."))
+            _set_custom_operation(
+                "error",
+                error = ("setup_failed", "Cloudflare setup failed."),
+                error_phase = "provision",
+            )
         else:
             _set_custom_operation("idle")
 
@@ -617,10 +629,20 @@ def teardown_custom_remote_access(app_state) -> dict:
                 clear_auto_start = clear_custom_remote_access_auto_start,
             )
         except ProvisioningError as exc:
-            _set_custom_operation("error", error = (exc.code, exc.detail))
+            _set_custom_operation(
+                "error",
+                error = (exc.code, exc.detail),
+                error_phase = "teardown",
+                error_settled = read_identity() is None,
+            )
         except Exception:
             logger.warning("Custom Cloudflare teardown failed.", exc_info = True)
-            _set_custom_operation("error", error = ("teardown_failed", "Cloudflare teardown failed."))
+            _set_custom_operation(
+                "error",
+                error = ("teardown_failed", "Cloudflare teardown failed."),
+                error_phase = "teardown",
+                error_settled = read_identity() is None,
+            )
         else:
             _set_custom_operation("idle")
 

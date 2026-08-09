@@ -1020,3 +1020,55 @@ class TestHealthAuthGate:
         assert body["status"] == "healthy"
         for field in self.LAUNCHER_BITS + self.FINGERPRINT_FIELDS:
             assert field in body, f"missing: {field}"
+
+    def test_health_offers_custom_url_only_after_dns_resolves(self, health_app, monkeypatch):
+        from auth import storage
+        from auth.authentication import create_access_token
+        import cloudflare_tunnel
+
+        url = "https://studio.example.com"
+        health_app.state.cloudflare_url = url
+        token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+        client = TestClient(health_app)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for dns, expected in (("unknown", None), ("pending", None), ("resolved", url)):
+            monkeypatch.setattr(
+                cloudflare_tunnel,
+                "get_studio_tunnel_status",
+                lambda dns = dns: {"kind": "custom", "url": url, "dns": dns},
+            )
+            response = client.get("/api/health", headers = headers)
+            assert response.status_code == 200
+            assert response.json()["cloudflare_url"] == expected
+
+        monkeypatch.setattr(
+            cloudflare_tunnel,
+            "get_studio_tunnel_status",
+            lambda: {"kind": "temporary", "url": url, "dns": "unknown"},
+        )
+        assert client.get("/api/health", headers = headers).json()["cloudflare_url"] == url
+
+        monkeypatch.setattr(
+            cloudflare_tunnel,
+            "get_studio_tunnel_status",
+            lambda: {
+                "kind": "custom",
+                "url": "https://stale.example.com",
+                "dns": "resolved",
+            },
+        )
+        assert client.get("/api/health", headers = headers).json()["cloudflare_url"] is None
+
+        monkeypatch.setattr(
+            cloudflare_tunnel,
+            "get_studio_tunnel_status",
+            lambda: {"kind": None, "url": None, "dns": "unknown"},
+        )
+        assert client.get("/api/health", headers = headers).json()["cloudflare_url"] is None
+
+        def _status_error():
+            raise RuntimeError("status unavailable")
+
+        monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_status", _status_error)
+        assert client.get("/api/health", headers = headers).json()["cloudflare_url"] is None

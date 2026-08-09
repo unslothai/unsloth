@@ -1606,6 +1606,23 @@ async def liveness_check():
     return alive
 
 
+def _offered_cloudflare_url(app_state):
+    url = getattr(app_state, "cloudflare_url", None)
+    if not url:
+        return None
+    try:
+        from cloudflare_tunnel import get_studio_tunnel_status
+        tunnel = get_studio_tunnel_status()
+    except Exception:
+        logger.warning("Could not verify the remote URL before publishing it.", exc_info = True)
+        return None
+    if tunnel.get("url") != url:
+        return None
+    if tunnel.get("kind") == "custom" and tunnel.get("dns") != "resolved":
+        return None
+    return url
+
+
 @app.get("/api/health")
 async def health_check(request: Request):
     """Liveness plus launcher capability bits; host fingerprint gated on a bearer.
@@ -1686,7 +1703,7 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         # API-screen fields (authed-only; they fingerprint how the host is exposed).
-        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
+        "cloudflare_url": _offered_cloudflare_url(request.app.state),
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
     }

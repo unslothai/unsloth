@@ -1640,6 +1640,8 @@ class RemoteAccessResponse(BaseModel):
     login_url: Optional[str] = None
     custom_error: Optional[str] = None
     custom_error_detail: Optional[str] = None
+    custom_error_phase: Optional[Literal["provision", "teardown"]] = None
+    custom_error_settled: bool = False
     orphaned_hostnames: list[str] = Field(default_factory = list)
 
 

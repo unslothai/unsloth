@@ -303,6 +303,8 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         "login_url": "https://dash.cloudflare.com/login",
         "custom_error": "dns_conflict",
         "custom_error_detail": "record exists",
+        "custom_error_phase": "provision",
+        "custom_error_settled": False,
         "orphaned_hostnames": ["old.example.com"],
     }
     via_key = [False]
@@ -333,7 +335,9 @@ def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
         body["custom_hostname"],
         body["custom_runnable"],
         body["custom_error_detail"],
-    ) == ("provisioning", "studio.example.com", True, "record exists")
+        body["custom_error_phase"],
+        body["custom_error_settled"],
+    ) == ("provisioning", "studio.example.com", True, "record exists", "provision", False)
     assert client.post(
         "/remote-access/custom/provision", json = {"hostname": "studio.example.com"}
     ).json()["login_url"]
