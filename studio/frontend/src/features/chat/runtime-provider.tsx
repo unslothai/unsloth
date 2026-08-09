@@ -85,7 +85,7 @@ import {
   setActiveBranchReader,
 } from "./utils/refresh-context-usage";
 import {
-  awaitStoredChatThreadRecord,
+  awaitStoredChatThreadRecordBounded,
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatMessage,
@@ -647,11 +647,14 @@ export async function ensureThreadRecord({
   modelType,
   pairId,
   projectId,
+  incognito,
 }: {
   threadId: string;
   modelType: ModelType;
   pairId?: string;
   projectId?: string | null;
+  /** Snapshot from the send this row belongs to, so a retry cannot read a since-flipped toggle. */
+  incognito?: boolean;
 }): Promise<void> {
   if (isChatThreadDeleted(threadId)) {
     return;
@@ -661,7 +664,7 @@ export async function ensureThreadRecord({
   // state at creation. Reading it after the await would let a toggle-off
   // that lands mid-await (the list call is a real network round-trip) flip
   // the decision and persist what should have been an incognito thread.
-  const incognitoAtInit = useChatRuntimeStore.getState().incognito;
+  const incognitoAtInit = incognito ?? useChatRuntimeStore.getState().incognito;
   // Fresh assistant-ui threads are local ids. Temporary chats can skip the
   // history list entirely so a storage outage cannot block the first send.
   if (incognitoAtInit && isAssistantLocalThreadId(threadId)) {
@@ -761,8 +764,17 @@ function createStudioDbAdapter(
 
     initialize(threadId: string) {
       // assistant-ui withholds the first message until this resolves, so the row write is tracked, not awaited.
+      // Captured here, not inside the creator: a retry must not re-read a toggle the user has
+      // flipped since, which would mark an already-initialized normal thread incognito.
+      const incognitoAtInit = useChatRuntimeStore.getState().incognito;
       trackStoredChatThreadRecord(threadId, () =>
-        ensureThreadRecord({ threadId, modelType, pairId, projectId }),
+        ensureThreadRecord({
+          threadId,
+          modelType,
+          pairId,
+          projectId,
+          incognito: incognitoAtInit,
+        }),
       );
       // A run already streaming on this thread filed its handles under "__default" because
       // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
@@ -1380,7 +1392,9 @@ function useStudioRuntimeAdapters(
         );
         const write = (async () => {
           const { remoteId } = await initializeThread;
-          await awaitStoredChatThreadRecord(remoteId);
+          // Bounded: this promise is tracked by chatHistoryClearBoundary, whose waitForPending is
+          // unbounded, so a wedged row write here would hang "clear all chats" outright.
+          await awaitStoredChatThreadRecordBounded(remoteId);
           if (isChatThreadDeleted(remoteId)) {
             await deleteStoredChatThreads([remoteId]);
             return;

@@ -615,7 +615,9 @@ function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
 }
 
 /** Wait for a thread's row write, bounded, so a wedged request cannot stall a delete. */
-function awaitStoredChatThreadRecordBounded(threadId: string): Promise<void> {
+export function awaitStoredChatThreadRecordBounded(
+  threadId: string,
+): Promise<void> {
   return settleWithin(
     awaitStoredChatThreadRecord(threadId),
     THREAD_RECORD_DRAIN_TIMEOUT_MS,
