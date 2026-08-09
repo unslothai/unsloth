@@ -672,6 +672,29 @@ def _is_companion_base_repo(repo_id: str) -> bool:
         return False
 
 
+def _variant_delete_empties_repo(repo_id: str, variant: str) -> bool:
+    """Whether removing *variant* would leave *repo_id* with no main GGUF at all.
+
+    Fails CLOSED (True) when the cache cannot be read: the caller only asks for a repo already
+    established as a companion base, so an unreadable cache means the remaining quants cannot be
+    enumerated, not that there are some.
+    """
+    from hub.services.models import cache_inventory, companion_cleanup
+
+    try:
+        scans = cache_inventory.all_hf_cache_scans()
+        repos = companion_cleanup._repos_by_id(scans).get((repo_id or "").strip().lower(), [])
+        if not repos:
+            return False
+        return not any(
+            companion_cleanup._remaining_main_gguf_variants(repo, excluding = variant)
+            for repo in repos
+        )
+    except Exception as exc:  # noqa: BLE001 -- an unreadable cache is not permission to delete
+        logger.warning(f"Could not enumerate remaining quants for {repo_id}: {exc}")
+        return True
+
+
 def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
     from hub.services.models import companion_cleanup
@@ -768,6 +791,17 @@ def _delete_cached_model_blocking(
     # Here rather than in the async caller so it shares this function's cache walk and its stubs:
     # the check IS part of the destructive stage, and a caller that replaces that stage should not
     # end up with half of it still running.
+    # A variant delete normally cannot touch another repo, so the guard is a whole-repo check.
+    # The exception is a companion whose asset IS a GGUF variant: the native Qwen-Image encoder
+    # is one quant inside a chat GGUF repo, so deleting the LAST main GGUF from a companion base
+    # removes the encoder just as surely as deleting the repo would, and skipping the check there
+    # unlinked it under an installed image model.
+    if (
+        variant is not None
+        and _is_companion_base_repo(repo_id)
+        and _variant_delete_empties_repo(repo_id, variant)
+    ):
+        variant = None
     if variant is None and _is_companion_base_repo(repo_id):
         # Fails CLOSED, and only here: the lookup above already established this repo IS a
         # companion base, so an unreadable cache means the dependants cannot be enumerated, not

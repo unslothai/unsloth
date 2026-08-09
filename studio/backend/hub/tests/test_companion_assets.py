@@ -507,3 +507,58 @@ def test_one_full_copy_does_not_hide_an_orphaned_copy_in_another_cache(monkeypat
     assert [c["cache_path"] for c in offered] == [
         "/cache/models--black-forest-labs--FLUX.2-klein-4B"
     ]
+
+
+def test_a_preexisting_native_gguf_still_protects_its_encoder(monkeypatch):
+    """The native engine never reads the diffusers base; it fetches a single-file VAE and text
+    encoder from their own repos, and those repos are now offerable for deletion. With no
+    recorded link -- an upgraded cache, or state loss -- the derived fallback has to name them,
+    or Free up space lists the encoder of an installed checkpoint as an unused asset."""
+    from core.inference.diffusion_families import (
+        detect_family_for_pick,
+        sd_cpp_text_encoders_for,
+    )
+
+    gguf = "Qwen-Image-Q4_K_M.gguf"
+    fam = detect_family_for_pick("some-owner/custom", gguf)
+    assert fam is not None and fam.sd_cpp_vae, "pick a family with a native VAE for this test"
+    vae_repo = fam.sd_cpp_vae[0]
+    encoder_repo = sd_cpp_text_encoders_for(fam, "some-owner/custom", gguf)[0][0]
+
+    _install(
+        monkeypatch,
+        _repo("some-owner/custom", [(gguf, 2_000_000)]),
+        _repo(vae_repo, [("vae.safetensors", 300_000)]),
+        _repo(encoder_repo, [("encoder.gguf", 900_000)]),
+    )
+    required = companion_assets.required_companion_bases(cache_inventory.all_hf_cache_scans())
+    assert "some-owner/custom" in required.get(vae_repo.lower(), set())
+    assert "some-owner/custom" in required.get(encoder_repo.lower(), set())
+    offered = [
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    ]
+    assert vae_repo not in offered and encoder_repo not in offered
+
+
+def test_deleting_the_last_quant_of_a_companion_repo_runs_the_guard(monkeypatch):
+    """The native Qwen-Image text encoder is one quant inside a chat GGUF repo, so a variant
+    delete can remove a companion asset outright. The guard only ran for whole-repo deletes, and
+    the encoder went while an image model that needs it stayed installed."""
+    from hub.services.models import deletion
+
+    encoder_repo = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
+    only_quant = _repo(encoder_repo, [("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)])
+    two_quants = _repo(
+        encoder_repo,
+        [
+            ("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000),
+            ("Qwen2.5-VL-7B-Instruct-Q8_0.gguf", 8_000_000),
+        ],
+    )
+    _install(monkeypatch, only_quant)
+    assert deletion._variant_delete_empties_repo(encoder_repo, "Q4_K_M") is True
+    _install(monkeypatch, two_quants)
+    assert deletion._variant_delete_empties_repo(encoder_repo, "Q4_K_M") is False
+    # A repo that is not cached at all is not emptied by this delete.
+    assert deletion._variant_delete_empties_repo("some-owner/absent", "Q4_K_M") is False
