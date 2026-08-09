@@ -72,6 +72,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    raise_on_image_activation_shortfall,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -401,6 +402,29 @@ def _clamp_max_side(img: Any, max_side: int) -> Any:
     return img.resize((nw, nh), Image.LANCZOS)
 
 
+def _image_variant_hint(
+    family_name: Optional[str],
+    single_file_name: Optional[str],
+    repo_id: Optional[str],
+    base: Optional[str],
+) -> str:
+    """The free-text hint ``estimate_image_runtime_mib`` scans for distilled / turbo / edit
+    markers, built from every identifier this load carries.
+
+    Both ``repo_id`` AND ``base`` go in. Picking one (``repo_id or base``) dropped the base
+    whenever a repo id existed, which is every GGUF load, and the base is precisely where the
+    marker usually lives: ``unsloth/Z-Image-GGUF`` says nothing while its base
+    ``Tongyi-MAI/Z-Image-Turbo`` says turbo, so the 0.85 distilled discount never fired for the
+    models most likely to be running on a card that needs it. Deduplicated (a pipeline load passes
+    the same id as both) and order-stable, so the hint is a pure function of the load."""
+    parts: list[str] = []
+    for part in (family_name, single_file_name, repo_id, base):
+        text = (part or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    return " ".join(parts)
+
+
 def _compile_shape_dims(workflow: str, init_pil: Any, width: int, height: int) -> tuple[int, int]:
     """The (width, height) a generation's forward ACTUALLY runs at, for static
     compile-cache shape registration.
@@ -698,6 +722,10 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
+    # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids).
+    # Stored rather than rebuilt so generate()'s activation re-check budgets with the SAME
+    # distilled / edit multipliers the load did, and the two can never drift apart.
+    variant_hint: str = ""
 
 
 @dataclass
@@ -1967,6 +1995,36 @@ class DiffusionBackend:
         )
 
     @staticmethod
+    def _local_dir_text_encoder_sizes(path: Path) -> dict[str, int]:
+        """``{relative path: on-disk bytes}`` for the TEXT-ENCODER weight files under a diffusers
+        directory: the ``text_encoder*`` subfolders of what ``_local_dir_weight_sizes`` returns.
+
+        Derived from that same walk rather than a second one, so the text-encoder term is a strict
+        subset of the companion term the planner subtracts it from. Deriving it independently could
+        make the subtraction go negative on a tree where one walk saw a file the other did not."""
+        return {
+            rel: size
+            for rel, size in DiffusionBackend._local_dir_weight_sizes(
+                path, exclude_transformer = True
+            ).items()
+            # Prefix, not equality: families ship text_encoder, text_encoder_2, text_encoder_3.
+            if rel.split("/", 1)[0].startswith("text_encoder")
+        }
+
+    @staticmethod
+    def _text_encoder_cache_bytes(base: str, staged_dir: Optional[str] = None) -> int:
+        """Text-encoder size for the memory plan: the share of ``_companion_cache_bytes`` the
+        planner can move off the resident floor by streaming the encoders.
+
+        Same union-over-cache-roots merge as the companion total, keyed on the same relative
+        paths, so a repo split across two roots is counted once in BOTH terms."""
+        return DiffusionBackend._union_over_cached_revs(
+            base,
+            DiffusionBackend._local_dir_text_encoder_sizes,
+            staged_dir,
+        )
+
+    @staticmethod
     def _safetensors_param_count(path: Path) -> int:
         """Total tensor elements in a safetensors file, read from its JSON header without
         touching the tensor data. 0 on any read/parse failure."""
@@ -2214,6 +2272,13 @@ class DiffusionBackend:
                                     ),
                                     # Pass the companion estimate so prefetched base shards aren't double-counted.
                                     companion_override_mib = candidate.companions_mib,
+                                    # ... and its text-encoder share, so the planner can still
+                                    # price the streamed-encoder group tier on this path. getattr:
+                                    # a candidate without the split (a duck-typed or older
+                                    # estimate) passes None and keeps the previous decision.
+                                    text_encoder_override_mib = getattr(
+                                        candidate, "text_encoders_mib", None
+                                    ),
                                 )
 
                             replanned = _replan_candidate()
@@ -2742,6 +2807,14 @@ class DiffusionBackend:
                         hf_token = hf_token,
                         resolved = resolved,
                         gguf_filename = gguf_filename,
+                        # Built from the artifact this load COMMITTED to, by the same helper
+                        # _plan_memory used, so the generate-time re-check reuses it verbatim.
+                        variant_hint = _image_variant_hint(
+                            fam.name,
+                            Path(single_file_path).name if single_file_path else None,
+                            repo_id,
+                            base,
+                        ),
                     )
                     state_committed = True
                 finally:
@@ -3016,6 +3089,7 @@ class DiffusionBackend:
         repo_id: Optional[str] = None,
         transformer_resident_override_mib: Optional[int] = None,
         companion_override_mib: Optional[int] = None,
+        text_encoder_override_mib: Optional[int] = None,
         base_local_dir: Optional[str] = None,
         fetch_base: Optional[str] = None,
     ):
@@ -3035,7 +3109,10 @@ class DiffusionBackend:
         ``companion_override_mib`` likewise replaces the cached companion total on that
         re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
-        top of transformer_resident_override_mib (a double-count of the transformer).
+        top of transformer_resident_override_mib (a double-count of the transformer);
+        ``text_encoder_override_mib`` carries that override's TEXT-ENCODER share, which the
+        planner needs to price the streamed-text-encoder group tier. Both come from the same
+        family component table, so they cannot disagree about what the companions are.
 
         ``base_local_dir`` is the snapshot the load will actually read, carried into the size lookups
         as an extra source alongside the cache roots. A prefetch split across roots hands back no
@@ -3090,6 +3167,9 @@ class DiffusionBackend:
                         table_mib if model_dense_mib is None else max(model_dense_mib, table_mib)
                     )
             companion_mib = None
+            # No companion total on this branch (the whole repo IS the model), so there is no
+            # split to hand the planner either. None, not a guess: it reproduces the old decision.
+            text_encoder_mib = None
         else:
             if transformer_resident_override_mib is not None:
                 # Planning the dense-quant candidate: the auto-policy estimate replaces the file-size derivation.
@@ -3108,31 +3188,42 @@ class DiffusionBackend:
             if companion_override_mib is not None:
                 # Re-planning the dense candidate: the prefetched transformer/ shards land in the same cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
+                # The text-encoder share of that same override, from the same family component
+                # table, so the two terms cannot disagree. None when the caller has no split.
+                text_encoder_mib = text_encoder_override_mib
             else:
                 # Scan the repo the bytes were staged from, and hand over the staged snapshot too: a
                 # base served from the import-time root is invisible to a hub-id scan of the live
                 # one, so the VAE + text encoders would load unbudgeted.
                 companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
+                # The text-encoder share of that companion total, from the SAME walk over the same
+                # trees, so the subtraction the planner does is exact rather than two estimates
+                # meeting in the middle. 0 bytes reads as "nothing cached", i.e. no split.
+                text_encoder = self._text_encoder_cache_bytes(fetch_base or base, base_local_dir)
+                text_encoder_mib = (
+                    int(text_encoder // (1024 * 1024)) if text_encoder else None
+                )
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
         # Feed the variant hint so estimate_image_runtime_mib sees distilled markers (distilled needs ~15% less headroom).
-        variant_hint = " ".join(
-            p
-            for p in (
-                fam.name,
-                Path(single_file_path).name if single_file_path else "",
-                repo_id or base or "",
-            )
-            if p
+        variant_hint = _image_variant_hint(
+            fam.name,
+            Path(single_file_path).name if single_file_path else None,
+            repo_id,
+            base,
         )
+        # No dimensions on purpose: load time genuinely does not know what the user will generate
+        # at, so this budgets the 1024x1024 default for PLACEMENT. generate() re-checks the real
+        # resolution against the free budget before it samples (raise_on_image_activation_shortfall).
         runtime_headroom = estimate_image_runtime_mib(width = None, height = None, family = variant_hint)
         return plan_diffusion_memory(
             target = target,
             device_memory = device_memory,
             model_dense_mib = model_dense_mib,
             companion_dense_mib = companion_mib,
+            text_encoder_dense_mib = text_encoder_mib,
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,
@@ -3820,6 +3911,51 @@ class DiffusionBackend:
                 # Per-forward chunks: the whole job list in ONE forward by default (batch 32 on 4-step models is ~10-22x over
                 # serial engines), bounded by an explicit batch_size cap; the OOM backoff below halves a failed chunk.
                 chunks = chunk_jobs(jobs, batch_size)
+
+                # Resolution-aware re-check, with the size this call ACTUALLY runs at. The load-time
+                # plan budgeted the 1024x1024 default because load time cannot know the request, so
+                # a much larger frame has never been compared against anything. Do it here, before
+                # any latent is allocated: weights can be offloaded but activations cannot, so an
+                # activation estimate over the free budget overruns at EVERY offload tier, and the
+                # refusal is a fact rather than a tuning guess. Best-effort throughout -- a probe
+                # that fails must never block a generation that would have worked.
+                try:
+                    # The dimensions the forward runs at, not the sliders: img2img / inpaint /
+                    # upscale / edit take their output size from the input image. Same derivation
+                    # the compile-cache shape registration uses further down.
+                    guard_width, guard_height = _compile_shape_dims(
+                        workflow, init_pil, width, height
+                    )
+                    # Batch term: the OOM backoff below halves a failed multi-image forward down to
+                    # SINGLETONS, so an oversized batch is already recoverable wherever torch
+                    # raises. Budgeting the full chunk here would refuse batches that complete
+                    # today (the measured batch-32 fast path). One image that does not fit is the
+                    # case no backoff can rescue, so that is the floor this refuses on.
+                    guard_batch = 1
+                    raise_on_image_activation_shortfall(
+                        # Settled with a single read: the sync + empty_cache makes the reading
+                        # honest (cached allocator blocks count as used to mem_get_info, and a
+                        # stale cache would fake a shortfall), while attempts=1 keeps the
+                        # multi-second retry loop out of every generation.
+                        device_memory = settled_snapshot_device_memory(
+                            self._resolve_device_target(state.family),
+                            attempts = 1,
+                            delay_s = 0.0,
+                        ),
+                        width = guard_width,
+                        height = guard_height,
+                        batch_size = guard_batch,
+                        # The hint the load planned with, so the distilled / edit multipliers match.
+                        family = state.variant_hint,
+                        logger = logger,
+                    )
+                except ValueError:
+                    raise  # the refusal itself: the route turns this into a 400 with the reason
+                except Exception as exc:  # noqa: BLE001 — fail OPEN on a broken probe
+                    logger.warning(
+                        "diffusion.generate: activation headroom re-check skipped (%s)", exc
+                    )
+
                 gen = _GenState(total_steps = steps * len(chunks))
                 # Steps completed by FINISHED chunks, so the bar spans the whole multi-chunk call (mutable cell for _on_step).
                 steps_done = [0]
