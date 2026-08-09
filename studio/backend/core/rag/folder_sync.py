@@ -1293,11 +1293,7 @@ def _reconcile_folder(job_id: str) -> None:
         for old_rel, rel in pairs:
             remaining_old.discard(old_rel)
             remaining_destinations.discard(rel)
-        if (
-            len(remaining_old) == 1
-            and len(remaining_destinations) == 1
-            and key[1] not in (None, 0)
-        ):
+        if len(remaining_old) == 1 and len(remaining_destinations) == 1 and key[1] not in (None, 0):
             pairs.append((remaining_old.pop(), remaining_destinations.pop()))
 
         for old_rel, rel in pairs:
@@ -1305,16 +1301,12 @@ def _reconcile_folder(job_id: str) -> None:
             same_extension = (
                 os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
             )
-            same_content = (
-                known[old_rel].get("content_hash") == destination_hashes.get(rel)
-            )
+            same_content = known[old_rel].get("content_hash") == destination_hashes.get(rel)
             _check_running()
             if rel in new and same_extension and same_content:
                 _check_root_identity(folder["path"], scanned_identity)
                 _rename_mapping(folder["id"], old_rel, rel)
-                _update_mapping_metadata(
-                    folder["id"], rel, current[rel], destination_hashes[rel]
-                )
+                _update_mapping_metadata(folder["id"], rel, current[rel], destination_hashes[rel])
                 new.discard(rel)
                 known[rel] = {
                     **known[old_rel],
@@ -1337,9 +1329,7 @@ def _reconcile_folder(job_id: str) -> None:
     changed = {
         rel
         for rel in set(current) & set(known)
-        if rebuild
-        or rel in extension_renames
-        or rel in materially_changed
+        if rebuild or rel in extension_renames or rel in materially_changed
     }
     work = sorted(new | changed)
     total = len(work) + len(missing)
@@ -1676,7 +1666,12 @@ def _recover_startup_state() -> None:
         _queue_requested_rebuild(job["id"])
 
 
-def start_auto_sync(*, admission_lock = None, admit = None, project_exists = None) -> bool:
+def start_auto_sync(
+    *,
+    admission_lock = None,
+    admit = None,
+    project_exists = None,
+) -> bool:
     global _thread, _thread_stop
     try:
         if not rag_db.rag_available():

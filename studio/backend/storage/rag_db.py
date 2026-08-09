@@ -248,9 +248,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         r[1] for r in conn.execute("PRAGMA table_info(linked_folder_retired_scopes)").fetchall()
     }
     if "restore_state_json" not in retired_scope_cols:
-        conn.execute(
-            "ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT"
-        )
+        conn.execute("ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT")
     folder_file_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(linked_folder_files)").fetchall()
     }
