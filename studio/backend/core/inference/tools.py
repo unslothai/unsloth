@@ -7232,7 +7232,14 @@ def _owners_read(path: "str | None") -> dict:
     return owners if isinstance(owners, dict) else {}
 
 
+def _record_key(session_id: str, section: str) -> str:
+    # Keyed by directory name in the sessions section, so a marker naming an
+    # owner can be looked up the same way whatever the id behind it looked like.
+    return _sandbox_name(session_id) if section == _SESSIONS else session_id
+
+
 def _recorded_workdir(session_id: str, section: str = _SESSIONS) -> "str | None":
+    session_id = _record_key(session_id, section)
     entries = _owners_read(_owners_path()).get(section)
     recorded = entries.get(session_id) if isinstance(entries, dict) else None
     return recorded if isinstance(recorded, str) and recorded else None
@@ -7252,6 +7259,7 @@ def _record_workdir(
     path = _owners_path()
     if not path:
         return
+    session_id = _record_key(session_id, section)
     with _owners_lock:
         owners = _owners_read(path)
         entries = owners.get(section)
@@ -7290,9 +7298,21 @@ def _sandbox_name(session_id: str) -> str:
 
 
 def _mark_sandbox(workdir: str, session_id: str) -> None:
+    """(Re)write the marker. Never through a link.
+
+    The file sits where tool code runs, so one replaced by a symlink would send
+    this write to whatever it points at and truncate it.
+    """
+    marker = os.path.join(workdir, _SANDBOX_MARKER)
     try:
-        with open(os.path.join(workdir, _SANDBOX_MARKER), "w", encoding = "utf-8") as fh:
-            fh.write(_sandbox_name(session_id))
+        if os.path.islink(marker):
+            os.unlink(marker)
+        flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(marker, flags, 0o600)
+        try:
+            os.write(fd, _sandbox_name(session_id).encode("utf-8"))
+        finally:
+            os.close(fd)
     except OSError:
         pass
 
@@ -7304,12 +7324,43 @@ def _marker_owner(workdir: str) -> "str | None":
     a tool writing over this file would otherwise send its own chat to a fresh
     directory on the next launch, leaving its files behind.
     """
+    marker = os.path.join(workdir, _SANDBOX_MARKER)
+    if os.path.islink(marker):
+        return None  # not a marker we wrote, and not one to follow
     try:
-        with open(os.path.join(workdir, _SANDBOX_MARKER), encoding = "utf-8") as fh:
+        with open(marker, encoding = "utf-8") as fh:
             owner = fh.read(256).strip()
     except (OSError, UnicodeDecodeError):
         return None
     return owner if owner and _usable_session_id(owner) else None
+
+
+def _claimed_by_other(workdir: str, session_id: str) -> bool:
+    """Whether another session holds *workdir*, by its marker and its record."""
+    owner = _marker_owner(workdir)
+    if owner is None or owner == _sandbox_name(session_id):
+        return False
+    return _recorded_workdir(owner) == workdir
+
+
+def _trusted_record(root: str, session_id: str) -> "str | None":
+    """The recorded directory for a session, where it could have been ours.
+
+    The ledger lives under the studio home, which tool code can still reach by
+    relative path, so a forged entry must not be able to point a session
+    outside the root, at a link, or at a directory another session holds. It
+    can only ever name a directory this session would have been given anyway.
+    """
+    recorded = _recorded_workdir(session_id)
+    if not recorded or os.path.islink(recorded) or not os.path.isdir(recorded):
+        return None
+    if not _contained_in_root(recorded, root) or os.path.dirname(recorded) != root:
+        return None
+    if not os.path.basename(recorded).startswith(_sandbox_name(session_id)):
+        return None
+    if _claimed_by_other(recorded, session_id):
+        return None
+    return recorded
 
 
 def _session_dir(root: str, session_id: str) -> str:
@@ -7322,14 +7373,9 @@ def _session_dir(root: str, session_id: str) -> str:
     us at is nobody's sandbox: it is stepped around rather than run in, so no
     tool can write a marker into it and make it look like ours.
     """
-    recorded = _recorded_workdir(session_id)
-    if (
-        recorded
-        and os.path.isdir(recorded)
-        and not os.path.islink(recorded)
-        and _contained_in_root(recorded, root)
-    ):
-        return recorded  # said so when we made it, and no tool can reach this
+    recorded = _trusted_record(root, session_id)
+    if recorded:
+        return recorded  # what we wrote down when we made it
     name = _sandbox_name(session_id)
     plain = os.path.join(root, name)
     # A link is never ours, whatever it points at: claiming through one writes
@@ -7387,9 +7433,10 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         # The record is not writable from a sandbox, so it outranks whatever
         # the marker says; and a marker naming nobody is one a tool wrote over,
         # which at our own root nothing else could have put here.
-        if _recorded_workdir(session_id) == workdir or (
-            _root_is_ours() and _marker_owner(workdir) is None
-        ):
+        if (
+            _recorded_workdir(session_id) == workdir
+            and not _claimed_by_other(workdir, session_id)
+        ) or (_root_is_ours() and _marker_owner(workdir) is None):
             _mark_sandbox(workdir, session_id)
             _record_workdir(session_id, workdir)
             return workdir
@@ -7535,7 +7582,12 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             # otherwise through the resolver, so a name already taken by
             # something in a shared root lands at this session's own name
             # instead of merging into a directory that is not ours.
-            target = _recorded_workdir(name, _MIGRATING) or _session_dir(root, name)
+            # Only while it still names somewhere in this root: the override
+            # can have changed since, and moving there would put the files
+            # where nothing resolves.
+            target = _recorded_workdir(name, _MIGRATING)
+            if not target or os.path.dirname(target) != root:
+                target = _session_dir(root, name)
             if os.path.exists(target):
                 # Ours only if we said so before starting this move: a
                 # directory that merely looks similar is somebody's own, and a
@@ -7624,7 +7676,7 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
     ``_ensure_session_dir`` claims or steps aside; a read has to decide on what
     is already there, and the disambiguated name can be somebody else's too.
     """
-    if _recorded_workdir(session_id) == workdir:
+    if _trusted_record(os.path.dirname(workdir), session_id) == workdir:
         return True
     owner = _marker_owner(workdir)
     if owner is not None:
@@ -7640,8 +7692,16 @@ def _get_workdir(session_id: str | None = None) -> str:
     if cached is not None and not os.path.isdir(cached):
         cached = None
     if cached is not None and not _get_project_workdir(session_id or ""):
-        if not _contained_in_root(cached, sandbox_root()):
-            cached = None  # replaced by a symlink out of the root since it was cached
+        # The same checks a fresh resolve makes: the entry can have been
+        # renamed and replaced with a link to another chat's directory since,
+        # and containment alone accepts that.
+        root_now = sandbox_root()
+        if (
+            os.path.islink(cached)
+            or not _contained_in_root(cached, root_now)
+            or (session_id and not _owned_by_session(cached, session_id))
+        ):
+            cached = None
     if cached is None:
         _workdirs.pop(key, None)
         sandbox_root_path = sandbox_root()
@@ -7694,7 +7754,12 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
             return project
     root = sandbox_root()
     cached = _workdirs.get(session_id or "_default")
-    if cached and _contained_in_root(cached, root):
+    if (
+        cached
+        and not os.path.islink(cached)
+        and _contained_in_root(cached, root)
+        and (not session_id or _owned_by_session(cached, session_id))
+    ):
         return cached
     if not session_id:
         return _sandbox_fallback(root, "_default")

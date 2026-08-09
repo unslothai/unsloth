@@ -2536,5 +2536,112 @@ def test_the_sandbox_listing_runs_in_a_worker():
     assert "os.stat" not in source
 
 
+def test_a_marker_replaced_by_a_link_is_not_written_through(tmp_path, monkeypatch):
+    """The file sits where tool code runs, so a link there would send our write
+    to whatever it points at."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_link911"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    victim = tmp_path / "notes.txt"
+    victim.write_text("years of notes", encoding = "utf-8")
+
+    marker = workdir / tools._SANDBOX_MARKER
+    marker.unlink()
+    marker.symlink_to(victim)
+    assert tools._marker_owner(str(workdir)) is None, "followed a link to read"
+
+    tools._mark_sandbox(str(workdir), session)
+    assert victim.read_text(encoding = "utf-8") == "years of notes", "wrote through the link"
+    assert not marker.is_symlink()
+    assert marker.read_text(encoding = "utf-8") == session
+
+
+def test_a_cached_path_swapped_for_another_chats_directory_is_dropped(tmp_path, monkeypatch):
+    """cd .., mv, ln -s is all a tool needs, and containment accepts a link to
+    a sibling."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    victim = Path(tools.get_sandbox_workdir("__LOCALID_victim2"))
+    (victim / "private.csv").write_text("theirs", encoding = "utf-8")
+    attacker = Path(tools.get_sandbox_workdir("__LOCALID_attack2"))
+
+    shutil.rmtree(attacker)
+    attacker.symlink_to(victim, target_is_directory = True)
+
+    again = Path(tools.get_sandbox_workdir("__LOCALID_attack2"))
+    assert again.resolve() != victim.resolve(), again
+    assert not (again / "private.csv").exists()
+    resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_attack2"))
+    assert not (resolved / "private.csv").exists(), resolved
+
+
+def test_a_forged_record_cannot_point_a_chat_at_another_ones_files(tmp_path, monkeypatch):
+    """The ledger is reachable from a sandbox by a relative path, so an entry in
+    it must not be able to name anything this chat would not have been given."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    victim = Path(tools.get_sandbox_workdir("__LOCALID_victim3"))
+    (victim / "private.csv").write_text("theirs", encoding = "utf-8")
+    attacker = "__LOCALID_attack3"
+    mine = Path(tools.get_sandbox_workdir(attacker))
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for forged in (str(victim), str(outside)):
+        tools._record_workdir(attacker, forged)
+        tools._workdirs.clear()
+        landed = Path(tools.get_sandbox_workdir(attacker))
+        assert landed != victim, "took another chat's directory"
+        assert landed.parent == Path(tools.sandbox_root())
+        assert not (landed / "private.csv").exists()
+    assert (victim / "private.csv").is_file()
+    assert mine.is_dir()
+
+
+def test_a_migration_target_from_another_root_is_not_used(tmp_path, monkeypatch):
+    """The override can change between the interrupted move and the retry, and
+    those files would land where nothing resolves."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_stale11"
+    legacy.mkdir(parents = True)
+    (legacy / "sales.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    old_root = tmp_path / "old_sandbox"
+    old_root.mkdir()
+    new_root = tmp_path / "new_sandbox"
+    new_root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(new_root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    # What the interrupted run wrote down, back when the root was elsewhere.
+    tools._record_workdir(
+        "__LOCALID_stale11", str(old_root / "__LOCALID_stale11"), tools._MIGRATING,
+    )
+
+    tools._migrate_legacy_sandbox(str(new_root))
+    assert not (old_root / "__LOCALID_stale11").exists(), "moved outside the active root"
+    assert (new_root / "__LOCALID_stale11" / "sales.csv").is_file()
+    assert Path(tools.get_sandbox_workdir("__LOCALID_stale11")) == new_root / "__LOCALID_stale11"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
