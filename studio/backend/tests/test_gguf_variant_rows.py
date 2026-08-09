@@ -829,7 +829,9 @@ def test_a_bpw_key_needs_no_scope_label():
     variants = [
         GgufVariantInfo(filename = "model-IQ4_XS-3.53bpw.gguf", quant = "IQ4_XS-3.53bpw", size_bytes = 1),
         GgufVariantInfo(filename = "model-IQ4_XS-3.97bpw.gguf", quant = "IQ4_XS-3.97bpw", size_bytes = 2),
-        GgufVariantInfo(filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K", size_bytes = 3),
+        GgufVariantInfo(
+            filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K", size_bytes = 3
+        ),
     ]
     _apply_gguf_display_labels(variants)
     assert variants[0].display_label is None

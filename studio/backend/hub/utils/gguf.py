@@ -373,6 +373,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+
     # The bpw modifier is part of the key but reads perfectly well on its own
     # ("IQ4_XS-3.53bpw"), so a key that is only the token plus its bpw suffix is NOT a
     # path-qualified one and needs no scope label.
