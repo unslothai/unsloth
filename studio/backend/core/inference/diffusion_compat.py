@@ -141,7 +141,6 @@ def _hub_revision(repo_id: str, gguf_filename: str, hf_token: Optional[str]) -> 
     one, and an offline or erroring host must leave today's verdict alone."""
     try:
         from huggingface_hub import get_hf_file_metadata, hf_hub_url
-
         meta = get_hf_file_metadata(
             hf_hub_url(repo_id, gguf_filename),
             token = hf_token,

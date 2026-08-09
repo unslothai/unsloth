@@ -912,7 +912,12 @@ def test_the_offline_caller_still_gets_a_memoised_remote_answer(monkeypatch, tmp
 # ── a cached copy the Hub has moved past ──────────────────────────────────────
 
 
-def _cached_snapshot(tmp_path, sha, body, filename = KLEIN_4B_FILE):
+def _cached_snapshot(
+    tmp_path,
+    sha,
+    body,
+    filename = KLEIN_4B_FILE,
+):
     """A file where huggingface_hub puts it: ``models--org--repo/snapshots/<sha>/<file>``."""
     path = tmp_path / f"models--{KLEIN_4B_GGUF.replace('/', '--')}" / "snapshots" / sha / filename
     path.parent.mkdir(parents = True, exist_ok = True)
