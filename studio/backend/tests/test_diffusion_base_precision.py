@@ -387,6 +387,85 @@ def test_resolve_auto_int8_band_treats_stub_as_absent(monkeypatch):
     assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
 
 
+def _fake_cuda_with_free_gb(monkeypatch, free_gb: float):
+    """Point torch.cuda at a GPU reporting ``free_gb`` free, so the auto pick is deterministic."""
+    import torch
+
+    class _FakeCuda:
+        @staticmethod
+        def mem_get_info():
+            return (int(free_gb * 1e9), int(80 * 1e9))
+
+        @staticmethod
+        def get_device_capability():
+            return (10, 0)
+
+    monkeypatch.setattr(torch, "cuda", _FakeCuda)
+    monkeypatch.setattr(dit, "has_functional_torchao", lambda: True)
+
+
+@pytest.mark.parametrize(
+    "base_model",
+    [
+        "black-forest-labs/FLUX.2-klein-9B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+        # The unsloth mirrors resolve to the same upstream ids, and they are what the Train tab sends.
+        "unsloth/FLUX.2-klein-9B",
+        "unsloth/FLUX.2-klein-base-9B",
+    ],
+)
+def test_auto_sizes_flux2_klein_9b_off_its_own_weights(monkeypatch, base_model):
+    # flux.2-klein covers a 4B and a 9B transformer under one family entry, so the family's
+    # dense_bf16_gb (8.1, the 4B) must not size a 9B run: 20 GB free clears 8.1 * 1.5 but the
+    # 9B dense weights are 18.2 GB, so "auto" would pick bf16 and the load would OOM before
+    # step 1. Every 9B id has to land on nf4 here.
+    spec = dit._SPECS["flux.2-klein"]
+    _fake_cuda_with_free_gb(monkeypatch, 20.0)
+    cfg = _cfg(base_model = base_model, base_precision = "auto", mixed_precision = "bf16")
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "nf4"
+    assert dit._dense_bf16_gb(spec, base_model) > 2 * spec.dense_bf16_gb
+
+
+def test_auto_still_picks_bf16_for_the_klein_4b_default(monkeypatch):
+    # The same 20 GB against the family DEFAULT (4B, 8.1 GB dense) still clears the bf16 band:
+    # the per-base lookup must narrow only the variant it has a size for.
+    spec = dit._SPECS["flux.2-klein"]
+    _fake_cuda_with_free_gb(monkeypatch, 20.0)
+    cfg = _cfg(
+        base_model = "black-forest-labs/FLUX.2-klein-4B",
+        base_precision = "auto",
+        mixed_precision = "bf16",
+    )
+    assert dit._resolve_base_precision(cfg, spec, "cuda") == "bf16"
+
+
+def test_dense_bf16_gb_keeps_every_single_size_family_where_it_was():
+    # Only flux.2-klein has more than one size under its entry. Every other family must keep the
+    # number its spec already carried (the shared table is the same figure), and an unknown base
+    # must fall back rather than raise -- otherwise this lookup could fail a run that would train.
+    for name in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-dev"):
+        spec = dit._SPECS[name]
+        for base in ("some/unknown-base", spec.family, ""):
+            assert dit._dense_bf16_gb(spec, base) == pytest.approx(
+                spec.dense_bf16_gb, rel = 0.05
+            )
+
+
+def test_dense_bf16_gb_survives_a_broken_lookup(monkeypatch):
+    # The sizing table is an optimisation, never a precondition: a lookup that blows up falls
+    # back to the family number instead of failing the run.
+    import core.inference.diffusion_auto_policy as ap
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("table unavailable")
+
+    monkeypatch.setattr(ap, "family_bf16_components_gb", _boom)
+    spec = dit._SPECS["flux.2-klein"]
+    assert dit._dense_bf16_gb(spec, "unsloth/FLUX.2-klein-base-9B") == pytest.approx(
+        spec.dense_bf16_gb
+    )
+
+
 def test_has_functional_torchao_rejects_stub(monkeypatch):
     # has_functional_torchao must reject the import stub: the import succeeds against it, but the symbols are no-op stub types.
     import importlib

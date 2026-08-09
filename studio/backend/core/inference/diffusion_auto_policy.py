@@ -70,8 +70,13 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 }
 
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
+# flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and
+# 9B / base-9B (18.2 GB transformer, Qwen3-8B encoder). The 9B pair needs an override on BOTH ids: sizing
+# klein-BASE-9B off the family default understates it by 2.3x, and the base variants are the ones the upstream
+# guidance points fine-tuning at, so it is the likelier of the two to be loaded.
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
+    "black-forest-labs/FLUX.2-klein-base-9B": (18.2, 16.4, 0.2),
 }
 
 
