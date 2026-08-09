@@ -3608,6 +3608,77 @@ def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch
     assert result["progress"] == 1.0
 
 
+def test_a_refused_manifest_is_not_reread_through_the_blob_hash_fallback(monkeypatch, tmp_path):
+    """Refusing a manifest has to stick.
+
+    Two caches disagreeing about the variant means no manifest may be applied across the
+    scan. The generic blob-hash helper reads the DEFAULT cache's manifest with none of that
+    scoping, so falling through to it reinstated the rejected hashes -- and they then filter
+    out every blob of the cache that actually holds the finished variant.
+    """
+    active = tmp_path / "active" / "models--Org--Model-GGUF"
+    remembered = tmp_path / "remembered" / "models--Org--Model-GGUF"
+    active.mkdir(parents = True)
+    remembered.mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        download_manifest, "_canonical_hub_cache", lambda root = None: str(root or "")
+    )
+    for root, digest in ((active.parent, "new"), (remembered.parent, "old")):
+        assert download_manifest.write_manifest(
+            "model",
+            "Org/Model-GGUF",
+            "Q4_K_M",
+            [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = digest)],
+            "http",
+            hub_cache = root,
+        )
+    monkeypatch.setattr(
+        downloads,
+        "preferred_repo_cache_dirs",
+        lambda *_a, **_kw: [active, remembered],
+    )
+
+    called: list[str] = []
+
+    def _blob_hashes(*_args, **_kwargs):
+        called.append("fallback")
+        return frozenset({"new"})
+
+    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_blob_hashes", _blob_hashes)
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+    captured: dict = {}
+
+    async def _progress(*_args, **kwargs):
+        captured["resolver"] = kwargs.get("metadata_resolver")
+        return {
+            "downloaded_bytes": 0,
+            "completed_bytes": 0,
+            "complete_on_disk": False,
+            "expected_bytes": 0,
+            "progress": 0,
+            "cache_path": None,
+        }
+
+    monkeypatch.setattr(downloads.snapshot_progress, "snapshot_progress_response", _progress)
+
+    asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+    resolver = captured["resolver"]
+    assert resolver is not None
+    assert resolver("Org/Model-GGUF", None) == (100, frozenset())
+    assert called == []
+
+
 def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch, tmp_path):
     """The no-manifest completion is evidence-gated, not size-gated.
 

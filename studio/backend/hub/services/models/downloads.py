@@ -499,7 +499,25 @@ def _variant_manifest_in_any_cache(
     force_active: bool = False,
     active_root: Optional[Path] = None,
 ) -> Optional[download_manifest.Manifest]:
-    """The variant's manifest from whichever cache dir on disk holds it.
+    """The manifest half of :func:`_variant_manifest_decision`."""
+    return _variant_manifest_decision(
+        repo_id, variant, force_active = force_active, active_root = active_root
+    )[1]
+
+
+def _variant_manifest_decision(
+    repo_id: str,
+    variant: str,
+    *,
+    force_active: bool = False,
+    active_root: Optional[Path] = None,
+) -> "tuple[str, Optional[download_manifest.Manifest]]":
+    """The variant's manifest from whichever cache dir on disk holds it, and why.
+
+    The verdict is ``"found"``, ``"absent"`` (no cache on disk has one) or ``"refused"`` (one
+    exists but applying it across the scanned caches would be wrong). Callers have to tell those
+    last two apart: a refusal is a decision that NO manifest may speak here, so re-reading one by
+    another route walks straight back into the answer this function just rejected.
 
     snapshot_progress reads manifests per scanned cache entry (``entry.parent``)
     while this resolver only ever asked the active cache, so the two could
@@ -539,7 +557,7 @@ def _variant_manifest_in_any_cache(
             if active_manifest is None:
                 # The cache snapshot_progress will scan, with no manifest of its own. Anything
                 # returned here would be another cache's answer applied to its blobs.
-                return None
+                return ("refused", None)
             continue
         manifest = download_manifest.read_manifest(
             "model",
@@ -552,10 +570,10 @@ def _variant_manifest_in_any_cache(
             # a manifest can be deleted, or never written by an older build -- and returning
             # some other cache's hashes filters every blob of it out AND disables the per-entry
             # name-based fallback that would still have counted them. Refuse instead.
-            return None
+            return ("refused", None)
         found.append(manifest)
     if not found:
-        return None
+        return ("absent", None)
     # One answer, or several that agree: safe to apply to every scanned entry, which is what
     # snapshot_progress does with the hash set this produces.
     #
@@ -567,8 +585,8 @@ def _variant_manifest_in_any_cache(
     # None instead degrades to the name-based fallback, which stays attributable per entry.
     first = _manifest_hashes(found[0])
     if any(_manifest_hashes(m) != first for m in found[1:]):
-        return None
-    return found[0]
+        return ("refused", None)
+    return ("found", found[0])
 
 
 def _manifest_hashes(manifest: download_manifest.Manifest) -> frozenset[str]:
@@ -614,7 +632,7 @@ async def get_gguf_download_progress_response(
         get_job_metadata = getattr(_registry, "get_job_metadata", None)
         job_metadata = get_job_metadata(job_key) if callable(get_job_metadata) else None
         hub_cache = getattr(job_metadata, "hub_cache", None)
-        manifest = _variant_manifest_in_any_cache(
+        verdict, manifest = _variant_manifest_decision(
             resolved_repo_id,
             progress_variant,
             # Same scoping rule snapshot_progress applies to its own scan.
@@ -626,6 +644,14 @@ async def get_gguf_download_progress_response(
                 sum(max(0, int(file.size or 0)) for file in manifest.expected_files),
                 frozenset(file.sha256 for file in manifest.expected_files if file.sha256),
             )
+        if verdict == "refused":
+            # A refusal is not a miss. The lookup above found manifests and ruled that none of
+            # them may be applied across the caches snapshot_progress scans; the blob-hash
+            # helper reads the DEFAULT cache's manifest with none of that scoping, so falling
+            # through here reinstates the very hashes just rejected and filters out every blob
+            # of whichever cache actually holds the variant. An empty set degrades to the
+            # per-entry name-based fallback, which stays attributable to the entry it counted.
+            return (expected_total, frozenset())
         return (
             expected_total,
             gguf_variants.gguf_variant_blob_hashes(

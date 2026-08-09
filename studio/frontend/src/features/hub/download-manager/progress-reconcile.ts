@@ -100,6 +100,12 @@ export function resolveProgressUpdate(
   const completeOnDisk = progressResp.complete_on_disk === true && measuredCompleted;
   const madeProgress =
     resetMonotonic ||
+    // An UNMEASURED scan is not an idle one. The backend says cache_measured false when it
+    // could not read the cache at all, and the response is then all zeroes -- which the idle
+    // grace reads as "nothing is happening" and finalizes the job as gone. The initial adopt
+    // probe already refuses to retire on that shape; without this the protection lasted only
+    // until the first adopted poll loop ran its grace out.
+    progressResp.cache_measured === false ||
     downloadedBytes > previousDownloadedBytes ||
     expected !== job.expectedBytes;
   const reportedFraction = finiteReading(progressResp.progress);

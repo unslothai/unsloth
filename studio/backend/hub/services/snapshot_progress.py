@@ -355,7 +355,9 @@ def _snapshot_resolves_to(
 
     HF names a blob by its hash and the snapshot entry links to it, so the link target settles
     which revision is materialized here. A copy-layout cache (Windows without symlinks) has no
-    target to read: unanswerable is not a mismatch, so it passes.
+    target to read: unanswerable is not a mismatch, so it passes -- and it does not have to be
+    answered, because the byte tally that gates completion only ever counts blobs whose name IS
+    an expected hash, so the expected revision is already proven present in this cache dir.
     """
     for expected in getattr(manifest, "expected_files", ()) or ():
         if not download_manifest.expected_path_is_safe(expected.path):

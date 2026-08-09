@@ -112,6 +112,21 @@ test("the held reading still lets real progress through", () => {
   assert.equal(resolved.madeProgress, true);
 });
 
+test("an unmeasured scan keeps the idle grace from finalizing the job", () => {
+  // cache_measured false is the backend saying it could not read the cache at all, and the
+  // reply is then all zeroes. The adopt probe already refuses to retire on that shape; without
+  // the same rule here the protection lasted only until the adopted poll loop's grace ran out,
+  // and a download whose cache was merely unreadable was finalized as gone.
+  const resolved = resolveProgressUpdate(
+    job(),
+    emptyReading({ cache_measured: false }),
+  );
+
+  assert.equal(resolved.madeProgress, true);
+  // Still not a measurement: the card holds its figures.
+  assert.equal(resolved.downloadedBytes, EXPECTED);
+});
+
 test("resetMonotonic publishes the zero for a new generation", () => {
   // The escape hatch has to keep working, or a restart would show the previous
   // run's bytes until the new one passed them.
