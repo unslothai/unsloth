@@ -827,7 +827,7 @@ def _has_active_lora(loras: Any) -> bool:
     return False
 
 
-def _uncached_prequant_repo(
+def _auto_gguf_dense_download_reason(
     fam: Optional[DiffusionFamily],
     target: Any,
     requested: Optional[str],
@@ -835,12 +835,15 @@ def _uncached_prequant_repo(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
-    when it costs no extra bytes (no hosted source, a local override, or already cached).
+    """Why an AUTO-derived dense quant would DOWNLOAD a second denoiser, or None when safe.
 
-    Otherwise an auto GGUF pick fetches the GGUF and then a second multi-GB denoiser it uses
-    instead. Shared by ``load_pipeline`` and ``_dense_quant_prefetch_needed`` so the load and the
-    download plan decline together. Cheap (a refs read + stat) and never raises."""
+    A hosted pre-quant that is already cached, or an operator-provided local checkpoint, costs no
+    extra bytes. An uncached hosted pre-quant costs that checkpoint; a family with no pre-quant
+    costs the base repository's dense transformer. The latter two cases must both decline Auto,
+    otherwise selecting a GGUF downloads a second multi-GB denoiser and never runs the GGUF.
+
+    Shared by ``load_pipeline`` and the download-plan helpers so they cannot disagree. Cheap (a
+    refs read + stat) and never raises; an unresolved probe declines the optional shortcut."""
     try:
         scheme = select_transformer_quant_scheme(
             target, requested, family = getattr(fam, "name", None)
@@ -850,14 +853,16 @@ def _uncached_prequant_repo(
         source = usable_prequant_source(
             fam, scheme, path_override = prequant_path, base_repo = base_repo
         )
-        # A local override is the operator's own file, so it never downloads.
-        if source is None or source.kind != "repo":
+        if source is None:
+            return "the base repository's dense transformer"
+        # A usable local override is the operator's own file, so it never downloads.
+        if source.kind != "repo":
             return None
         if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
             return None
-        return source.location
-    except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the prequant shortcut
-        return None
+        return f"the pre-quant checkpoint in {source.location}"
+    except Exception:  # noqa: BLE001 — an optional shortcut must not trigger an unplanned fetch
+        return "a transformer checkpoint whose cache state could not be resolved"
 
 
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
@@ -1120,7 +1125,7 @@ class DiffusionBackend:
                 auto
                 # Active weights only: disagreeing with the load stages shards it never reads.
                 and not _has_active_lora(kwargs.get("loras"))
-                and _uncached_prequant_repo(
+                and _auto_gguf_dense_download_reason(
                     fam,
                     target,
                     mode,
@@ -2361,32 +2366,32 @@ class DiffusionBackend:
                 # the fallback would pull them HERE, inside the load lock, after eviction, where unload cannot preempt it and
                 # progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
-                # A GGUF pick with the scheme left to us: the hosted pre-quant is free only while
-                # already cached, since fetching it means a SECOND multi-GB denoiser and the GGUF
-                # never runs. An explicit scheme, a LoRA bake and every non-GGUF kind keep today's
-                # behaviour, where the prequant IS the point. An all-zero-weight list is not a bake.
+                # A GGUF pick with the scheme left to us may use a replacement only when it is
+                # already local. Fetching an uncached pre-quant OR the base dense transformer means
+                # buying a second multi-GB denoiser and never running the GGUF. Explicit schemes,
+                # LoRA bakes and non-GGUF kinds retain the dense behaviour. Zero-weight LoRAs do
+                # not bake.
                 baking_loras = _has_active_lora(loras)
                 if kind == "gguf" and transformer_quant_auto and not baking_loras:
-                    uncached_prequant = _uncached_prequant_repo(
+                    dense_download_reason = _auto_gguf_dense_download_reason(
                         fam,
                         target,
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
                     )
-                    if uncached_prequant is not None:
+                    if dense_download_reason is not None:
                         logger.info(
-                            "diffusion.transformer_quant_declined: pre-quant checkpoint in %s is "
-                            "not cached (an auto quant never downloads a second transformer for a "
-                            "GGUF pick); loading the GGUF",
-                            uncached_prequant,
+                            "diffusion.transformer_quant_declined: %s would have to be downloaded "
+                            "(Auto never downloads a second transformer for a GGUF pick); loading "
+                            "the GGUF",
+                            dense_download_reason,
                         )
                         dense_declined = True
                         # Auto-only branch, so this reason only ever reaches an "Auto: OFF" badge.
                         transformer_quant_decline = (
-                            f"the hosted pre-quant checkpoint in {uncached_prequant} is not "
-                            "cached, and an auto quant never downloads a second transformer for "
-                            "a GGUF pick"
+                            f"{dense_download_reason} would have to be downloaded, and Auto never "
+                            "downloads a second transformer for a GGUF pick"
                         )
                 if (
                     kind == "gguf"
@@ -3159,7 +3164,7 @@ class DiffusionBackend:
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
                     # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
-                    # The root _uncached_prequant_repo cleared this load against, so its hit is
+                    # The root _auto_gguf_dense_download_reason cleared this load against, so its hit is
                     # reused rather than re-downloaded under the import-time constant.
                     cache_dir = hub_cache_dir(),
                     logger = logger,

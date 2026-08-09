@@ -1,11 +1,11 @@
 # Disposable repro workflow. Delete after validation.
 
-name: "PR 8036 Qwen Q6 Dense Download Repro"
+name: "Qwen Q6 Auto Dense Download Fix"
 
 on:
   push:
     branches:
-      - "fix/pr8036-qwen-dense-repro-ci"
+      - "fix/qwen-gguf-auto-dense-download"
   workflow_dispatch:
 
 permissions:
@@ -53,8 +53,8 @@ jobs:
           assert 55_000_000_000 < full_required_base < 65_000_000_000
           PY
 
-      - name: "Reproduce Auto dense request versus Speed off"
+      - name: "Verify Auto stays GGUF and explicit quant stays available"
         shell: bash
         run: |
           cd studio/backend
-          python -m pytest tests/test_diffusion_backend.py -q -s -k qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_off_does_not --tb=short
+          python -m pytest tests/test_diffusion_backend.py -q -s -k qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transformer --tb=short

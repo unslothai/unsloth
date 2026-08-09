@@ -4211,6 +4211,33 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
     assert len(_dense_calls(calls, backend)) == 1
 
 
+def test_auto_quant_declines_dense_fallback_when_no_prequant_exists(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Qwen Image Edit has no hosted pre-quant. None therefore means Auto would have to download
+    # the base repo's dense transformer, not that a free replacement is available.
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    status = backend.load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "qwen-image-edit-2511"
+    )
+
+    assert _dense_calls(calls, backend) == []
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]
+
+
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
 def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
     # Weight 0 is disabled everywhere else, so plain truthiness on the list would call this a bake,
@@ -5646,15 +5673,14 @@ _QWEN_EDIT_BASE_SIBLINGS = [
 ]
 
 
-def test_qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_off_does_not(
+def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transformer(
     fake_runtime, monkeypatch
 ):
-    """Reproduce the reported Q6 -> 58 GB second download without transferring model bytes.
+    """Prevent the reported Q6 -> 58 GB second download without transferring model bytes.
 
-    A large CUDA device lets the default Auto fast path replace the selected GGUF with a dense
-    transformer that is quantized in memory. The download plan must then include the base repo's
-    transformer shards. Speed=off is the causal control: it pins the selected GGUF and leaves only
-    the text encoder, VAE, tokenizer and configuration files in the base-repo request.
+    Even on a large CUDA device, default Auto keeps the explicitly selected GGUF when the family
+    has no locally available pre-quant. An explicit transformer quant request is the causal
+    control: it may still request the dense shards because the user opted into that replacement.
     """
     from core.inference import diffusion as dmod
     from core.inference import diffusion_memory as dmem
@@ -5674,8 +5700,11 @@ def test_qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_of
 
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
-    # Simulate an 80 GB CUDA card where the post-quant dense build fits. Qwen Image Edit has no
-    # hosted pre-quant shortcut, so Auto falls through to the dense BF16 materialisation path.
+    # Simulate an 80 GB CUDA card where the post-quant dense build fits and Auto selects int8.
+    # Qwen Image Edit has no hosted pre-quant, so Auto must keep the selected GGUF.
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
     monkeypatch.setattr(
         dmod,
         "resolve_dense_quant_candidate",
@@ -5695,22 +5724,26 @@ def test_qwen_edit_q6_auto_large_gpu_requests_the_dense_transformer_but_speed_of
     )
     auto_base = next(e for e in auto["entries"] if e["repo_id"] == base_repo)
     auto_transformer = [f for f in auto_base["files"] if f.startswith("transformer/")]
-    assert len(auto_transformer) == 5
-    assert 55_000_000_000 < auto_base["bytes"] < 60_000_000_000
+    assert auto_transformer == []
+    assert 16_000_000_000 < auto_base["bytes"] < 18_000_000_000
 
-    pinned = backend.download_plan(
+    explicit = backend.download_plan(
         checkpoint_repo,
         gguf_filename = _QWEN_EDIT_Q6,
-        speed_mode = "off",
+        transformer_quant = "int8",
     )
-    pinned_base = next(e for e in pinned["entries"] if e["repo_id"] == base_repo)
-    assert not any(f.startswith("transformer/") for f in pinned_base["files"])
-    assert 16_000_000_000 < pinned_base["bytes"] < 18_000_000_000
+    explicit_base = next(e for e in explicit["entries"] if e["repo_id"] == base_repo)
+    explicit_transformer = [
+        f for f in explicit_base["files"] if f.startswith("transformer/")
+    ]
+    assert len(explicit_transformer) == 5
+    assert 55_000_000_000 < explicit_base["bytes"] < 60_000_000_000
 
     print(
-        "QWEN_Q6_REPRO "
+        "QWEN_Q6_FIXED "
         f"auto_base_bytes={auto_base['bytes']} auto_transformer_shards={len(auto_transformer)} "
-        f"speed_off_base_bytes={pinned_base['bytes']} speed_off_transformer_shards=0"
+        f"explicit_base_bytes={explicit_base['bytes']} "
+        f"explicit_transformer_shards={len(explicit_transformer)}"
     )
 
 
