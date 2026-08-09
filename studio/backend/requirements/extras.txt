@@ -7,7 +7,6 @@ scikit-learn==1.7.1
 # Additional extras
 jiwer                            # WER/CER metrics for vision OCR save-merge benchmarks
 omegaconf
-# einx 0.4.3 ships a top-level test/ tree the 0.1.901 verifier reports as missing.
 einx<0.4.3; sys_platform == "win32"
 einx; sys_platform != "win32"
 pyloudnorm
