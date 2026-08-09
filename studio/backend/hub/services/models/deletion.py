@@ -662,6 +662,33 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
     return None
 
 
+def _is_companion_base_repo(repo_id: str) -> bool:
+    """Whether *repo_id* is a curated image-family companion base (pure table lookup, no I/O)."""
+    try:
+        from hub.utils import companion_assets
+        return companion_assets.is_companion_base(repo_id)
+    except Exception as e:  # noqa: BLE001 -- an unavailable table just skips the extra guard
+        logger.debug(f"Companion base classification unavailable for {repo_id}: {e}")
+        return False
+
+
+def _companion_share_blocks_delete(repo_id: str) -> Optional[str]:
+    """The 400 detail when installed models still need *repo_id*'s shared assets, else None."""
+    from hub.services.models import companion_cleanup
+
+    holders = companion_cleanup.companion_dependents(repo_id, ignore_repo_ids = [repo_id])
+    if not holders:
+        return None
+    shown = ", ".join(holders[:3])
+    extra = len(holders) - 3
+    if extra > 0:
+        shown = f"{shown} and {extra} more"
+    return (
+        f"{repo_id} holds the text encoder, VAE and tokenizer that {shown} still "
+        "needs. Delete those models first, then remove these shared assets."
+    )
+
+
 async def delete_cached_model_response(
     repo_id: str,
     variant: Optional[str] = None,
@@ -708,6 +735,29 @@ async def delete_cached_model_response(
             status_code = 400,
             detail = blocks_detail,
         )
+
+    # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
+    # family, so removing it while one is installed leaves that quant unloadable with nothing on
+    # screen to say why. Derived from what is installed right now, never from a stored count, and
+    # only for a WHOLE-repo delete: a variant delete cannot touch another repo. Deleting the
+    # dependants first makes the base an orphan, which Free up space then offers.
+    if variant is None and _is_companion_base_repo(repo_id):
+        # Fails CLOSED, and only here: the table lookup above already established this repo IS a
+        # companion base, so an unreadable cache means the dependants cannot be enumerated, not
+        # that there are none. Every other repo skips the check entirely and is unaffected.
+        try:
+            shared_detail = await asyncio.to_thread(_companion_share_blocks_delete, repo_id)
+        except Exception as e:
+            logger.warning(f"Companion dependency check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "Couldn't check whether other installed models still need these shared "
+                    "assets. Try again in a moment."
+                ),
+            )
+        if shared_detail:
+            raise HTTPException(status_code = 400, detail = shared_detail)
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
     if not downloads.registry.begin_delete(repo_key, variant):

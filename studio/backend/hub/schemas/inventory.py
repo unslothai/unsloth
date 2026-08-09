@@ -283,6 +283,48 @@ class DeleteCachedModelResponse(BaseModel):
     variant: Optional[str] = None
 
 
+class CompanionAssetInfo(BaseModel):
+    """A companion base repo (text encoders, VAE, tokenizer, configs) in the cache."""
+
+    repo_id: str
+    size_bytes: int = Field(0, description = "Real on-disk blob bytes, deduped per blob")
+    needed_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that still need it; empty means it is reclaimable",
+    )
+
+
+class DeleteImpactResponse(BaseModel):
+    """What a pending delete would actually do, so the confirm dialog can say it."""
+
+    repo_id: str
+    variant: Optional[str] = None
+    reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
+    retained_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that stay because another installed model needs them",
+    )
+    freeable_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that become orphaned by this delete and can then be removed",
+    )
+    blocked_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that make this delete impossible (shared-asset guard)",
+    )
+
+
+class OrphanCompanionInfo(BaseModel):
+    repo_id: str
+    size_bytes: int = 0
+    cache_path: Optional[str] = None
+
+
+class OrphanCompanionsResponse(BaseModel):
+    companions: List[OrphanCompanionInfo] = Field(default_factory = list)
+    total_bytes: int = 0
+
+
 class BrowseEntry(BaseModel):
     """A directory entry surfaced by the folder browser."""
 

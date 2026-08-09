@@ -27,17 +27,20 @@ from hub.schemas.inventory import (
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
+    DeleteImpactResponse,
     GgufVariantsResponse,
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
     RecommendedFoldersResponse,
+    OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
     ScanFoldersResponse,
 )
 from hub.services.models import (
     cache_inventory,
+    companion_cleanup,
     deletion,
     downloads,
     folder_browser,
@@ -223,6 +226,27 @@ async def list_hidden_models(current_subject: str = Depends(get_current_subject)
 
     needles, exact_ids, exact_paths = await asyncio.to_thread(hidden_model_matchers)
     return HiddenModelsResponse(needles = needles, exact_ids = exact_ids, exact_paths = exact_paths)
+
+
+@router.post("/delete-impact", response_model = DeleteImpactResponse)
+async def delete_impact(
+    repo_id: str = Body(...),
+    variant: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview a delete: bytes reclaimed, shared assets retained, and anything blocking it.
+
+    POST rather than GET because a repo id is a path-shaped value and this reads no cache of its
+    own; it is a pure query and mutates nothing.
+    """
+    return await companion_cleanup.delete_impact_response(repo_id, variant)
+
+
+@router.get("/orphan-companions", response_model = OrphanCompanionsResponse)
+async def orphan_companions(current_subject: str = Depends(get_current_subject)):
+    """Cached companion assets no installed model needs. Listing only; removal goes through
+    the ordinary guarded delete."""
+    return await companion_cleanup.orphan_companions_response()
 
 
 @router.delete(

@@ -472,6 +472,13 @@ class SdCppDiffusionBackend:
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
         base = resolve_base_repo(fam, base_repo)
+        # Same link the diffusers resolver records, so the delete guard protects a native pick's
+        # companions too. Best-effort bookkeeping; never fails a load.
+        try:
+            from hub.utils.companion_assets import record_companion_link
+            record_companion_link(repo_id, base)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
