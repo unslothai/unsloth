@@ -2698,7 +2698,9 @@ def test_two_processes_writing_the_ledger_keep_both_entries(tmp_path, monkeypatc
     )
     out = subprocess.run(
         [sys.executable, "-c", code],
-        capture_output = True, text = True, encoding = "utf-8",
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
         env = {**os.environ, "UNSLOTH_STUDIO_HOME": str(tmp_path / "home")},
         cwd = str(Path(__file__).resolve().parents[1]),
     )
@@ -2768,9 +2770,7 @@ def test_an_id_a_path_segment_cannot_carry_rides_in_the_query():
     """ASGI decodes %2F before it matches a route, so an id with a slash in it
     would arrive as a different id and a different filename."""
     root = Path(__file__).resolve().parents[2] / "frontend" / "src"
-    helper = (root / "components" / "assistant-ui" / "sandbox-files.ts").read_text(
-        encoding = "utf-8"
-    )
+    helper = (root / "components" / "assistant-ui" / "sandbox-files.ts").read_text(encoding = "utf-8")
     assert "export function sandboxRoutePrefix" in helper
     assert "?session=${encodeURIComponent(sessionId)}" in helper
 

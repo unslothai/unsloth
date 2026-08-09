@@ -7675,7 +7675,11 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         return False
 
 
-def _sandbox_fallback(root: str, name: str, create: bool = False) -> str:
+def _sandbox_fallback(
+    root: str,
+    name: str,
+    create: bool = False,
+) -> str:
     """``_default`` / ``_invalid`` under the root, contained like any session.
 
     They are ordinary directories in a writable sandbox, so one replaced by a
