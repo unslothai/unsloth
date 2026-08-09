@@ -256,10 +256,17 @@ def _assert_family_pipeline_available(fam: Any) -> None:
     called in plenty of places that never train, so making it depend on a working diffusers import
     would refuse configs over an unrelated environment problem.
 
-    Family-agnostic on purpose: it reads ``fam.pipeline_class`` off whatever spec it is handed, so
-    the image registry and the separate video registry share one gate rather than one each."""
-    from core.inference.diffusion_families import assert_pipeline_class_available
-    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+    Family-agnostic on purpose: it reads the probe class off whatever spec it is handed, so the
+    image registry and the separate video registry share one gate rather than one each. The class
+    comes from ``family_probe_class`` rather than ``fam.pipeline_class`` for the reason that
+    helper documents: a modular family's ``pipeline_class`` is the generic ``ModularPipeline``,
+    which an older diffusers exports regardless, so probing it accepted a MiniMax-H3 start that
+    the listing had already hidden and the child could only fail -- after the teardown."""
+    from core.inference.diffusion_families import (
+        assert_pipeline_class_available,
+        family_probe_class,
+    )
+    assert_pipeline_class_available(family_probe_class(fam), fam.name)
 
 
 def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
@@ -276,7 +283,10 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
     Returns the message instead of raising, matching ``training_precision_preflight_error``, so the
     route maps it to its own 400."""
-    from core.inference.diffusion_families import assert_pipeline_class_available
+    from core.inference.diffusion_families import (
+        assert_pipeline_class_available,
+        family_probe_class,
+    )
 
     # Either registry: a video family is invisible to detect_family, and returning None for one
     # would hand the strict half of the gate back to the spawned child, after the teardown.
@@ -284,7 +294,7 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
     if fam is None:
         return None
     try:
-        assert_pipeline_class_available(fam.pipeline_class, fam.name, strict = True)
+        assert_pipeline_class_available(family_probe_class(fam), fam.name, strict = True)
     except ValueError as e:
         return str(e)
     return None
@@ -626,11 +636,15 @@ def effective_mixed_precision(cfg: Any) -> str:
     import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
 
     requested = str(getattr(cfg, "mixed_precision", "") or "")
-    if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _DIT_TRAIN_FAMILIES:
-        # The DiT trainer does not read mixed_precision at all: weight_dtype is bf16 on CUDA and
-        # fp32 otherwise. Recording the REQUEST for those families put "fp16" or "no" in the
-        # identity of a run that executed in bf16, and a later bf16 resume of it was then
-        # rejected as a precision mismatch between two runs that ran identically.
+    if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _FLOW_TRAIN_FAMILIES:
+        # No flow-matching trainer reads mixed_precision at all: weight_dtype is bf16 on CUDA and
+        # fp32 otherwise, in the DiT loop and in the H3 loop alike. Recording the REQUEST for those
+        # families put "fp16" or "no" in the identity of a run that executed in bf16, and a later
+        # bf16 resume of it was then rejected as a precision mismatch between two runs that ran
+        # identically. _FLOW_TRAIN_FAMILIES rather than _DIT_TRAIN_FAMILIES so the answer follows
+        # the weight dtype rather than which loop happens to own the family: H3 refuses a non-bf16
+        # request and writes no checkpoint today, so this is the same string either way for every
+        # config it accepts, but the helper stops being the odd one out the day that changes.
         return "bf16" if torch.cuda.is_available() else "no"
     if not torch.cuda.is_available():
         return "no"
@@ -1415,6 +1429,34 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
+# The SCHEMA defaults the MiniMax-H3 loop cannot honour, and the value it actually runs with.
+# Unlike the fields ``h3_train_unsupported_reason`` refuses, these three have a DEFAULT that the
+# loop disagrees with, so refusing them would 422 every untouched request; they are normalised
+# instead. center_crop/random_flip: every frame goes through the same centre cover-crop and
+# nothing is flipped (a per-frame flip tears a clip, and a per-clip one has nowhere to live --
+# the cached tensors carry no variant axis). snr_gamma: the step is a plain unweighted MSE.
+_H3_FIXED_RECIPE: dict[str, Any] = {
+    "center_crop": True,
+    "random_flip": False,
+    "snr_gamma": None,
+}
+
+
+def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
+    """The fields whose REQUESTED value this family's loop replaces, mapped to what it runs.
+
+    Shared for the same reason ``h3_train_unsupported_reason`` is: the trainer applies these in
+    the CHILD, while the run record is written by the PARENT from the config handed to
+    ``service.start``. Normalising in the trainer alone therefore fixed what ran and left Previous
+    Runs describing cropping, flipping and min-SNR weighting that never happened -- exactly the
+    recipe drift the normalisation exists to prevent. Both sides read this one table instead.
+
+    Empty for every other family: their loops honour all three."""
+    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
+        return {}
+    return dict(_H3_FIXED_RECIPE)
+
+
 # Families whose dataset is captioned video CLIPS rather than stills. LTX-2 is deliberately not
 # here: it trains a style LoRA FROM still images, so it keeps the image discovery.
 CLIP_TRAINED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
@@ -1620,11 +1662,15 @@ def _refuse_ltx23_training_base(base_model: str) -> None:
     )
 
 
-def _assert_trusted_base_model(base_model: str) -> None:
+def _assert_trusted_base_model(base_model: str, *, allow_modular: bool = False) -> None:
     """Gate the training base model the same way the inference backend gates non-GGUF loads:
     a local path or a trusted repo (``unsloth/*`` or an allowlisted official base). This runs
     BEFORE ``from_pretrained`` so an untrusted remote repo (which could ship pickle weights)
-    is never fetched or deserialised."""
+    is never fetched or deserialised.
+
+    ``allow_modular`` is for a trainer whose loader is ``ModularPipeline.from_pretrained``: a
+    local MiniMax-H3 pipeline carries ``modular_model_index.json`` and no ``model_index.json``,
+    so the conventional shape check rejected the one local layout that family HAS."""
     from core.inference.diffusion import _assert_local_base_is_pipeline, _is_trusted_diffusion_repo
 
     trusted = (
@@ -1636,8 +1682,8 @@ def _assert_trusted_base_model(base_model: str) -> None:
             f"Refusing to train from untrusted base model '{base_model}'. Use a local path or "
             f"a trusted repo (an unsloth/* repo or an official base)."
         )
-    # An existing LOCAL base is loaded as a full pipeline, which needs a model_index.json; reject a non-pipeline local dir before /diffusion/start frees the GPU models.
-    _assert_local_base_is_pipeline(base_model)
+    # An existing LOCAL base is loaded as a full pipeline, which needs an index; reject a non-pipeline local dir before /diffusion/start frees the GPU models.
+    _assert_local_base_is_pipeline(base_model, allow_modular = allow_modular)
 
 
 # ── resume checkpoints ────────────────────────────────────────────────────────

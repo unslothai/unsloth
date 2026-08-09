@@ -5143,3 +5143,66 @@ def test_h3_records_the_guidance_that_actually_ran(monkeypatch):
     assert result["guidance"] == backend._state.family.default_guidance == 1.0
     # And that default is exactly what the engine was told to run.
     assert calls[-1]["params"].cfg_scale == 1.0
+
+
+def test_h3_records_no_negative_prompt_because_neither_engine_takes_one(monkeypatch):
+    """The same rule as the guidance above, for the other half of the unconditional branch. A
+    negative prompt IS the unconditional branch, so a guidance-distilled family consumes none:
+    the diffusers call adds the kwarg only when the pipeline signature has it (H3's modular
+    workflow does not) and ``SdCppVideoGenParams`` carries no field for one at all. Persisting the
+    caller's string left the gallery sidecar and its restored recipe claiming conditioning that
+    never reached a sampler."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+        width = 960,
+        height = 544,
+    )
+
+    assert result["negative_prompt"] is None
+    assert not hasattr(calls[-1]["params"], "negative_prompt")
+
+
+def test_the_video_sidecar_records_the_negative_prompt_that_ran(monkeypatch, tmp_path):
+    """The recipe the gallery reads back comes from the RESULT, like guidance beside it, not from
+    the request the worker was handed: normalising inside generate() alone would have left
+    _run_generate persisting the caller's original string."""
+    from core.inference import video as video_mod
+    from core.inference import video_gallery
+
+    saved: list = []
+    monkeypatch.setattr(
+        video_gallery, "save", lambda data, meta: (saved.append(meta), {"id": "v1"})[1]
+    )
+
+    backend = VideoBackend()
+    result = {
+        "mp4_bytes": b"MP4",
+        "seed": 7,
+        "repo_id": "unsloth/MiniMax-H3-GGUF",
+        "width": 960,
+        "height": 544,
+        "num_frames": 124,
+        "fps": 24,
+        "duration_s": 5.0,
+        "has_audio": True,
+        "conditioning": "t2va",
+        "steps": 30,
+        "guidance": 1.0,
+        "negative_prompt": None,
+    }
+    monkeypatch.setattr(backend, "generate", lambda **kw: result)
+    monkeypatch.setattr(backend, "_finish_generate_job", lambda **kw: None)
+
+    backend._run_generate(
+        cancel_event = threading.Event(),
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+    )
+
+    assert saved and saved[-1]["negative_prompt"] is None
+    assert saved[-1]["prompt"] == "a fox runs through snow"

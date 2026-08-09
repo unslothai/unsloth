@@ -527,7 +527,7 @@ def _is_trusted_diffusion_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_REPOS
 
 
-def _assert_local_base_is_pipeline(base_repo: str) -> None:
+def _assert_local_base_is_pipeline(base_repo: str, *, allow_modular: bool = False) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
     ANY existing local path, so without this a local base that is not a pipeline dir would pass the
@@ -536,7 +536,14 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
     by the trust check (it is neither an existing path nor an unsloth/*/allowlisted repo); a bare
     remote id is left for the loader to resolve. Shared by the image, video, and training preflights
     so their local-base shape check stays in sync. Never evicts; raises ValueError on a bad local
-    base."""
+    base.
+
+    ``allow_modular`` accepts ``modular_model_index.json`` as well, for a caller whose loader is
+    ``ModularPipeline.from_pretrained``: that IS the valid on-disk layout for a Modular Diffusers
+    pipeline (MiniMax-H3 ships no ``model_index.json`` at all), and the local-model scanners
+    already count either index. Off by default -- a conventional ``DiffusionPipeline`` load still
+    needs the conventional index, and accepting a modular directory there would only move the
+    failure back into the loader."""
     base = (base_repo or "").strip()
     if not base:
         return
@@ -547,9 +554,13 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
         return  # invalid path characters -> a remote id, not a local path
     if not exists:
         return
-    if not root.is_dir() or not (root / "model_index.json").is_file():
+    indexes = ["model_index.json"]
+    if allow_modular:
+        indexes.append("modular_model_index.json")
+    if not root.is_dir() or not any((root / name).is_file() for name in indexes):
         raise ValueError(
-            f"Local base_repo is not a diffusers pipeline directory (no model_index.json): {base}"
+            f"Local base_repo is not a diffusers pipeline directory "
+            f"(no {' or '.join(indexes)}): {base}"
         )
 
 

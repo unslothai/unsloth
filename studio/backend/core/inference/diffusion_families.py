@@ -948,6 +948,21 @@ def assert_pipeline_class_available(
     )
 
 
+def family_probe_class(fam: Any) -> str:
+    """The class whose presence in the installed diffusers actually proves ``fam`` is loadable.
+
+    Normally that is ``fam.pipeline_class``. ``ModularPipeline`` is the exception: it is the
+    generic entry point for every Modular Diffusers workflow, not a family, and it has existed for
+    several releases, so a diffusers that predates MiniMax-H3's own blocks still answers hasattr
+    for it. Probe the family's own transformer class there instead, which is the thing the load
+    actually needs. Shared by the listing probe and by both training gates so a family cannot be
+    hidden from the picker and simultaneously accepted by /diffusion/start."""
+    name = str(getattr(fam, "pipeline_class", "") or "")
+    if name == "ModularPipeline":
+        return str(getattr(fam, "transformer_class", None) or name)
+    return name
+
+
 def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     """True when the installed diffusers actually has this family's pipeline class.
 
@@ -963,14 +978,9 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     lookup imports that pipeline module and can raise something other than AttributeError."""
     if fam is None:
         return False
-    # ``ModularPipeline`` is the generic entry point, not a family: it has existed for several
-    # releases, so a diffusers that predates MiniMax-H3's own blocks still answers hasattr for
-    # it and the family would be advertised and started, only to fail resolving its workflow
-    # after the start route had already evicted the resident models. Probe the family's own
-    # transformer class there instead, which is the thing the load actually needs.
-    name = fam.pipeline_class
-    if name == "ModularPipeline":
-        name = getattr(fam, "transformer_class", None) or name
+    # A modular family is judged on its own transformer class, not on the generic
+    # ``ModularPipeline`` entry point -- see ``family_probe_class``.
+    name = family_probe_class(fam)
     try:
         import diffusers
         return hasattr(diffusers, name)

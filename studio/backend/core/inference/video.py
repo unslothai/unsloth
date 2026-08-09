@@ -2976,7 +2976,11 @@ class VideoBackend:
                 result["mp4_bytes"],
                 {
                     "prompt": gen_kwargs["prompt"],
-                    "negative_prompt": gen_kwargs.get("negative_prompt"),
+                    # From the RESULT, not the request, exactly like guidance below: a
+                    # guidance-distilled family consumes no negative prompt on either engine, and
+                    # persisting the caller's string made the restored recipe claim conditioning
+                    # that never reached a sampler.
+                    "negative_prompt": result.get("negative_prompt"),
                     "width": result["width"],
                     "height": result["height"],
                     "num_frames": result["num_frames"],
@@ -3120,9 +3124,16 @@ class VideoBackend:
                 # a sampler, so recording it would label the clip and its gallery sidecar with a
                 # parameter that did nothing. Normalise to the family default instead of refusing:
                 # the value is inert, and a 422 would break every caller that sends the generic
-                # default. negative_prompt is applied unconditionally and is unaffected.
+                # default. negative_prompt goes the same way and for the same reason: a negative
+                # prompt IS the unconditional branch, so a family without one consumes it on
+                # neither engine (the diffusers call adds the kwarg only when the pipeline
+                # signature has it, which a guidance-distilled workflow does not, and
+                # SdCppVideoGenParams has no field for it at all). Left as sent, it reached the
+                # gallery sidecar and the restored recipe claimed conditioning that never touched
+                # a sampler.
                 if not fam.supports_cfg:
                     guidance = float(default_guidance)
+                    negative_prompt = None
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
                 )
@@ -3397,6 +3408,10 @@ class VideoBackend:
                     "conditioning": conditioning,
                     "steps": steps,
                     "guidance": guidance,
+                    # The EFFECTIVE negative prompt, like guidance beside it: a guidance-distilled
+                    # family normalises it away above, so the sidecar records what conditioned the
+                    # clip instead of what the caller happened to send.
+                    "negative_prompt": negative_prompt,
                     "flow_shift": shift,
                     "audio_flow_shift": audio_shift,
                     # The BUILD this clip came off, read from the ENGAGED state and never from the
@@ -3739,6 +3754,10 @@ class VideoBackend:
                     "conditioning": conditioning,
                     "steps": steps,
                     "guidance": guidance,
+                    # sd-cli's vid_gen mode has no negative-prompt input at all
+                    # (SdCppVideoGenParams carries no field for one), and this path serves only
+                    # MiniMax-H3, which is guidance-distilled. Recorded as the None it ran with.
+                    "negative_prompt": None,
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,

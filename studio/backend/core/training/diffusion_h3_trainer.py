@@ -84,6 +84,7 @@ from core.training.diffusion_train_common import (
     h3_train_unsupported_reason,
     native_bf16_supported,
     resolve_train_steps,
+    train_recipe_overrides,
 )
 from core.training.diffusion_train_extras import LoRAEMA, save_ema_adapter
 
@@ -193,8 +194,14 @@ def _load_conditioners(cfg, device):
     from diffusers import ModularPipeline
 
     pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token)
-    pipe.load_components(names = list(_H3_TEXT_COMPONENTS), torch_dtype = torch.bfloat16)
-    pipe.load_components(names = list(_H3_VAE_COMPONENTS), torch_dtype = torch.float32)
+    # The token above opens the modular INDEX only. load_components runs a separate
+    # from_pretrained per component, against the repos that index names, so it has to carry the
+    # token again -- and it swallows a component failure as a logger.warning rather than raising,
+    # so an anonymous 401 leaves the attribute unset and the first use dies on None instead of
+    # saying the base was gated. The inference H3 loader forwards it for the same reason.
+    auth = {"token": cfg.hf_token} if cfg.hf_token else {}
+    pipe.load_components(names = list(_H3_TEXT_COMPONENTS), torch_dtype = torch.bfloat16, **auth)
+    pipe.load_components(names = list(_H3_VAE_COMPONENTS), torch_dtype = torch.float32, **auth)
     _assert_component_grid(pipe)
     # ``load_components`` builds every component on the CPU, so place them explicitly.
     pipe.text_encoder.to(device)
@@ -453,10 +460,11 @@ def run_h3_lora_training(
     # side: the step is a plain unweighted MSE and the field defaults to 5.0, so every default
     # request recorded min-SNR weighting that never ran (weighting_scheme, its sibling, is
     # refused above because it has no default to break). All three SCHEMA defaults disagree with
-    # what the loop does, so they are normalised here rather than refused: refusing would 422
-    # every default request, and leaving them would have the run record describe a recipe that
-    # did not happen.
-    cfg = replace(cfg, center_crop = True, random_flip = False, snr_gamma = None)
+    # what the loop does, so they are normalised rather than refused: refusing would 422 every
+    # default request, and leaving them would have the run record describe a recipe that did not
+    # happen. Read off the shared table, which the SERVICE also applies to the config it persists
+    # -- normalising only here fixed the run and left the history entry lying about it.
+    cfg = replace(cfg, **train_recipe_overrides(cfg))
 
     import torch
 
@@ -484,7 +492,10 @@ def run_h3_lora_training(
         )
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
-    _assert_trusted_base_model(cfg.base_model)
+    # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local
+    # MiniMax-H3 pipeline carries modular_model_index.json and no model_index.json, so the
+    # conventional shape check refused the only local layout the family has.
+    _assert_trusted_base_model(cfg.base_model, allow_modular = True)
     pairs = discover_clip_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )

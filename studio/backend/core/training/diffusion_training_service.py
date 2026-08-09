@@ -537,10 +537,13 @@ class DiffusionTrainingService:
 
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
-        # Validate cheaply BEFORE spawning so a bad request fails fast with a clear error.
+        # Validate cheaply BEFORE spawning so a bad request fails fast with a clear error. The
+        # normalised config is kept: it carries the resolved family the recipe overrides below
+        # are keyed on, which the raw request dict does not have to name.
         from .diffusion_lora_trainer import _config_from_dict
+        from .diffusion_train_common import train_recipe_overrides
 
-        _config_from_dict(config).normalized()
+        normalized_cfg = _config_from_dict(config).normalized()
 
         # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
@@ -600,8 +603,13 @@ class DiffusionTrainingService:
             # against, instead of trusting the pathname and offering back whatever later
             # occupies that slot.
             self._seed_source_identity(config)
-            # Keep the config (minus secrets) for the persisted run record.
+            # Keep the config (minus secrets) for the persisted run record, with the fields this
+            # family's loop REPLACES rather than honours set to what it will actually run. The
+            # trainer applies the same table in the child, which the record is not written from,
+            # so without this Previous runs described a recipe (cropping, flipping, min-SNR
+            # weighting) that no step of the run ever used.
             self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config.update(train_recipe_overrides(normalized_cfg))
             self._pump = threading.Thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )

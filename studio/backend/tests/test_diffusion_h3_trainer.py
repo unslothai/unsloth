@@ -1064,9 +1064,13 @@ def test_the_augmentation_knobs_record_what_h3_actually_does():
     from dataclasses import replace as _replace
 
     from core.training import diffusion_h3_trainer as h3
+    from core.training.diffusion_train_common import train_recipe_overrides
 
     src = Path(h3.__file__).read_text()
-    assert "center_crop = True, random_flip = False" in src
+    # Applied from the shared table, which the service also reads for the persisted run record.
+    assert "replace(cfg, **train_recipe_overrides(cfg))" in src
+    overrides = train_recipe_overrides(_h3_cfg().normalized())
+    assert overrides["center_crop"] is True and overrides["random_flip"] is False
     # And the two fields really are settable on the config the trainer normalises.
     cfg = _replace(_h3_cfg(), center_crop = True, random_flip = False)
     assert cfg.center_crop is True and cfg.random_flip is False
@@ -1166,3 +1170,194 @@ def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypat
         on_note = notes.append,
     )
     assert notes == []
+
+
+# ── what the run RECORDS vs what the loop RUNS ───────────────────────────────
+def test_the_precision_recorded_for_h3_is_the_one_its_loop_runs_in():
+    """``identity_for_config`` records the EFFECTIVE mixed precision, and the helper it reads it
+    from keyed the "this loop ignores the knob" branch on _DIT_TRAIN_FAMILIES, which H3 is not in.
+
+    H3's loop is byte-identical to the DiT loop here -- bf16 on CUDA, fp32 otherwise, and the
+    string "mixed_precision" appears nowhere in it -- so the two families must resolve to the same
+    answer. Judged against a reference DiT family rather than a hardcoded value, so the test
+    describes the host it runs on (a CPU runner legitimately answers "no" for both).
+
+    Not reachable as a live mismatch today: an H3 request may only be bf16 (two independent gates
+    below), and H3 writes no checkpoint at all, so nothing consults the identity. Pinned anyway
+    because both of those are documented as temporary."""
+    import inspect
+
+    from core.training import diffusion_dit_trainer, diffusion_h3_trainer
+    from core.training.diffusion_train_common import effective_mixed_precision
+
+    h3 = _cfg().normalized()
+    reference = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        mixed_precision = "bf16",
+    ).normalized()
+    assert effective_mixed_precision(h3) == effective_mixed_precision(reference)
+
+    # The claim the equality rests on: the same weight-dtype rule in both loops, and no reader of
+    # mixed_precision in the H3 one.
+    dtype_rule = 'weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32'
+    h3_src = inspect.getsource(diffusion_h3_trainer)
+    assert dtype_rule in h3_src
+    assert dtype_rule in inspect.getsource(diffusion_dit_trainer)
+    assert "mixed_precision" not in h3_src
+
+
+def test_an_h3_run_can_never_record_a_precision_it_did_not_use():
+    """The three gates that keep the identity honest today, so a change to any of them fails here
+    rather than in a resume refusal: fp16 is refused in validation, any other non-bf16 value is
+    refused by the shared start preflight, and the family writes no checkpoint to record into."""
+    from dataclasses import replace as _replace
+
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    with pytest.raises(ValueError, match = "bf16"):
+        _cfg(mixed_precision = "fp16").normalized()
+    reason = h3_train_unsupported_reason(_replace(_cfg().normalized(), mixed_precision = "no"))
+    assert reason and "requires bf16" in reason
+    with pytest.raises(ValueError, match = "resume_from_checkpoint"):
+        _cfg(resume_from_checkpoint = "/tmp/out").normalized()
+    with pytest.raises(ValueError, match = "save_steps"):
+        _cfg(save_steps = 100).normalized()
+
+
+def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
+    """The loop replaces center_crop / random_flip / snr_gamma, but the run record is written by
+    the PARENT from the config handed to ``service.start`` -- the child's ``replace`` never
+    reached it, so Previous runs described cropping, flipping and min-SNR weighting that no step
+    used. Both sides read one shared table now."""
+    import inspect
+
+    from core.training.diffusion_training_service import DiffusionTrainingService
+    from core.training.diffusion_train_common import train_recipe_overrides
+
+    assert train_recipe_overrides(_cfg().normalized()) == {
+        "center_crop": True,
+        "random_flip": False,
+        "snr_gamma": None,
+    }
+    # Config-only, and no other family's loop disagrees with its request.
+    other = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+    ).normalized()
+    assert train_recipe_overrides(other) == {}
+
+    # The two appliers: the trainer for what runs, the service for what is recorded.
+    from core.training import diffusion_h3_trainer
+
+    assert "train_recipe_overrides" in inspect.getsource(diffusion_h3_trainer)
+    start_src = inspect.getsource(DiffusionTrainingService.start)
+    assert "train_recipe_overrides" in start_src
+    assert "self._config.update(" in start_src
+
+
+# ── start-route gates ────────────────────────────────────────────────────────
+def test_the_strict_start_gate_probes_the_h3_transformer_not_modular_pipeline(monkeypatch):
+    """A diffusers old enough to predate H3's blocks still exports the generic ``ModularPipeline``,
+    so the listing probe (which reads the family's own transformer class) hid H3 while a direct
+    POST /diffusion/start sailed through both training gates, evicted the resident GPU models and
+    failed in the child. Both gates read the same probe class now."""
+    from core.inference.diffusion_families import family_pipeline_available, family_probe_class
+    from core.training.diffusion_train_common import (
+        _trainable_family_spec,
+        training_pipeline_import_error,
+    )
+
+    fam = _trainable_family_spec("minimax-h3")
+    assert fam is not None and fam.pipeline_class == "ModularPipeline"
+    assert family_probe_class(fam) == "MiniMaxH3Transformer3DModel"
+
+    old = types.ModuleType("diffusers")
+    old.__version__ = "0.36.0"
+    old.ModularPipeline = object  # the generic entry point, present for several releases
+    old.FluxPipeline = object
+    monkeypatch.setitem(sys.modules, "diffusers", old)
+
+    assert family_pipeline_available(fam) is False
+    reason = training_pipeline_import_error("minimax-h3")
+    assert reason and "MiniMaxH3Transformer3DModel" in reason
+    # A conventional family on the same install is untouched.
+    assert training_pipeline_import_error("flux.1") is None
+
+    # And the trainer-side half refuses before it can reach a download.
+    with pytest.raises(ValueError, match = "MiniMaxH3Transformer3DModel"):
+        _cfg().normalized()
+
+
+def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
+    """A local MiniMax-H3 pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json`` -- that is the layout ``ModularPipeline.from_pretrained`` reads and the
+    one the local-model scanners already count. The shared shape check knew only the conventional
+    index, so it rejected the only local layout the family has."""
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    modular = tmp_path / "MiniMax-H3"
+    modular.mkdir()
+    (modular / "modular_model_index.json").write_text("{}")
+
+    _assert_trusted_base_model(str(modular), allow_modular = True)
+    # Off by default: a conventional DiffusionPipeline load still needs the conventional index.
+    with pytest.raises(ValueError, match = "model_index.json"):
+        _assert_trusted_base_model(str(modular))
+    # And a directory that is neither is still refused on both paths.
+    empty = tmp_path / "not-a-pipeline"
+    empty.mkdir()
+    for allow in (True, False):
+        with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
+            _assert_trusted_base_model(str(empty), allow_modular = allow)
+
+
+def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
+    """``ModularPipeline.from_pretrained``'s token opens the modular INDEX only: every component
+    is fetched by its own ``from_pretrained`` inside ``load_components``, which swallows a failure
+    as a logger.warning and leaves the attribute unset. A gated or private base therefore loaded
+    its components anonymously and died on a None, after the route's authenticated preflight had
+    passed. The inference H3 loader forwards it again for exactly this reason."""
+    from core.training import diffusion_h3_trainer as h3
+
+    seen: list[dict] = []
+
+    class _Placed:
+        def to(self, device):
+            return self
+
+    class _Pipe:
+        text_encoder = _Placed()
+        vae = _Placed()
+        audio_vae = _Placed()
+
+        def load_components(self, **kwargs):
+            seen.append(kwargs)
+
+    class _Modular:
+        @staticmethod
+        def from_pretrained(path, token = None):
+            seen.append({"index_token": token})
+            return _Pipe()
+
+    monkeypatch.setitem(
+        sys.modules, "diffusers", types.SimpleNamespace(ModularPipeline = _Modular)
+    )
+    monkeypatch.setattr(h3, "_assert_component_grid", lambda pipe: None)
+
+    cfg = types.SimpleNamespace(base_model = "unsloth/private-h3", hf_token = "hf_secret")
+    h3._load_conditioners(cfg, "cpu")
+
+    assert seen[0] == {"index_token": "hf_secret"}
+    component_loads = seen[1:]
+    assert len(component_loads) == 2
+    assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
+
+    # No token configured -> the kwarg is omitted entirely rather than sent as None.
+    seen.clear()
+    h3._load_conditioners(types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None), "cpu")
+    assert all("token" not in call for call in seen[1:]), seen
