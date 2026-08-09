@@ -235,6 +235,10 @@ def _read_card_metadata(path: Path) -> Any:
             payload = safe_load("\n".join(lines[1:end]))
         except YAMLError:
             return _UNPARSABLE_METADATA
+        if payload is None:
+            # Empty, comment-only or null front matter, which RepoCard reads as an empty
+            # card rather than refusing.
+            return {}
     except StopIteration:
         # Front matter that never closes is not front matter at all.
         return None
@@ -293,13 +297,23 @@ _MODULE_EXTENSIONS = {
 # The folder builders. datasets registers only these in both letter cases, so only their
 # extensions match case-insensitively; everything else is matched by a case-sensitive glob.
 _FOLDER_EXTENSIONS = frozenset(
-    ".apng .bmp .gif .ico .jfif .jp2 .jpe .jpeg .jpg .png .pnm .ppm .psd .tif .tiff .webp "
-    ".3gp .aiff .au .flac .m4v .mp3 .ogg .opus .wav .webm .wma "
+    # imagefolder
+    ".apng .blp .bmp .bufr .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc .ftu "
+    ".gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg .jpf "
+    ".jpg .jpx .msp .pbm .pcd .pcx .pgm .png .pnm .ppm .ps .psd .pxr .ras .rgb .rgba .sgi "
+    ".tga .tif .tiff .vda .vst .webp .wmf .xbm .xpm "
+    # audiofolder
+    ".3g2 .3gp .aiff .asf .au .avr .caf .f4v .flac .flv .htk .ircam .m4v .mat4 .mat5 .mp3 "
+    ".mpc2k .mpg .mxf .nist .nut .ogg .ogm .opus .paf .pvf .raw .rf64 .sd2 .sds .svx .voc "
+    ".w64 .wav .wavex .webm .wma .wmv .wve .xi "
+    # videofolder and pdffolder
     ".avi .mkv .mov .mp4 .mpeg .pdf".split()
 )
 _EXTENSION_MODULES = {
     extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
+# datasets infers a split's module from its first 200 files, in resolved (sorted) order.
+_MAX_MODULE_INFERENCE_FILES = 200
 # datasets' tie-break once the counts are level, then the extension string itself.
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
 # Folder-builder metadata loses every tie-break, so it never decides a split's builder.
@@ -463,7 +477,7 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
     modules = set()
     for entries in grouped.values():
         counts: dict[tuple[str, str], int] = {}
-        for path in entries:
+        for path in entries[:_MAX_MODULE_INFERENCE_FILES]:
             suffix = _data_suffix(path.name)
             module = _file_module(path.name)
             # Folder metadata is counted last whatever it is, so it never wins on its own.
@@ -483,16 +497,34 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
     return modules.pop() if len(modules) == 1 else None
 
 
-def _offerable(entries: list[PurePosixPath], snapshot: Path) -> Optional[bool]:
+def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Optional[bool]:
     """True when the split holds data Studio can train on, False when it holds none, None
     when a file the builder would read escapes the cache. datasets reads every file in the
     split, so one escape condemns the config rather than the single file."""
     trainable = False
+    empty = False
     for path in entries:
-        if resolved_dataset_snapshot_file(snapshot, path.as_posix()) is None:
+        resolved = resolved_dataset_snapshot_file(snapshot, path.as_posix())
+        if resolved is None:
             return None
-        trainable = trainable or _trainable_name(path.name)
-    return trainable
+        # Once a builder is chosen, datasets reads only what that builder claims, so a
+        # training file left behind by a folder builder is not data this split offers.
+        if _file_module(path.name) != module or not _trainable_name(path.name):
+            continue
+        if _empty_payload(resolved):
+            empty = True
+            continue
+        trainable = True
+    # Every builder but json fails outright on a file with no rows; json skips it.
+    return trainable and not (empty and module != "json")
+
+
+def _empty_payload(path: Path) -> bool:
+    """Whether the builder would read no bytes out of this file."""
+    try:
+        return path.stat().st_size == 0
+    except OSError:
+        return True
 
 
 def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
@@ -501,9 +533,12 @@ def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     if not files:
         return set()
     grouped = _grouped_splits(files)
-    if grouped is None or _one_module(grouped) is None:
+    module = _one_module(grouped) if grouped is not None else None
+    if grouped is None or module is None:
         return set()
-    offerable = {split: _offerable(entries, snapshot) for split, entries in grouped.items()}
+    offerable = {
+        split: _offerable(entries, snapshot, module) for split, entries in grouped.items()
+    }
     if any(state is None for state in offerable.values()):
         return set()
     return {
@@ -513,10 +548,29 @@ def _inferred_snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     }
 
 
+def _metadata_present(snapshot: Path, name: str) -> bool:
+    """Whether the snapshot holds this metadata file at all, readable or not."""
+    try:
+        return (snapshot / name).is_file()
+    except OSError:
+        return False
+
+
+def _unreadable_metadata(snapshot: Path, name: str) -> bool:
+    """Whether the file is there but _snapshot_metadata_file refused it, for its size or
+    for pointing out of the cache. The loader still reads it, so we cannot ignore it."""
+    return _metadata_present(snapshot, name) and _snapshot_metadata_file(snapshot, name) is None
+
+
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
-    declared = False
+    # Metadata we cannot read still names the loader's configs, so inference must not
+    # step in beside it: a card too large or too unsafe to open, or the standalone yaml
+    # file, which datasets reads as a card and we do not.
+    declared = _unreadable_metadata(snapshot, "README.md") or _metadata_present(
+        snapshot, ".huggingface.yaml"
+    )
     readme = _snapshot_metadata_file(snapshot, "README.md")
     if readme is not None:
         card_data = _read_card_metadata(readme)
@@ -527,9 +581,6 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             declared = bool(card_data.get("configs")) or bool(card_data.get("dataset_info"))
             _add_config_options(options, card_data.get("configs"))
             _add_dataset_info_options(options, card_data.get("dataset_info"))
-    # datasets reads this file as a card too, and we do not, so anything it declares is
-    # metadata we cannot see rather than a snapshot to infer from.
-    declared = declared or _snapshot_metadata_file(snapshot, ".huggingface.yaml") is not None
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)

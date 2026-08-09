@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from hub.schemas.datasets import LocalDatasetOptionsRequest
 from hub.services.datasets import local_options
 from hub.utils import dataset_cache
@@ -446,4 +448,94 @@ def test_snapshot_options_give_up_on_a_snapshot_too_large_to_compare(tmp_path, m
     _rows(snapshot, "train.jsonl", "test.jsonl")
 
     # Past the cap the scan is a traversal-order prefix, which proves nothing.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_vote_on_the_files_the_loader_samples(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    for index in range(200):
+        _rows(snapshot, f"train/{index:04d}.jsonl")
+    for index in range(300):
+        (snapshot / "train" / f"z{index:04d}.csv").write_text("text\nrow\n", encoding = "utf-8")
+    (snapshot / "test").mkdir()
+    (snapshot / "test" / "a.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # datasets samples a split's first 200 files, so train is json and disagrees with test.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_ignore_a_training_file_a_folder_builder_drops(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train").mkdir()
+    for name in ("a.JPG", "b.JPG"):
+        (snapshot / "train" / name).write_bytes(b"image")
+    _rows(snapshot, "train/c.jsonl")
+
+    # The folder builder wins the vote and then reads only the images.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_count_the_full_folder_extension_set(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(snapshot, "train/a.jsonl", "test/b.jsonl")
+    for name in ("c.blp", "d.blp"):
+        (snapshot / "test" / name).write_bytes(b"image")
+
+    # .blp is an imagefolder extension, so test is a different builder from train.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+@pytest.mark.parametrize("front", ["---\n---\n", "---\nnull\n---\n", "---\n# only a comment\n---\n"])
+def test_snapshot_options_read_empty_front_matter_as_an_empty_card(tmp_path, front):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "README.md").write_text(front + "Prose.\n", encoding = "utf-8")
+    _rows(snapshot, "records.jsonl")
+
+    # RepoCard treats these as an empty card and carries on with file inference.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_split_whose_only_file_is_empty(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.jsonl").write_text("", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_json_split_holding_one_empty_file(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.jsonl").write_text("", encoding = "utf-8")
+    _rows(snapshot, "train2.jsonl")
+
+    # The json builder skips an empty file as long as another still holds rows.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_csv_split_holding_one_empty_file(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "train.csv").write_text("", encoding = "utf-8")
+    (snapshot / "train2.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_a_card_too_large_to_read(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "README.md").write_text(
+        "---\nconfigs:\n- config_name: foo\n---\n" + "x" * 3_000_000, encoding = "utf-8"
+    )
+    _rows(snapshot, "records.jsonl")
+
+    # The loader reads the card and names foo, so inventing a default beside it is wrong.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_stand_down_beside_a_card_outside_the_cache(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "README.md").write_text("---\nconfigs:\n- config_name: foo\n---\n", encoding = "utf-8")
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "README.md").symlink_to(outside / "README.md")
+    _rows(snapshot, "records.jsonl")
+
     assert local_options._snapshot_options(snapshot) == set()
