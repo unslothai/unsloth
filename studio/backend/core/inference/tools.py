@@ -7286,8 +7286,14 @@ def _session_dir(root: str, session_id: str) -> str:
 
 
 def _name_suffix(session_id: str) -> str:
-    """A short stable tail, so the same chat lands in the same directory."""
-    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
+    """A short stable tail, so the same chat lands in the same directory.
+
+    surrogatepass for the same reason _sandbox_name uses it: an id with a lone
+    surrogate reaches here on the collision path, and a strict encode would
+    raise rather than step aside.
+    """
+    encoded = session_id.encode("utf-8", "surrogatepass")
+    return hashlib.sha256(encoded).hexdigest()[:8]
 
 
 # Serialises the pick-then-create below. Two case-variant ids racing on a
@@ -7455,6 +7461,26 @@ _legacy_one_lock = threading.Lock()
 _STAGING_SUFFIX = ".arriving-"
 
 
+def _free_move_target(root: str, name: str) -> "str | None":
+    """A name in *root* nothing occupies, for a legacy move to land on.
+
+    The resolver's own answer first, so an untouched root keeps the plain name.
+    Both derived names can be the user's in a root they pointed us at, and
+    returning nothing there stranded the files at the legacy root for good: the
+    marker the move writes is what finds this one again.
+    """
+    candidate = _session_dir(root, name)
+    if not os.path.exists(candidate):
+        return candidate
+    if _root_is_ours():
+        return None  # ours and occupied is a real collision, not a borrowed name
+    for _ in range(8):
+        candidate = os.path.join(root, f"{_sandbox_name(name)}-{uuid.uuid4().hex[:8]}")
+        if not os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def _staged_move(source: str, target: str, name: str) -> None:
     """Move one session in, so an interruption cannot look like a collision.
 
@@ -7493,9 +7519,9 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
         # Through the resolver, like the whole-tree pass: at a shared root the
         # plain name can be the user's own, and stopping here would leave this
         # chat with an empty sandbox and its files stranded at the old root.
-        target = _session_dir(root, name)
-        if os.path.exists(target) or not _contained_in_root(target, root):
-            return  # a collision, left for the whole-tree pass to report
+        target = _free_move_target(root, name)
+        if target is None or not _contained_in_root(target, root):
+            return  # nowhere free to land, left for the whole-tree pass
         try:
             os.makedirs(root, exist_ok = True)
             _staged_move(source, target, name)
@@ -7785,6 +7811,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
         return _sandbox_fallback(root, "_invalid")
+    if not _root_is_ours() and not _owned_by_session(workdir, session_id):
+        # In a root the user pointed us at this chat can be in a fallback whose
+        # name nothing recomputes, and a read that stops here shows an empty
+        # sandbox and 404s the file cards already in the transcript.
+        ours = _marked_sandbox_in(root, session_id)
+        if ours:
+            return ours
     if os.path.isdir(workdir) and not _owned_by_session(workdir, session_id):
         # Somebody else's, so this session has nothing here to serve.
         return _nothing_to_serve(session_id)
@@ -11079,6 +11112,20 @@ def _content_key(path: str, size: int) -> "str | None":
         return None
 
 
+def _defuse_sentinels(text: str) -> str:
+    """Break a marker line the executed program printed itself.
+
+    Both readers take the last one, so a call that created nothing and printed
+    `__FILES__:[{"name": "report.csv", "size": 1}]` had that read as the
+    envelope: the line was hidden from the model and the UI offered a download
+    for a file nobody wrote. One space is enough, since both anchor on the line
+    start, and it leaves the text otherwise as the program wrote it.
+    """
+    for marker in ("\n__FILES__:", "\n__IMAGES__:"):
+        text = text.replace(marker, "\n " + marker[1:])
+    return text
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff.
 
@@ -11130,6 +11177,14 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     return snapshot
 
 
+# Scratch scripts of calls running right now. Two calls can share a workdir
+# (chats in one project), and each snapshots the whole directory, so without
+# this the other call's studio_exec_*.py is reported as a file this call made
+# and its download 404s once that call cleans up.
+_active_scratch: "set[str]" = set()
+_scratch_lock = threading.Lock()
+
+
 def _created_file_sentinels(
     workdir: str | None,
     before: "dict[str, tuple]",
@@ -11144,10 +11199,15 @@ def _created_file_sentinels(
     after = _snapshot_workdir_files(workdir)
     # ``exclude`` is this call's own scratch script by exact name, not a pattern
     # reserved over names a tool might pick.
+    with _scratch_lock:
+        scratch = set(_active_scratch)
+    scratch.discard(exclude)  # this call's own is named below anyway
     changed = sorted(
         name
         for name, key in after.items()
-        if name != exclude and (name not in before or before[name] != key)
+        if name != exclude
+        and name not in scratch
+        and (name not in before or before[name] != key)
     )
     if not changed:
         return ""
@@ -11222,6 +11282,8 @@ def _python_exec(
         # utf-8 so non-ASCII in model-written code survives the OS default codec
         # (Windows cp1252 would otherwise raise UnicodeEncodeError).
         _scratch_name = os.path.basename(tmp_path)
+        with _scratch_lock:
+            _active_scratch.add(_scratch_name)
         with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
@@ -11294,6 +11356,9 @@ def _python_exec(
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
+        # Before ours is appended, and whether or not one is: a program's own
+        # marker line is not an envelope.
+        result = _defuse_sentinels(result)
 
         # Only for a chat that has an id: without one every first turn shares
         # the _default workdir, so a card pinned to it would later download
@@ -11306,6 +11371,9 @@ def _python_exec(
     except Exception as e:
         return f"Execution error: {e}"
     finally:
+        if _scratch_name:
+            with _scratch_lock:
+                _active_scratch.discard(_scratch_name)
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -11410,6 +11478,7 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
         result += hint
+        result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before)

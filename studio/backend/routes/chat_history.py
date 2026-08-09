@@ -790,6 +790,13 @@ async def clear_history(
     # added between the listing above and the delete is gone too, and its
     # sandbox would otherwise be stranded.
     cleared = clear_chat_history()
+    # A chat started between the listing and the transaction is in `cleared`
+    # but was never cancelled, and a generation still running would dispatch a
+    # tool and rebuild the sandbox this call is about to remove.
+    late = [thread_id for thread_id in cleared if thread_id not in set(thread_ids)]
+    if late:
+        _cancel_active_research(request, late)
+        _cancel_active_generations(late)
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
