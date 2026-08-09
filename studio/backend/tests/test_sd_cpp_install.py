@@ -1993,3 +1993,36 @@ def test_a_partial_sweep_never_returns_the_file_it_deleted(tmp_path, monkeypatch
     assert Path(got).is_file()
     # And it is still not memoised, so the next load retries the sweep.
     assert bk._failed_accelerator_upgrades == set()
+
+
+def test_a_re_found_cli_goes_through_the_usability_gate(tmp_path, monkeypatch):
+    """The partial-sweep raise happens BEFORE install()'s _make_executable, so on POSIX a freshly
+    extracted copy has no execute bit, and find_sd_cpp_binary only checks that the path is a file.
+    Handing that back gives the next load a binary that cannot launch."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    old = root / "build" / "bin" / "sd-cli"
+    old.parent.mkdir(parents = True)
+    old.write_bytes(b"old-cpu-cli")
+    new = root / "sd-bundle-cuda12" / "bin" / "sd-cli"
+    new.parent.mkdir(parents = True)
+
+    resolved = {"path": str(old)}
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: resolved["path"])
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    # Runnable before the install (the old CLI), not runnable after (the un-chmodded new one).
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda binary: binary == str(old))
+
+    def _sweep_gets_part_way(**_kwargs):
+        old.unlink()
+        new.write_bytes(b"new-cuda-cli")
+        resolved["path"] = str(new)
+        raise sdmod.SupersededBinaryError("could not remove the superseded binary sd-server")
+
+    monkeypatch.setattr(sdmod, "install", _sweep_gets_part_way)
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") is None
+    # Ours and unrunnable, so the gate removed it and the next load reinstalls cleanly.
+    assert not new.exists()
+    assert bk._failed_accelerator_upgrades == set()

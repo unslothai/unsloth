@@ -5103,3 +5103,51 @@ def test_an_unmanaged_h3_native_run_takes_no_claim(monkeypatch, tmp_path):
     monkeypatch.setattr(bk, "_sd_cpp_backend", None)
     backend.generate(prompt = "p", width = 960, height = 544)
     assert held == [0]
+
+
+def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
+    """Existence is not identity. An install that lands while this generation waits can put its
+    replacement at the SAME path, and that build is not the one ensure_h3_sd_cpp_binary vetted at
+    load: a different accelerator, or one predating the H3 options, which aborts partway through a
+    render nobody wants to repeat."""
+    pytest.importorskip("PIL.Image")
+    import contextlib
+    import os
+
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"the build the load checked")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state.pipe.engine.binary = str(managed)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    @contextlib.contextmanager
+    def _install_lands_during_the_wait(_binary):
+        # Same path, different build: exactly what an in-place replacement leaves behind.
+        managed.write_bytes(b"some other accelerator's build")
+        os.utime(managed, (1, 1))
+        yield
+
+    monkeypatch.setattr(bk, "_tree_reader", _install_lands_during_the_wait)
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert calls == [], "the run must not reach a build the load never checked"
+
+    # A binary that vanished during the wait is the same answer.
+    @contextlib.contextmanager
+    def _install_removes_it(_binary):
+        managed.unlink()
+        yield
+
+    managed.write_bytes(b"the build the load checked")
+    monkeypatch.setattr(bk, "_tree_reader", _install_removes_it)
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert calls == []

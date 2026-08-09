@@ -469,6 +469,21 @@ class _VideoLoadingState:
     asset_repos: tuple[str, ...] = ()
 
 
+def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
+    """``(size, mtime_ns)`` of an sd.cpp binary, or None when it cannot be read.
+
+    Enough to tell "the build we vetted at load" from "whatever an install left at that path",
+    without a subprocess on every generation. Never raises: an unreadable path is None, which the
+    caller reads as a change."""
+    if not binary:
+        return None
+    try:
+        stat = Path(binary).stat()
+    except OSError:
+        return None
+    return (stat.st_size, stat.st_mtime_ns)
+
+
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
 
@@ -3661,17 +3676,27 @@ class VideoBackend:
             from .sd_cpp_backend import _tree_reader
 
             binary = getattr(runtime.engine, "binary", None)
+            # Identity, not existence. An install that lands while this generation waits can put
+            # its replacement at the SAME path, and then the file is still there but it is not the
+            # build ensure_h3_sd_cpp_binary vetted at load: a different accelerator, or one
+            # predating the H3 options, which aborts partway through a render nobody wants to
+            # repeat. Cheap enough to take on every image, and it covers deletion too.
+            binary_identity = _sd_cli_identity(binary)
             try:
                 try:
                     with _tree_reader(binary):
-                        if binary and not Path(binary).is_file():
-                            # An install finished while this generation waited for it and took
-                            # the copy this runtime was built on. The engine is committed at
-                            # load, so say that plainly rather than handing a missing path to a
-                            # subprocess and surfacing its ENOENT.
+                        if binary and (
+                            binary_identity is None
+                            or _sd_cli_identity(binary) != binary_identity
+                        ):
+                            # The engine is committed at load, so this cannot be re-resolved
+                            # underneath a live generation the way the image path can. Say so
+                            # plainly instead of running an unvetted build or surfacing an ENOENT
+                            # from the subprocess.
                             raise RuntimeError(
                                 "The stable-diffusion.cpp binary this model was loaded with was "
-                                "replaced by an install. Reload the model and try again."
+                                "replaced by an install, so it is no longer the build this model "
+                                "was checked against. Reload the model and try again."
                             )
                         generated = runtime.engine.generate_video(
                             runtime.files,

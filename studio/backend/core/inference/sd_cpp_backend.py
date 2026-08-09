@@ -493,7 +493,14 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                     # fallback resolved before the install may be one of the copies it already
                     # removed. Re-find, so this returns a file that exists -- often the one the
                     # new bundle just extracted -- or None, never a path that is gone.
-                    return find_sd_cpp_binary()
+                    #
+                    # Through the usability gate, not raw: the raise came BEFORE install()'s
+                    # _make_executable, so on POSIX a freshly extracted copy has no execute bit
+                    # and find_sd_cpp_binary only checks that the path is a file. The gate probes
+                    # it and, being ours, removes it if it cannot run, so the next load reinstalls
+                    # rather than being handed a binary that fails to launch.
+                    refound = find_sd_cpp_binary()
+                    return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None:
                     _note_failed_upgrade(accelerator)
                 return fallback
@@ -539,8 +546,10 @@ def ensure_sd_server_binary(
                 # ensure_sd_cpp_binary immediately after this, and without the record that probe
                 # resolves and downloads the same bundle a second time inside one selection.
                 if _incomplete_tree_replacement(exc):
-                    # As above: the fallback may name a copy the partial sweep removed.
-                    return find_sd_server_binary()
+                    # As above: the fallback may name a copy the partial sweep removed, and a
+                    # freshly extracted one never reached _make_executable.
+                    refound = find_sd_server_binary()
+                    return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
                 return fallback
