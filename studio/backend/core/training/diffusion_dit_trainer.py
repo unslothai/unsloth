@@ -134,7 +134,9 @@ class _FamilySpec:
     lora_targets: tuple[str, ...]
     # bf16 only (Z-Image overflows fp16 and its RoPE/embedder run in fp32).
     force_bf16: bool
-    # Approximate dense-bf16 transformer weight size, used by base_precision="auto" to pick a mode that fits free VRAM.
+    # Approximate dense-bf16 transformer weight size for the family's DEFAULT base, used by
+    # base_precision="auto" to pick a mode that fits free VRAM. A family covering more than one
+    # size (flux.2-klein is 4B and 9B) must not be sized off this alone -- see _dense_bf16_gb.
     dense_bf16_gb: float
     # Phased load so the multi-GB transformer never coexists with the text encoders + VAE: ``load_conditioners`` builds the
     # pipeline WITHOUT it and returns (pipe, vae); ``load_transformer`` then loads it alone once the conditioners are freed.
@@ -476,6 +478,32 @@ def _pick_auto_precision(
     return "nf4"
 
 
+def _dense_bf16_gb(spec, base_model: str) -> float:
+    """The dense-bf16 transformer size of the base this run actually trains from.
+
+    ``spec.dense_bf16_gb`` is one number per FAMILY, and flux.2-klein is a family with two
+    transformer sizes under it: the 4B default (8.1 GB) and the 9B / base-9B pair (18.2 GB).
+    Sizing a 9B run off the family number understates it by 2.3x, so base_precision="auto"
+    (the mode /info recommends, and therefore the Train tab's default) resolves to bf16 on a
+    16-24 GB GPU and the dense load OOMs -- the run fails before the first step.
+
+    The inference auto-policy already keeps per-base overrides for exactly this, so read them
+    here instead of adding a second table that can drift. Reads the per-base OVERRIDES only,
+    never the family table underneath them: this spec's own number is the family default, and
+    the two are independently maintained, so falling through to the shared family entry would
+    silently re-size every base that has no override (klein's 4B default from 8.1 to 7.8, which
+    moves the bf16 band by half a GB). Never raises: a sizing lookup must not be able to fail a
+    run that would otherwise train."""
+    try:
+        from core.inference.diffusion_auto_policy import base_repo_bf16_components_gb
+        components = base_repo_bf16_components_gb(base_model)
+        if components:
+            return float(components[0])
+    except Exception:  # noqa: BLE001 -- table miss / import failure -> the family number
+        pass
+    return float(spec.dense_bf16_gb)
+
+
 def _resolve_base_precision(cfg, spec, device) -> str:
     """Resolve "auto" against the live GPU (free VRAM measured BEFORE anything loads);
     explicit modes pass through (normalized() already validated them against the repo and
@@ -537,7 +565,13 @@ def _resolve_base_precision(cfg, spec, device) -> str:
         except Exception:  # noqa: BLE001 -- probe failure -> the safe mode
             pass
     return _pick_auto_precision(
-        prequant, device, free_gb, spec.dense_bf16_gb, capability, has_fp8, has_torchao
+        prequant,
+        device,
+        free_gb,
+        _dense_bf16_gb(spec, cfg.base_model),
+        capability,
+        has_fp8,
+        has_torchao,
     )
 
 
