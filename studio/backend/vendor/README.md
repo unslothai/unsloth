@@ -39,11 +39,11 @@ than prepending also means a real installed truststore still wins.
 
 ### Updating
 
-```bash
-python scripts/sync_vendored_truststore.py --version <new version>
-```
+This is a static copy. There is no refresh step and nothing updates it automatically, which is the
+point: the bytes that verify certificates only change when someone decides they should.
 
-It re-downloads the wheel, verifies the hash against PyPI, rewrites this tree and
-`truststore_manifest.json`, and `tests/test_vendored_truststore.py` then checks the result.
-Read upstream's changelog first: a 0.x minor is where truststore has changed verification behaviour,
-which here applies process-wide.
+To move to another release, replace `truststore/` with that version's wheel contents, copy its
+`LICENSE`, and update `version`, `wheel`, `wheel_sha256` and the per-file hashes in
+`truststore_manifest.json`. `tests/test_vendored_truststore.py` fails until the manifest matches, so
+a half-finished swap cannot land. Read upstream's changelog first: a 0.x minor is where truststore
+has changed verification behaviour, which here applies process-wide.

@@ -3,9 +3,10 @@
 
 """The vendored truststore stays byte-identical to the release it came from.
 
-Drift here is silent and dangerous in both directions: a formatter reflowing the
-upstream files makes the next sync a merge conflict, and an edit to them means
-Studio verifies certificates with code no upstream release ever shipped.
+It is a static copy: nothing refreshes it, so any change to these bytes is either
+a deliberate version bump that must update the manifest with it, or an accident.
+The accident is the dangerous one, since it means Studio verifies certificates
+with code no upstream release ever shipped.
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ def test_vendored_tree_matches_the_manifest():
     found = _tracked_files()
     recorded = _MANIFEST["files"]
     assert set(found) == set(recorded), (
-        "the vendored tree gained or lost a file; re-run "
-        "scripts/sync_vendored_truststore.py rather than editing it by hand"
+        "the vendored tree gained or lost a file; it is a static copy of upstream "
+        f"{_MANIFEST['version']}, so update truststore_manifest.json in the same commit"
     )
     drifted = [
         name
