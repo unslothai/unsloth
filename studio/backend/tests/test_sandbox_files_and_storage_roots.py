@@ -3963,29 +3963,35 @@ def test_a_reference_is_a_session_id_not_a_piece_of_prose(tmp_path, monkeypatch)
 
     from storage import studio_db
 
-    studio_db.upsert_chat_thread({
-        "id": "keeper",
-        "title": "t",
-        "modelType": "local",
-        "modelId": "m",
-        "createdAt": 1,
-        "updatedAt": 1,
-    })
+    studio_db.upsert_chat_thread(
+        {
+            "id": "keeper",
+            "title": "t",
+            "modelType": "local",
+            "modelId": "m",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
     quoted = 'client"v1'
-    studio_db.upsert_chat_message({
-        "id": "m1",
-        "threadId": "keeper",
-        "role": "assistant",
-        "content": [{"type": "text", "sessionId": quoted}],
-        "createdAt": 1,
-    })
-    studio_db.upsert_chat_message({
-        "id": "m2",
-        "threadId": "keeper",
-        "role": "assistant",
-        "content": [{"type": "text", "text": "the report is in chat abc"}],
-        "createdAt": 2,
-    })
+    studio_db.upsert_chat_message(
+        {
+            "id": "m1",
+            "threadId": "keeper",
+            "role": "assistant",
+            "content": [{"type": "text", "sessionId": quoted}],
+            "createdAt": 1,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "m2",
+            "threadId": "keeper",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "the report is in chat abc"}],
+            "createdAt": 2,
+        }
+    )
 
     # The escaped id is found ...
     assert studio_db.sandbox_is_referenced_elsewhere(quoted) is True
@@ -4018,9 +4024,7 @@ def test_a_project_delete_cancels_the_research_it_removed():
 
     storage = inspect.getsource(studio_db.delete_chat_project)
     assert 'project["activeResearchRunIds"] = active_runs' in storage
-    assert storage.index("SELECT id FROM research_runs") < storage.index(
-        "DELETE FROM chat_threads"
-    )
+    assert storage.index("SELECT id FROM research_runs") < storage.index("DELETE FROM chat_threads")
 
     route = inspect.getsource(chat_history.delete_project)
     assert '_cancel_research_runs(request, list(project.get("activeResearchRunIds")' in route

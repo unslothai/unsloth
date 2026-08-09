@@ -1980,16 +1980,20 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         # Read before the cascade removes them: afterwards nothing can tell the
         # supervisor which runs to stop, and a worker keeps doing model, web and
         # RAG work for a project that is gone.
-        active_runs = [
-            row["id"]
-            for row in conn.execute(
-                "SELECT id FROM research_runs WHERE thread_id IN ({}) "
-                "AND status NOT IN ('cancelled', 'completed', 'failed')".format(
-                    ",".join("?" for _ in thread_ids) or "NULL"
-                ),
-                tuple(thread_ids),
-            )
-        ] if thread_ids else []
+        active_runs = (
+            [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM research_runs WHERE thread_id IN ({}) "
+                    "AND status NOT IN ('cancelled', 'completed', 'failed')".format(
+                        ",".join("?" for _ in thread_ids) or "NULL"
+                    ),
+                    tuple(thread_ids),
+                )
+            ]
+            if thread_ids
+            else []
+        )
         _reparent_surviving_forks(conn, thread_ids)
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
