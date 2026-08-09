@@ -1380,9 +1380,7 @@ def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.37.0"))
 
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"})
     assert r.status_code == 400, r.text
     assert "LTX2Pipeline" in r.json()["detail"]
     assert freed == []
@@ -1401,9 +1399,7 @@ def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeyp
     freed = []
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
 
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"})
     assert r.status_code == 400, r.text
     detail = r.json()["detail"]
     assert "model_index.json" in detail  # says why it cannot be a base

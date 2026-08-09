@@ -190,7 +190,6 @@ def _assert_video_pipeline_available(fam: Any) -> None:
     Losing a loaded model and THEN failing is the worst ordering available, so assert here, while
     ``resolve_trainable_family`` still runs ahead of any teardown."""
     from core.inference.diffusion_families import assert_pipeline_class_available
-
     assert_pipeline_class_available(fam.pipeline_class, fam.name)
 
 

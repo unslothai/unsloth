@@ -761,7 +761,6 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     500 with the message lost."""
     try:
         import diffusers
-
         present = hasattr(diffusers, pipeline_class)
     except Exception:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
         # Not this check's business: it answers "is the installed diffusers new enough for this family", and with
