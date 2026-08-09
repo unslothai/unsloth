@@ -1807,4 +1807,3 @@ def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
     assert batched is not None
     assert "at a batch of 4" in batched
     assert "or a smaller batch size" in batched
-

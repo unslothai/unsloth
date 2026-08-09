@@ -6892,7 +6892,6 @@ def test_discrete_vram_image_load_is_unaffected_by_the_refusal(fake_runtime, mon
 
 def _plan_with_weights(mib):
     from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
-
     return MemoryPlan(
         requested_mode = "auto",
         offload_policy = "none",
@@ -7317,7 +7316,6 @@ def test_the_activation_guard_budgets_the_real_batch_on_windows(monkeypatch):
     assert dmod._activation_guard_batch([]) == 1
 
 
-
 # ── generate cancellation (issue #8187) ──────────────────────────────────────
 #
 # The denoise loop already honoured the per-generation cancel event, but only unload() and a
@@ -7519,9 +7517,6 @@ def test_a_completed_generation_stops_advertising_itself_as_cancellable(
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
-
-
-
 def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
     fake_runtime, monkeypatch, tmp_path
 ):

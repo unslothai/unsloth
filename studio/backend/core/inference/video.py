@@ -1483,8 +1483,7 @@ class VideoBackend:
                     # On unified memory 'none' says nothing, so the quant plan has to clear the
                     # shortfall itself before it can replace one that did not.
                     if replanned.offload_policy == "none" and (
-                        not planned_shortfall
-                        or unified_memory_shortfall_message(replanned) is None
+                        not planned_shortfall or unified_memory_shortfall_message(replanned) is None
                     ):
                         if log:
                             logger.info(
