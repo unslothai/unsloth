@@ -49,6 +49,48 @@ DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
 
+# What the managed directory records about the install it holds, so a later ensure_* can tell a CPU
+# bundle from a CUDA one instead of reusing whatever binary happens to be on disk.
+INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def accelerator_class(accelerator: Optional[str]) -> str:
+    """The accelerator an install actually serves. ``auto`` resolves to the plain build, so it and
+    ``cpu`` are the same install and must not look like an upgrade to one another."""
+    accel = (accelerator or "auto").strip().lower()
+    return "cpu" if accel in ("auto", "cpu", "") else accel
+
+
+def read_install_record(root: Path) -> dict:
+    """The install record in ``root``, or ``{}`` when there is none (an install predating the
+    record, or a directory that is not ours). Never raises."""
+    try:
+        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+            rec = json.load(f)
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def installed_accelerator(root: Path) -> Optional[str]:
+    """The accelerator class the install in ``root`` was built for, or None when unrecorded."""
+    val = read_install_record(root).get("accelerator")
+    return val if isinstance(val, str) and val else None
+
+
+def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
+    """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
+
+    Best-effort: a failure here only costs the next run the ability to detect an accelerator
+    change, which is exactly the pre-record behaviour, so it must never fail the install."""
+    try:
+        with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
+            json.dump(
+                {"accelerator": accelerator_class(accelerator), "repo": repo, "tag": tag}, f
+            )
+    except OSError:
+        pass
+
 
 def _repo() -> str:
     return (os.environ.get("UNSLOTH_SD_CPP_REPO") or DEFAULT_REPO).strip() or DEFAULT_REPO
@@ -473,6 +515,16 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
+    # Written only now, on a complete install: a record naming an accelerator whose binaries never
+    # finished extracting would suppress the very reinstall that repairs it. Only for a directory we
+    # own -- an unowned one is the user's build, which we never claim to have installed.
+    if _may_own:
+        _write_install_record(
+            target,
+            accelerator = accelerator,
+            repo = used_repo,
+            tag = release.get("tag_name"),
+        )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli
 

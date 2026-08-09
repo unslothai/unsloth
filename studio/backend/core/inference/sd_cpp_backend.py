@@ -70,6 +70,7 @@ from core.inference.sd_cpp_engine import (
     find_sd_cpp_binary,
     find_sd_server_binary,
     is_managed_binary,
+    managed_install_root,
     runtime_env,
 )
 from core.inference.sd_cpp_server import SdCppServer
@@ -159,6 +160,60 @@ def _usable_or_discard_managed(binary: str) -> bool:
     return False
 
 
+def _installer_module():
+    """The installer module, importable from the backend's sys.path. None if unavailable."""
+    import sys
+
+    studio_dir = Path(__file__).resolve().parents[3]  # .../studio
+    if str(studio_dir) not in sys.path:
+        sys.path.insert(0, str(studio_dir))
+    import install_sd_cpp_prebuilt
+
+    return install_sd_cpp_prebuilt
+
+
+# Accelerators whose upgrade install already failed this process. Without this, a host that asks
+# for a GPU build it has no asset for would re-resolve (and re-download) on every single load,
+# because the wrong-accelerator binary it keeps still does not match the request.
+_failed_accelerator_upgrades: set[str] = set()
+
+
+def _note_failed_upgrade(accelerator: str) -> None:
+    """Stop retrying an accelerator upgrade that just failed while a usable binary is kept."""
+    try:
+        _failed_accelerator_upgrades.add(_installer_module().accelerator_class(accelerator))
+    except Exception:  # noqa: BLE001 -- best effort
+        pass
+
+
+def _accelerator_changed(binary: str, accelerator: str) -> bool:
+    """True when ``binary`` is a managed install built for a DIFFERENT accelerator than the one
+    now asked for, so reusing it would silently run the wrong build.
+
+    The case that matters: a host that installed the CPU bundle (the default when the device
+    target resolves to CPU) later forces the native engine on a CUDA/ROCm/Vulkan GPU. Both
+    ``ensure_*`` return any runnable binary they find, so without this the CPU sd-server is
+    reused forever and generation stays on the CPU even though a matching GPU build now exists.
+
+    Deliberately conservative -- only a copy the installer owns is ever replaced (the user's own
+    build or an in-tree checkout is left alone), an install with no record is only replaced when a
+    GPU build is requested (an unrecorded install predates the record and cannot be a GPU one, as
+    the record has shipped since the first GPU-capable asset), and asking for the CPU build back
+    never triggers a reinstall."""
+    if not is_managed_binary(binary):
+        return False
+    try:
+        mod = _installer_module()
+        want = mod.accelerator_class(accelerator)
+        if want == "cpu":
+            return False  # the plain build is what an unrecorded install already is
+        if want in _failed_accelerator_upgrades:
+            return False
+        return mod.installed_accelerator(managed_install_root()) != want
+    except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary, as before
+        return False
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed.
 
@@ -167,32 +222,34 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
     return is the router's signal to fall back to diffusers.
     """
     found = find_sd_cpp_binary()
-    if found and _usable_or_discard_managed(found):
+    usable = bool(found) and _usable_or_discard_managed(found)
+    if usable and not _accelerator_changed(found, accelerator):
         return found
     if not allow_install:
         return found
     with _install_lock:
         # Re-check inside the lock: a concurrent first-load may have installed it.
         found = find_sd_cpp_binary()
-        if found and _usable_or_discard_managed(found):
+        usable = bool(found) and _usable_or_discard_managed(found)
+        if usable and not _accelerator_changed(found, accelerator):
             return found
+        # A usable binary of the wrong accelerator is still better than none, so an install that
+        # cannot deliver the right one (no such asset for this host, no network) keeps it.
+        fallback = found if usable else None
         try:
-            import sys
-
-            studio_dir = Path(__file__).resolve().parents[3]  # .../studio
-            if str(studio_dir) not in sys.path:
-                sys.path.insert(0, str(studio_dir))
-            from install_sd_cpp_prebuilt import install as _install
+            _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-cli installer import failed: %s", exc)
-            return None
+            return fallback
         try:
             path = _install(accelerator = accelerator)
             logger.info("sd-cli installed at %s", path)
             return str(path)
         except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
             logger.warning("sd-cli auto-install failed: %s", exc)
-            return None
+            if fallback is not None:
+                _note_failed_upgrade(accelerator)
+            return fallback
 
 
 def ensure_sd_server_binary(
@@ -207,30 +264,31 @@ def ensure_sd_server_binary(
     uses the one-shot fallback. Never raises.
     """
     found = find_sd_server_binary()
-    if found and _usable_or_discard_managed(found):
+    usable = bool(found) and _usable_or_discard_managed(found)
+    if usable and not _accelerator_changed(found, accelerator):
         return found
     if not allow_install:
         return found
     with _install_lock:
         found = find_sd_server_binary()
-        if found and _usable_or_discard_managed(found):
+        usable = bool(found) and _usable_or_discard_managed(found)
+        if usable and not _accelerator_changed(found, accelerator):
             return found
+        # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
+        fallback = found if usable else None
         try:
-            import sys
-
-            studio_dir = Path(__file__).resolve().parents[3]  # .../studio
-            if str(studio_dir) not in sys.path:
-                sys.path.insert(0, str(studio_dir))
-            from install_sd_cpp_prebuilt import install as _install
+            _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-server installer import failed: %s", exc)
-            return None
+            return fallback
         try:
             _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
         except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
             logger.warning("sd-server auto-install failed: %s", exc)
-            return None
-        return find_sd_server_binary()
+            if fallback is not None:
+                _note_failed_upgrade(accelerator)
+            return fallback
+        return find_sd_server_binary() or fallback
 
 
 @dataclass(frozen = True)

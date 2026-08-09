@@ -869,3 +869,134 @@ def test_a_reinstall_over_an_owned_root_keeps_the_repair_loop_closed(tmp_path, m
     sd_cli = install(install_dir = target)
     assert (target / ".unsloth-studio-owned").is_file()
     assert eng.is_managed_binary(str(sd_cli)) is True
+
+
+# ── the install records its accelerator, and a change reinstalls ─────────────
+
+
+def test_install_records_the_accelerator_it_installed(tmp_path, monkeypatch):
+    """The record is what lets a later ensure_* tell a CPU bundle from a GPU one."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    target = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+
+    install(install_dir = target)
+    assert sdmod.installed_accelerator(target) == "cpu"
+    # "auto" resolves to the same plain build, so it must not read as a different install.
+    assert sdmod.accelerator_class("auto") == sdmod.accelerator_class("cpu") == "cpu"
+    assert sdmod.accelerator_class("CUDA") == "cuda"
+    # No record at all is "unknown", not "cpu".
+    assert sdmod.installed_accelerator(tmp_path / "nothing-here") is None
+
+
+def _managed_tree(tmp_path, monkeypatch, accelerator = None):
+    """A Studio-owned install tree, optionally carrying an install record."""
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    if accelerator is not None:
+        sdmod._write_install_record(root, accelerator = accelerator, repo = "r", tag = "t")
+    return root
+
+
+def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypatch):
+    """The P1: an upgraded Linux CUDA host already holding the managed CPU bundle. Both ensure_*
+    returned any runnable binary they found, so the new CUDA asset was never installed and native
+    generation silently stayed entirely on the CPU."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        server.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return root / "sd-bin" / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert [k["accelerator"] for k in installs] == ["cuda"], "the CUDA build must be installed"
+    assert server.read_bytes() == b"cuda-build"
+    # Now that the record says cuda, the next load reuses it instead of reinstalling.
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert len(installs) == 1
+
+
+def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
+    """Only an upgrade reinstalls. A CPU/auto request must reuse whatever is there, including an
+    install predating the record, or every CPU host would re-download on its next load."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = None)  # no record: an older install
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    def _install(**_kwargs):
+        raise AssertionError("a CPU request must not reinstall")
+
+    monkeypatch.setattr(sdmod, "install", _install)
+    assert bk.ensure_sd_server_binary(accelerator = "cpu") == str(server)
+    assert bk.ensure_sd_cpp_binary(accelerator = "auto") == str(cli)
+
+
+def test_a_user_supplied_binary_is_never_reinstalled_over_on_an_accelerator_change(
+    tmp_path, monkeypatch
+):
+    """An unmarked root is the user's own build. install() would refuse it anyway, so attempting
+    the upgrade would only cost a download and end with no binary at all."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"  # deliberately NOT marked
+    (root / "sd-bin").mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"users-own-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    def _install(**_kwargs):
+        raise AssertionError("an unmarked (user-owned) root must not be reinstalled over")
+
+    monkeypatch.setattr(sdmod, "install", _install)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+
+
+def test_a_failed_upgrade_keeps_the_working_binary_and_stops_retrying(tmp_path, monkeypatch):
+    """A host with no asset for the requested accelerator must keep the binary it has (returning
+    None would drop native inference entirely) and must not re-resolve on every later load."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    attempts: list = []
+
+    def _install(**kwargs):
+        attempts.append(kwargs)
+        raise RuntimeError("No prebuilt sd-cli for this host")
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    assert bk.ensure_sd_server_binary(accelerator = "vulkan") == str(server)
+    assert bk.ensure_sd_server_binary(accelerator = "vulkan") == str(server)
+    assert len(attempts) == 1, "the hopeless upgrade must be attempted once, not once per load"
+    assert server.read_bytes() == b"cpu-build"
