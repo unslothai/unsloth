@@ -4,7 +4,13 @@
 // What the bottom-right overlay stack has to keep clear of, in viewport
 // coordinates. The Live monitor is draggable and resizable and defaults to that
 // same corner; the chat composer docks to the bottom of the same column once a
-// thread has turns. Each publishes its box here while it is mounted.
+// thread has turns; the API monitor panel opens in that corner on its own. Each
+// publishes its box here while it is mounted.
+//
+// Read as well as written: the API monitor panel places itself against every
+// box but its own (api-monitor/panel-placement), so the three surfaces resolve
+// in one direction -- the monitor is placed by the user, the API panel steps
+// around the monitor, and the stack steps around both.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
