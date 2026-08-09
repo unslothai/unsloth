@@ -293,3 +293,18 @@ test("reselecting a non-Hub source repairs stale streaming state", () => {
     assert.equal(useTrainingConfigStore.getState().evalSteps, 0.1);
   }
 });
+
+test("every manual dataset draft edit advances the user edit revision", () => {
+  resetState({ manualDatasetOptionsValid: true, userEditRevision: 41 });
+
+  useTrainingConfigStore.getState().markManualDatasetOptionsEdited(true);
+  assert.equal(useTrainingConfigStore.getState().userEditRevision, 42);
+  assert.equal(useTrainingConfigStore.getState().manualDatasetOptionsValid, true);
+
+  useTrainingConfigStore.getState().markManualDatasetOptionsEdited(false);
+  assert.equal(useTrainingConfigStore.getState().userEditRevision, 43);
+  assert.equal(
+    useTrainingConfigStore.getState().manualDatasetOptionsValid,
+    false,
+  );
+});

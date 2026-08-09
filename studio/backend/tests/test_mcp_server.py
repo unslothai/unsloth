@@ -181,6 +181,9 @@ def test_export_and_checkpoint_tools_expose_forwarded_fields():
     checkpoint_props = set(_get_tool("load_checkpoint").parameters["properties"])
     assert {"hf_token", "approved_remote_code_fingerprint"} <= checkpoint_props
 
+    stop_schema = _get_tool("stop_training").parameters
+    assert "expected_job_id" in stop_schema["required"]
+
 
 def _stub_module(monkeypatch, name, **attrs):
     module = types.ModuleType(name)
@@ -251,6 +254,35 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
 
     assert captured["hf_token"] == "hf_secret"
     assert captured["approved_remote_code_fingerprint"] == "sha256:abc"
+
+
+def test_stop_training_forwards_job_scope(monkeypatch):
+    captured = {}
+
+    class FakeTrainingStopRequest:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    async def fake_stop(request, current_subject):
+        assert isinstance(request, FakeTrainingStopRequest)
+        captured["current_subject"] = current_subject
+        return {"status": "stopped"}
+
+    _stub_module(monkeypatch, "routes")
+    _stub_module(
+        monkeypatch,
+        "routes.training",
+        TrainingStopRequest = FakeTrainingStopRequest,
+        stop_training = fake_stop,
+    )
+
+    tool = _get_tool("stop_training")
+    result = asyncio.run(tool.fn(expected_job_id = "job-A", save = False))
+
+    assert captured["expected_job_id"] == "job-A"
+    assert captured["save"] is False
+    assert captured["current_subject"] == "mcp"
+    assert result == {"status": "stopped"}
 
 
 def test_list_training_runs_clamps_pagination(monkeypatch):

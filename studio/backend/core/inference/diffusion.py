@@ -21,12 +21,17 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
 from loggers import get_logger
 from utils.hardware import clear_gpu_cache
 
@@ -131,9 +136,25 @@ from .diffusion_transformer_quant import (
 
 logger = get_logger(__name__)
 
+# Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent
+# distributed backend: diffusers imports xformers on sight, its quantizers torchao.
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
+
 
 # "gguf" and "single_file" take companions from the base repo; "pipeline" is a full diffusers repo.
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
+
+
+def _record_sha(shas_out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
+    """Note the commit ``info`` describes so a cache probe can pin to it.
+
+    No ``sha`` just means the plan cannot pin, and stages as before."""
+    if shas_out is None:
+        return
+    sha = getattr(info, "sha", None)
+    if isinstance(sha, str) and sha:
+        shas_out[repo_id] = sha
 
 
 def hub_cache_dir() -> str:
@@ -144,6 +165,63 @@ def hub_cache_dir() -> str:
     setting, so without this a single load could split across two roots."""
     from utils.hf_cache_settings import active_hf_hub_cache
     return active_hf_hub_cache()
+
+
+# Repo id out of any hub URL in an error. A gated PUBLIC repo raises a download URL,
+# ".../huggingface.co/<owner>/<name>/resolve/..."; auth_check, and model_info on a gated PRIVATE
+# repo, raise ".../huggingface.co/api/models/<owner>/<name>", which without the prefix branch would yield "api/models".
+_HUB_REPO_RE = re.compile(
+    r"huggingface\.co/(?:api/(?:models|datasets|spaces)/)?([\w.\-]+/[\w.\-]+)"
+)
+
+
+def _gated_in_chain(exc: BaseException) -> Optional[BaseException]:
+    """The GatedRepoError in ``exc``'s cause/context chain, or None. Transformers loads re-raise
+    the 403 wrapped in an OSError, so the outermost error alone misses the case this exists for.
+    Screened by class name across the MRO, so no hub import."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if any(cls.__name__ == "GatedRepoError" for cls in type(exc).__mro__):
+            return exc
+        # `raise ... from None` means the raiser already wrote a better message (the base-repo preflight does), so stop.
+        exc = exc.__cause__ or (None if exc.__suppress_context__ else exc.__context__)
+    return None
+
+
+def _hf_token_in_play(hf_token: Optional[str]) -> bool:
+    """Whether the failing Hub call carried ANY credential, not just Studio's own: with token=None
+    huggingface_hub still falls back to HF_TOKEN or the cached CLI login, so keying off the request
+    token alone loops an already-authenticated user."""
+    if hf_token:
+        return True
+    try:
+        # What build_hf_headers calls: under HF_HUB_DISABLE_IMPLICIT_TOKEN get_token() still answers while the request goes out anonymous.
+        from huggingface_hub.utils import get_token_to_send
+        return bool(get_token_to_send(None))
+    except Exception:  # noqa: BLE001 -- assume none; at worst the message says "add a token"
+        return False
+
+
+def hub_access_message(exc: BaseException, *, had_token: bool) -> Optional[str]:
+    """Rewrite a gated-repo failure into the step that actually unblocks the user, else None so an
+    unrelated load error keeps its own text. Only the toast is affected; the raw exception, request
+    id and resolve URL still reach the log."""
+    gated = _gated_in_chain(exc)
+    if gated is None:
+        return None
+    found = _HUB_REPO_RE.search(str(gated))
+    # An API URL ends at the repo, so a trailing full stop lands inside the name (dots are legal mid-name, but a name never ends in one).
+    repo = found.group(1).rstrip(".") if found else None
+    # Any other /api/<endpoint> URL (whoami-v2, ...) would parse as the repo "api/<endpoint>".
+    if repo and repo.split("/", 1)[0] == "api":
+        repo = None
+    where = f"https://huggingface.co/{repo}" if repo else "its Hugging Face page"
+    subject = repo or "This model"
+    if had_token:
+        # A token was sent and still bounced, so the account itself lacks access.
+        return f"{subject} is gated and this Hugging Face account is not on its access list. Request access at {where}, then load again."
+    return f"{subject} is gated. Request access at {where}, then add a Hugging Face token in Settings and load again."
 
 
 def resolve_model_kind(gguf_filename: Optional[str], model_kind: Optional[str] = None) -> str:
@@ -1297,12 +1375,20 @@ class DiffusionBackend:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001
                 pass
-            # Redact native paths: this error is surfaced verbatim and Studio can be shared.
+            # Rewrite a gated-repo 403 into the step that unblocks the user, then redact native paths:
+            # this text is surfaced verbatim and Studio can be shared. Guarded because on this daemon
+            # thread anything escaping leaves _loading.error unset and load_progress() stuck forever.
             from utils.native_path_leases import redact_native_paths
 
+            try:
+                text = hub_access_message(
+                    exc, had_token = _hf_token_in_play(kwargs.get("hf_token"))
+                ) or str(exc)
+            except Exception:  # noqa: BLE001
+                text = str(exc)
             with self._lock:
                 if self._load_token == token and self._loading is not None:
-                    self._loading.error = redact_native_paths(str(exc))
+                    self._loading.error = redact_native_paths(text)
 
     def load_progress(self) -> dict[str, Any]:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
@@ -1386,6 +1472,8 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
+        file_sizes_out: Optional[dict[tuple[str, str], int]] = None,
+        shas_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -1393,6 +1481,9 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
+        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop cached
+        files and size the rest. ``shas_out`` is each repo's CURRENT commit, so a cache hit
+        counts only in that revision.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1425,6 +1516,7 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                _record_sha(shas_out, repo_id, info)
                 picked = [
                     s
                     for s in info.siblings
@@ -1441,16 +1533,21 @@ class DiffusionBackend:
                         continue
                     base_files.append(s.rfilename)
                     total += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(repo_id, s.rfilename)] = s.size or 0
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                _record_sha(shas_out, repo_id, info)
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
                 if sizes_out is not None:
                     sizes_out[repo_id] = gguf_bytes
+                if file_sizes_out is not None:
+                    file_sizes_out[(repo_id, gguf_filename)] = gguf_bytes
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1460,17 +1557,86 @@ class DiffusionBackend:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
+            _record_sha(shas_out, base_repo, base_info)
             base_bytes = 0
             for s in base_info.siblings:
                 if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
                     base_files.append(s.rfilename)
                     base_bytes += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(base_repo, s.rfilename)] = s.size or 0
             total += base_bytes
             if sizes_out is not None:
                 sizes_out[base_repo] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
+
+    @staticmethod
+    def _files_already_cached(
+        repo_id: str,
+        files: list[str],
+        revision: Optional[str] = None,
+    ) -> set[str]:
+        """Of ``files``, the names ONE root serves whole at ``revision``: all of them, or none.
+
+        Both roots are searched -- Studio's live setting, and ``cache_dir = None`` for
+        huggingface_hub's constant -- but hits are never UNIONED. A set split between the roots is
+        complete in neither: ``_prefetch_files`` hands back a snapshot only when every file came
+        from the SAME root, else None, and ``from_pretrained`` is then pinned to ``hub_cache_dir()``
+        and cannot see the other root, so dropping the repo moves its refetch inline, outside the
+        panel's progress and disk preflight. One root holding all of it still drops.
+
+        ``revision`` is REQUIRED to drop anything: defaulted, ``try_to_load_from_cache`` reads the
+        cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit, so the
+        stale blob would leave the plan and the loader would pull the new one inline.
+
+        Only a str is a cached path. Never raises: an unreadable cache means "stage it"."""
+        if not revision or not files:
+            return set()
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Once, inside the try: hub_cache_dir is a SQLite read plus Path.home(), which raises
+            # with no home -- per file and outside, it was the one way this could 500.
+            roots = (hub_cache_dir(), None)
+        except Exception:  # noqa: BLE001 — no hub package / unreadable settings: stage everything
+            return set()
+        wanted = set(files)
+        live_root, fallback_root = roots
+
+        def _hits(root: Optional[str]) -> set[str]:
+            found: set[str] = set()
+            for name in wanted:
+                try:
+                    hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
+                except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
+                    continue
+                # is_file() is belt and braces: hub already ends on os.path.isfile today.
+                if isinstance(hit, str) and Path(hit).is_file():
+                    found.add(name)
+            return found
+
+        live = _hits(live_root)
+        if live == wanted:
+            return wanted
+        # A partial live hit IS the split: no single-root snapshot, so the pinned load refetches
+        # the fallback's share.
+        if live:
+            return set()
+        return wanted if _hits(fallback_root) == wanted else set()
+
+    @staticmethod
+    def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
+        """``repo_id``'s current commit, or None when the Hub does not say.
+
+        Only for the MIRROR: it is a separate repo with its own history, so the vendor sha
+        ``_estimate_download_bytes`` recorded would never hit."""
+        try:
+            from huggingface_hub import HfApi
+            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
+        except Exception:  # noqa: BLE001 — no sha means no skip, never a failed plan
+            return None
 
     def download_plan(
         self,
@@ -1506,7 +1672,10 @@ class DiffusionBackend:
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
-        total, base_files = self._estimate_download_bytes(
+        file_sizes: dict[tuple[str, str], int] = {}
+        shas: dict[str, str] = {}
+        # Total discarded: it counts every file the pick needs, not what is left to fetch.
+        _estimate_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
             base,
@@ -1517,6 +1686,8 @@ class DiffusionBackend:
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
+            file_sizes_out = file_sizes,
+            shas_out = shas,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1526,38 +1697,74 @@ class DiffusionBackend:
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
-        for repo, files in te_files.values():
+
+        def _stage(
+            repo: str,
+            files: list[str],
+            sized: dict[str, int],
+            gguf: Optional[str],
+            revision: Optional[str] = None,
+        ) -> None:
+            """Queue the files the cache is missing at ``revision``.
+
+            Entries are what the Downloads panel lists, so an all-cached pick yields none rather
+            than reading as a re-download of a model the user already has. No revision drops
+            nothing, so an unpinnable repo stages in full as it always did.
+
+            All or nothing per repo, never a subset: every diffusion entry for a repo rides the one
+            "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files differ
+            from the live job's, so a shrinking list would 409 a second pick sharing this base where
+            it used to adopt the running job. Staging a cached file costs nothing anyway, since
+            hf_hub_download returns the pointer without a transfer.
+
+            "Cached" is per ROOT, never a union across the two; see ``_files_already_cached``."""
+            cached = self._files_already_cached(repo, files, revision)
+            if files and cached.issuperset(files):
+                return
             entries.append(
                 {
                     "repo_id": repo,
-                    "files": [name for name, _size in files],
-                    "bytes": int(sum(size for _name, size in files)),
-                    "gguf_filename": None,
+                    "files": files,
+                    "bytes": int(sum(sized.get(name, 0) for name in files)),
+                    "gguf_filename": gguf,
                 }
             )
-            total += int(sum(size for _name, size in files))
+
+        for repo, files in te_files.values():
+            # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast
+            # checkpoint stages whole, not off a stale refs/main. Worth surfacing its info.sha:
+            # these replace tens of GB.
+            _stage(repo, [n for n, _s in files], dict(files), None)
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            entries.append(
-                {
-                    "repo_id": repo_id,
-                    "files": [gguf_filename],
-                    "bytes": int(sizes.get(repo_id, 0)),
-                    "gguf_filename": gguf_filename,
-                }
+            _stage(
+                repo_id,
+                [gguf_filename],
+                # file_sizes, not sizes: a base repo equal to this one overwrote sizes[repo_id]
+                # with the base total, mis-sizing this row.
+                {gguf_filename: int(file_sizes.get((repo_id, gguf_filename), 0))},
+                gguf_filename,
+                shas.get(repo_id),
             )
         if base_files and not Path(base).expanduser().exists():
             # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
             # an anonymous user at staging and the swap downstream is never reached. status(), the
             # API base repo, saved configs and LoRA tags keep the vendor id; sizes key on it too.
-            entries.append(
-                {
-                    "repo_id": fetch_base,
-                    "files": base_files,
-                    "bytes": int(sizes.get(base, 0)),
-                    "gguf_filename": None,
-                }
+            # The commit follows the id: the sizes came from the vendor, the probe must not.
+            base_rev = (
+                shas.get(base) if fetch_base == base else self._current_sha(fetch_base, hf_token)
             )
-        return {"entries": entries, "total_bytes": int(total)}
+            _stage(
+                fetch_base,
+                base_files,
+                {name: file_sizes.get((base, name), 0) for name in base_files},
+                None,
+                base_rev,
+            )
+        # Derived, never decremented: a carried total can only drift from the rows the panel shows.
+        return {
+            "entries": entries,
+            "total_bytes": int(sum(e["bytes"] for e in entries)),
+        }
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:

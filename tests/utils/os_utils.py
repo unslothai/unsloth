@@ -15,6 +15,26 @@ def _missing_dependency(message):
         pytest.skip(message, allow_module_level = True)
 
 
+TRUTHY = ("1", "true", "yes", "on")
+
+
+def require_opt_in(env_var, reason):
+    """Gate a module-level script so `pytest` skips it instead of executing it.
+
+    Files under tests/saving are standalone scripts: the whole body runs at
+    import, so pytest *collection* alone downloads checkpoints, trains and
+    pushes to the Hub, and any failure surfaces as a collection ERROR that
+    interrupts the entire run. Call this before the heavy imports so the module
+    is a visible SKIP unless ``env_var`` is truthy. Running the file directly
+    (``python tests/saving/...py``) is unaffected.
+    """
+    if os.environ.get(env_var, "").strip().lower() in TRUTHY:
+        return
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip(f"{reason} Set {env_var}=1 to run.", allow_module_level = True)
+
+
 def detect_package_manager():
     """Detect the available package manager"""
     package_managers = {

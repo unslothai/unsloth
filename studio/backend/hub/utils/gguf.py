@@ -389,6 +389,21 @@ def list_gguf_variants_from_hf_cache(
     return selected[:3] if selected is not None else None
 
 
+def _is_state_filename_fallback(variant: str, path: Path) -> bool:
+    """Whether *variant* was read off *path*'s own name rather than out of it.
+
+    An unreadable payload leaves the reader the filename, whose fragment for an
+    unspellable variant is a digest. Spelling cannot tell that from a variant
+    genuinely called ``sha256-<32 hex>``, but the file can: a real one is stored
+    under the hash of itself, never under its own name. A recovered digest names
+    nothing -- it cannot be spelled back, and a resume would re-key it again.
+    """
+    from hub.utils.state_dir import variant_is_hashed_fragment
+    return variant_is_hashed_fragment(variant) and path.stem.lower().endswith(
+        f"--variant--{variant.strip().lower()}"
+    )
+
+
 def list_partial_gguf_variants_from_state(
     repo_id: str, hub_cache: Optional[Path] = None
 ) -> Optional[tuple[list[GgufVariantInfo], bool]]:
@@ -426,7 +441,9 @@ def list_partial_gguf_variants_from_state(
         )
     )
     for source in sources:
-        for variant, _path in source:
+        for variant, path in source:
+            if _is_state_filename_fallback(variant, path):
+                continue
             key = variant.lower()
             if key not in seen:
                 seen.add(key)
