@@ -7650,3 +7650,80 @@ def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     transformer_gb, encoders_gb, _vae = dmod.family_bf16_components_gb(fam, base)
     saved_gb = (dense_mib - precast_mib) * (1024.0 * 1024.0) / (1000.0**3)
     assert saved_gb == pytest.approx(encoders_gb * (1.0 - TE_PREQUANT_BUDGET_SCALE), rel = 0.02)
+
+
+def test_the_resident_size_table_never_shrinks_an_unrecognised_remote_variant(fake_runtime):
+    """Same hole as the local-path one, reached from the Hub: a fine-tune or a renamed mirror that
+    the family detector still matches by name is NOT an exact key in the size table, so it falls
+    through to the family entry -- and for a family carrying two sizes that entry is the smaller
+    one. A 9B derivative lowered to the 4B number walks straight past the refusal."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
+    backend = DiffusionBackend()
+    measured = 34_000
+    plan = _plan_with_weights(measured)
+
+    kept = backend._resident_sized_plan(
+        plan, fam, "someone/FLUX.2-klein-9B-anime-tune", target, "pipeline"
+    )
+    assert kept.estimates["model_dense_mib"] == measured
+    # The two recognised shapes still get it: an explicit per-base override, and the family default.
+    override = backend._resident_sized_plan(
+        plan, fam, "black-forest-labs/FLUX.2-klein-9B", target, "pipeline"
+    )
+    assert override.estimates["model_dense_mib"] < measured
+    default = backend._resident_sized_plan(plan, fam, fam.base_repo, target, "pipeline")
+    assert default.estimates["model_dense_mib"] < measured
+
+
+def test_a_whole_pipeline_single_file_is_not_charged_for_cached_companions(fake_runtime):
+    """An SDXL-style single file carries the U-Net, VAE and text encoders itself and the base repo
+    is read for config only, but the plan still adds the base's cached companion weights. As an
+    offload hint that is conservative; as a hard refusal it rejects a checkpoint that fits, and
+    only for users who happen to have loaded the full pipeline before."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert fam.single_file_is_pipeline, "this test is about the SDXL-shaped families"
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = "none",
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = DeviceMemory("mps", "mps", "unified_memory", 32_768, 65_536),
+        estimates = {
+            "model_dense_mib": 14_000,  # the checkpoint (7 GB) plus 7 GB of cached companions
+            "companion_dense_mib": 7_000,
+            "safe_device_budget_mib": 10_000,
+        },
+    )
+    sized = DiffusionBackend()._resident_sized_plan(
+        plan, fam, "stabilityai/stable-diffusion-xl-base-1.0", target, "single_file"
+    )
+    assert sized.estimates["model_dense_mib"] == 7_000

@@ -140,6 +140,7 @@ from .diffusion_auto_policy import (
     RESOLVED_APPLIED,
     RESOLVED_FELL_BACK,
     RESOLVED_UNSUPPORTED,
+    base_repo_bf16_components_gb,
     build_resolved_record,
     family_bf16_components_gb,
     precision_fallback_allowed,
@@ -3759,11 +3760,38 @@ class DiffusionBackend:
         would be lowered to a number less than half what it loads. On disk is the measured truth
         there; only a hub id the table actually recognises earns the substitution."""
         try:
+            # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself,
+            # and the base repo is read for config only -- but the plan still adds the base's
+            # cached companion weights, so a user who once loaded the full pipeline has those
+            # bytes counted twice. Harmless as an offload hint, a rejected load as a hard refusal.
+            if kind == "single_file" and getattr(fam, "single_file_is_pipeline", False):
+                companion = plan.estimates.get("companion_dense_mib")
+                current = plan.estimates.get("model_dense_mib")
+                if companion and current is not None and int(companion) < int(current):
+                    return replace(
+                        plan,
+                        estimates = {
+                            **plan.estimates,
+                            "model_dense_mib": int(current) - int(companion),
+                        },
+                    )
+                return plan
             if kind != "pipeline" or _is_local_path(base):
                 return plan
             import torch
 
             if getattr(target, "dtype", None) not in (torch.bfloat16, torch.float16):
+                return plan
+            # RECOGNISED bases only. The table is keyed on exact upstream ids, so a fine-tune or a
+            # renamed mirror the family detector still matches by name would fall through to the
+            # coarse family entry -- and for a family carrying two sizes that entry is the smaller
+            # one, so a 9B derivative would be lowered to the 4B number and walk past the refusal.
+            # Accept the family's own default base and anything with an explicit override; anything
+            # else keeps its measured size.
+            canonical = canonical_base(base)
+            if base_repo_bf16_components_gb(base) is None and canonical.lower() != str(
+                getattr(fam, "base_repo", "") or ""
+            ).lower():
                 return plan
             table = family_bf16_components_gb(fam, base)
             if table is None:
