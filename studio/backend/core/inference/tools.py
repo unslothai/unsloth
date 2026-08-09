@@ -7202,9 +7202,14 @@ _SANDBOX_MARKER = ".unsloth_sandbox"
 # a marker they delete or write over, which is otherwise the only thing saying
 # an existing directory in a shared root is ours.
 _OWNERS_FILE = "sandbox_owners.json"
-# Key prefix for a move in progress: written before it starts and dropped when
-# it finishes, so an interruption is the only thing that leaves one behind.
-_MIGRATING = "migrating:"
+# Reserved: a directory named this way belongs to the id that hashes to it, and
+# never to a chat that happens to be called the same thing.
+_DERIVED_PREFIX = "_id-"
+# Where a move in progress is noted: its own object, so no session id can name
+# one. Written before the move starts and dropped when it finishes, so an
+# interruption is the only thing that leaves one behind.
+_MIGRATING = "migrating"
+_SESSIONS = "sessions"
 _owners_lock = threading.Lock()
 
 
@@ -7227,12 +7232,17 @@ def _owners_read(path: "str | None") -> dict:
     return owners if isinstance(owners, dict) else {}
 
 
-def _recorded_workdir(session_id: str) -> "str | None":
-    recorded = _owners_read(_owners_path()).get(session_id)
+def _recorded_workdir(session_id: str, section: str = _SESSIONS) -> "str | None":
+    entries = _owners_read(_owners_path()).get(section)
+    recorded = entries.get(session_id) if isinstance(entries, dict) else None
     return recorded if isinstance(recorded, str) and recorded else None
 
 
-def _record_workdir(session_id: str, workdir: "str | None") -> None:
+def _record_workdir(
+    session_id: str,
+    workdir: "str | None",
+    section: str = _SESSIONS,
+) -> None:
     """Remember (or forget) where a session's files are. Best effort.
 
     Re-read under the lock before writing: another Studio sharing this home
@@ -7244,13 +7254,17 @@ def _record_workdir(session_id: str, workdir: "str | None") -> None:
         return
     with _owners_lock:
         owners = _owners_read(path)
+        entries = owners.get(section)
+        if not isinstance(entries, dict):
+            entries = {}
+            owners[section] = entries
         if workdir is None:
-            if owners.pop(session_id, None) is None:
+            if entries.pop(session_id, None) is None:
                 return
         else:
-            if owners.get(session_id) == workdir:
+            if entries.get(session_id) == workdir:
                 return
-            owners[session_id] = workdir
+            entries[session_id] = workdir
         try:
             os.makedirs(os.path.dirname(path), exist_ok = True)
             tmp = f"{path}.{os.getpid()}.tmp"
@@ -7268,9 +7282,11 @@ def _sandbox_name(session_id: str) -> str:
     shared bucket: those ids come from API clients, and one bucket meant every
     such chat could read and delete every other one's files.
     """
-    if _usable_session_id(session_id):
+    if _usable_session_id(session_id) and not session_id.startswith(_DERIVED_PREFIX):
         return session_id
-    return "_id-" + hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
+    # An id that already looks derived is derived too, or it would land on the
+    # directory of whichever unusable id hashes to it.
+    return _DERIVED_PREFIX + hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:16]
 
 
 def _mark_sandbox(workdir: str, session_id: str) -> None:
@@ -7316,13 +7332,14 @@ def _session_dir(root: str, session_id: str) -> str:
         return recorded  # said so when we made it, and no tool can reach this
     name = _sandbox_name(session_id)
     plain = os.path.join(root, name)
-    if os.path.islink(plain):
-        return plain  # never read a marker through a link; containment decides
-    owner = _marker_owner(plain)
-    if owner == name:
-        return plain
-    if owner is None and not (os.path.isdir(plain) and not _root_is_ours()):
-        return plain
+    # A link is never ours, whatever it points at: claiming through one writes
+    # the marker into a directory somebody else made, inside the root or not.
+    if not os.path.islink(plain):
+        owner = _marker_owner(plain)
+        if owner == name:
+            return plain
+        if owner is None and not (os.path.isdir(plain) and not _root_is_ours()):
+            return plain
     return _disambiguated_session_dir(root, session_id)
 
 
@@ -7367,9 +7384,12 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         if _claim_sandbox(workdir, session_id):
             _record_workdir(session_id, workdir)
             return workdir
-        # A marker that names nobody is one a tool wrote over. At our own root
-        # nothing else put this directory here, so take it back.
-        if _root_is_ours() and _marker_owner(workdir) is None:
+        # The record is not writable from a sandbox, so it outranks whatever
+        # the marker says; and a marker naming nobody is one a tool wrote over,
+        # which at our own root nothing else could have put here.
+        if _recorded_workdir(session_id) == workdir or (
+            _root_is_ours() and _marker_owner(workdir) is None
+        ):
             _mark_sandbox(workdir, session_id)
             _record_workdir(session_id, workdir)
             return workdir
@@ -7515,13 +7535,13 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             # otherwise through the resolver, so a name already taken by
             # something in a shared root lands at this session's own name
             # instead of merging into a directory that is not ours.
-            target = _recorded_workdir(_MIGRATING + name) or _session_dir(root, name)
+            target = _recorded_workdir(name, _MIGRATING) or _session_dir(root, name)
             if os.path.exists(target):
                 # Ours only if we said so before starting this move: a
                 # directory that merely looks similar is somebody's own, and a
                 # claimed one is a session the new root already has, whose
                 # legacy copy is deliberately left for the user to find.
-                if _recorded_workdir(_MIGRATING + name) != target or not os.path.isdir(source):
+                if _recorded_workdir(name, _MIGRATING) != target or not os.path.isdir(source):
                     continue
                 if not _contained_in_root(target, root):
                     continue
@@ -7530,7 +7550,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 _mark_migrated(target, name)
                 _record_workdir(name, target)
                 if _finish_partial_move(source, target):
-                    _record_workdir(_MIGRATING + name, None)
+                    _record_workdir(name, None, _MIGRATING)
                     moved += 1
                 else:
                     complete = False
@@ -7538,11 +7558,11 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             try:
                 # Written first, so a move that dies part way through is still
                 # recognisable as ours on the next launch.
-                _record_workdir(_MIGRATING + name, target)
+                _record_workdir(name, target, _MIGRATING)
                 shutil.move(source, target)
                 _mark_migrated(target, name)
                 _record_workdir(name, target)
-                _record_workdir(_MIGRATING + name, None)
+                _record_workdir(name, None, _MIGRATING)
                 moved += 1
             except OSError as error:
                 complete = False
@@ -7596,6 +7616,20 @@ def _contained_in_root(workdir: str, root: str) -> bool:
         return resolved != base and os.path.commonpath([resolved, base]) == base
     except (OSError, ValueError):
         return False
+
+
+def _owned_by_session(workdir: str, session_id: str) -> bool:
+    """Whether this session may read *workdir*, for a caller that creates nothing.
+
+    ``_ensure_session_dir`` claims or steps aside; a read has to decide on what
+    is already there, and the disambiguated name can be somebody else's too.
+    """
+    if _recorded_workdir(session_id) == workdir:
+        return True
+    owner = _marker_owner(workdir)
+    if owner is not None:
+        return owner == _sandbox_name(session_id)
+    return _root_is_ours()
 
 
 def _get_workdir(session_id: str | None = None) -> str:
@@ -7669,6 +7703,11 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     # the root would otherwise serve whatever it points at.
     if not _contained_in_root(workdir, root):
         return _sandbox_fallback(root, "_invalid")
+    if os.path.isdir(workdir) and not _owned_by_session(workdir, session_id):
+        # Somebody else's, so this session has nothing here to serve. A path
+        # under a directory we never create, so a listing is empty and a
+        # download is a 404 rather than someone else's file.
+        return os.path.join(root, "_unowned", _sandbox_name(session_id))
     return workdir
 
 
@@ -7778,7 +7817,9 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
-    entry = _session_dir(root, session_id)
+    entry = os.path.join(root, _sandbox_name(session_id))
+    if not os.path.islink(entry):
+        entry = _session_dir(root, session_id)
     # The entry itself, not what it resolves to: a symlink to a sibling passes
     # the check below and would take that chat's files. Drop the link, but only
     # at our own root: in a shared one it is the user's entry, not a sandbox.

@@ -38,12 +38,14 @@ interface StructuredResult {
 }
 
 function isStructuredResult(val: unknown): val is StructuredResult {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { files?: unknown };
   return (
-    typeof val === "object" &&
-    val !== null &&
     "text" in val &&
     "images" in val &&
-    "sessionId" in val
+    "sessionId" in val &&
+    // Persisted content can carry anything, and the card maps over this.
+    (v.files === undefined || Array.isArray(v.files))
   );
 }
 

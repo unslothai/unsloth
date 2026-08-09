@@ -672,8 +672,10 @@ def test_a_symlinked_session_cannot_serve_files_outside_the_sandbox(tmp_path, mo
     tools._legacy_sandbox_migrated = False
     tools._migrate_legacy_sandbox(tools.sandbox_root())
     resolved = tools.resolve_sandbox_workdir("__LOCALID_evil")
-    assert Path(resolved).name == "_invalid", resolved
+    assert Path(resolved).name != "__LOCALID_evil", resolved
+    assert not Path(resolved).is_symlink()
     assert not str(Path(resolved).resolve()).startswith(str(outside.resolve()))
+    assert not (Path(resolved) / "secret.txt").exists()
 
 
 def test_the_executor_leaves_nothing_in_the_sandbox(tmp_path, monkeypatch):
@@ -855,11 +857,13 @@ def test_a_cached_sandbox_path_is_re_checked(tmp_path, monkeypatch):
     workdir.symlink_to(outside)
 
     resolved = Path(tools.resolve_sandbox_workdir("__LOCALID_swapped"))
-    assert resolved.name == "_invalid", resolved
+    assert resolved.name != "__LOCALID_swapped", resolved
     assert not (resolved / "secret.txt").exists()
 
     executing = Path(tools.get_sandbox_workdir("__LOCALID_swapped"))
-    assert executing.name == "_invalid", executing
+    assert executing.name != "__LOCALID_swapped", executing
+    assert not executing.is_symlink() and executing.is_dir()
+    assert not (executing / "secret.txt").exists()
 
 
 def test_a_shared_compile_location_loses_only_generated_files(tmp_path, monkeypatch):
@@ -999,7 +1003,7 @@ def test_clear_all_chats_can_take_the_files_too(tmp_path, monkeypatch):
     assert signature.parameters["delete_files"].default is False
 
     source = inspect.getsource(chat_history.clear_history)
-    assert "delete_files = delete_files" in source
+    assert "_remove_sandboxes(thread_ids, delete_files)" in source
 
 
 def test_a_failed_legacy_move_is_retried(tmp_path, monkeypatch):
@@ -1511,13 +1515,12 @@ def test_a_symlinked_cache_location_is_still_cleared(tmp_path, monkeypatch):
 
 
 def test_the_delete_switch_only_appears_where_it_works():
-    """A training run has no sandbox, and a chat in a project shares the project
-    workspace, which chat deletion does not touch."""
+    """A training run has no sandbox of its own; a chat always does."""
     sidebar = (
         Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
     ).read_text(encoding = "utf-8")
     assert "function deleteTargetHasFiles" in sidebar
-    assert 'return target.kind === "chat" && !target.item.projectId;' in sidebar
+    assert '"training"' not in sidebar.split("function deleteTargetHasFiles")[1][:400]
     assert "{deleteTargetHasFiles(confirmingDelete) ? (" in sidebar
     # And every opener clears the switch, so it can never arrive preselected.
     assert "function openDeleteDialog" in sidebar
@@ -2140,7 +2143,7 @@ def test_a_half_finished_migration_is_finished_later(tmp_path, monkeypatch):
     (partial / "already_there.csv").write_text("newer", encoding = "utf-8")
     # The record the move writes before it starts, which is what says this
     # directory is the one it was in the middle of filling.
-    tools._record_workdir(tools._MIGRATING + "__LOCALID_part111", str(partial))
+    tools._record_workdir("__LOCALID_part111", str(partial), tools._MIGRATING)
 
     tools._migrate_legacy_sandbox(str(root))
 
@@ -2173,7 +2176,7 @@ def test_a_partial_move_is_claimed_even_with_a_duplicate_left_below(tmp_path, mo
     partial = root / "__LOCALID_dup222"
     partial.mkdir()
     (partial / "kept.csv").write_text("newer", encoding = "utf-8")
-    tools._record_workdir(tools._MIGRATING + "__LOCALID_dup222", str(partial))
+    tools._record_workdir("__LOCALID_dup222", str(partial), tools._MIGRATING)
 
     tools._migrate_legacy_sandbox(str(root))
     assert (partial / tools._SANDBOX_MARKER).is_file(), "the destination was left unclaimed"
@@ -2321,6 +2324,156 @@ def test_a_foreign_folder_is_not_taken_for_an_interrupted_move(tmp_path, monkeyp
 
     assert not (theirs / tools._SANDBOX_MARKER).exists(), "claimed a folder we never made"
     assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "theirs"
+
+
+def test_a_literal_id_cannot_take_a_derived_name(tmp_path, monkeypatch):
+    """_id-<hash> is the name an unusable id resolves to, so a chat called that
+    must not land on the same directory."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    derived = tools._sandbox_name("chat.one")
+    assert derived.startswith(tools._DERIVED_PREFIX)
+    assert tools._sandbox_name(derived) != derived, "a literal id took a derived name"
+
+    first = Path(tools.get_sandbox_workdir("chat.one"))
+    (first / "mine.csv").write_text("mine", encoding = "utf-8")
+    second = Path(tools.get_sandbox_workdir(derived))
+    assert second != first
+    assert not (second / "mine.csv").exists()
+
+
+def test_a_read_never_serves_a_directory_that_is_not_the_chats(tmp_path, monkeypatch):
+    """Both names can be taken in a shared root, and a listing creates nothing,
+    so it has to decide on what is already there."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_read11"
+    for path in (root / session, Path(tools._disambiguated_session_dir(str(root), session))):
+        path.mkdir()
+        (path / tools._SANDBOX_MARKER).write_text("__LOCALID_other9", encoding = "utf-8")
+        (path / "not_ours.txt").write_text("theirs", encoding = "utf-8")
+
+    resolved = Path(tools.resolve_sandbox_workdir(session))
+    assert not (resolved / "not_ours.txt").exists(), resolved
+    assert not resolved.exists(), "a read materialised a directory"
+
+
+def test_a_link_inside_the_root_is_stepped_around(tmp_path, monkeypatch):
+    """Its target is contained, so containment alone accepts it, and claiming
+    through it writes our marker into a directory we never made."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    foreign = root / "foreign"
+    foreign.mkdir()
+    (foreign / "theirs.txt").write_text("theirs", encoding = "utf-8")
+    (root / "chat").symlink_to(foreign, target_is_directory = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("chat"))
+    assert workdir.resolve() != foreign.resolve(), workdir
+    assert not (foreign / tools._SANDBOX_MARKER).exists(), "claimed through a link"
+    assert (foreign / "theirs.txt").is_file()
+
+
+def test_the_record_outranks_a_marker_a_tool_rewrote(tmp_path, monkeypatch):
+    """All marker contents are tool-writable, so a valid-looking overwrite must
+    not move the chat any more than a deleted one does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_rewrit"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).write_text("__LOCALID_someone", encoding = "utf-8")
+
+    tools._workdirs.clear()
+    assert Path(tools.get_sandbox_workdir(session)) == workdir
+    assert (workdir / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == session
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+
+
+def test_migration_bookkeeping_cannot_be_named_by_a_session(tmp_path, monkeypatch):
+    """A chat whose id looked like the old key shared it with the provenance
+    for another session's move."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._record_workdir("foo", "/somewhere/foo", tools._MIGRATING)
+    hostile = Path(tools.get_sandbox_workdir("migrating:foo"))
+    assert tools._recorded_workdir("foo", tools._MIGRATING) == "/somewhere/foo"
+    assert tools._recorded_workdir("migrating:foo") == str(hostile)
+    assert str(hostile) != "/somewhere/foo"
+
+
+def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypatch):
+    """Unsloth*Trainer.py is a name a user's own subclass carries, and anything
+    else in that directory would then shadow real modules for every worker."""
+    import sys as _sys
+
+    theirs = tmp_path / "unsloth_compiled_cache"
+    theirs.mkdir()
+    (theirs / "UnslothCustomTrainer.py").write_text("class X: pass\n", encoding = "utf-8")
+    (theirs / "numpy.py").write_text("raise SystemExit('shadowed')\n", encoding = "utf-8")
+    # In the launch directory, which is the case that is not ours.
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", "")
+
+    from utils import cache_cleanup
+
+    before = list(_sys.path)
+    cache_cleanup.register_compiled_cache_on_path()
+    assert str(theirs.resolve()) not in _sys.path, "an unowned directory went on sys.path"
+    assert str(theirs.resolve()) not in os.environ.get("PYTHONPATH", "")
+    _sys.path[:] = before
+
+    # One the compiler has actually written into is still registered.
+    (theirs / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
+    cache_cleanup.register_compiled_cache_on_path()
+    assert str(theirs.resolve()) in _sys.path
+    _sys.path[:] = before
+
+
+def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
+    """Anything it wrote before the move is in its own folder, and the backend
+    never touches the project workspace."""
+    sidebar = (
+        Path(__file__).resolve().parents[2]
+        / "frontend" / "src" / "components" / "app-sidebar.tsx"
+    ).read_text(encoding = "utf-8")
+    assert 'return target.kind === "project" || target.kind === "chat";' in sidebar
+    assert "!target.item.projectId" not in sidebar
+
+
+def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
+    """The cards map over it, so anything else takes the chat view down."""
+    root = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    adapter = (root / "features" / "chat" / "api" / "chat-adapter.ts").read_text(encoding = "utf-8")
+    python_card = (
+        root / "components" / "assistant-ui" / "tool-ui-python.tsx"
+    ).read_text(encoding = "utf-8")
+    for source in (adapter, python_card):
+        assert "v.files === undefined || Array.isArray(v.files)" in source
 
 
 if __name__ == "__main__":

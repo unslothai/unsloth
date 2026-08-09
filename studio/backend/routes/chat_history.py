@@ -367,15 +367,29 @@ async def delete_threads(
     delete_chat_threads(payload.ids)
     # Keyed by thread id, so nothing can reference the folder once the thread
     # is gone. Clean it up rather than leaking one per chat.
-    removed = 0
-    try:
+    # In a worker: right after an upgrade this also runs the legacy move, and a
+    # cross-filesystem copy on the event loop stops every other request.
+    removed = await _remove_sandboxes(payload.ids, payload.delete_files)
+    return {"status": "deleted", "sandboxes_removed": removed}
+
+
+async def _remove_sandboxes(thread_ids, delete_files: bool) -> int:
+    """Drop each thread's sandbox off the event loop. Never raises."""
+    from starlette.concurrency import run_in_threadpool
+
+    def _remove() -> int:
         from core.inference.tools import remove_session_sandbox
-        for thread_id in payload.ids:
-            if remove_session_sandbox(thread_id, delete_files = payload.delete_files):
-                removed += 1
+
+        return sum(
+            1 for thread_id in thread_ids
+            if remove_session_sandbox(thread_id, delete_files = delete_files)
+        )
+
+    try:
+        return await run_in_threadpool(_remove)
     except Exception:
         logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
-    return {"status": "deleted", "sandboxes_removed": removed}
+        return 0
 
 
 @router.get("/attachments")
@@ -743,14 +757,7 @@ async def clear_history(
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
-    removed = 0
-    try:
-        from core.inference.tools import remove_session_sandbox
-        for thread_id in thread_ids:
-            if remove_session_sandbox(thread_id, delete_files = delete_files):
-                removed += 1
-    except Exception:
-        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+    removed = await _remove_sandboxes(thread_ids, delete_files)
     return {"status": "deleted", "sandboxes_removed": removed}
 
 

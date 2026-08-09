@@ -1403,13 +1403,12 @@ export function AppSidebar() {
     setConfirmingDelete(target);
   }
 
-  /** Only where a sandbox can actually be removed. A training run has none, and
-   *  a chat in a project shares the project workspace, which chat deletion does
-   *  not touch. */
+  /** Only where a sandbox can actually be removed. A training run has none.
+   *  A chat in a project still has one: anything it wrote before the move is in
+   *  its own folder, and deletion never touches the project workspace. */
   function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
     if (!target) return false;
-    if (target.kind === "project") return true;
-    return target.kind === "chat" && !target.item.projectId;
+    return target.kind === "project" || target.kind === "chat";
   }
 
   async function commitDelete() {

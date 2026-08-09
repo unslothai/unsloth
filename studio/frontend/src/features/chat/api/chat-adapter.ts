@@ -978,14 +978,22 @@ export function isSandboxToolResult(
   val: unknown,
 ): val is { text: string; sessionId: string } {
   if (typeof val !== "object" || val === null) return false;
-  const v = val as { text?: unknown; sessionId?: unknown; images?: unknown };
+  const v = val as {
+    text?: unknown;
+    sessionId?: unknown;
+    images?: unknown;
+    files?: unknown;
+  };
   // images too: it is always in Studio's own wrapper, and a tool result that
   // merely has text and sessionId is someone else's, whose other fields would
   // be dropped on export.
   return (
     typeof v.text === "string" &&
     typeof v.sessionId === "string" &&
-    Array.isArray(v.images)
+    Array.isArray(v.images) &&
+    // Persisted content can carry anything: the cards map over this, so a
+    // string or an object here would take the whole chat view down.
+    (v.files === undefined || Array.isArray(v.files))
   );
 }
 

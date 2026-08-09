@@ -89,6 +89,24 @@ def _is_dedicated_cache(path: Path) -> bool:
         return False
 
 
+def _trusted_cache_paths() -> set:
+    """Where a cache is ours by where it is: the source-tree candidates, and
+    whatever UNSLOTH_COMPILE_LOCATION names, since that is the caller's answer
+    to where the cache lives. Never the launch directory."""
+    trusted = _builtin_cache_paths()
+    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
+    if configured:
+        trusted.add(str(Path(configured).expanduser()))
+    return trusted
+
+
+def _entries(path: Path) -> list:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
 def _holds_generated_modules(path: Path) -> bool:
     """True when the compiler has written into this directory.
 
@@ -155,7 +173,18 @@ def register_compiled_cache_on_path() -> None:
     # inserted last and thus end up first in sys.path / PYTHONPATH.
     # Same ownership test as cleanup: a directory in the launch dir that merely
     # has the name would otherwise shadow real dependencies for every worker.
-    for cache_dir in reversed([d for d, _dedicated in _cleanable_cache_dirs()]):
+    # A directory in the launch dir needs a file only the compiler writes:
+    # Unsloth*Trainer.py is a name a user's own subclass can carry, and
+    # prepending that directory lets anything else in it shadow real modules for
+    # every worker. Where we were pointed, or where we put it, is ours anyway.
+    trusted = _trusted_cache_paths()
+    registrable = [
+        d for d, dedicated in _cleanable_cache_dirs()
+        if dedicated
+        or str(d) in trusted
+        or any(_OWNED_DELETE_RE.match(item.name) for item in _entries(d))
+    ]
+    for cache_dir in reversed(registrable):
         resolved = str(cache_dir.resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
