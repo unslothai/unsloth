@@ -234,6 +234,11 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+    # A non-positive window means "no local attention", not "a window of nothing": a config
+    # spelling it 0 would otherwise put the mask's lower bound above its causal upper bound
+    # and hide every position from every other.
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
     # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
@@ -392,6 +397,18 @@ def run_attention(
                 if local_mask.dtype == torch.bool:
                     no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
+
+            if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
+                # SDPA's is_causal is FULL causal; it has no window. With no padding mask to
+                # hang the window off, a model whose config declares one attended its whole
+                # history whenever neither the xformers bias nor flash's window_size was the
+                # thing running.
+                q_pos = torch.arange(k_len_local - q_len_local, k_len_local, device = Q.device)
+                k_pos = torch.arange(k_len_local, device = Q.device)
+                local_mask = (
+                    (k_pos[None, :] <= q_pos[:, None])
+                    & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
+                )[None, None, :, :]
 
             is_causal_local = local_mask is None and q_len_local == k_len_local
 
