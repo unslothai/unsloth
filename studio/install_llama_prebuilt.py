@@ -6475,6 +6475,14 @@ def validate_prebuilt_attempts(
     if not attempt_list:
         raise PrebuiltFallback("no prebuilt bundle attempts were available")
 
+    # Resolve the probe up front when any attempt will validate. The per-candidate
+    # handler below catches Exception, so a probe download failing inside it would
+    # read as a bad bundle and demote a healthy GPU pick to CPU -- and, since the
+    # thunk memoises success but not failure, re-download once per attempt. Plans
+    # that skip validation never call the thunk, so they stay lazy.
+    if staged_validation_enabled() or any(a.expected_sha256 is None for a in attempt_list):
+        probe = resolve_validation_model(probe)
+
     tried_fallback = initial_fallback_used
     for index, attempt in enumerate(attempt_list):
         if index > 0:

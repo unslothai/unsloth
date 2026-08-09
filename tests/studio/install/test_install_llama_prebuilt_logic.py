@@ -3541,6 +3541,64 @@ def test_probe_rate_limit_no_longer_forces_a_source_build(tmp_path, monkeypatch)
         install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
 
+def test_probe_failure_does_not_demote_to_a_lower_priority_candidate(tmp_path, monkeypatch):
+    # validate_prebuilt_attempts catches Exception per candidate, so a probe download
+    # failing inside that try would read as a bad bundle and quietly install the CPU
+    # asset over the healthy GPU one -- re-downloading each time, since the thunk
+    # memoises success but not failure. Hashless attempts always validate, so the
+    # probe has to be resolved before the loop.
+    fetches = []
+
+    def refuse() -> Path:
+        fetches.append(1)
+        raise INSTALL_LLAMA_PREBUILT.PrebuiltFallback(
+            "validation model unavailable: HTTP Error 429: Too Many Requests"
+        )
+
+    attempted: list[str] = []
+    monkeypatch.setattr(
+        INSTALL_LLAMA_PREBUILT,
+        "validate_prebuilt_choice",
+        lambda attempt, *args, **kwargs: attempted.append(attempt.name),
+    )
+
+    def hashless(name: str, install_kind: str) -> AssetChoice:
+        return AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = "release-1",
+            name = name,
+            url = f"https://example.com/{name}",
+            source_label = "direct-upstream",
+            install_kind = install_kind,
+            expected_sha256 = None,  # hashless: the smoke test is its only integrity gate
+        )
+
+    with pytest.raises(INSTALL_LLAMA_PREBUILT.PrebuiltFallback, match = "429"):
+        INSTALL_LLAMA_PREBUILT.validate_prebuilt_attempts(
+            [
+                hashless("llama-b9001-bin-win-cuda-x64.zip", "windows-cuda"),
+                hashless("llama-b9001-bin-win-cpu-x64.zip", "windows-cpu"),
+            ],
+            _nvidia_linux_host(),
+            tmp_path / "install",
+            tmp_path / "work",
+            refuse,
+            requested_tag = "b9001",
+            llama_tag = "b9001",
+            release_tag = "release-1",
+            approved_checksums = ApprovedReleaseChecksums(
+                repo = "unslothai/llama.cpp",
+                release_tag = "release-1",
+                upstream_tag = "b9001",
+                source_commit = None,
+                artifacts = {},
+            ),
+        )
+
+    assert attempted == []        # the CPU asset was never reached
+    assert len(fetches) == 1      # and the probe was not retried per candidate
+
+
 def test_staged_validation_enabled_default_off(monkeypatch):
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
     monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
