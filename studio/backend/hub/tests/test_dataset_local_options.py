@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import json
+import lzma
 import os
 
 import pytest
@@ -476,7 +478,18 @@ def test_snapshot_options_offer_a_compound_suffix_file(tmp_path):
 def test_snapshot_options_accept_only_decompressible_suffixes(tmp_path, suffix, expected):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
     snapshot.mkdir(parents = True)
-    (snapshot / f"records.jsonl{suffix}").write_bytes(b"compressed")
+    payload = b'{"text":"row"}\n'
+    packers = {
+        ".gz": gzip.compress,
+        ".gzip": gzip.compress,
+        ".bz2": bz2.compress,
+        ".xz": lzma.compress,
+        ".lzma": lzma.compress,
+    }
+    packer = packers.get(suffix)
+    (snapshot / f"records.jsonl{suffix}").write_bytes(
+        packer(payload) if packer else payload
+    )
 
     assert local_options._snapshot_options(snapshot) == expected
 
@@ -2588,5 +2601,105 @@ def test_snapshot_options_reject_every_config_when_one_data_dir_is_empty(tmp_pat
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
     (snapshot / "e").mkdir()
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_list_valued_builder_parameter(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  header:\n  - 0\n  - 1\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("a,b\nc,d\n1,2\n", encoding = "utf-8")
+
+    # A literal rule sits beside the types, and an unhashable value must not reach it.
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("sizing", ["num_classes: 3", "num_classes: '3'", "names_file: x.txt"])
+def test_snapshot_options_reject_a_class_label_sized_without_names(tmp_path, sizing):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: label\n"
+                    f"    dtype:\n      class_label:\n        {sizing}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"label":0}\n', encoding = "utf-8")
+
+    # A card can only size a ClassLabel by its names; datasets drops the other two.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_a_nested_feature_field_without_a_name(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    dtype:\n      struct:\n      - dtype: string\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":{"y":"a"}}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_named_nested_feature_field(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    struct:\n    - name: y\n      dtype: string\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":{"y":"a"}}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("dtype", ["string_view", "binary_view", "month_day_nano_interval"])
+def test_snapshot_options_accept_the_newer_value_aliases(tmp_path, dtype):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, f"configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: text\n    dtype: {dtype}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("array", ["shape: [2]\n        dtype: int32", "shape: [2, 2]\n        dtype: nope",
+                                   "shape: two\n        dtype: int32", "shape: [0, 2]\n        dtype: int32"])
+def test_snapshot_options_reject_an_array_feature_the_schema_refuses(tmp_path, array):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    f"    dtype:\n      array2_d:\n        {array}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_a_well_formed_array_feature(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+                    "    dtype:\n      array2_d:\n        shape: [2, 2]\n        dtype: int32\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.jsonl").write_text('{"x":[[1,2],[3,4]]}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+@pytest.mark.parametrize("suffix,packer", [(".gz", gzip.compress), (".bz2", bz2.compress), (".xz", lzma.compress)])
+def test_snapshot_options_reject_a_compressed_file_with_no_payload(tmp_path, suffix, packer):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / f"train.csv{suffix}").write_bytes(packer(b""))
+
+    # The container has bytes, the split has none, and the builder fails on it.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_keep_a_compressed_file_that_holds_rows(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.csv.gz").write_bytes(gzip.compress(b"text\nrow\n"))
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_compressed_file_it_cannot_open(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.csv.gz").write_bytes(b"not really gzip")
 
     assert local_options._snapshot_options(snapshot) == set()

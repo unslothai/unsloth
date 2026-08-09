@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import json
+import lzma
 import os
 import re
 from pathlib import Path, PurePosixPath
@@ -45,11 +48,20 @@ _MAX_RESOLUTION_WORK = 10_000_000
 # supported" and offering them would put a dead split in the picker.
 _COMPRESSION_EXTENSIONS = ("", ".gz", ".gzip", ".bz2", ".xz", ".lzma", ".zip")
 _UNREADABLE_COMPRESSION = frozenset({".zst", ".zstd", ".lz4"})
+# A zip is left alone; we do not open archives, so its payload stays unknown.
+_DECOMPRESSORS = {
+    ".gz": gzip.open,
+    ".gzip": gzip.open,
+    ".bz2": bz2.open,
+    ".xz": lzma.open,
+    ".lzma": lzma.open,
+}
 # What a card may name as a feature dtype, as datasets 4.3 reads it: a pyarrow value alias,
 # optionally parameterised, or one of its own feature classes.
 _VALUE_DTYPES = frozenset(
     "null bool bool_ int8 int16 int32 int64 uint8 uint16 uint32 uint64 float float16 float32 "
-    "float64 double date32 date64 binary large_binary string large_string utf8 large_utf8".split()
+    "float64 double date32 date64 binary large_binary string large_string utf8 large_utf8 "
+    "string_view binary_view month_day_nano_interval".split()
 )
 # The parameterised ones, with the units pyarrow actually takes.
 _DTYPE_UNITS = {
@@ -82,7 +94,7 @@ _REQUIRED_FEATURE_ARGS = {
     "array4d": ("shape", "dtype"),
     "array5d": ("shape", "dtype"),
 }
-_CLASS_LABEL_ARGS = ("num_classes", "names", "names_file")
+_ARRAY_RANKS = {"array2d": 2, "array3d": 3, "array4d": 4, "array5d": 5}
 # datasets' own version grammar. Anything else raises when it builds the cache directory.
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 # Ordered, because datasets resolves a split's keyword patterns in this order and samples
@@ -369,6 +381,17 @@ def _known_dtype(dtype: str) -> bool:
     )
 
 
+def _valid_array(spec: dict[str, Any], rank: int) -> bool:
+    """An ArrayXD the builder can put in a schema: its shape has to have the class's rank,
+    and its dtype has to be one Value understands."""
+    shape = spec.get("shape")
+    if not isinstance(shape, list) or len(shape) != rank:
+        return False
+    if not all(isinstance(size, int) and not isinstance(size, bool) and size > 0 for size in shape):
+        return False
+    return isinstance(spec.get("dtype"), str) and _known_dtype(spec["dtype"])
+
+
 def _valid_class_label(spec: dict[str, Any]) -> bool:
     """ClassLabel takes its names as a list, or as a mapping datasets reads back into one,
     which it only can when the ids are every integer from zero up."""
@@ -406,7 +429,13 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     if isinstance(node, str):
         return _known_dtype(node)
     if isinstance(node, list):
-        return all(_valid_feature_node(item, depth + 1) for item in node)
+        # datasets pops a name off each child, so one without it raises there.
+        return all(
+            isinstance(item, dict)
+            and isinstance(item.get("name"), str)
+            and _valid_feature_node(item, depth + 1)
+            for item in node
+        )
     if not isinstance(node, dict):
         return False
     keys = [key for key in node if key != "name"]
@@ -423,10 +452,12 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
     if name not in _FEATURE_TYPE_NAMES or not isinstance(node[role], dict):
         return False
     if name == "classlabel":
-        return any(key in node[role] for key in _CLASS_LABEL_ARGS) and _valid_class_label(
-            node[role]
-        )
-    return all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ()))
+        # A card can only size a ClassLabel by its names; datasets drops the other two.
+        return "names" in node[role] and _valid_class_label(node[role])
+    if not all(key in node[role] for key in _REQUIRED_FEATURE_ARGS.get(name, ())):
+        return False
+    rank = _ARRAY_RANKS.get(name)
+    return rank is None or _valid_array(node[role], rank)
 
 
 def _valid_features(features: Any) -> bool:
@@ -1070,10 +1101,21 @@ def _split_module(files: Iterable[_DataFile]) -> Optional[str]:
     return _EXTENSION_MODULES[best[1]]
 
 
-def _empty_file(path: Path) -> bool:
+def _empty_file(path: Path, name: str) -> bool:
+    """Whether the builder would read no bytes out of this file. A compressed one is opened
+    for a single byte, since its container size says nothing about its payload. The name is
+    the one the snapshot uses, since the cache resolves it to a suffixless blob."""
+    opener = _DECOMPRESSORS.get(PurePosixPath(name).suffix.lower())
+    if opener is None:
+        try:
+            return path.stat().st_size == 0
+        except OSError:
+            return True
     try:
-        return path.stat().st_size == 0
-    except OSError:
+        with opener(path, "rb") as stream:
+            return not stream.read(1)
+    except (OSError, EOFError, ValueError):
+        # Unreadable is as dead as empty, and the builder fails on it either way.
         return True
 
 
@@ -1102,7 +1144,7 @@ def _offerable_split(
             return None
         if not _has_snapshot_data_extension(path.name):
             continue
-        if _empty_file(resolved):
+        if _empty_file(resolved, path.name):
             # An empty file fails the whole generation for every builder but json, which
             # skips it and carries on as long as one file still holds rows.
             empty = True
@@ -1357,7 +1399,7 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
     rules = rule if isinstance(rule, tuple) else (rule,)
     literals = frozenset().union(*[item for item in rules if isinstance(item, frozenset)])
     types = tuple(item for item in rules if not isinstance(item, frozenset))
-    if value in literals:
+    if isinstance(value, str) and value in literals:
         return True
     if bool not in types and isinstance(value, bool):
         return False
