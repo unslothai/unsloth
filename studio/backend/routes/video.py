@@ -118,6 +118,11 @@ async def video_download_plan(
             # pre-quantized checkpoint has to be refused HERE, on the route that stages the
             # download, or the panel fetches ~98.7 GB before /video/load can say no.
             transformer_quant = request.transformer_quant,
+            # And task-keyed, for the pairing /video/load already refuses: the hosted MiniMax-H3
+            # prequants are keyframe denoisers, so a quantized References pick is rejected rather
+            # than staged. Without the task this route returned a 200 plan carrying that
+            # checkpoint for a request the load would then 400.
+            h3_task = request.h3_task,
         )
         # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an

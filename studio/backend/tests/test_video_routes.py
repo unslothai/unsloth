@@ -1237,6 +1237,38 @@ def test_video_download_plan_forwards_the_h3_task(client, monkeypatch):
     assert seen["h3_task"] == "ref2va"
 
 
+def test_video_download_plan_refuses_a_quantized_reference_pick(client, monkeypatch):
+    # /video/load refuses this pairing (the hosted prequants are keyframe denoisers), and the
+    # plan route has to refuse it too: staging first meant a 200 plan carrying a 20 GB checkpoint
+    # for a request the load then answered with a 400.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+
+    def _plan(model_path, **kwargs):  # pragma: no cover - reaching this IS the regression
+        raise AssertionError("download_plan must not be reached for a refused pick")
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "family_override": "minimax-h3",
+            "model_kind": "pipeline",
+            "transformer_quant": "int8",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "reference video" in resp.json()["detail"]
+
+
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
     # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
     # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
