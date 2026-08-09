@@ -1132,7 +1132,9 @@ export async function estimateKvCache(
   const params = new URLSearchParams({ repo_id: repoId, quant });
   if (nCtx && nCtx > 0) params.set("n_ctx", String(nCtx));
   if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
-  if (nParallel && nParallel > 1) params.set("n_parallel", String(nParallel));
+  // Any positive override goes, including 1: omitting it means "use the
+  // server's slot count", which now defaults to more than one.
+  if (nParallel && nParallel > 0) params.set("n_parallel", String(nParallel));
   if (speculativeType) params.set("speculative_type", speculativeType);
   const response = await authFetch(
     `/api/models/kv-cache-estimate?${params}`,

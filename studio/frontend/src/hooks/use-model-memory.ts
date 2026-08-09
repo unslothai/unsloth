@@ -250,6 +250,7 @@ export function useModelMemory(
 
   const repoId = source?.repoId;
   const quant = source?.quant;
+  const sizeBytes = source?.sizeBytes;
   // Keyed on primitives rather than the object: callers build the source inline,
   // so a fresh identity each render would loop forever.
   const plan = useMemo(() => {
@@ -259,6 +260,9 @@ export function useModelMemory(
     const cacheKey = [
       repoId,
       quant,
+      // A re-download can change the file under a stable quant name, and the
+      // cached weights would otherwise outrank the row's fresh size.
+      sizeBytes ?? "",
       nCtx ?? "native",
       config?.kvCacheDtype ?? "",
       effectiveSpeculativeType(config) ?? "",
@@ -276,7 +280,7 @@ export function useModelMemory(
     // into the cache key instead would evict every row's answer on any save.
     // biome-ignore lint/correctness/useExhaustiveDependencies: see above
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, repoId, quant, epoch]);
+  }, [enabled, repoId, quant, sizeBytes, epoch]);
 
   useEffect(() => {
     if (!plan) return;

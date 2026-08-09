@@ -3234,15 +3234,23 @@ async def get_kv_cache_estimate(
                 from core.inference.llama_cpp import (
                     _auto_mode_drops_mtp,
                     _extract_model_size_b,
+                    _mla_mtp_auto_enabled,
                 )
                 drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
                 # Auto declines MTP on a sub-3B embedded head, where the
                 # per-token cost regresses; a separate drafter is exempt. Pricing
                 # a reserve the load will not take would overstate the bar and
                 # could warn OOM on a model that fits.
-                from core.inference.llama_cpp import _mla_mtp_auto_enabled
-
                 _mode = (speculative_type or "").lower()
+
+                # Same reason, one level down: llama-server only takes the MTP
+                # path when it advertises a --spec-type mtp token, and the loader
+                # declines on an inconclusive probe too. Both cover the
+                # separate-drafter path, which is emitted behind the same gate.
+                # Probes are cached on (path, mtime), so this stays cheap.
+                _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get(
+                    "mtp_token"
+                )
                 # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
                 # that path keeps a duplicated full target-KV context and runs
                 # slower than no speculation, so it is off unless opted into.
@@ -3254,7 +3262,7 @@ async def get_kv_cache_estimate(
                     and not drafter_path
                     and not _mla_mtp_auto_enabled()
                 )
-                if _auto_drops_mla or _auto_mode_drops_mtp(
+                if _binary_lacks_mtp or _auto_drops_mla or _auto_mode_drops_mtp(
                     _mode,
                     _extract_model_size_b(repo_id),
                     has_separate_drafter = bool(drafter_path),
