@@ -213,8 +213,12 @@ function clipMeta(video: GalleryVideo): string {
 // Bar label for an in-flight generation: the phase ("Denoising step X/Y", "Encoding video...") plus an ETA once known.
 function genStepLabel(p: VideoGenerateProgress): string {
   if (p.phase === "export") return "Encoding video…";
+  // Native (sd.cpp) phases. It reloads the GGUF from disk every run and decodes frames after
+  // sampling; neither reports a sampling step, so they say what they are instead of showing 0/N.
+  if (p.phase === "load") return "Loading model…";
+  if (p.phase === "decode") return "Decoding frames…";
   // Text encoding and the first-step warmup run before the first scheduler tick, so step 0 means "working, not denoising yet" -- up to a minute at 720p.
-  if (p.step === 0) return "Preparing (text encoding + warmup)…";
+  if (p.step === 0 || p.step == null) return "Preparing (text encoding + warmup)…";
   const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
   const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
   return eta ? `${base} · ~${eta}` : base;
@@ -1883,7 +1887,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                     title={null}
                     message="Starting…"
                     progressPercent={
-                      genStep && genStep.total > 0 ? (genStep.step / genStep.total) * 100 : null
+                      genStep && genStep.step != null && genStep.total > 0
+                        ? (genStep.step / genStep.total) * 100
+                        : null
                     }
                     progressLabel={genStep ? genStepLabel(genStep) : null}
                   />

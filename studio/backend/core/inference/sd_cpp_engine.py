@@ -13,9 +13,11 @@ heavy is reached only inside ``generate`` / ``version``, so import is free and t
 
 from __future__ import annotations
 
+import codecs
 import logging
 import os
 import queue
+import re
 import shutil
 import signal
 import subprocess
@@ -23,7 +25,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from utils.process_lifetime import child_popen_kwargs
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -52,6 +54,91 @@ OWNER_MARKER = ".unsloth-studio-owned"
 # Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still progressing.
 # It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding the lock forever; cancel_event is the user-facing abort.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
+
+
+# sd-cli redraws its progress bar IN PLACE. Each redraw is one printf + fflush shaped
+# "\r<bar> <step>/<steps> - <speed>\033[K", with a trailing newline only on the final step of a
+# phase. So the carriage return LEADS the record and the erase-to-end-of-line CLOSES it.
+_ANSI_ERASE = "\x1b[K"
+# Any CSI escape (the erase above, plus colour runs some builds emit), stripped before a record
+# reaches on_log / the error tail: an escape in the middle of a line corrupts both.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+# One read1() per redraw in practice; large enough that a burst of finished lines costs one read.
+_READ_CHUNK = 4096
+
+
+def strip_ansi(text: str) -> str:
+    """Drop CSI escape sequences (notably the ``\\033[K`` that closes every progress redraw)."""
+    return _ANSI_CSI_RE.sub("", text)
+
+
+def split_progress_records(buf: str) -> tuple[list[str], str]:
+    """Split raw sd-cli stdout into complete records plus the still-unterminated remainder.
+
+    A record ends at a carriage return, a newline, OR a trailing erase-to-end-of-line. That last
+    terminator is the point: an in-place redraw carries no newline, and its carriage return is at
+    the FRONT of the *next* redraw, so keying only on CR/LF delivers every sampling step one step
+    late (and the final one only once sampling is over). ``\\033[K`` closes the record sd-cli has
+    already flushed, so the step is delivered when it happens.
+
+    Returns records in order (still containing their escapes; call ``strip_ansi``) and whatever
+    trailing text is not yet terminated, which the caller carries into the next chunk.
+    """
+    records: list[str] = []
+    start = 0
+    i = 0
+    n = len(buf)
+    while i < n:
+        ch = buf[i]
+        if ch == "\r" or ch == "\n":
+            records.append(buf[start:i])
+            # CRLF is one terminator, not two (Windows sd-cli builds).
+            if ch == "\r" and i + 1 < n and buf[i + 1] == "\n":
+                i += 1
+            i += 1
+            start = i
+            continue
+        if buf.startswith(_ANSI_ERASE, i):
+            i += len(_ANSI_ERASE)
+            records.append(buf[start:i])
+            start = i
+            continue
+        i += 1
+    return records, buf[start:]
+
+
+def iter_sd_cpp_records(stream) -> Iterator[str]:
+    """Yield cleaned sd-cli output records from ``stream`` as soon as each is flushed.
+
+    Reads the undecoded pipe via ``buffer.read1`` so a redraw that never sends a newline is not
+    stuck behind a blocking readline, decoding incrementally so a multi-byte character split
+    across two reads survives. Streams without a raw ``.buffer`` (test doubles, non-pipes) fall
+    back to line iteration, which still splits on CR under universal newlines and so still
+    reports progress, just one redraw behind.
+    """
+    raw = getattr(stream, "buffer", None)
+    if raw is None or not hasattr(raw, "read1"):
+        for line in stream:
+            records, rest = split_progress_records(line)
+            for rec in records:
+                yield strip_ansi(rec)
+            if rest:
+                yield strip_ansi(rest)
+        return
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    pending = ""
+    while True:
+        chunk = raw.read1(_READ_CHUNK)
+        if not chunk:
+            pending += decoder.decode(b"", final = True)
+            break
+        pending += decoder.decode(chunk)
+        records, pending = split_progress_records(pending)
+        for rec in records:
+            yield strip_ansi(rec)
+    # EOF: hand over any final line the child left unterminated.
+    if pending:
+        yield strip_ansi(pending)
 
 
 class SdCppCancelled(RuntimeError):
@@ -449,14 +536,15 @@ class SdCppEngine:
             **child_popen_kwargs(),
         )
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against a wall-clock deadline.
+        # iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no newline of their own, so sampling progress reaches on_log while sampling is still running.
         tail: list[str] = []
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
         def _drain() -> None:
             try:
                 assert proc.stdout is not None
-                for raw in proc.stdout:
-                    line_q.put(raw.rstrip("\n"))
+                for rec in iter_sd_cpp_records(proc.stdout):
+                    line_q.put(rec)
             finally:
                 line_q.put(None)
 

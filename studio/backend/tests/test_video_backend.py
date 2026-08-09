@@ -3343,3 +3343,96 @@ def test_h3_vae_trim_survives_a_renamed_attribute():
     assert trim_h3_video_vae(None, workflow = "t2va") == {"encoder_freed": 0, "decoder_freed": 0}
     bare = torch.nn.Module()
     assert trim_h3_video_vae(bare, workflow = "t2va")["decoder_freed"] == 0
+
+
+# ── native (sd.cpp) generate progress ───────────────────────────────────────
+# The Video page's progress endpoint reported phase "denoise", step 0/30 for an entire 9.5 minute
+# GGUF run and then flipped to "completed": the parser looked for the words "step"/"sampling",
+# which sd-cli's progress bar does not contain.
+
+
+def _bar(done, total, speed = "21.50s/it", char = "="):
+    """One sd-cli progress redraw, as the engine hands it over (escapes already stripped)."""
+    filled = char * 10
+    return f"  |{filled}>          | {done}/{total} - {speed}"
+
+
+def _parser(steps = 30):
+    from core.inference.video import NativeProgressParser
+
+    gen: dict = {"phase": "load", "step": None, "total": steps}
+    return NativeProgressParser(steps, gen.update), gen
+
+
+def test_native_parser_advances_on_the_real_sd_cli_bar():
+    """The bar carries neither "step" nor "sampling"; this is verbatim what sd-cli prints."""
+    feed, gen = _parser(30)
+    feed(_bar(7, 30))
+    assert gen["phase"] == "denoise"
+    assert gen["step"] == 7
+    assert gen["total"] == 30
+
+
+def test_native_parser_ignores_an_unrelated_ratio():
+    """A bare "n/m" elsewhere in the log must not drive the progress bar.
+
+    Every ratio here has the SAME denominator as the step count, so the "denominator must match
+    the requested steps" guard cannot save us: only the bar-and-unit anchoring rejects them.
+    """
+    feed, gen = _parser(30)
+    for noise in (
+        "[INFO ] model.cpp:412 - loaded 12/30 tensors",
+        "[INFO ] stable-diffusion.cpp:180 - sampling method 2/30 chosen",
+        "offloading block 7/30 to CPU",
+    ):
+        feed(noise)
+    assert gen["step"] is None
+    assert gen["phase"] == "load"
+
+
+def test_native_parser_reports_weight_load_without_inventing_a_step():
+    """Weight load prints the same bar shape with a byte rate. It is real work with no sampling
+    step, so it gets its own phase and a null step rather than a fake 0 of 30.
+
+    The byte bar here counts to exactly the requested step count, so only the UNIT tells the two
+    apart: a tensor count that happens to match the step count must not read as sampling.
+    """
+    feed, gen = _parser(30)
+    feed(_bar(12, 30, speed = "512.00MB/s", char = "#"))
+    assert gen["phase"] == "load"
+    assert gen["step"] is None
+
+
+def test_native_parser_does_not_let_vae_decode_rewind_the_counter():
+    """Tiled VAE decode prints an IDENTICAL s/it bar counting tiles. Without a guard the bar
+    finishes denoising at 30/30 and then jumps backwards to 1/16."""
+    feed, gen = _parser(30)
+    for i in range(1, 31):
+        feed(_bar(i, 30))
+    assert gen["step"] == 30
+    feed(_bar(1, 16))
+    assert gen["phase"] == "decode"
+    assert gen["step"] is None
+    assert gen["total"] == 30
+
+
+def test_native_parser_eta_excludes_the_weight_load():
+    """ETA is measured from the FIRST step, not from job start: sd-cli reloads the GGUF every run,
+    and charging that one-off load to every remaining step reports hours."""
+    import time as _time
+
+    feed, gen = _parser(10)
+    feed(_bar(1, 10))
+    assert gen["eta_seconds"] is None  # not measurable from a single step
+    _time.sleep(0.05)
+    feed(_bar(2, 10))
+    # 8 steps left at ~0.05 s/step, nowhere near the wall clock since the process started.
+    assert gen["eta_seconds"] is not None
+    assert gen["eta_seconds"] < 5.0
+
+
+def test_native_parser_accepts_it_per_second_units():
+    """Fast steps flip sd-cli's unit from s/it to it/s."""
+    feed, gen = _parser(4)
+    feed(_bar(3, 4, speed = "8.00it/s"))
+    assert gen["step"] == 3

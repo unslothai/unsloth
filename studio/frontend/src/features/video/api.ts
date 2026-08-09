@@ -63,9 +63,10 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "queued" | "load" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "load" and "decode" are native (sd.cpp) only and carry a null step: they are real work with no sampling step to report.
   phase?: string | null;
-  step: number;
+  step: number | null;
   total: number;
   eta_seconds?: number | null;
   // Saved gallery record when phase is "completed".

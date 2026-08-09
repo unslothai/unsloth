@@ -33,12 +33,13 @@ from __future__ import annotations
 import contextlib
 import inspect
 import os
+import re
 import tempfile
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
@@ -297,6 +298,95 @@ class _VideoLoadingState:
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
+
+
+def _estimate_native_eta(
+    total_steps: int, step: int, first_step_at: float, now: float
+) -> Optional[float]:
+    """Seconds left in an sd-cli sampling run, or None until it can be measured.
+
+    Rate is taken between the FIRST observed step and now, so the one-off weight load that
+    precedes step 1 is excluded instead of being amortised across every remaining step. Same
+    definition as the Images page's ``_estimate_eta``; kept here so this module does not import
+    the (much heavier) sd.cpp image backend just for five lines of arithmetic.
+    """
+    steps_since_first = step - 1
+    if not first_step_at or steps_since_first <= 0:
+        return None
+    per_step = (now - first_step_at) / steps_since_first
+    return max(0.0, (total_steps - step) * per_step)
+
+
+# What sd-cli actually prints for each sampling step, redrawn in place:
+#   "  |=========>          | 7/30 - 21.50s/it"
+# It contains neither the word "step" nor "sampling", which is why an
+# r"(?:step|sampling)\D+(\d+)/(\d+)" pattern never matched and the Video page's bar sat at 0/30
+# for an entire run. Anchored on the bar and on the trailing speed unit rather than on a bare
+# "n/m", so an unrelated ratio in some other log line cannot drive the progress bar. The unit
+# matters because THREE different things print this same bar: sampling steps and tiled VAE decode
+# both report s/it or it/s, while weight loading reports MB/s or GB/s.
+_SD_CPP_BAR_RE = re.compile(
+    r"\|[ =>#]{2,}\|\s*(\d+)\s*/\s*(\d+)\s*-\s*[\d.]+\s*(s/it|it/s|MB/s|GB/s)",
+    re.IGNORECASE,
+)
+
+
+class NativeProgressParser:
+    """Turn sd-cli's stdout into Video-page progress updates.
+
+    Fed one output record at a time (see ``sd_cpp_engine.iter_sd_cpp_records``) and calls
+    ``emit(**fields)`` only when something actually changed. It reports what sd-cli is really
+    doing rather than filling gaps with a plausible number:
+
+    * weight load and post-sampling VAE decode get their own phase and a ``step`` of None,
+      because neither has a sampling step to report;
+    * only a bar whose denominator is the step count we asked for advances the counter, and only
+      until it completes. Tiled VAE decode prints an identical bar counting TILES, so without
+      that guard a 30-step job would finish denoising and then jump backwards to "step 1/16".
+    """
+
+    def __init__(self, steps: int, emit: Callable[..., Any]) -> None:
+        self._steps = int(steps)
+        self._emit = emit
+        self._denoise_done = False
+        self._first_step_at = 0.0
+        self._phase = "load"
+
+    def __call__(self, line: str) -> None:
+        match = _SD_CPP_BAR_RE.search(line)
+        if match is None:
+            return
+        done, total = int(match.group(1)), int(match.group(2))
+        unit = match.group(3).lower()
+        if unit in ("mb/s", "gb/s"):
+            # Weight load byte throughput, not sampling. Name the phase, invent no step.
+            if not self._denoise_done and self._phase != "denoise":
+                self._set("load")
+            return
+        if self._denoise_done or total != self._steps:
+            # Work after sampling finished (VAE decode) reuses this bar with its own denominator.
+            if self._denoise_done:
+                self._set("decode")
+            return
+        now = time.monotonic()
+        if not self._first_step_at:
+            self._first_step_at = now
+        self._phase = "denoise"
+        self._emit(
+            phase = "denoise",
+            step = done,
+            total = total,
+            eta_seconds = _estimate_native_eta(total, done, self._first_step_at, now),
+        )
+        if done >= total:
+            self._denoise_done = True
+
+    def _set(self, phase: str) -> None:
+        """Enter a phase that has no step of its own (idempotent: emit only on a change)."""
+        if self._phase == phase:
+            return
+        self._phase = phase
+        self._emit(phase = phase, step = None, eta_seconds = None)
 
 
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
@@ -2728,7 +2818,6 @@ class VideoBackend:
         cancel: threading.Event,
     ) -> dict[str, Any]:
         import random
-        import re
 
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
@@ -2738,28 +2827,19 @@ class VideoBackend:
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
         started = time.monotonic()
+        # sd-cli reloads the GGUF from disk on every run, and that load is most of the wall clock,
+        # so "load" is the honest opening phase: nothing is sampling yet and there is no step to
+        # report. The first sampler redraw flips this to "denoise".
         self._gen = {
             "active": True,
-            "phase": "denoise",
-            "step": 0,
+            "phase": "load",
+            "step": None,
             "total": steps,
             "started": started,
             "eta_seconds": None,
             "error": None,
         }
-        step_pattern = re.compile(r"(?:step|sampling)\D+(\d+)\s*/\s*(\d+)", re.IGNORECASE)
-
-        def on_log(line: str) -> None:
-            match = step_pattern.search(line)
-            if match is None:
-                return
-            done, total = int(match.group(1)), int(match.group(2))
-            elapsed = time.monotonic() - started
-            self._gen.update(
-                step = done,
-                total = total,
-                eta_seconds = (elapsed / max(1, done)) * max(0, total - done),
-            )
+        on_log = NativeProgressParser(steps, self._gen.update)
 
         tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
         tmp.close()
