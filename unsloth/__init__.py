@@ -21,12 +21,31 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # broken optional backend breaks Unsloth, which uses neither: on Colab an install
 # cell that moves protobuf leaves the first `from unsloth import ...` raising
 # `cannot import name 'runtime_version'`. `setdefault`, so an explicit USE_TF=1
-# still wins. Transformers reads these once at import, so this has to land first;
-# if it did not, an already-imported Transformers has settled the question anyway.
-# 5.x dropped both backends and ignores the variables.
+# still wins. Transformers reads these once at import, so this has to land first.
+# 5.x dropped both backends and ignores all of this.
 if "transformers" not in sys.modules:
     os.environ.setdefault("USE_TF", "0")
     os.environ.setdefault("USE_FLAX", "0")
+else:
+    # Too late for the variables, but not for the answer they feed: Transformers
+    # decided `_tf_available` / `_flax_available` from `find_spec` alone, without
+    # importing either backend, so clearing the cached flags still keeps
+    # `image_transforms` from loading a broken one. Only when the backend is
+    # genuinely unused, and never against an explicit opt-in.
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    _import_utils = sys.modules.get("transformers.utils.import_utils")
+    for _flag, _modules, _opt_ins in (
+        ("_tf_available", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("_flax_available", ("flax", "jax"), ("USE_FLAX",)),
+    ):
+        if any(_m in sys.modules for _m in _modules): continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins): continue
+        try:
+            # Absent on 5.x, and a module proxy can refuse the write.
+            if getattr(_import_utils, _flag, False): setattr(_import_utils, _flag, False)
+        except (AttributeError, TypeError):
+            pass
+    del _TRUE, _import_utils, _flag, _modules, _opt_ins
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
