@@ -33,3 +33,26 @@ test("the video download plan is asked with the selected precision", () => {
   // precision its checkpoint carries, and the stale control value must not reach either call.
   assert.ok(call.includes('opts.kind === "pipeline"'));
 });
+
+test("the staged plan reads the precision live, not the value it closed over", () => {
+  // loadOrStage is memoized on [stage, pickGuard] so its consumers keep a stable identity. A
+  // plain capture of transformerQuant therefore froze at the value selected when the callback
+  // was built, and the ordinary auto -> FP8 change sent the plan no precision at all: the
+  // pre-download refusal was skipped and tens of GB were staged before the load refused it.
+  const call = source.slice(
+    source.indexOf("await getVideoDownloadPlan({"),
+    source.indexOf("await getVideoDownloadPlan({") + 900,
+  );
+  assert.ok(
+    call.includes("transformerQuantRef.current"),
+    "the plan must read the precision through the ref",
+  );
+  assert.ok(
+    !/transformerQuant\s*[!=]==/.test(call),
+    "a direct read of the memoized capture is the stale value",
+  );
+  assert.ok(
+    source.includes("transformerQuantRef.current = transformerQuant"),
+    "the ref must be kept current on every render",
+  );
+});

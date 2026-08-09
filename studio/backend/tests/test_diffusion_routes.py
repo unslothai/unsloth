@@ -10,6 +10,8 @@ diffusers, weights, or a GPU.
 
 from __future__ import annotations
 
+import types
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -1832,3 +1834,68 @@ def test_gallery_image_accepts_a_record_written_before_the_build_fields():
     assert record.gguf_filename is None
     assert record.transformer_quant is None
     assert record.baked_loras == []
+
+
+@pytest.mark.parametrize("memory", [
+    {"memory_mode": "balanced"},
+    {"memory_mode": "low_vram"},
+    {"cpu_offload": True},
+])
+def test_an_offloading_memory_request_refuses_an_explicit_precision(monkeypatch, memory):
+    """balanced and low_vram name their offload policy outright, and the legacy cpu_offload flag
+    forces whole-module offload. Offload hooks move modules with Module.to(), which torchao
+    tensors do not survive, so the loader skips the dense build -- and the strict refusal then
+    arrived after the resident image model had already been torn down. The two requests are
+    incompatible on their face, so the refusal is owed before anything is staged or evicted."""
+    from core.inference.diffusion import DiffusionBackend
+
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_resolve_device_target",
+        lambda self, fam: types.SimpleNamespace(device = "cuda", dtype = "bfloat16", _cc = (10, 0)),
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.assert_precision_available(
+            None, model_kind = "gguf", transformer_quant = "fp8", **memory
+        )
+    assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
+    assert "offload" in str(excinfo.value)
+
+
+def test_a_measured_memory_mode_is_not_refused_by_the_precision_gate(monkeypatch):
+    """fast and auto decide their policy from the MEASURED footprint, so they are not knowable
+    network-free and this gate has no business refusing them."""
+    from core.inference.diffusion import _memory_request_forces_offload
+
+    assert _memory_request_forces_offload("fast", False) is False
+    assert _memory_request_forces_offload("auto", False) is False
+    assert _memory_request_forces_offload(None, False) is False
+    # The legacy flag applies only when no mode was named, matching resolve_offload_policy.
+    assert _memory_request_forces_offload("fast", True) is False
+    assert _memory_request_forces_offload(None, True) is True
+
+
+def test_fast_and_auto_memory_do_not_refuse_a_precision(client, monkeypatch):
+    """The other side of the fence: fast and auto decide their policy from the MEASURED
+    footprint, so they are not knowable network-free and must not be refused here."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS
+
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_DIFFUSERS)
+    seen: list = []
+    monkeypatch.setattr(backend, "assert_precision_available", lambda *a, **k: seen.append(k))
+    for mode in ("fast", "auto"):
+        resp = client.post(
+            "/api/inference/images/load",
+            json = {
+                "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+                "transformer_quant": "fp8",
+                "memory_mode": mode,
+            },
+        )
+        assert resp.status_code != 409, resp.text
+    # And the gate was told about the memory request either way, so the decision is its to make.
+    assert seen and all("memory_mode" in kwargs for kwargs in seen)

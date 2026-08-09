@@ -1402,6 +1402,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
+  // Read through a ref for the same reason handleLoad is: loadOrStage is memoized so its
+  // consumers keep a stable identity, and a plain capture froze the precision at whatever was
+  // selected when the callback was built. The ordinary auto -> FP8 change then sent the plan no
+  // precision at all, skipping the pre-download refusal, and the user staged tens of GB before
+  // /video/load rejected the same pick.
+  const transformerQuantRef = useRef(transformerQuant);
+  transformerQuantRef.current = transformerQuant;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
   // A pick made while the download ran already owns the page; only the newest may load. `isLatest`, not `holds`: leaving the
@@ -1451,8 +1458,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // cannot honour, so omitting it staged tens of GB of weights and left the refusal to
           // the load afterwards. Sent under the identical pipeline-only rule handleLoad applies.
           transformer_quant:
-            opts.kind === "pipeline" && transformerQuant !== "auto"
-              ? transformerQuant
+            opts.kind === "pipeline" && transformerQuantRef.current !== "auto"
+              ? transformerQuantRef.current
               : undefined,
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.

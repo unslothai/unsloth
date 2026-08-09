@@ -856,6 +856,19 @@ def _uncached_prequant_repo(
         return None
 
 
+def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
+    """Whether this memory request offloads the transformer no matter what the weights measure.
+
+    ``balanced`` and ``low_vram`` name their policy outright in ``resolve_offload_policy``, and
+    the legacy ``cpu_offload`` flag forces whole-module offload when no mode was supplied.
+    ``fast`` and ``auto`` are decided from the measured footprint, so they are not knowable here.
+    """
+    mode = normalize_memory_mode(memory_mode)
+    if mode in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+        return True
+    return mode is None and bool(cpu_offload)
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -894,6 +907,8 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target()
         return target.device, target.dtype
 
+    # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
+    # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
     def assert_precision_available(
         self,
         fam: Optional[DiffusionFamily],
@@ -901,6 +916,8 @@ class DiffusionBackend:
         model_kind: str,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        memory_mode: Optional[str] = None,
+        cpu_offload: bool = False,
     ) -> None:
         """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
 
@@ -927,6 +944,18 @@ class DiffusionBackend:
                 reason = (
                     f"the dense transformer-quant path applies to GGUF picks only, and this is a "
                     f"'{model_kind}' load, which runs the precision its checkpoint carries"
+                )
+            elif _memory_request_forces_offload(memory_mode, cpu_offload):
+                # Not a measurement: balanced and low_vram name their policy outright, and the
+                # legacy flag forces model offload. Offload hooks move modules with Module.to(),
+                # which torchao tensors do not survive, so the loader skips the dense build for
+                # any of them -- and the strict refusal then landed after the resident model was
+                # already gone. The two requests are incompatible on their face; say so here.
+                requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
+                reason = (
+                    f"'{requested_memory}' memory places the transformer under CPU offload, and "
+                    "torchao quantised tensors cannot be moved by the offload hooks, so the dense "
+                    "quant is skipped"
                 )
             elif not dense_transformer_supported(target):
                 reason = (

@@ -20155,6 +20155,10 @@ async def diffusion_download_plan(
                     model_kind = kind,
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
+                    # The memory request settles the offload policy for balanced/low_vram before
+                    # anything is measured, and an offloaded transformer skips the dense quant.
+                    memory_mode = getattr(request, "memory_mode", None),
+                    cpu_offload = bool(getattr(request, "cpu_offload", False)),
                 )
             else:
                 _assert_native_precision_unset(
@@ -20307,6 +20311,8 @@ async def load_diffusion_model(
                 model_kind = kind,
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
+                memory_mode = getattr(request, "memory_mode", None),
+                cpu_offload = bool(getattr(request, "cpu_offload", False)),
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
             # The native engine accepts both knobs for interface parity and ignores them. It was
@@ -20354,6 +20360,8 @@ async def load_diffusion_model(
                     model_kind = kind,
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
+                    memory_mode = getattr(request, "memory_mode", None),
+                    cpu_offload = bool(getattr(request, "cpu_offload", False)),
                 )
 
         def _start_engine_load():
