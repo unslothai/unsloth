@@ -19,6 +19,7 @@ import { ToolResultOutput } from "./tool-result-output";
 import { SandboxFiles } from "./sandbox-files-view";
 import type { SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { isSandboxToolResult } from "@/features/chat/api/chat-adapter";
 
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
@@ -41,10 +42,11 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   const isWritingCommand = isRunning && propStatus.command === "streaming";
   // A command that wrote files arrives as the python tool's structured shape;
   // a plain string means it wrote none.
-  const structured =
-    typeof result === "object" && result !== null && "text" in result
-      ? (result as { text: string; sessionId?: string; files?: SandboxFile[] })
-      : null;
+  // The same test the adapter applies: a foreign result that merely has text
+  // would otherwise be rendered as that field alone.
+  const structured = isSandboxToolResult(result)
+    ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
+    : null;
   const files = structured?.files ?? [];
   const sessionId = structured?.sessionId ?? "";
   const output =

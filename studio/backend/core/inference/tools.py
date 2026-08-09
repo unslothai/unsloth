@@ -7219,16 +7219,67 @@ def _session_dir(root: str, session_id: str) -> str:
     Two ids differing only in case are one name on Windows and on a default
     macOS volume. The marker says which id made the directory, and anyone else
     gets one of their own rather than sharing files that either chat's deletion
-    would then remove.
+    would then remove. A directory already sitting in a root the user pointed
+    us at is nobody's sandbox: it is stepped around rather than run in, so no
+    tool can write a marker into it and make it look like ours.
     """
     plain = os.path.join(root, session_id)
     if os.path.islink(plain):
         return plain  # never read a marker through a link; containment decides
     owner = _marker_owner(plain)
-    if owner is None or owner == session_id:
+    if owner == session_id:
         return plain
+    if owner is None and not (os.path.isdir(plain) and not _root_is_ours()):
+        return plain
+    return _disambiguated_session_dir(root, session_id)
+
+
+def _disambiguated_session_dir(root: str, session_id: str) -> str:
     digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
-    return f"{plain}-{digest}"
+    return os.path.join(root, f"{session_id}-{digest}")
+
+
+# Serialises the pick-then-create below. Two case-variant ids racing on a
+# case-insensitive volume could otherwise both see an unowned name and take it.
+_assign_lock = threading.Lock()
+
+
+def _claim_sandbox(workdir: str, session_id: str) -> bool:
+    """Write the marker if nobody has, and report whether this id owns it.
+
+    O_EXCL, so of two processes creating the same directory exactly one claims
+    it and the other is told to go elsewhere.
+    """
+    marker = os.path.join(workdir, _SANDBOX_MARKER)
+    try:
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return _marker_owner(workdir) == session_id
+    except OSError:
+        return False
+    try:
+        os.write(fd, session_id.encode("utf-8"))
+    finally:
+        os.close(fd)
+    return True
+
+
+def _ensure_session_dir(root: str, session_id: str) -> str:
+    """Create this id's sandbox and claim it, stepping aside on a collision."""
+    with _assign_lock:
+        workdir = _session_dir(root, session_id)
+        if not _contained_in_root(workdir, root):
+            return _sandbox_fallback(root, "_invalid")
+        os.makedirs(workdir, exist_ok = True)
+        if _claim_sandbox(workdir, session_id):
+            return workdir
+        # Someone else got there first, so take a name of our own.
+        workdir = _disambiguated_session_dir(root, session_id)
+        if not _contained_in_root(workdir, root):
+            return _sandbox_fallback(root, "_invalid")
+        os.makedirs(workdir, exist_ok = True)
+        _claim_sandbox(workdir, session_id)
+        return workdir
 
 
 def _root_is_ours() -> bool:
@@ -7290,6 +7341,16 @@ def _migrate_legacy_sandbox(root: str) -> None:
             _legacy_sandbox_migrated = True
 
 
+def _mark_migrated(workdir: str, session_id: str) -> None:
+    """Claim a sandbox moved up from the legacy root.
+
+    It is ours: it came from our own folder. Without the marker an overridden
+    root would read it as someone else's and the chat could never remove it.
+    """
+    if os.path.isdir(workdir) and not os.path.islink(workdir):
+        _claim_sandbox(workdir, session_id)
+
+
 def _migrate_legacy_sandbox_locked(root: str) -> bool:
     """True when the legacy root holds nothing that could still be moved.
 
@@ -7310,6 +7371,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 continue
             try:
                 shutil.move(source, target)
+                _mark_migrated(target, name)
                 moved += 1
             except OSError as error:
                 complete = False
@@ -7388,20 +7450,13 @@ def _get_workdir(session_id: str | None = None) -> str:
         if project_workdir:
             workdir = project_workdir
         elif session_id and _usable_session_id(session_id):
-            workdir = _session_dir(sandbox_root_path, session_id)
-            if not _contained_in_root(workdir, sandbox_root_path):
-                workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
+            workdir = _ensure_session_dir(sandbox_root_path, session_id)
         elif session_id:
             workdir = _sandbox_fallback(sandbox_root_path, "_invalid")
         else:
             workdir = _sandbox_fallback(sandbox_root_path, "_default")
-        # Marked only when we made it: at a shared root an id can name a
-        # directory that was already there, and the marker is what later allows
-        # a delete to remove it whole.
         created = not os.path.isdir(workdir)
         os.makedirs(workdir, exist_ok = True)
-        if created and not project_workdir:
-            _mark_sandbox(workdir, session_id or "")
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
         if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
@@ -10650,7 +10705,11 @@ _SERVABLE_SEGMENT_RE = re.compile(r"\A[^/\\\x00-\x1f]{1,255}\Z")
 
 
 def _servable_segment(name: str) -> bool:
-    return name not in (".", "..") and bool(_SERVABLE_SEGMENT_RE.match(name))
+    if name in (".", "..") or not _SERVABLE_SEGMENT_RE.match(name):
+        return False
+    # Non-UTF-8 bytes in a POSIX filename surface as lone surrogates, which
+    # encodeURIComponent throws on, so the chip could never issue its download.
+    return not any("\ud800" <= ch <= "\udfff" for ch in name)
 
 
 # Studio's own bookkeeping, written by the sandbox sitecustomize. One exact

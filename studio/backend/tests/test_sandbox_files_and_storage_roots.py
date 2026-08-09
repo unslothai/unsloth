@@ -1828,9 +1828,11 @@ def test_an_existing_folder_in_a_shared_root_is_never_claimed(tmp_path, monkeypa
 
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("taxes"))
-    assert workdir == theirs
+    assert workdir != theirs, "ran the tool inside a folder we did not create"
+    assert workdir.name.startswith("taxes-")
     assert not (theirs / tools._SANDBOX_MARKER).exists(), "claimed a folder we did not create"
-    assert tools.remove_session_sandbox("taxes", delete_files = True) is False
+    # Deleting the chat takes our directory and leaves theirs alone.
+    assert tools.remove_session_sandbox("taxes", delete_files = True) is True
     assert (theirs / "2026.pdf").is_file()
 
 
@@ -1920,7 +1922,7 @@ def test_a_pre_existing_folder_keeps_its_permissions(tmp_path, monkeypatch):
     from core.inference import tools
 
     tools._workdirs.clear()
-    assert Path(tools.get_sandbox_workdir("team")) == theirs
+    assert Path(tools.get_sandbox_workdir("team")) != theirs
     assert oct(theirs.stat().st_mode)[-3:] == "755", "an unowned folder was locked down"
 
     # Ours is still tightened.
@@ -1984,6 +1986,92 @@ def test_the_delete_switch_does_not_promise_project_files():
     ).read_text(encoding = "utf-8")
     assert "This chat's own sandbox folder is removed from disk." in sidebar
     assert "Anything this chat's tools wrote is removed from disk." not in sidebar
+
+
+def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch):
+    """The marker is writable by whatever runs in the sandbox, so the answer is
+    to never run in a folder that was already there."""
+    root = tmp_path / "shared"
+    import time
+
+    root.mkdir()
+    theirs = root / "photos"
+    theirs.mkdir()
+    (theirs / "wedding.jpg").write_text("jpeg", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("photos"))
+    assert workdir != theirs, "ran the tool inside a folder we did not create"
+    assert not (theirs / tools._SANDBOX_MARKER).exists()
+    # What the tool writes lands in ours, and deleting the chat takes ours.
+    (workdir / "plot.png").write_text("png", encoding = "utf-8")
+    assert tools.remove_session_sandbox("photos", delete_files = True) is True
+    for _ in range(50):
+        if not workdir.exists():
+            break
+        time.sleep(0.05)
+    assert not workdir.exists()
+    assert (theirs / "wedding.jpg").is_file()
+
+
+def test_two_ids_racing_for_one_name_do_not_share_it(tmp_path, monkeypatch):
+    """Both can see an unowned name before either writes its marker."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    root = tools.sandbox_root()
+    os.makedirs(root, exist_ok = True)
+    first = Path(tools._ensure_session_dir(root, "RaceId"))
+    # The other id, resolving the same plain name (what a case-insensitive
+    # volume produces): the claim is already taken, so it steps aside.
+    plain = Path(root) / "raceid"
+    if not plain.exists():
+        plain.mkdir()
+        (plain / tools._SANDBOX_MARKER).write_text("RaceId", encoding = "utf-8")
+    second = Path(tools._ensure_session_dir(root, "raceid"))
+    assert second != first and second != plain
+    assert (second / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "raceid"
+
+
+def test_a_migrated_sandbox_stays_deletable_in_an_overridden_root(tmp_path, monkeypatch):
+    """It came from our own folder, so the move has to say so or the chat can
+    never remove it again."""
+    home = tmp_path / "userhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    legacy = home / "studio_sandbox" / "__LOCALID_moved11"
+    legacy.mkdir(parents = True)
+    (legacy / "notes.txt").write_text("mine", encoding = "utf-8")
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    tools._migrate_legacy_sandbox(str(root))
+
+    moved = root / "__LOCALID_moved11"
+    assert (moved / "notes.txt").is_file()
+    assert (moved / tools._SANDBOX_MARKER).is_file(), "the migrated sandbox lost its claim"
+    assert tools.remove_session_sandbox("__LOCALID_moved11", delete_files = True) is True
+
+
+def test_a_name_the_download_url_cannot_carry_is_not_advertised():
+    """A non-UTF-8 byte in a POSIX filename arrives as a lone surrogate, and
+    encodeURIComponent throws on it, so the chip could never download."""
+    from core.inference import tools
+
+    assert tools._servable_segment("report.csv")
+    assert not tools._servable_segment("bad\udcffname.csv")
+    assert not tools._servable_segment("\ud800.txt")
 
 
 if __name__ == "__main__":
