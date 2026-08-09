@@ -4315,7 +4315,7 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
     route = inspect.getsource(chat_history.delete_project)
     assert 'if project.get("sandboxPath"):' in route
     assert "if not delete_files:" in route
-    body = route[route.index("if not delete_files:"):]
+    body = route[route.index("if not delete_files:") :]
     assert "record_orphaned_project, project_id" in body[:400]
     assert "False," in body[:400], "a keep must not be recorded as pending deletion"
 

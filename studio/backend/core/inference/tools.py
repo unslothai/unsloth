@@ -7202,7 +7202,9 @@ def _orphan_records_dir() -> str:
 
 
 def record_orphaned_project(
-    project_id: str, workspace: str, pending_delete: bool = False
+    project_id: str,
+    workspace: str,
+    pending_delete: bool = False,
 ) -> None:
     """Remember where a deleted project's kept workspace lives.
 
@@ -7271,7 +7273,6 @@ def collect_orphaned_project_workspaces() -> None:
     running in there, or while a chat still shows its files.
     """
     from storage.studio_db import sandbox_is_referenced_elsewhere
-
     for project_id, workspace, pending in list_orphaned_projects():
         if not pending:
             continue
@@ -7287,19 +7288,24 @@ def collect_orphaned_project_workspaces() -> None:
             logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
 
 
-def finish_workspace_delete_when_idle(project_id: str, timeout: float = 600.0) -> "threading.Thread":
+def finish_workspace_delete_when_idle(
+    project_id: str, timeout: float = 600.0
+) -> "threading.Thread":
     """Wait out the tool call still using a workspace, then delete it.
 
     The delete dialog promised those files would go, and nothing else would
     come back to them: the collection otherwise runs only on the next delete.
     """
+
     def _wait_and_collect() -> None:
         session = project_session_id(project_id)
         wait_for_sessions_idle([session], timeout = timeout)
         collect_orphaned_project_workspaces()
 
     thread = threading.Thread(
-        target = _wait_and_collect, name = "workspace-delete", daemon = True,
+        target = _wait_and_collect,
+        name = "workspace-delete",
+        daemon = True,
     )
     thread.start()
     return thread
@@ -8243,6 +8249,7 @@ def _start_detached_sweep() -> "threading.Thread | None":
         if _swept_detached:
             return None
         _swept_detached = True
+
     def _sweep() -> None:
         sweep_detached_sandboxes()
         # A workspace the user asked to delete, left pending because a tool was

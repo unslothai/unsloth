@@ -468,7 +468,6 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
         # A project workspace kept for a fork that has now gone: the user asked
         # for the files on both surfaces, and nothing else would ever revisit it.
         from core.inference.tools import collect_orphaned_project_workspaces
-
         await run_in_threadpool(collect_orphaned_project_workspaces)
     return result
 
@@ -715,7 +714,10 @@ async def delete_project(
             # row that held a custom path is gone, and a fork's cards still name
             # this session.
             await run_in_threadpool(
-                record_orphaned_project, project_id, project["sandboxPath"], False,
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                False,
             )
         elif not idle:
             # Still running after the wait. Removing a live tool call's working
