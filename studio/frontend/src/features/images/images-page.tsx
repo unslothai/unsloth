@@ -1785,7 +1785,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // comes back empty, so only an app reload recovered. Narrowed to
         // "loading" so a generation in flight is left alone, as handleUnload's
         // own finally does.
-        setBusy((prev) => (prev === "loading" ? null : prev));
+        // ...but not while a load start is still in flight. begin_load refuses a second load
+        // while one is registered, so a model picked in that window is rejected while the load
+        // this eject was meant to cancel carries on, and handleLoad's compensating unload names
+        // no load. Hold busy until the whole path settles, exactly as handleCancelLoad does.
+        const pending = pendingStart.current;
+        if (pending) {
+          setBusy((prev) => (prev === "loading" ? "unloading" : prev));
+          void pending
+            .catch(() => {})
+            .finally(() => setBusy((prev) => (prev === "unloading" ? null : prev)));
+        } else {
+          setBusy((prev) => (prev === "loading" ? null : prev));
+        }
         setQuant(null);
         void refreshStatus();
       }),

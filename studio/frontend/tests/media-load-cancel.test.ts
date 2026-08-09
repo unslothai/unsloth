@@ -251,6 +251,18 @@ for (const [page, path] of PAGES) {
     assert.match(raced, /restoreLoadTracking\(\);/);
   });
 
+  test(`the ${page} external eject is fenced by the pending start too`, () => {
+    // The loaded-models card ejects without going through handleCancelLoad, so it needs the same
+    // fence: clearing busy while a start request is in flight lets the user pick a model that
+    // begin_load then refuses, while the load the eject meant to cancel keeps running untracked.
+    const listener = SOURCE.slice(
+      SOURCE.indexOf("subscribeModelEjected("),
+      SOURCE.indexOf("subscribeModelEjected(") + 1600,
+    );
+    assert.match(listener, /const pending = pendingStart\.current;/);
+    assert.match(listener, /setBusy\(\(prev\) => \(prev === "loading" \? "unloading" : prev\)\);/);
+  });
+
   test(`the ${page} cancel names the load, not the download`, () => {
     // A user mid-load can have a staged download in the manager panel too, and
     // the two stop different things: this one abandons the load, that one stops

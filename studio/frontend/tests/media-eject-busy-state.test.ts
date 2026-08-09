@@ -32,7 +32,8 @@ for (const [page, runtime, path] of PAGES) {
   const SOURCE = read(path);
   const listener = SOURCE.slice(
     SOURCE.indexOf(`subscribeModelEjected("${runtime}"`),
-    SOURCE.indexOf(`subscribeModelEjected("${runtime}"`) + 900,
+    // Wide enough for the pending-start fence the listener grew around that clear.
+    SOURCE.indexOf(`subscribeModelEjected("${runtime}"`) + 1800,
   );
 
   test(`the ${page} page settles its busy state on an external eject`, () => {
