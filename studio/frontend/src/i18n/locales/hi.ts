@@ -404,6 +404,9 @@ export const hi = {
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
         showLlamaUpdatesDescription:
           "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
+        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
+        showLoadedModelsDescription:
+          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -712,6 +715,23 @@ export const hi = {
         free: "{value} खाली",
         total: "{value} कुल",
       },
+      modelMemory: {
+        title: "मॉडल मेमोरी",
+        keepResident: "मॉडल को GPU मेमोरी में रखें",
+        keepResidentDescription: "प्रॉम्प्ट के बीच VRAM में बना रहता है।",
+        keepResidentHint: "जब तक मॉडल लोड रहता है, वेट्स सिस्टम RAM को वापस नहीं दिए जाते। निष्क्रिय होने पर स्वतः अनलोड बंद कर देता है, और जब वेट्स वास्तव में होस्ट RAM में रहते हैं (यूनिफाइड मेमोरी, या आंशिक GPU ऑफ़लोड) तब --mlock भी भेजता है, ताकि OS उन्हें पेज आउट करके आपके अगले प्रॉम्प्ट पर दोबारा अपलोड न करे।",
+        noRamReserve: "मॉडल के लिए सिस्टम RAM आरक्षित न करें",
+        noRamReserveDescription: "RAM में पूरी प्रति नहीं रखता।",
+        noRamReserveHint: "RAM में पूरी प्रति रखने के बजाय वेट्स को VRAM में भेजता है। llama.cpp की मेमोरी-मैप्ड लोडिंग बनाए रखता है और --no-mmap तथा --mlock हटा देता है।",
+        mlockVetoed: "--mlock बंद ही रहता है: मॉडल को पिन करने से उसकी पूरी मात्रा के लिए RAM आरक्षित हो जाएगी। निष्क्रिय होने पर स्वतः अनलोड अब भी अक्षम है।",
+        memlockCapped: "यह सिस्टम लॉक की गई मेमोरी को {limit} तक सीमित करता है। इससे बड़ा मॉडल पूरी तरह पिन नहीं होगा; ulimit -l से सीमा बढ़ाएँ।",
+        reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
+        loadError: "मॉडल मेमोरी सेटिंग्स लोड नहीं हो सकीं",
+        saveError: "मॉडल मेमोरी सेटिंग्स सहेजी नहीं जा सकीं",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu मेमोरी रैम स्थायी पिन लॉक बनाए रखें लोड अनलोड निष्क्रिय mmap no-mmap load-mode स्वैप पेजिंग",
+      },
       storage: {
         title: "स्टोरेज",
         systemDisk: "सिस्टम डिस्क",
@@ -720,8 +740,8 @@ export const hi = {
         modelsFolder: "मॉडल फ़ोल्डर",
         modelsFolderKeywords:
           "मॉडल फ़ोल्डर फोल्डर निर्देशिका पथ स्थान डाउनलोड कैश संग्रहण डिस्क ड्राइव स्थानांतरित बदलें models folder path hugging face",
-        modelsFolderDescription:
-          "डाउनलोड किए गए मॉडल यहाँ संग्रहीत होते हैं। मॉडल को सिस्टम ड्राइव से अलग रखने के लिए यह स्थान बदलें।",
+        modelsFolderDescription: "डाउनलोड किए गए मॉडल कहाँ संग्रहीत होते हैं।",
+        modelsFolderHint: "डाउनलोड किए गए मॉडल कहाँ संग्रहीत होते हैं। मॉडल को अपनी सिस्टम ड्राइव से दूर रखने के लिए इसे बदलें। यह केवल नए डाउनलोड पर लागू होता है। आपके पास पहले से मौजूद मॉडल वहीं रहते हैं।",
         openAction: "खोलें",
         copyAction: "पथ कॉपी करें",
         copied: "पथ कॉपी किया गया",

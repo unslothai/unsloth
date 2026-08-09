@@ -418,6 +418,9 @@ export const de = {
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
         showLlamaUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
+        showLoadedModels: "Anzeige geladener Modelle",
+        showLoadedModelsDescription:
+          "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -733,14 +736,31 @@ export const de = {
         free: "{value} frei",
         total: "{value} gesamt",
       },
+      modelMemory: {
+        title: "Modellspeicher",
+        keepResident: "Modell im GPU-Speicher behalten",
+        keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
+        keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
+        noRamReserve: "Keinen System-RAM für das Modell reservieren",
+        noRamReserveDescription: "Keine vollständige Kopie im RAM behalten.",
+        noRamReserveHint: "Die Gewichte werden in den VRAM gestreamt, statt eine vollständige Kopie im RAM zu halten. Behält das speicherabgebildete Laden von llama.cpp bei und entfernt --no-mmap und --mlock.",
+        mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
+        memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
+        reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
+        loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",
+        saveError: "Modellspeicher-Einstellungen konnten nicht gespeichert werden",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
+      },
       storage: {
         title: "Speicher",
         systemDisk: "Systemfestplatte",
         diskUsage: "{used} belegt / {total}",
         diskFree: "{free} frei",
         modelsFolder: "Modell-Ordner",
-        modelsFolderDescription:
-          "Wo heruntergeladene Modelle gespeichert werden. Ändern Sie ihn, um Modelle nicht auf dem Systemlaufwerk abzulegen.",
+        modelsFolderDescription: "Wo heruntergeladene Modelle gespeichert werden.",
+        modelsFolderHint: "Wo heruntergeladene Modelle gespeichert werden. Ändern Sie den Pfad, um Modelle von Ihrem Systemlaufwerk fernzuhalten. Gilt nur für neue Downloads. Bereits vorhandene Modelle bleiben, wo sie sind.",
         modelsFolderKeywords:
           "Modelle Ordner Verzeichnis Pfad Speicherort Download Downloads Cache Speicher Festplatte Laufwerk verschieben ändern hugging face",
         futureDownloads: "Nur neue Downloads",

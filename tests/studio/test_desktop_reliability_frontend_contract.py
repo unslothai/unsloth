@@ -42,6 +42,8 @@ APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
+VIDEO_API = FRONTEND / "features/video/api.ts"
+RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
 
 REMOTE_ACCESS_SECTION = FRONTEND / "features/settings/components/remote-access-section.tsx"
 PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialog.tsx"
@@ -54,6 +56,31 @@ TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
+
+
+def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
+    """Each ``const <NAME>_STYLE = { ... } as CSSProperties`` block as a var -> value map.
+
+    Per block, so a value is only ever compared against the others that ship with it.
+    """
+    return {
+        name: dict(re.findall(r'"(--[\w-]+)":\s*"([^"]+)"', body))
+        for name, body in re.findall(
+            r"const (\w+_STYLE) = \{(.*?)\} as CSSProperties;", source, re.S
+        )
+    }
+
+
+def _titlebar_nav_button_px(source: str) -> int | None:
+    """The navigation button's box, read off the class string that sizes it."""
+    match = re.search(r"const buttonClass =\s*\n?\s*\"[^\"]*?size-\[(\d+)px\]", source, re.S)
+    return int(match.group(1)) if match else None
+
+
+def _px(value: str | None) -> int | None:
+    """*value* as whole pixels, or None if it is not a px literal (rem, calc, absent)."""
+    match = re.fullmatch(r"(\d+)px", (value or "").strip())
+    return int(match.group(1)) if match else None
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
@@ -238,6 +265,62 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     for source in (training, markdown, image, audio):
         assert 'document.createElement("a")' not in source
         assert "isDownloadCancelled(error)" in source
+
+
+def test_gallery_video_links_are_absolute_and_saved_natively():
+    video_api = VIDEO_API.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    rag_api = RAG_API.read_text(encoding = "utf-8")
+
+    # The backend mints this link relative so a proxy can serve it. Its consumers are
+    # <video src> and the download, none of which go through authFetch, so a relative
+    # path under Tauri resolves against the webview and yields the SPA shell.
+    assert "return apiUrl(body.url);" in video_api
+    assert 'from "@/lib/api-base"' in video_api
+    # The same fix the RAG document preview already carries.
+    assert "return apiUrl(data.url);" in rag_api
+
+    # An absolute link is cross-origin, where the download attribute stops saving, so the
+    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
+    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
+    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
+    assert '"save_native_file_from_url"' in helper
+    assert "isDownloadCancelled(err)" in video_page
+    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
+    assert "URL.createObjectURL(blob)" in video_page
+
+    # media-src, not just connect-src: the signed link is played by an element.
+    tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
+    assert (
+        "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
+    )
+
+    # The save dialog now offers these to video, not just to the audio player, and the
+    # streaming command is registered and pinned to the local backend.
+    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
+    assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
+    assert "async fn stream_url_to_path" in dialogs
+    # Parsed, not sliced: in http://127.0.0.1:8888@evil.test the loopback part is userinfo.
+    assert "reqwest::Url::parse(url)" in dialogs
+    assert "parsed.username().is_empty()" in dialogs
+    assert "parsed.password().is_some()" in dialogs
+    # The chooser has to come first, or the user waits on the body before being asked where.
+    streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
+    assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
+    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
+    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
+    # quiet cannot hang the save while a legitimately large clip still finishes.
+    loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
+    assert "fn streaming_client" in loopback
+    assert "redirect(reqwest::redirect::Policy::none())" in loopback
+    assert ".read_timeout(read_timeout)" in loopback
+    assert ".timeout(" not in loopback.split("fn streaming_client")[1]
+    assert loopback.count(".no_proxy()") == 2
+    assert "loopback_http::streaming_client" in dialogs
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
+    assert "native_file_dialogs::save_native_file_from_url," in main_rs
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
@@ -496,9 +579,24 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    assert '"--studio-titlebar-navigation-offset-y": "2px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
+    # The nudge has to move the navigation without pushing it out of the titlebar it sits
+    # in, so the button box travels with it. The container's mt-1 is deliberately not in
+    # the sum: translate-y is visual, and the margin already seats the box in the row.
+    button = _titlebar_nav_button_px(TITLEBAR.read_text(encoding = "utf-8"))
+    assert button is not None, "navigation button size no longer readable from buttonClass"
+    blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
+    nudged = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-titlebar-navigation-offset-y" in values
+    }
+    assert nudged, blocks.keys()
+    for name, values in nudged.items():
+        offset = _px(values["--studio-titlebar-navigation-offset-y"])
+        titlebar = _px(values.get("--studio-desktop-titlebar-height"))
+        assert offset is not None and offset > 0, (name, values)
+        assert titlebar is not None, (name, values)
+        assert offset + button <= titlebar, (name, offset, button, titlebar)
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
@@ -549,7 +647,22 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    assert '"--studio-chat-header-padding-top": "7px"' in provider
+    # Sharing the row is the contract: the padding must leave the control room inside the
+    # header, so a retune to a large value fails here rather than shipping a clipped row.
+    blocks = _chrome_style_blocks(provider)
+    padded = {
+        name: values
+        for name, values in blocks.items()
+        if "--studio-chat-header-padding-top" in values
+    }
+    assert padded, blocks.keys()
+    for name, values in padded.items():
+        padding = _px(values["--studio-chat-header-padding-top"])
+        header = _px(values.get("--studio-chat-header-height"))
+        control = _px(values.get("--studio-chat-control-height"))
+        assert padding is not None and padding > 0, (name, values)
+        assert header is not None and control is not None, (name, values)
+        assert padding + control <= header, (name, padding, control, header)
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 

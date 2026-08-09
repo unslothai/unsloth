@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Same plan shape as the images backend: both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan } from "@/features/images/api";
+import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 // One Advanced control's resolved value + provenance for the "Auto: X" badges, same shape as the diffusion status.
@@ -139,7 +141,9 @@ export interface VideoReferenceVideo {
 export interface VideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional.
+  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they must match that family's
+  // rules -- width/height one of status.defaults.resolution_presets, num_frames on the k*frame_step+1 lattice -- or the
+  // backend answers 422 with the supported shapes (the same rules the video page's selects are built from).
   width?: number;
   height?: number;
   num_frames?: number;
@@ -200,12 +204,18 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getVideoStatus(): Promise<VideoStatus> {
-  return parseJson(await authFetch("/api/inference/video/status"));
+export async function getVideoStatus(
+  signal?: AbortSignal,
+): Promise<VideoStatus> {
+  return parseJson(await authFetch("/api/inference/video/status", { signal }));
 }
 
-export async function getVideoLoadProgress(): Promise<VideoLoadProgress> {
-  return parseJson(await authFetch("/api/inference/video/load-progress"));
+export async function getVideoLoadProgress(
+  signal?: AbortSignal,
+): Promise<VideoLoadProgress> {
+  return parseJson(
+    await authFetch("/api/inference/video/load-progress", { signal }),
+  );
 }
 
 export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
@@ -213,12 +223,20 @@ export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress>
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
-  return parseJson(
-    await authFetch("/api/inference/video/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+  // Announced so the indicator shows the load while the toast does, and settled
+  // from load-progress because this POST only starts it. See images.
+  return withBackgroundLoadNotice(
+    "video",
+    body.model_path,
+    async () =>
+      parseJson<VideoStatus>(
+        await authFetch("/api/inference/video/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
+    async (signal) => (await getVideoLoadProgress(signal)).phase,
   );
 }
 
@@ -288,7 +306,9 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   const body = (await res.json()) as { url?: string };
   if (!body.url) throw new Error("The server returned no video link.");
-  return body.url;
+  // Absolute because consumers bypass authFetch, and a relative path under Tauri
+  // resolves against the webview origin. No-op in the browser (empty apiBase).
+  return apiUrl(body.url);
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */

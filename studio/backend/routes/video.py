@@ -221,9 +221,19 @@ async def generate_video(
     generate + gallery-persist pipeline; the terminal outcome (completed with the
     saved record / failed with a client-safe error) arrives via generate-progress."""
     from core.inference.video import get_video_backend
-    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG, VIDEO_NOT_LOADED_MSG
+    from core.inference.video_families import (
+        VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_NOT_LOADED_MSG,
+        VideoShapeError,
+    )
 
     backend = get_video_backend()
+    # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
+    # family's (its presets and frame lattice), and begin_generate applies it under the same lock that
+    # reserves the state the job will run against, so a load committing concurrently cannot leave the
+    # shape judged against one family and denoised by another. Unloaded still falls through to the
+    # not-loaded 409; a family with no declared presets keeps the old SIZE snapping, though its frame
+    # lattice is enforced either way (frame_step is declared regardless).
     try:
         await asyncio.to_thread(
             backend.begin_generate,
@@ -246,6 +256,10 @@ async def generate_video(
             flow_shift = request.flow_shift,
             audio_flow_shift = request.audio_flow_shift,
         )
+    except VideoShapeError as exc:
+        # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body
+        # parses and is in range, but the shape is not one this model can render.
+        raise HTTPException(status_code = 422, detail = str(exc))
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))
