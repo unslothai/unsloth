@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import sqlite3
 import uuid
 from typing import Any
 
@@ -323,6 +324,12 @@ async def create_research_run(
         )
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    except sqlite3.IntegrityError as exc:
+        # The thread can be deleted between the check above and this insert, and the foreign key
+        # then fails. Report it gone rather than as a server fault.
+        raise HTTPException(status_code = 404, detail = "Thread not found") from exc
+    if run is None:
+        raise HTTPException(status_code = 404, detail = "Thread not found")
     supervisor = getattr(request.app.state, "research_supervisor", None)
     if supervisor is not None:
         supervisor.note_request_port(request)

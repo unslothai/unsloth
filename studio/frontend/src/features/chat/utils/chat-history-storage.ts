@@ -369,6 +369,17 @@ async function backfillLegacyThreadFields(
       legacyThread.anthropicCodeExecContainerId;
   }
   if (Object.keys(patch).length === 0) return backendThread;
+  const work = applyLegacyThreadBackfill(backendThread, patch);
+  pendingLegacyThreadImports.add(work);
+  const forget = () => pendingLegacyThreadImports.delete(work);
+  work.then(forget, forget);
+  return work;
+}
+
+async function applyLegacyThreadBackfill(
+  backendThread: ThreadRecord,
+  patch: Partial<ThreadRecord>,
+): Promise<ThreadRecord> {
   try {
     const updated = (await updateChatThread(backendThread.id, patch)) ?? {
       ...backendThread,
@@ -687,7 +698,9 @@ async function retryFailedThreadRecord(
     failedThreadRecordByThreadId.delete(threadId);
     trackStoredChatThreadRecord(threadId, createRecord);
   } else if (!pendingThreadRecordByThreadId.has(threadId)) {
-    return undefined;
+    // The write can commit between the caller's read and this check, which clears the tracker.
+    // Re-read rather than reporting a row that now exists as missing.
+    return (await getChatThread(threadId)) ?? undefined;
   }
   // Rethrows on purpose. A caller handed undefined reads it as "no row to update" and drops its
   // patch silently, which is how the prompt queue loses its model correction. Bounded too, since
@@ -783,9 +796,14 @@ export async function listStoredChatThreads(
   if (backendThreads) {
     await importLegacyChatsIfNeeded().catch(() => undefined);
     // A point import can have committed its row while its bump is still pending, and another can
-    // start while this waits, so drain until none remain rather than snapshotting once.
-    while (pendingLegacyThreadImports.size > 0) {
-      await Promise.allSettled([...pendingLegacyThreadImports]);
+    // start while this waits, so drain until none remain. Bounded: authFetch sets no request
+    // timeout, and one wedged import must not hang every sidebar, count and search listing.
+    const importDeadline = Date.now() + THREAD_RECORD_DRAIN_TIMEOUT_MS;
+    while (pendingLegacyThreadImports.size > 0 && Date.now() < importDeadline) {
+      await settleWithin(
+        Promise.allSettled([...pendingLegacyThreadImports]),
+        importDeadline - Date.now(),
+      );
     }
     // Re-read only when the import created threads the read above could not see.
     if (legacyChatImportGeneration !== importGenerationBeforeRead) {
