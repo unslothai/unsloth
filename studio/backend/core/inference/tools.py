@@ -7849,7 +7849,9 @@ def _start_detached_sweep() -> "threading.Thread | None":
             return None
         _swept_detached = True
     thread = threading.Thread(
-        target = sweep_detached_sandboxes, name = "sandbox-sweep", daemon = True,
+        target = sweep_detached_sandboxes,
+        name = "sandbox-sweep",
+        daemon = True,
     )
     thread.start()
     return thread

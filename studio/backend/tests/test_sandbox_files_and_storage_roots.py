@@ -2955,7 +2955,8 @@ def test_an_interrupted_delete_is_finished_on_the_next_launch(tmp_path, monkeypa
     tombstone.mkdir()
     (tombstone / "secret.csv").write_text("rows", encoding = "utf-8")
     (tombstone / tools._SANDBOX_MARKER).write_text(
-        "__LOCALID_gone111", encoding = "utf-8",
+        "__LOCALID_gone111",
+        encoding = "utf-8",
     )
     # The user's own, named similarly and never marked.
     theirs = root / "report.deleting-old"
@@ -2997,8 +2998,8 @@ def test_clearing_every_chat_reports_the_files_it_kept():
     src = Path(__file__).resolve().parents[2] / "frontend/src"
 
     api = (src / "features/chat/api/chat-api.ts").read_text(encoding = "utf-8")
-    clear = api[api.index("export async function clearBackendChats"):]
-    clear = clear[:clear.index("\nexport ")]
+    clear = api[api.index("export async function clearBackendChats") :]
+    clear = clear[: clear.index("\nexport ")]
     assert "Promise<string[]>" in clear
     assert "sandboxes_kept" in clear
 
