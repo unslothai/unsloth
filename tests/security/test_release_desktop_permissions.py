@@ -97,9 +97,7 @@ def test_the_wait_step_polls_every_build_matrix_leg_by_its_real_name():
         return
 
     wait = next(
-        step
-        for step in jobs["publish-release"]["steps"]
-        if "GITHUB_RUN_ID" in step.get("run", "")
+        step for step in jobs["publish-release"]["steps"] if "GITHUB_RUN_ID" in step.get("run", "")
     )
     # Leg names carry their own parentheses, so take the LEGS line, not to `)`.
     legs = re.findall(r"'([^']+)'", wait["run"].split("LEGS=(", 1)[1].split("\n", 1)[0])

@@ -892,9 +892,7 @@ class TestWorkflowOrdering:
         # Scanning a different directory would report on nothing at all.
         steps = self._job("virustotal-scan")["steps"]
         download = next(
-            step
-            for step in steps
-            if step.get("uses", "").startswith("actions/download-artifact@")
+            step for step in steps if step.get("uses", "").startswith("actions/download-artifact@")
         )
         # The two spell the runner temp dir differently, so compare the leaf.
         target = download["with"]["path"].rstrip("/").rsplit("/", 1)[-1]
@@ -920,8 +918,6 @@ class TestWorkflowOrdering:
             if step.get("uses", "").startswith("actions/checkout@")
         )
         scan = next(
-            index
-            for index, step in enumerate(steps)
-            if "virustotal_scan.py" in step.get("run", "")
+            index for index, step in enumerate(steps) if "virustotal_scan.py" in step.get("run", "")
         )
         assert checkout < scan, [step.get("name") for step in steps]
