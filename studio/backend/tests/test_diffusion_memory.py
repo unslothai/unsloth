@@ -1356,7 +1356,12 @@ def test_guard_refuses_the_oversized_frame_and_passes_the_default_one():
     assert message is not None
     # Everything the user needs to act: what they asked for, what it costs, what they have.
     assert "1088x1920" in message
-    assert "13.55 GB" in message  # needed
+    # The TOTAL the decision compared, not the activations alone: 13,872 MiB of activations plus
+    # the 2,048 MiB of fixed overhead. Quoting 13.55 GB against a 13.50 GB budget was a refusal
+    # whose own numbers were close enough to read as a bug, and on the 15.92 GiB card in the
+    # report (14,254 MiB usable) it read as an outright contradiction.
+    assert "15.55 GB" in message  # needed, overhead included
+    assert "2.00 GB of fixed overhead" in message
     assert "13.50 GB" in message  # usable
     assert "15.50 GB" in message  # currently free
     assert "smaller resolution" in message
@@ -1502,3 +1507,47 @@ def test_default_resolution_plans_identically_across_card_sizes():
             base_overhead_mib = 2048,
         )
         assert _zimage_plan_on(memory, None).offload_policy == expected, gigabytes
+
+
+def test_the_refusal_reports_the_number_it_compared():
+    """A refusal that quotes less than it compared reads as a bug in the guard. On the 15.92 GiB
+    card in #8188 (14,254 MiB usable) it printed "needs about 13.55 GB ... only about 13.92 GB
+    usable" and then refused, which is a contradiction on its face."""
+    from core.inference.diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB
+
+    message = _shortfall(1088, 1920, base_overhead_mib = 1_024)
+    assert message is not None
+    # 13,872 MiB of activations + 1,024 MiB of overhead.
+    assert "14.55 GB of working memory" in message
+    assert "1.00 GB of fixed overhead" in message
+    # And with no overhead at all the two numbers are the activations, unchanged.
+    assert "13.55 GB of working memory" in _shortfall(1088, 1920, base_overhead_mib = 0)
+    assert DEFAULT_BASE_OVERHEAD_MIB > 0
+
+
+def test_the_activation_refusal_is_its_own_error_type():
+    """The OpenAI-compatible route sanitises every exception into a bare 500, so the one message
+    written FOR the caller needs a type it can recognise. Still a ValueError, so /images/generate
+    keeps mapping it to a 400 with the reason."""
+    import pytest as _pytest
+
+    from core.inference.diffusion_memory import (
+        ImageActivationShortfallError,
+        raise_on_image_activation_shortfall,
+    )
+
+    assert issubclass(ImageActivationShortfallError, ValueError)
+    with _pytest.raises(ImageActivationShortfallError):
+        raise_on_image_activation_shortfall(
+            device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+            width = 1088,
+            height = 1920,
+            family = _TURBO_HINT,
+        )
+    # A request the guard passes still raises nothing at all.
+    raise_on_image_activation_shortfall(
+        device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
+        width = 1024,
+        height = 1024,
+        family = _TURBO_HINT,
+    )

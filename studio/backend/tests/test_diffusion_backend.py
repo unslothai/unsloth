@@ -7102,3 +7102,21 @@ def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
             transformer_quant = "int8",
         )
     assert seen and all(value == 7_629 for value in seen)
+
+
+def test_the_activation_guard_budgets_the_real_batch_on_windows(monkeypatch):
+    """The singleton floor rests on the OOM backoff halving a failed forward, and under WDDM
+    there is no OOM to catch: the driver serves the overflow from system RAM, the desktop stops
+    responding and nothing recovers it. So Windows budgets the largest chunk it will actually
+    run, while every other platform keeps the batch-32 fast path it measures today."""
+    from core.inference import diffusion as dmod
+
+    chunks = [[object()] * 8, [object()] * 3]
+    monkeypatch.setattr(dmod.sys, "platform", "linux")
+    assert dmod._activation_guard_batch(chunks) == 1
+    assert dmod._activation_guard_batch([]) == 1
+    monkeypatch.setattr(dmod.sys, "platform", "win32")
+    assert dmod._activation_guard_batch(chunks) == 8
+    assert dmod._activation_guard_batch([[object()]]) == 1
+    # An empty job list is still a valid batch of one, never a zero passed to the estimator.
+    assert dmod._activation_guard_batch([]) == 1

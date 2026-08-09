@@ -866,6 +866,16 @@ def _apply_group_offload(
 OVERSIZED_GENERATE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE"
 
 
+class ImageActivationShortfallError(ValueError):
+    """This generation's activations cannot fit the free device budget.
+
+    A ValueError subclass so ``/images/generate``'s existing mapping still turns it into a 400
+    with the reason. The distinct type is what lets the OpenAI-compatible route, whose boundary
+    sanitises every other exception into a bare 500, recognise the one message here that is
+    written FOR the caller and hand it back instead of "Image generation failed."
+    """
+
+
 def _oversized_generate_override() -> bool:
     return os.environ.get(OVERSIZED_GENERATE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -959,8 +969,13 @@ def image_activation_shortfall_message(
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
     # Two decimals, not one: the refusal is often decided by tens of MiB (the 1088x1920 report
     # needed 13,872 MiB against a 13,822 MiB budget), and one decimal prints both as "13.5 GB".
+    # The overhead is part of the comparison above, so it has to be part of the number reported.
+    # Quoting the activations alone printed a refusal that contradicted itself: 13.55 GB needed
+    # against 13.92 GB usable, refused.
+    total = int(needed) + max(0, int(base_overhead_mib))
     return (
-        f"Generating at {w}x{h}{batch_note} needs about {needed / 1024:.2f} GB of working memory, "
+        f"Generating at {w}x{h}{batch_note} needs about {total / 1024:.2f} GB of working memory "
+        f"(including about {max(0, int(base_overhead_mib)) / 1024:.2f} GB of fixed overhead), "
         f"but only about {int(budget) / 1024:.2f} GB is usable on this device (of the "
         f"{int(free) / 1024:.2f} GB currently free, after reserving room for fragmentation and "
         "other processes). Working memory holds this pass's latents and attention buffers, which "
@@ -999,7 +1014,7 @@ def raise_on_image_activation_shortfall(
         return
     if logger is not None:
         logger.error("diffusion.memory: refusing oversized generation: %s", message)
-    raise ValueError(message)
+    raise ImageActivationShortfallError(message)
 
 
 def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:

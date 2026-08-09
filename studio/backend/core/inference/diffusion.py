@@ -22,11 +22,12 @@ import inspect
 import json
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from core._torchao_stub import (
     install_torchao_windows_rocm_stub,
@@ -888,6 +889,24 @@ def _uncached_prequant_repo(
         return source.location
     except Exception:  # noqa: BLE001 — a probe that cannot answer keeps the prequant shortcut
         return None
+
+
+def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
+    """The batch size the generate-time activation guard budgets for.
+
+    One image, normally. The OOM backoff halves a failed multi-image forward all the way down to
+    SINGLETONS, so an oversized batch is already recoverable wherever torch raises; budgeting the
+    whole chunk here would refuse batches that complete today (the measured batch-32 fast path).
+    A single image that does not fit is the case no backoff can rescue, so that is the floor.
+
+    Windows is the exception, and it is the exception this guard was written for. Under WDDM the
+    driver satisfies a device overflow out of system RAM instead of raising, so no
+    OutOfMemoryError ever reaches the backoff and an overrunning batch simply grows into tens of
+    GB of host RAM and pagefile with the desktop unresponsive. Nothing recovers that after the
+    fact, so the largest real chunk is budgeted up front there."""
+    if sys.platform != "win32":
+        return 1
+    return max((len(chunk) for chunk in chunks), default = 1)
 
 
 def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
@@ -4468,12 +4487,7 @@ class DiffusionBackend:
                     guard_width, guard_height = _compile_shape_dims(
                         workflow, init_pil, width, height
                     )
-                    # Batch term: the OOM backoff below halves a failed multi-image forward down to
-                    # SINGLETONS, so an oversized batch is already recoverable wherever torch
-                    # raises. Budgeting the full chunk here would refuse batches that complete
-                    # today (the measured batch-32 fast path). One image that does not fit is the
-                    # case no backoff can rescue, so that is the floor this refuses on.
-                    guard_batch = 1
+                    guard_batch = _activation_guard_batch(chunks)
                     raise_on_image_activation_shortfall(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(),
                         # which is right once per load but wrong on a per-generation path -- it
