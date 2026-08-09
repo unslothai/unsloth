@@ -582,8 +582,8 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if isinstance(card_data, dict):
             # datasets merges the standalone YAML into the card, so a README that
             # declares nothing does not undo a declaration made there.
-            declared = declared or bool(card_data.get("configs")) or bool(
-                card_data.get("dataset_info")
+            declared = (
+                declared or bool(card_data.get("configs")) or bool(card_data.get("dataset_info"))
             )
             _add_config_options(options, card_data.get("configs"))
             _add_dataset_info_options(options, card_data.get("dataset_info"))
