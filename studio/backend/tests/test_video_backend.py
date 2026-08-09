@@ -5366,6 +5366,4 @@ def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, 
             model_dense_mib = int(gb * mib_per_gb),
             runtime_headroom_mib = headroom,
         )
-        assert (
-            unified_memory_shortfall_message(plan, family = fam.name) is not None
-        ) is refused, gb
+        assert (unified_memory_shortfall_message(plan, family = fam.name) is not None) is refused, gb
