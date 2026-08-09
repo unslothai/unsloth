@@ -1628,7 +1628,8 @@ def _end_previous_connector(record: object) -> bool:
 def reclaim_at_launch() -> None:
     try:
         with certificate_state_claim("cleanup"):
-            _settle(None)
+            from utils.remote_access_settings import clear_custom_remote_access_auto_start
+            _settle(None, clear_auto_start = clear_custom_remote_access_auto_start)
     except ProvisioningError as exc:
         if exc.code != "certificate_state_busy":
             logger.warning("Cloudflare setup reclaim stopped: %s", exc.detail)

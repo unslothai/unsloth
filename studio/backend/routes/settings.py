@@ -92,10 +92,13 @@ from utils.preview_sharing_settings import (
 )
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
+    cancel_custom_remote_access,
+    provision_custom_remote_access,
     remote_access_status,
     set_remote_access_auto_start,
     start_remote_access,
     stop_remote_access,
+    teardown_custom_remote_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -1603,6 +1606,11 @@ class PreviewSharingResponse(BaseModel):
 
 class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
+    kind: Literal["temporary", "custom"] = "temporary"
+
+
+class CustomTunnelProvisionPayload(BaseModel):
+    hostname: str = Field(..., min_length = 1, max_length = 253)
 
 
 class RemoteAccessResponse(BaseModel):
@@ -1618,6 +1626,21 @@ class RemoteAccessResponse(BaseModel):
     block_reason: Optional[str] = None
     password_pending: bool = False
     streaming_supported: bool = True
+    kind: Optional[Literal["temporary", "custom"]] = None
+    connector_registered: bool = False
+    tunnel_serving: bool = False
+    dns: Literal["unknown", "pending", "resolved"] = "unknown"
+    auto_start_kind: Optional[Literal["temporary", "custom"]] = None
+    auto_start_block_reason: Optional[str] = None
+    custom_state: Literal["unconfigured", "provisioning", "configured", "tearing_down", "error"] = (
+        "unconfigured"
+    )
+    custom_hostname: Optional[str] = None
+    custom_runnable: bool = False
+    login_url: Optional[str] = None
+    custom_error: Optional[str] = None
+    custom_error_detail: Optional[str] = None
+    orphaned_hostnames: list[str] = Field(default_factory = list)
 
 
 def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
@@ -1643,9 +1666,10 @@ def start_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
+    kind: Optional[Literal["temporary", "custom"]] = None,
 ) -> RemoteAccessResponse:
     try:
-        response = RemoteAccessResponse(**start_remote_access(request.app.state))
+        response = RemoteAccessResponse(**start_remote_access(request.app.state, kind = kind))
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     logger.info("settings.remote_access_start_requested subject=%s", current_subject)
@@ -1684,13 +1708,52 @@ def update_remote_access_auto_start(
 ) -> RemoteAccessResponse:
     if bool(getattr(request.app.state, "remote_access_is_colab", False)):
         raise HTTPException(status_code = 409, detail = "colab")
-    set_remote_access_auto_start(payload.enabled)
+    set_remote_access_auto_start(payload.enabled, payload.kind)
     logger.info(
         "settings.remote_access_auto_start_updated subject=%s enabled=%s",
         current_subject,
         payload.enabled,
     )
     return _remote_access_response(request)
+
+
+@router.post("/remote-access/custom/provision", response_model = RemoteAccessResponse)
+def provision_custom_remote_access_route(
+    request: Request,
+    payload: CustomTunnelProvisionPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = provision_custom_remote_access(request.app.state, payload.hostname)
+    except Exception as exc:
+        code = getattr(exc, "code", None) or str(exc)
+        raise HTTPException(status_code = 409, detail = code) from exc
+    logger.info("settings.custom_tunnel_provision_requested subject=%s", current_subject)
+    return RemoteAccessResponse(**status)
+
+
+@router.post("/remote-access/custom/cancel", response_model = RemoteAccessResponse)
+def cancel_custom_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    return RemoteAccessResponse(**cancel_custom_remote_access(request.app.state))
+
+
+@router.post("/remote-access/custom/teardown", response_model = RemoteAccessResponse)
+def teardown_custom_remote_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> RemoteAccessResponse:
+    try:
+        status = teardown_custom_remote_access(request.app.state)
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.custom_tunnel_teardown_requested subject=%s", current_subject)
+    return RemoteAccessResponse(**status)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
