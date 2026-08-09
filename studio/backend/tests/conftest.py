@@ -747,3 +747,41 @@ def _reset_optional_module_memo():
     _shim._reset_optional_module_cache()
     yield
     _shim._reset_optional_module_cache()
+
+
+@pytest.fixture
+def healthy_diffusers(monkeypatch):
+    """A diffusers that answers any pipeline class, for tests about a route rather than a cast.
+
+    The training route asserts the family's pipeline class strictly before it frees the resident
+    GPU models, so a runner whose diffusers cannot import (a transformers/huggingface-hub pin skew
+    is the common one: the lazy top level then raises RuntimeError instead of answering hasattr)
+    would turn every routing and config test into a 400 about diffusers. This is a PROXY, not a
+    replacement: everything the real module can still serve is delegated, including ``__path__`` so
+    ``from diffusers.optimization import ...`` keeps working, and only a pipeline class it cannot
+    produce is answered here. Tests that DO exercise the gate replace ``sys.modules["diffusers"]``
+    themselves, which runs after this and wins."""
+    import types
+
+    try:
+        import diffusers as _real
+    except Exception:  # noqa: BLE001 -- an absent diffusers is exactly what this stands in for
+        _real = None
+
+    class _AnyPipeline(types.ModuleType):
+        def __getattr__(self, name):
+            if _real is not None:
+                try:
+                    return getattr(_real, name)
+                except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
+                    pass
+            if name.endswith("Pipeline"):
+                return object
+            raise AttributeError(name)
+
+    proxy = _AnyPipeline("diffusers")
+    proxy.__version__ = str(getattr(_real, "__version__", "0.39.0"))
+    for attr in ("__path__", "__file__", "__spec__", "__loader__"):
+        if _real is not None and hasattr(_real, attr):
+            setattr(proxy, attr, getattr(_real, attr))
+    monkeypatch.setitem(sys.modules, "diffusers", proxy)
