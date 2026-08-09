@@ -1705,7 +1705,12 @@ def test_a_record_written_elsewhere_takes_the_answer_back_from_the_memo(tmp_path
 
     real_open = builtins.open
 
-    def _readonly_record(file, mode = "r", *a, **k):
+    def _readonly_record(
+        file,
+        mode = "r",
+        *a,
+        **k,
+    ):
         if str(file).endswith(sdmod.INSTALL_RECORD) and "w" in mode:
             raise OSError("permission denied")
         return real_open(file, mode, *a, **k)

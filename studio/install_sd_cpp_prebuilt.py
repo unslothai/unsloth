@@ -355,9 +355,7 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
 
 
 def _executable_names() -> set[str]:
-    return (
-        {"sd-cli.exe", "sd-server.exe"} if sys.platform == "win32" else {"sd-cli", "sd-server"}
-    )
+    return {"sd-cli.exe", "sd-server.exe"} if sys.platform == "win32" else {"sd-cli", "sd-server"}
 
 
 def _managed_executables(root: Path) -> set[Path]:
