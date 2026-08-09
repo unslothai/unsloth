@@ -16,7 +16,7 @@ export const CHAT_AUDIO_DROP_ACCEPT = ".wav,.mp3,.m4a,.ogg,.oga,.flac";
 const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, ${CHAT_AUDIO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, or a single .gguf model.`;
 
 function hasExt(path: string, ext: string): boolean {
   return path.toLowerCase().endsWith(ext);
@@ -49,6 +49,11 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
     AUDIO_EXTS.some((ext) => hasExt(path, ext)),
   );
   if (docs.length + images.length + audio.length !== paths.length) {
+    return { kind: "unsupported" };
+  }
+  // The composer's audio adapter takes one clip per message, so a larger batch
+  // would register and read files that can never attach.
+  if (audio.length > 1) {
     return { kind: "unsupported" };
   }
   if (docs.length === 0 && images.length === 0 && audio.length === 0) {

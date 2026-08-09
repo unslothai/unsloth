@@ -17,6 +17,9 @@ interface NativeIntentState {
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
   registeringImageDrops: number;
+  // Same, for audio drops: the send gate has to cover the register-and-read
+  // window, or a fast submit goes out without the clip.
+  registeringAudioDrops: number;
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
@@ -32,6 +35,8 @@ interface NativeIntentState {
   takeAudioAttachments: (targetKey: string) => NativeIntent[];
   beginImageDropRegistration: () => void;
   endImageDropRegistration: () => void;
+  beginAudioDropRegistration: () => void;
+  endAudioDropRegistration: () => void;
   failImageDropRegistration: (targetKey: string) => void;
   noteImageDropOwner: (targetKey: string, identity: string) => void;
   claimImageAttachments: (identity: string, targetKey: string) => void;
@@ -44,6 +49,7 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingImageAttachments: {},
   pendingAudioAttachments: {},
   registeringImageDrops: 0,
+  registeringAudioDrops: 0,
   imageDropFailures: {},
   imageDropOwners: {},
   addAttachments: (targetKey, intents) => {
@@ -117,6 +123,12 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   },
   endImageDropRegistration: () => {
     set({ registeringImageDrops: Math.max(0, get().registeringImageDrops - 1) });
+  },
+  beginAudioDropRegistration: () => {
+    set({ registeringAudioDrops: get().registeringAudioDrops + 1 });
+  },
+  endAudioDropRegistration: () => {
+    set({ registeringAudioDrops: Math.max(0, get().registeringAudioDrops - 1) });
   },
   failImageDropRegistration: (targetKey) => {
     const current = get().imageDropFailures;

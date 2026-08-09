@@ -244,6 +244,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           // so an Enter in that window would send the text without the image.
           const store = useNativeIntentStore.getState();
           if (needsImages) store.beginImageDropRegistration();
+          if (needsAudio) store.beginAudioDropRegistration();
           try {
             const registered = await registerDroppedAttachments(dropped);
             const latestOptions = optionsRef.current;
@@ -287,6 +288,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             });
           } finally {
             if (needsImages) store.endImageDropRegistration();
+            if (needsAudio) store.endAudioDropRegistration();
           }
           return;
         }

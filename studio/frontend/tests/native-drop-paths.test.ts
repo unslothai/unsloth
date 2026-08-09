@@ -362,14 +362,32 @@ test("document and image drop extensions stay disjoint", () => {
 
 // The composer already takes audio uploads, so a dropped clip has to reach the
 // same adapter instead of being reported as an unsupported file type.
-test("audio routes to chat audio attachments, one or many", () => {
+test("a single audio file routes to chat audio attachments", () => {
+  const dropped = classifyDropPaths(["/clips/take.WAV"]);
+  assert.equal(dropped.kind, "audio");
+  assert.deepEqual(dropped.kind === "audio" ? dropped.paths : [], [
+    "/clips/take.WAV",
+  ]);
+});
+
+// The adapter attaches one clip per message, so a larger batch has to be turned
+// away up front rather than registered and read for attachments that cannot land.
+test("multi-audio drops are rejected before they are routed", () => {
   const dropped = classifyDropPaths([
     "/clips/take.WAV",
     "/clips/note.mp3",
     "/clips/voice.flac",
   ]);
-  assert.equal(dropped.kind, "audio");
-  assert.equal(dropped.kind === "audio" ? dropped.paths.length : 0, 3);
+  assert.equal(dropped.kind, "unsupported");
+});
+
+test("a second clip alongside other attachments is rejected too", () => {
+  const dropped = classifyDropPaths([
+    "/docs/a.pdf",
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
+  assert.equal(dropped.kind, "unsupported");
 });
 
 test("documents, images and audio can be dropped together", () => {
