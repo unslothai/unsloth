@@ -17,6 +17,9 @@ const BLOCKED_HOSTS_SHOWN = 3;
 // Far above what a real page trips, so the banner's count stays exact in
 // practice; it only saturates for a canvas manufacturing violations.
 const BLOCKED_URIS_TRACKED = 100;
+// Generous next to a real report, which is just an origin, and it bounds both
+// the stored string and the host derived from it.
+const BLOCKED_URI_MAX_CHARS = 2048;
 
 type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
@@ -147,6 +150,15 @@ export function ArtifactHtmlFrame({
         // already navigated away from.
         if (event.data.v !== codeVersion) return;
         const uri = event.data.blockedURI;
+        // A genuine report is only an origin: a cross-origin blockedURI is
+        // stripped to scheme+host+port, and this frame's origin is opaque, so
+        // every http(s) resource is cross-origin. Anything longer is forged by
+        // the canvas, which can post these directly. The entry cap bounds how
+        // many are kept but not their size, so bound it here or a handful of
+        // reports can park megabytes in parent state.
+        if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
+          return;
+        }
         const host = blockedHost(uri);
         if (!host) return;
         setBlocked((current) => appendBlocked(current, code, uri, host));

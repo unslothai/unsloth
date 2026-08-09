@@ -224,6 +224,7 @@ test("no effect resets the grant, which would leave a stale render", () => {
   assert.ok(!resetInEffect, "the grant must not be reset from an effect");
 });
 
+const URI_LENGTH_GUARD = /uri\.length > BLOCKED_URI_MAX_CHARS/;
 const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
 const URI_DUPLICATE = /\buris\.includes\(uri\)/;
 const BAILS_OUT = /\bcurrent\b/;
@@ -266,6 +267,28 @@ test("blocked reports from a stale frame load are rejected", () => {
   };
   source.forEachChild(visit);
   assert.ok(guarded, "reports are not matched against the current load");
+});
+
+// The entry cap bounds how many reports are kept, not how big each one is, and
+// the canvas can post these directly rather than going through the CSP. A real
+// report is only an origin, so anything long is forged; without this a handful
+// of reports parks megabytes of parent state. The host is derived from the URI,
+// so bounding the URI bounds it too.
+test("oversized blocked URIs are dropped before anything is stored", () => {
+  const source = sourceFile(FRAME);
+  let bounded = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      URI_LENGTH_GUARD.test(node.expression.getText()) &&
+      node.thenStatement.getText().includes("return")
+    ) {
+      bounded = true;
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(bounded, "an oversized blockedURI is not rejected");
 });
 
 // The canvas picks the blocked URIs, so an uncapped list is memory growth and a
