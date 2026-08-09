@@ -11,6 +11,7 @@ reaped only the wrapper on Windows, and the orphaned venv python then made
 import os
 import signal
 import subprocess
+import threading
 import sys
 import time
 from pathlib import Path
@@ -1614,6 +1615,106 @@ def test_forgetting_an_untracked_pid_costs_nothing():
 
     assert scanned == []
     assert written == [], "rewrote the record for a pid it never held"
+
+
+def test_a_validation_server_the_installer_started_is_recorded(monkeypatch, tmp_path):
+    """It is a grandchild: a parent-death signal reaches the installer only, and
+    the record of the installer pid alone never finds the server holding the GPU."""
+    from utils.prebuilt import update_flow
+
+    adopted, forgotten = [], []
+    monkeypatch.setattr(update_flow, "adopt_pid", lambda pid: adopted.append(pid))
+    monkeypatch.setattr(update_flow, "forget_pid", lambda pid: forgotten.append(pid))
+
+    class FakeProc:
+        pid = 4321
+        stdout = iter([
+            "downloading 10% (1/10)\n",
+            "UNSLOTH_INSTALLER_CHILD started 9911\n",
+            "validating\n",
+            "UNSLOTH_INSTALLER_CHILD stopped 9911\n",
+            "downloading 100% (10/10)\n",
+        ])
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
+    update_flow.stream_installer(
+        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+    )
+
+    assert adopted == [4321, 9911], adopted  # the installer, then its server
+    # Dropped on the stop line, before the installer's own record goes.
+    assert forgotten[0] == 9911, forgotten
+
+
+def test_a_validation_server_left_running_stays_recorded(monkeypatch):
+    """The installer killed before it could report the stop is exactly the case
+    the record exists for, so nothing may drop it."""
+    from utils.prebuilt import update_flow
+
+    adopted, forgotten = [], []
+    monkeypatch.setattr(update_flow, "adopt_pid", lambda pid: adopted.append(pid))
+    monkeypatch.setattr(update_flow, "forget_pid", lambda pid: forgotten.append(pid))
+
+    class FakeProc:
+        pid = 4321
+        stdout = iter(["UNSLOTH_INSTALLER_CHILD started 9912\n"])
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
+    update_flow.stream_installer(
+        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+    )
+
+    assert adopted == [4321, 9912], adopted  # the installer, then its server
+    assert 9912 not in forgotten, "dropped the only handle on a running server"
+
+
+def test_the_installer_announces_and_groups_its_validation_server():
+    """The other half of the handoff, in the script Studio runs."""
+    source = (
+        Path(__file__).resolve().parents[2] / "install_llama_prebuilt.py"
+    ).read_text(encoding = "utf-8")
+
+    assert '_announce_child("started", process.pid)' in source
+    assert '_announce_child("stopped", process.pid)' in source
+    # Its own group, so a server that starts something of its own is still
+    # reachable through the one pid that gets recorded.
+    assert '"start_new_session": True' in source
+    assert "_terminate_validation_server" in source
+    assert "killpg" in source
+
+
+def test_a_backend_never_starts_under_a_disarmed_job():
+    """The UI gate runs per update action, but a webview remount starts a backend
+    on its own, so the check belongs where the spawn happens."""
+    process_rs = (
+        Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "process.rs"
+    ).read_text(encoding = "utf-8")
+
+    start = process_rs.index("pub fn start_backend(")
+    spawn = process_rs.index("resolve_backend_binary()", start)
+    gate = process_rs.index("kill_on_close_armed()", start)
+    assert gate < spawn, "the armed check runs after the backend is resolved and spawned"
+    assert "resume_after_update_installer()" in process_rs[start:spawn]
+    # Fail closed: a re-arm that will not take must stop the start.
+    assert "Refusing to start the backend with crash cleanup disarmed" in process_rs
 
 
 if __name__ == "__main__":

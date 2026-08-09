@@ -36,6 +36,10 @@ RESOLVE_TTL_SECONDS = 24 * 60 * 60
 # Matches the installer's download progress lines, e.g.
 # "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
 PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
+# The installer announces each server it starts to validate a build. They are
+# grandchildren, so a parent-death signal or a sweep of the installer pid alone
+# never reaches them, and one left running holds the GPU and the staged files.
+CHILD_PID_LINE_RE = re.compile(r"\AUNSLOTH_INSTALLER_CHILD (started|stopped) (\d+)\Z")
 # The download dominates the update; extract/validate fill the last slice.
 DOWNLOAD_PROGRESS_CEILING = 0.95
 
@@ -335,6 +339,13 @@ def stream_installer(
             tail_lines.append(line)
             if len(tail_lines) > 80:
                 del tail_lines[0]
+            child = CHILD_PID_LINE_RE.match(line.strip())
+            if child is not None:
+                # Recorded while it runs and dropped when the installer says it
+                # stopped; one it never got to report stays for the sweep.
+                started, child_pid = child.group(1) == "started", int(child.group(2))
+                (adopt_pid if started else forget_pid)(child_pid)
+                continue
             m = PROGRESS_LINE_RE.search(line)
             if m is None:
                 continue

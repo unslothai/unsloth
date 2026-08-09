@@ -18,6 +18,7 @@ import platform
 import random
 import re
 import shutil
+import signal
 import site
 import socket
 import ssl
@@ -5270,8 +5271,16 @@ def validate_server(
                     stderr = subprocess.STDOUT,
                     text = True,
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
+                    # Its own group, so whatever it starts is reachable through
+                    # the leader alone. Not shared with this script: Studio kills
+                    # the installer's group, and this server has to go with it.
+                    **({"start_new_session": True} if os.name == "posix" else {}),
                     **windows_hidden_subprocess_kwargs(),
                 )
+                # For the caller that spawned this script: a validation server is
+                # its grandchild, so a crash here leaves it holding the GPU and
+                # the staged files with nothing recording where it is.
+                _announce_child("started", process.pid)
                 deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
@@ -5332,12 +5341,9 @@ def validate_server(
                     )
         finally:
             if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout = 5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout = 5)
+                _terminate_validation_server(process)
+            if process is not None:
+                _announce_child("stopped", process.pid)
             try:
                 log_path.unlink(missing_ok = True)
             except Exception:
@@ -5345,6 +5351,45 @@ def validate_server(
     if last_failure is not None:
         raise last_failure
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
+
+
+def _announce_child(state: str, pid: int) -> None:
+    """Tell whoever runs this script about a server it started.
+
+    Studio adopts the pid so its own sweep can reach it; run by hand the line is
+    just noise on stdout.
+    """
+    print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
+
+
+def _terminate_validation_server(process: "subprocess.Popen") -> None:
+    """Stop the validation server and anything it started.
+
+    It leads its own group, so signalling the leader alone would leave a child
+    of its own behind.
+    """
+    signalled = False
+    if os.name == "posix" and hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            signalled = True
+        except OSError:
+            pass
+    if not signalled:
+        process.terminate()
+    try:
+        process.wait(timeout = 5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "posix" and hasattr(os, "killpg"):
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except OSError:
+            process.kill()
+    else:
+        process.kill()
+    process.wait(timeout = 5)
 
 
 def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
