@@ -141,6 +141,7 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _gguf_variant_key,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -175,6 +176,7 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _gguf_variant_key,
         _is_big_endian_gguf_path,
         _is_mtp_drafter,
         is_audio_input_type,
@@ -2758,7 +2760,13 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        if _extract_quant_label(path.name).lower() != variant.lower():
+        # Keyed on the path, not the basename: a repo holding several checkpoints at
+        # one quant would otherwise delete every one of them for a single row.
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = path.name
+        if _gguf_variant_key(relative).lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
@@ -3453,6 +3461,9 @@ async def get_gguf_variants(
                 GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
+                    # A path-qualified key is not a label a picker can show; without this
+                    # the row reads as its whole relative path.
+                    display_label = getattr(v, "display_label", None),
                     size_bytes = v.size_bytes,
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
