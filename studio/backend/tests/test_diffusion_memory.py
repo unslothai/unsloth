@@ -1050,6 +1050,11 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
     mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)  # the tables are DECIMAL GB
     # family: the RAM sizes (GiB) at which the load must be REFUSED.
     expected_refusals = {
+        # 144.2 GB of bf16 weights, the largest video family by a wide margin: refused at every
+        # size in this matrix, 128 GiB included. That is the correct answer rather than a gap in
+        # the table -- the dense pipeline cannot fit any Mac modelled here, and a user on one
+        # reaches H3 through the GGUF or prequantized artifacts instead.
+        "minimax-h3": {16, 24, 32, 64, 96, 128},
         "ltx-2": {16, 24, 32, 64, 96},
         "wan2.2-ti2v-5b": {16, 24, 32},
         "wan2.2-t2v-a14b": {16, 24, 32, 64, 96},
