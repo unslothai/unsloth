@@ -18544,6 +18544,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     sees an orphan tool_call_id.
     """
     dropped_ids: set[str] = set()
+    stranded: set[int] = set()
     sanitized_assistant: list[dict] = []
     for m in messages:
         if m.get("role") != "assistant":
@@ -18603,8 +18604,8 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         m_clean = {k: v for k, v in m.items() if k != "extra_content"}
         if cleaned:
             m_clean["tool_calls"] = cleaned
-        else:
-            m_clean.pop("tool_calls", None)
+        elif m_clean.pop("tool_calls", None):
+            stranded.add(id(m_clean))  # lost every call; its tool reply goes too
         if not m_clean.get("content") and not m_clean.get("tool_calls"):
             if not m_clean.get("reasoning_content"):
                 continue  # assistant turn now empty, drop
@@ -18614,7 +18615,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         sanitized_assistant.append(m_clean)
 
     if not dropped_ids:
-        return _merge_padded_reasoning_turns(sanitized_assistant)
+        return _merge_scrubbed_assistant_turns(sanitized_assistant, stranded)
     out: list[dict] = []
     for m in sanitized_assistant:
         if (
@@ -18624,37 +18625,35 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         ):
             continue
         out.append(m)
-    return _merge_padded_reasoning_turns(out)
+    return _merge_scrubbed_assistant_turns(out, stranded)
 
 
-def _merge_padded_reasoning_turns(messages: list[dict]) -> list[dict]:
-    """Fold a padded reasoning-only assistant turn into the assistant turn after it.
+def _merge_scrubbed_assistant_turns(messages: list[dict], stranded: set) -> list[dict]:
+    """Merge an assistant turn the scrub emptied of tool_calls into the one after it.
 
-    Stripping a turn down to its trace and dropping the matching tool result leaves
-    that turn back to back with the provider's real answer, and strict alternating
-    templates (Gemma 3) raise on adjacent assistant turns rather than generate. The
-    two were one logical response anyway, so the trace moves onto the answer,
-    oldest first when both carry one. ``content == ""`` only ever comes from the
-    padding above, since ChatMessage collapses an empty string to None."""
+    Taking a turn's synthetic calls and its tool reply away strands it beside the
+    provider's real answer, and strict alternating templates (Gemma 3) raise on
+    adjacent assistant turns rather than generate. They were one response, so text
+    and trace move onto the answer, oldest first."""
     out: list[dict] = []
     for msg in messages:
         prev = out[-1] if out else None
-        if (
-            msg.get("role") == "assistant"
-            and prev is not None
-            and prev.get("role") == "assistant"
-            and prev.get("content") == ""
-            and not prev.get("tool_calls")
-            and prev.get("reasoning_content")
-        ):
-            merged = dict(msg)
-            own = merged.get("reasoning_content")
-            merged["reasoning_content"] = (
-                prev["reasoning_content"] + "\n\n" + own if own else prev["reasoning_content"]
-            )
-            out[-1] = merged
+        if not (msg.get("role") == "assistant" and prev is not None and id(prev) in stranded):
+            out.append(msg)
             continue
-        out.append(msg)
+        merged = dict(msg)
+        old, new = prev.get("content"), merged.get("content")
+        if isinstance(old, str) and old:
+            if isinstance(new, list):
+                merged["content"] = [{"type": "text", "text": old}] + new
+            elif isinstance(new, str) and new:
+                merged["content"] = old + "\n\n" + new
+            else:
+                merged["content"] = old
+        old, new = prev.get("reasoning_content"), merged.get("reasoning_content")
+        if isinstance(old, str) and old:
+            merged["reasoning_content"] = old + "\n\n" + new if new else old
+        out[-1] = merged
     return out
 
 

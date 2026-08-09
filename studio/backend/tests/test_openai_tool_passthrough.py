@@ -2005,6 +2005,59 @@ class TestDropEmptyAssistantSentinels:
         assert out[1]["content"] == "Here is what I found."
         assert out[1]["reasoning_content"] == "I should search"
 
+    def test_scrub_merges_stranded_content_turn_into_the_next_assistant(self):
+        """Same adjacency without any reasoning_content: a synthetic-tool turn that
+        carries its own text is stranded beside the answer once the tool reply goes.
+        This one predates reasoning passthrough."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "search"},
+            {"role": "assistant", "content": "let me look",
+             "tool_calls": [{"id": "c0", "type": "function", "function": {
+                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "results"},
+            {"role": "assistant", "content": "Here is what I found."},
+        ]
+        out = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(msgs))
+        assert [m["role"] for m in out] == ["user", "assistant"]
+        assert out[1]["content"] == "let me look\n\nHere is what I found."
+
+    def test_scrub_merge_prepends_a_text_part_when_the_answer_is_content_parts(self):
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "looking",
+             "tool_calls": [{"id": "c0", "type": "function", "function": {
+                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "r"},
+            {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
+        ]
+        out = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(msgs))
+        assert out[1]["content"] == [
+            {"type": "text", "text": "looking"}, {"type": "text", "text": "answer"},
+        ]
+
+    def test_scrub_leaves_real_tool_calls_and_client_adjacency_alone(self):
+        """Only turns the scrub itself emptied are merged. A real function call keeps
+        its tool reply, and assistant turns the client sent back to back are its own
+        business, forwarded exactly as before."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        real = [{"role": "user", "content": "weather?"},
+                {"role": "assistant", "content": "checking",
+                 "tool_calls": [{"id": "r0", "type": "function", "function": {
+                     "name": "lookup", "arguments": '{"q": "w"}'}}]},
+                {"role": "tool", "tool_call_id": "r0", "content": "sunny"},
+                {"role": "assistant", "content": "It is sunny."}]
+        assert [m["role"] for m in _strip_provider_synthetic_tool_history(real)] == [
+            "user", "assistant", "tool", "assistant"]
+
+        client = [{"role": "assistant", "content": "part one"},
+                  {"role": "assistant", "content": "part two"}]
+        assert _strip_provider_synthetic_tool_history(client) == client
+
     def test_scrub_merge_keeps_both_traces_oldest_first(self):
         from routes.inference import _strip_provider_synthetic_tool_history
 
