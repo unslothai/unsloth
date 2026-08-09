@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the advisory VirusTotal post-publish scan.
+"""Unit tests for the advisory VirusTotal release asset scan.
 
-The scan is a sweep of the bundles a release has already published, run in the
-`virustotal-scan` job after `publish-release`. It is not a gate and cannot hold
-a release back; Defender in the build job is the fail-closed check.
+The scan is a sweep of the bundles `publish-release` uploaded, run in the
+`virustotal-scan` job after it. Those bundles are attached to a draft on the
+default dispatch and to a published release otherwise, which is why neither the
+job nor the summary heading claims a publication. It is not a gate and cannot
+hold a release back; Defender in the build job is the fail-closed check.
 
 Offline by design: every test injects a fake transport, so the suite never spends
 the account's 500/day quota and never uploads a build. The two behaviours worth
@@ -20,6 +22,7 @@ protecting are the ones a release depends on:
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import pathlib
 import sys
@@ -446,7 +449,7 @@ class TestDeadlineEnforcement:
             ]
         )
         assert rc == 0
-        assert "VirusTotal pre-flight scan" in summary.read_text()
+        assert vt.SUMMARY_HEADING in summary.read_text()
 
 
 class TestRenderMarkdown:
@@ -855,6 +858,10 @@ class TestWorkflowOrdering:
     def _scan_step_names(self):
         return [step.get("name") for step in self._scan_job()["steps"]]
 
+    @staticmethod
+    def _leaf(path):
+        return path.rstrip("/").rsplit("/", 1)[-1]
+
     def test_the_scan_is_its_own_job_gated_on_publish_release(self):
         # Pins the post-publish ordering rather than merely tolerating it: the
         # job must exist and must be downstream of publish-release, so dropping
@@ -863,10 +870,27 @@ class TestWorkflowOrdering:
         assert job["needs"] == ["publish-release"]
 
     def test_the_scan_job_is_not_conditioned_away(self):
-        # A job-level `if:` is the quiet way to disable a scan without deleting
-        # it, so the job carries none: reaching it is decided by `needs` alone.
+        # `needs:` alone gives ordering plus GitHub's default `success()` gating,
+        # which is what keeps the scan from running after a publication that
+        # never happened. A job-level `if:` overrides that gating: `always()`,
+        # `failure()` or `cancelled()` would upload build artifacts to a third
+        # party on the strength of a failed publish-release, and `${{ false }}`
+        # would disable the scan without deleting the job. So the job may either
+        # carry no `if:` at all, as it does today, or one that still requires
+        # `success()` and adds to it.
         job = self._scan_job()
-        assert "if" not in job
+        condition = job.get("if")
+        if condition is not None:
+            normalised = str(condition).replace(" ", "")
+            assert "success()" in normalised, (
+                f"virustotal-scan carries `if: {condition}`, which drops the success() "
+                "gating that needs: [publish-release] provides by default"
+            )
+            for override in ("always()", "failure()", "cancelled()"):
+                assert override not in normalised, (
+                    f"virustotal-scan carries `if: {condition}`, which runs the scan "
+                    "for outcomes other than a successful publish-release"
+                )
 
         # Nor may the individual steps be skipped, except the summary, which is
         # `if: always()` precisely so the evidence survives a failed scan.
@@ -882,17 +906,46 @@ class TestWorkflowOrdering:
         # artifacts the build matrix uploaded and publish-release shipped. A
         # pattern that matched nothing would scan an empty directory and still
         # report success.
+        build = self._workflow()["jobs"]["build"]
         upload_names = {
             step.get("with", {}).get("name")
-            for step in self._workflow()["jobs"]["build"]["steps"]
+            for step in build["steps"]
             if step.get("uses", "").startswith("actions/upload-artifact@")
         }
         assert "desktop-release-${{ matrix.artifact }}" in upload_names
 
         download = self._scan_step_map()["Download published assets"]
         assert download["uses"].startswith("actions/download-artifact@")
-        assert download["with"]["pattern"] == "desktop-release-*"
         assert download["with"]["merge-multiple"] is True
+
+        # Tie the scan's input to publish-release's own artifact download rather
+        # than to a literal repeated in both places. What has to hold is that the
+        # scan covers the set that was released: if publish-release ever ships a
+        # different artifact set, a scan still pulling the old pattern would
+        # leave the shipped installers unscanned while reporting a clean sweep.
+        publish_download = next(
+            step
+            for step in self._publish_step_list()
+            if step.get("uses", "").startswith("actions/download-artifact@")
+        )
+        for key in ("pattern", "merge-multiple"):
+            assert download["with"][key] == publish_download["with"][key], (
+                key,
+                download["with"].get(key),
+                publish_download["with"].get(key),
+            )
+        # The two spell the runner temp directory differently, so compare leaves.
+        assert self._leaf(download["with"]["path"]) == self._leaf(publish_download["with"]["path"])
+
+        # And that shared pattern has to match what the matrix actually uploads,
+        # or both jobs would agree on a set that does not exist.
+        template = "desktop-release-${{ matrix.artifact }}"
+        for entry in build["strategy"]["matrix"]["include"]:
+            artifact = template.replace("${{ matrix.artifact }}", entry["artifact"])
+            assert fnmatch.fnmatch(artifact, download["with"]["pattern"]), (
+                artifact,
+                download["with"]["pattern"],
+            )
 
         names = self._scan_step_names()
         assert names.index("Download published assets") < names.index("VirusTotal scan")
@@ -1020,3 +1073,28 @@ class TestWorkflowOrdering:
         assert summary["if"] == "always()"
         assert "$GITHUB_STEP_SUMMARY" in summary["run"]
         assert "virustotal-summary.md" in summary["run"]
+
+    def test_the_placeholder_summary_matches_the_real_one(self):
+        # The placeholder is written when the scan produced no summary at all, so
+        # a heading that differs from the script's would render as a second,
+        # unrelated section rather than as the report the reader is looking for.
+        summary = self._scan_step_map()["Publish VirusTotal summary"]
+        assert vt.SUMMARY_HEADING in summary["run"], summary["run"]
+
+    def test_the_summary_heading_holds_for_a_draft_release_too(self):
+        # `inputs.draft` defaults to true and "Create versioned release" only
+        # adds --draft when it is set, so the ordinary dispatch leaves a draft
+        # behind and nothing is published. A heading calling this a post-publish
+        # scan would tell a release operator the opposite of what happened, so
+        # the wording has to cover an upload to a draft as well as a publication.
+        workflow = self._workflow()
+        draft = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["draft"]
+        assert draft["default"] is True
+
+        create = self._publish_step_map()["Create versioned release"]["run"]
+        assert 'release_flags+=(--draft)' in create
+        assert '"$RELEASE_DRAFT" = "true"' in create
+
+        heading = vt.SUMMARY_HEADING.lower()
+        for claim in ("post-publish", "published", "pre-flight"):
+            assert claim not in heading, (vt.SUMMARY_HEADING, claim)

@@ -1,5 +1,6 @@
 """Permission-boundary checks for the desktop release workflow."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -78,8 +79,31 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     # Every one of those refusals has to be terminal.
     assert wait_run.count("exit 1") >= 3
 
+    # The wait is a poll of this run's job list, not a mention of an env var.
+    # Assert the mechanism, because the error strings above could survive a step
+    # that no longer loops or no longer reads a conclusion: the jobs API call,
+    # the loop that repeats it, and the two states it decides on. Without these,
+    # deleting the polling loop and the status checks while leaving GITHUB_RUN_ID
+    # and LEGS in place still reads as a wait, and the download races the matrix.
+    assert "actions/runs/${GITHUB_RUN_ID}/jobs" in wait_run
+    assert ".status" in wait_run and ".conclusion" in wait_run
+    # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
+    assert re.search(r'!=\s*"completed"', wait_run), wait_run
+    assert re.search(r'!=\s*"success"', wait_run), wait_run
+    # A single API read is a snapshot, not a wait: it has to loop and sleep.
+    assert re.search(r"^\s*while\b", wait_run, re.MULTILINE), wait_run
+    assert re.search(r"^\s*sleep\b", wait_run, re.MULTILINE), wait_run
+
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index("Create versioned release")
+    # And it has to clear before the assets are pulled, or the download races the
+    # legs and publish-release dies on artifacts that do not exist yet.
+    download = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert names.index("Wait for the build matrix") < download, names
 
     # Creating a missing release is a separate step gated on validation, so a
     # non-draft release is never reserved before its assets are ready to upload.
