@@ -274,23 +274,66 @@ def test_shifted_sigma_is_monotonic_in_u():
 
 
 # ── LoRA targets ─────────────────────────────────────────────────────────────
-def test_h3_targets_are_qualified_so_the_text_refiner_is_not_adapted():
-    # MiniMaxH3TokenRefinerBlock carries `attn` and `ff` under the same leaf names as a
+# Every Linear of the released checkpoint, by name (num_layers and num_refiner_layers cut
+# down; the names are otherwise exactly what MiniMaxH3Transformer3DModel builds).
+_H3_LINEARS = (
+    "proj_in",
+    "audio_proj_in",
+    "context_embedder",
+    "time_embedder.linear_1",
+    "time_embedder.linear_2",
+    "token_refiner.refiner_blocks.0.attn.to_q",
+    "token_refiner.refiner_blocks.0.attn.to_k",
+    "token_refiner.refiner_blocks.0.attn.to_v",
+    "token_refiner.refiner_blocks.0.attn.to_out.0",
+    "token_refiner.refiner_blocks.0.ff.net.0.proj",
+    "token_refiner.refiner_blocks.0.ff.net.2",
+    "token_refiner.refiner_blocks.1.attn.to_q",
+    "transformer_blocks.0.attn.to_q",
+    "transformer_blocks.0.attn.to_k",
+    "transformer_blocks.0.attn.to_v",
+    "transformer_blocks.0.attn.to_out.0",
+    "transformer_blocks.0.ff.net.0.proj",
+    "transformer_blocks.0.ff.net.2",
+    "transformer_blocks.0.adaln_proj.linear",
+    "transformer_blocks.49.attn.to_q",
+    "transformer_blocks.49.ff.net.2",
+    "norm_out.linear",
+    "proj_out",
+    "audio_proj_out",
+)
+
+
+def _selected(target_regex: str) -> set:
+    """PEFT's own rule for a STRING target_modules: re.fullmatch on the module name."""
+    import re
+
+    return {name for name in _H3_LINEARS if re.fullmatch(target_regex, name)}
+
+
+def test_h3_targets_are_a_regex_because_peft_does_not_glob():
+    # PEFT either suffix-matches a LIST of names or re.fullmatch-es a STRING. A list entry
+    # written "transformer_blocks.*.attn.to_q" matches nothing at all, so the adapter would
+    # train zero parameters while every step still reported a loss.
+    from core.training.diffusion_h3_trainer import _H3_TARGETS
+
+    assert isinstance(_H3_TARGETS, str)
+    assert "*" not in _H3_TARGETS
+
+
+def test_h3_targets_never_adapt_the_text_refiner():
+    # MiniMaxH3TokenRefinerBlock carries `attn` and `ff` under the SAME leaf names as a
     # transformer block, so a bare "to_q" would also adapt the two refiner blocks, i.e. the
     # text stream rather than the denoiser.
     from core.training.diffusion_h3_trainer import _H3_TARGETS
 
-    for target in _H3_TARGETS:
-        assert target.startswith("transformer_blocks."), target
-    assert "to_q" not in _H3_TARGETS
-    assert "to_out.0" not in _H3_TARGETS
+    assert not any(name.startswith("token_refiner") for name in _selected(_H3_TARGETS))
 
 
 def test_h3_targets_cover_attention_and_the_feed_forward_and_nothing_else():
-    from core.training.diffusion_h3_trainer import _H3_TARGETS
+    from core.training.diffusion_h3_trainer import _H3_TARGET_LEAVES, _H3_TARGETS
 
-    leaves = {t.split("transformer_blocks.*.", 1)[1] for t in _H3_TARGETS}
-    assert leaves == {
+    assert set(_H3_TARGET_LEAVES) == {
         "attn.to_q",
         "attn.to_k",
         "attn.to_v",
@@ -298,10 +341,21 @@ def test_h3_targets_cover_attention_and_the_feed_forward_and_nothing_else():
         "ff.net.0.proj",
         "ff.net.2",
     }
+    selected = _selected(_H3_TARGETS)
+    assert selected == {
+        f"transformer_blocks.{index}.{leaf}"
+        for index in (0, 49)
+        for leaf in _H3_TARGET_LEAVES
+        if f"transformer_blocks.{index}.{leaf}" in _H3_LINEARS
+    }
     # adaln_proj is 40% of the checkpoint but its input carries two or three rows per step.
-    assert not any("adaln" in t for t in _H3_TARGETS)
+    assert not any("adaln" in name for name in selected)
     # The patch and text projections are fp32 in the checkpoint's own _keep_in_fp32_modules.
-    assert not any("proj_in" in t or "proj_out" in t or "context_embedder" in t for t in _H3_TARGETS)
+    assert not any(
+        "proj_in" in name or "proj_out" in name or "context_embedder" in name for name in selected
+    )
+    # The final norm's modulation projection is a dtype-reading module, not an adapter site.
+    assert "norm_out.linear" not in selected
 
 
 def test_the_nf4_skip_list_covers_every_dtype_reading_module():
@@ -393,6 +447,41 @@ def test_h3_accepts_the_precisions_it_supports():
 
 def test_h3_resolves_to_its_family_through_normalized():
     assert _cfg().normalized().resolved_family == "minimax-h3"
+
+
+# ── entrypoint refusals, all of which must fire BEFORE anything loads ─────────
+def _run(**kw):
+    from core.training.diffusion_h3_trainer import run_h3_lora_training
+
+    return run_h3_lora_training(_cfg(**kw))
+
+
+def test_h3_refuses_a_batch_larger_than_one():
+    # The batch axis of an H3 forward is a pure replication axis: the row layout is set by the
+    # clip's geometry AND its caption's length, so two clips cannot share one packed sequence.
+    with pytest.raises(ValueError, match = "batch size 1"):
+        _run(train_batch_size = 2)
+
+
+def test_h3_refuses_a_cfg_dropout():
+    # The checkpoint is guidance-distilled: there is no unconditional branch to train.
+    with pytest.raises(ValueError, match = "guidance-distilled"):
+        _run(cfg_dropout = 0.1)
+
+
+def test_h3_refuses_a_weighted_loss():
+    # Two schedules put video and audio at different sigmas in the same step, so a single
+    # weight over "the" timestep is ambiguous.
+    with pytest.raises(ValueError, match = "weighting_scheme"):
+        _run(weighting_scheme = "bell")
+
+
+def test_the_entrypoint_refusals_fire_before_the_data_directory_is_read():
+    # _cfg points data_dir at a path that does not exist, so any of these reaching discovery
+    # would raise FileNotFoundError instead -- and in a real run would have already evicted the
+    # resident GPU models.
+    with pytest.raises(ValueError):
+        _run(train_batch_size = 4)
 
 
 # ── the forward contract, against a fake transformer ─────────────────────────

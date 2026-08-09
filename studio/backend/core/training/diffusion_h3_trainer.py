@@ -98,17 +98,26 @@ from core.training.diffusion_train_extras import LoRAEMA, save_ema_adapter
 #   - ``proj_in`` / ``audio_proj_in`` / ``proj_out`` / ``audio_proj_out`` / ``context_embedder``
 #     are the patch and text projections, kept in fp32 by the checkpoint's own
 #     ``_keep_in_fp32_modules``; adapting them mixes precisions for no benefit.
-#   - ``token_refiner`` blocks carry ``attn`` and ``ff`` under the same leaf names, which is why
-#     these targets are qualified with ``transformer_blocks``: the bare suffixes PEFT matches on
-#     would also hit the two refiner blocks, i.e. the text stream.
-_H3_TARGETS = (
-    "transformer_blocks.*.attn.to_q",
-    "transformer_blocks.*.attn.to_k",
-    "transformer_blocks.*.attn.to_v",
-    "transformer_blocks.*.attn.to_out.0",
-    "transformer_blocks.*.ff.net.0.proj",
-    "transformer_blocks.*.ff.net.2",
+#   - the ``token_refiner`` blocks carry ``attn`` and ``ff`` under the SAME leaf names
+#     (``token_refiner.refiner_blocks.0.attn.to_q``), so PEFT's suffix rule for a LIST of
+#     target names would adapt the text refiner as well as the denoiser stack.
+#
+# That last point is why the targets are a REGEX and not a list: PEFT globs nothing, it either
+# suffix-matches a list or ``re.fullmatch``es a string, so qualifying a list entry with
+# ``transformer_blocks.*.`` matches nothing at all and the adapter silently trains zero
+# parameters (the trainer also refuses an empty adapter, so both halves of that mistake are
+# caught).
+_H3_TARGET_LEAVES = (
+    "attn.to_q",
+    "attn.to_k",
+    "attn.to_v",
+    "attn.to_out.0",
+    "ff.net.0.proj",
+    "ff.net.2",
 )
+_H3_TARGETS = r"transformer_blocks\.\d+\.(?:" + "|".join(
+    leaf.replace(".", r"\.") for leaf in _H3_TARGET_LEAVES
+) + ")"
 
 # Modules whose weights the transformer reads a DTYPE off to align an activation with
 # (``x.to(self.linear.weight.dtype)``). A bitsandbytes ``Params4bit`` reports ``uint8``, so
@@ -129,7 +138,12 @@ _H3_TEXT_ENCODER_LAYER = 50
 
 # Components the conditioning phase needs, and the one the training phase needs. Naming them
 # is what keeps the 66 GB transformer off the device while the 63 GiB conditioner is on it.
-_H3_CONDITIONING_COMPONENTS = ("text_encoder", "tokenizer", "processor", "vae", "audio_vae")
+_H3_TEXT_COMPONENTS = ("text_encoder", "tokenizer", "processor")
+# The VAEs load in fp32: both carry modules diffusers refuses to cast (their encoders,
+# decoders and projection heads), so a bf16 load followed by a .to(float32) both warns and
+# leaves the cast half-applied.
+_H3_VAE_COMPONENTS = ("vae", "audio_vae")
+_H3_CONDITIONING_COMPONENTS = _H3_TEXT_COMPONENTS + _H3_VAE_COMPONENTS
 
 
 def _shifted_sigma(u: float, shift: float) -> float:
@@ -176,12 +190,13 @@ def _load_conditioners(cfg, device):
     from diffusers import ModularPipeline
 
     pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token)
-    pipe.load_components(names = list(_H3_CONDITIONING_COMPONENTS), torch_dtype = torch.bfloat16)
+    pipe.load_components(names = list(_H3_TEXT_COMPONENTS), torch_dtype = torch.bfloat16)
+    pipe.load_components(names = list(_H3_VAE_COMPONENTS), torch_dtype = torch.float32)
     _assert_component_grid(pipe)
-    # The VAEs run in fp32 like the inference path: the posterior, and its affine
-    # normalisation, are what the cache stores.
-    pipe.vae.to(device, dtype = torch.float32)
-    pipe.audio_vae.to(device, dtype = torch.float32)
+    # ``load_components`` builds every component on the CPU, so place them explicitly.
+    pipe.text_encoder.to(device)
+    pipe.vae.to(device)
+    pipe.audio_vae.to(device)
     return pipe
 
 
@@ -400,6 +415,12 @@ def run_h3_lora_training(
             f"MiniMax-H3 trains on a canvas whose edges are multiples of {H3_CANVAS_MULTIPLE} "
             f"(a 16x VAE compression and a 2x patch); got resolution {cfg.resolution}."
         )
+    if float(getattr(cfg, "cfg_dropout", 0.0) or 0.0) > 0:
+        raise ValueError(
+            "MiniMax-H3 is guidance-distilled: it has no unconditional branch and no negative "
+            "prompt, so a classifier-free-guidance dropout trains a path the sampler never "
+            "takes. Set cfg_dropout to 0."
+        )
     if str(getattr(cfg, "weighting_scheme", "none") or "none") != "none":
         raise ValueError(
             "MiniMax-H3 has no timestep-weighted loss yet: its two schedules put video and "
@@ -480,12 +501,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_frames = h3_video_latent_frames(num_frames)
     num_audio_latents = h3_audio_latent_count(num_frames)
 
-    if float(getattr(cfg, "cfg_dropout", 0.0) or 0.0) > 0:
-        raise ValueError(
-            "MiniMax-H3 is guidance-distilled: it has no unconditional branch and no negative "
-            "prompt, so a classifier-free-guidance dropout trains a path the sampler never "
-            "takes. Set cfg_dropout to 0."
-        )
     to_encode = sorted(set(captions))
 
     # ── phase 1: conditioning. The 63 GiB Qwen3-VL conditioner and both VAEs are resident
@@ -539,8 +554,11 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         )
     transformer = _load_transformer(cfg, device, base_precision)
     transformer.requires_grad_(False)
-    targets = (
-        list(_H3_TARGETS)
+    # ``normalized()`` fills lora_target_modules with the generic DEFAULT_LORA_TARGETS when a
+    # caller does not set it, so that value means "unset" and the family's own regex wins. Any
+    # other explicit tuple is a deliberate override and is passed through as a list.
+    targets: Any = (
+        _H3_TARGETS
         if tuple(cfg.lora_target_modules) == DEFAULT_LORA_TARGETS
         else list(cfg.lora_target_modules)
     )
