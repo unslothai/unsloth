@@ -12,6 +12,8 @@ summing stale blobs against the wrong total)."""
 from __future__ import annotations
 
 import asyncio
+import os
+import stat as stat_module
 import threading
 from pathlib import Path
 from typing import Callable, Generic, Optional, Sequence, TypeVar
@@ -25,8 +27,8 @@ from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     blob_bytes_present,
-    latest_snapshot_dir,
     preferred_repo_cache_dirs,
+    snapshot_selection_key,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
@@ -183,6 +185,20 @@ def _variant_main_shard_present(
     return None if unreadable else False
 
 
+def _retained_snapshot_dirs(entry: Path) -> list[Path]:
+    """Every snapshot the repo cache dir keeps, newest first.
+
+    A cache can hold several revisions, and the requested variant is not always in the newest:
+    reading only that one reported a complete cached quant as 0 bytes and never verified its
+    manifest, so it stayed at 99% and adoptable.
+    """
+    try:
+        snapshots = [child for child in (entry / "snapshots").iterdir() if child.is_dir()]
+    except OSError:
+        return []
+    return sorted(snapshots, key = snapshot_selection_key, reverse = True)
+
+
 def _variant_present_in_any_snapshot(
     entry: Path, variant_file_matcher: Optional["VariantFileMatcher"]
 ) -> Optional[bool]:
@@ -191,10 +207,7 @@ def _variant_present_in_any_snapshot(
     True as soon as one holds the variant's own file; False only when every snapshot was read
     and none did; None when there was nothing to read or a read failed, which is unknown.
     """
-    try:
-        snapshots = [child for child in (entry / "snapshots").iterdir() if child.is_dir()]
-    except OSError:
-        return None
+    snapshots = _retained_snapshot_dirs(entry)
     if not snapshots:
         return None
     verdicts = [
@@ -269,7 +282,7 @@ def _snapshot_complete_on_disk(
     repo_id: str,
     variant: Optional[str],
     entry: Path,
-    snapshot_dir: "_Lazy[Optional[Path]]",
+    snapshot_dirs: "_Lazy[list[Path]]",
     entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]",
     metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]",
     expected_total: int,
@@ -278,8 +291,8 @@ def _snapshot_complete_on_disk(
 ) -> bool:
     if expected_total <= 0 or completed_bytes < expected_total or in_progress_bytes > 0:
         return False
-    snapshot = snapshot_dir.get()
-    if snapshot is None:
+    snapshots = snapshot_dirs.get()
+    if not snapshots:
         return False
     if variant is None and hf_cache_scan.repo_cache_dir_has_incomplete_blobs(entry):
         return False
@@ -317,7 +330,9 @@ def _snapshot_complete_on_disk(
             started_at = "",
             expected_files = metadata_expected,
         )
-    return download_manifest.verify_against_disk(manifest, snapshot).ok
+    # ANY retained snapshot: the variant can be complete in an older revision while the newest
+    # holds only a sibling, and checking the newest alone left that download at 99% forever.
+    return any(download_manifest.verify_against_disk(manifest, snap).ok for snap in snapshots)
 
 
 def compute_snapshot_progress(
@@ -401,7 +416,17 @@ def compute_snapshot_progress(
         in_progress_bytes = 0
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"
-        if blobs_dir.is_dir():
+        try:
+            # os.stat, not Path.is_dir(): is_dir() swallows the OSError and answers False, so a
+            # Windows ACL or network-filesystem failure on the directory ITSELF read as "no
+            # blobs here" -- a MEASURED absence, which hydration retires the job on.
+            blobs_present = stat_module.S_ISDIR(os.stat(blobs_dir).st_mode)
+        except FileNotFoundError:
+            blobs_present = False
+        except OSError as exc:
+            scan_errors.append(exc)
+            blobs_present = False
+        if blobs_present:
             try:
                 blob_entries = list(blobs_dir.iterdir())
             except OSError as exc:
@@ -436,8 +461,8 @@ def compute_snapshot_progress(
                     # persisted download whose target may be intact behind the error.
                     scan_errors.append(exc)
                     continue
-        snapshot_dir: "_Lazy[Optional[Path]]" = _Lazy(
-            lambda entry = entry: latest_snapshot_dir(entry)
+        snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
+            lambda entry = entry: _retained_snapshot_dirs(entry)
         )
         entry_manifest: "_Lazy[Optional[download_manifest.Manifest]]" = _Lazy(
             lambda entry = entry: download_manifest.read_manifest(
@@ -448,10 +473,16 @@ def compute_snapshot_progress(
             )
         )
         if variant_file_set_unknown:
-            on_disk = _variant_bytes_on_disk(
-                entry_manifest.get(),
-                snapshot_dir.get(),
-                variant_file_matcher,
+            # The best reading across every retained snapshot, for the same reason presence is
+            # established across all of them: the variant can live in an older revision while
+            # the newest holds a sibling, and reading only the newest reported 0 bytes for a
+            # complete cached quant.
+            on_disk = max(
+                (
+                    _variant_bytes_on_disk(entry_manifest.get(), snap, variant_file_matcher)
+                    for snap in snapshot_dirs.get()
+                ),
+                default = 0,
             )
             # Clamped, because the matcher behind the no-manifest half of that
             # reading accepts every companion in the repo and so can overshoot.
@@ -498,7 +529,7 @@ def compute_snapshot_progress(
                     repo_id = repo_id,
                     variant = variant,
                     entry = entry,
-                    snapshot_dir = snapshot_dir,
+                    snapshot_dirs = snapshot_dirs,
                     entry_manifest = entry_manifest,
                     metadata_files = metadata_files,
                     expected_total = expected_total,

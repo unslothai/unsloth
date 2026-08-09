@@ -113,9 +113,15 @@ export function resolveProgressUpdate(
   // Keep the GGUF variant bar monotonic: backend progress is recomputed from the
   // shared per-repo blobs/ dir, so a sibling quant, generation bump, or
   // no-metadata poll can dip one reading. Resets via startJob's seed fraction.
-  const fraction = isGgufVariantJob
-    ? Math.max(cappedFraction, job.fraction)
-    : cappedFraction;
+  //
+  // NOT across a generation change, though. `resetMonotonic` is the caller saying another
+  // client restarted this job, and it already clears the byte counters -- carrying the old
+  // generation's high-water mark over pinned a retry that starts at 0 B to the previous run's
+  // 99% for its entire life, which is the stale card this whole path exists to remove.
+  const fraction =
+    isGgufVariantJob && !resetMonotonic
+      ? Math.max(cappedFraction, job.fraction)
+      : cappedFraction;
   return {
     expected,
     downloadedBytes,

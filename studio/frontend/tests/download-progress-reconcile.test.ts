@@ -296,3 +296,20 @@ test("a non-finite reading is not a measurement", () => {
     assert.equal(resolved.expected, EXPECTED);
   }
 });
+
+test("a new generation resets the fraction, not only the bytes", () => {
+  // Another client restarting the same GGUF job is exactly what resetMonotonic signals, and it
+  // already clears the byte counters. The GGUF high-water mark carried the OLD generation's
+  // fraction over, so a retry starting at 0 B sat pinned at the previous run's 99% for its
+  // whole life -- the stale card this path exists to remove.
+  const resolved = resolveProgressUpdate(job({ fraction: 0.99 }), emptyReading(), {
+    resetMonotonic: true,
+  });
+
+  assert.equal(resolved.downloadedBytes, 0);
+  assert.equal(resolved.fraction, 0);
+
+  // Without the reset the mark still holds, which is what keeps a sibling-quant dip off the bar.
+  const held = resolveProgressUpdate(job({ fraction: 0.99 }), emptyReading());
+  assert.equal(held.fraction, 0.99);
+});

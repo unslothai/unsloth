@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import errno
+import time
 import json
 import os
 import sys
@@ -6633,4 +6635,76 @@ def test_a_verified_completion_wins_a_byte_tie_between_caches(monkeypatch, tmp_p
         )
     )
 
+    assert result["complete_on_disk"] is True, result
+
+
+def test_an_unstatable_blobs_dir_is_not_an_absent_one(monkeypatch, tmp_path):
+    """Path.is_dir() swallows a whole class of OSError and answers False, so a failure on the
+    blobs directory ITSELF read as "no blobs here" -- a measured absence, which idle hydration
+    retires a persisted download on. ELOOP is the case it hides (a symlink cycle, or a
+    network-filesystem path that stops resolving); EACCES it re-raises, which the same try
+    now contains rather than letting it escape the whole reading."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+    real_stat = os.stat
+
+    denied = {"hit": False}
+
+    def _deny(path, *a, **kw):
+        if str(path).endswith("blobs"):
+            denied["hit"] = True
+            raise OSError(errno.ELOOP, "too many levels of symbolic links")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(snapshot_progress.os, "stat", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+    assert result.get("cache_measured") is not True, result
+    assert denied["hit"], "the test must actually exercise the directory stat"
+
+
+def test_a_variant_complete_in_an_older_snapshot_settles(monkeypatch, tmp_path):
+    """The presence check already looks at every retained snapshot, but the byte reading and the
+    manifest verification did not: a quant complete in an older revision, with the newest
+    holding only a sibling, reported 0 bytes and never settled -- 99% and adoptable forever."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    old_snap = entry / "snapshots" / "rev0"
+    new_snap = entry / "snapshots" / "rev1"
+    old_snap.mkdir(parents = True)
+    new_snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (old_snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (new_snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    os.utime(old_snap, (time.time() - 600, time.time() - 600))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 100, result
     assert result["complete_on_disk"] is True, result
