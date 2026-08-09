@@ -480,9 +480,12 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
-# Byte-identical ungated unsloth mirrors of the gated vendor bases: a GGUF/FP8 pick ships only the
-# denoiser, so a gated base still 401s on the companions. Swapped at the fetch sites only, never in
-# ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see ``canonical_base``).
+# Byte-identical unsloth mirrors of the vendor bases: a GGUF/FP8 pick ships only the denoiser, so
+# companions come from the base, which is a 401 for gated vendors and a third-party fetch for the
+# rest. Swapped at the fetch sites only, never in ``resolve_base_repo``, whose result keys the
+# UPSTREAM-id tables below (see ``canonical_base``).
+# A mirror stands in for the WHOLE base, bf16 pipeline loads included, so it must be a complete
+# copy: a companions-only repo breaks every pick that needs the transformer.
 _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
     ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
@@ -496,13 +499,36 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
+    # Ungated from here down: mirrored to drop the third-party fetch, not a gate. Every licence
+    # here permits redistribution, and each mirror carries the upstream licence text plus the
+    # notice that licence prescribes. Qwen-Image-2512 is the one no other redirect could reach:
+    # its companions are named by the artifact repo's base_model card tag, not the family table.
+    ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
+    ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
+    ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
+    ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
+    # Lookup is by exact id, so every VARIANT a pick can resolve to needs its own row: the base-4B
+    # is what `unsloth/FLUX.2-klein-base-4B-GGUF` resolves to from its card tag, and Dev / Fast are
+    # offered directly as bf16 pipeline picks. Without these three the table silently misses them.
+    ("black-forest-labs/FLUX.2-klein-base-4B", "unsloth/FLUX.2-klein-base-4B"),
+    ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
+    ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
+    ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
+    ("HiDream-ai/HiDream-I1-Dev", "unsloth/HiDream-I1-Dev"),
+    ("HiDream-ai/HiDream-I1-Fast", "unsloth/HiDream-I1-Fast"),
+    ("stabilityai/stable-diffusion-xl-base-1.0", "unsloth/stable-diffusion-xl-base-1.0"),
+    ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
+    # NOT mirrored: hunyuanvideo-community/HunyuanImage-2.1-Diffusers. The Tencent Hunyuan
+    # Community License permits distribution "exclusively in the Territory", and the Territory
+    # excludes the EU, the UK and South Korea. A public Hub repo distributes worldwide, so that
+    # mirror cannot be made compliant and the family keeps fetching upstream.
 )
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
 _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
-    """The ungated unsloth mirror of ``repo_id``, or None when it is not a gated vendor base."""
+    """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
 
 
@@ -762,15 +788,22 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     500 with the message lost."""
     try:
         import diffusers
-    except ImportError:
+        present = hasattr(diffusers, pipeline_class)
+    except Exception:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
         # Not this check's business: it answers "is the installed diffusers new enough for this family", and with
-        # nothing installed there is no version to judge. Refusing would also break the native sd.cpp engine, which
+        # nothing importable there is no version to judge. Refusing would also break the native sd.cpp engine, which
         # serves GGUF picks on a CPU or Apple host without diffusers. A pick that really needs it fails later, in
         # the loader. The one thing that must not happen is a raise: ModuleNotFoundError is not the ValueError the
         # routes map to 400, so it escapes /images/download-plan as a bare 500 with the message lost.
+        #
+        # The attribute probe is inside the try for the same reason. diffusers' top level is a lazy module, so
+        # ``hasattr`` is what actually imports the pipeline's submodule, and when that submodule's own dependencies
+        # are unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines...") -- which hasattr does
+        # NOT swallow, since it only absorbs AttributeError. A partially usable diffusers install therefore escaped
+        # this guard exactly the way a missing one used to.
         return
 
-    if hasattr(diffusers, pipeline_class):
+    if present:
         return
     raise ValueError(
         f"'{family_name}' needs diffusers >= 0.39.0 ({pipeline_class}); this environment has "

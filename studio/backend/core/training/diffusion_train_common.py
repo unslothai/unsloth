@@ -324,6 +324,31 @@ _DIT_TRAIN_FAMILIES = frozenset(
 )
 
 
+def effective_mixed_precision(cfg: Any) -> str:
+    """The precision the SDXL trainer will actually run in, resolved the same way it resolves it.
+
+    A pre-Ampere card has no native bf16, so a bf16 request silently becomes fp16 there. Recording
+    the REQUEST in a checkpoint's identity let a bundle written in fp16 resume in bf16 on a newer
+    card (and the reverse), continuing restored optimizer moments under different frozen-base
+    numerics while reporting a clean resume. Shared so the start route and the trainer cannot
+    disagree about what a checkpoint was trained as.
+    """
+    import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
+
+    requested = str(getattr(cfg, "mixed_precision", "") or "")
+    if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _DIT_TRAIN_FAMILIES:
+        # The DiT trainer does not read mixed_precision at all: weight_dtype is bf16 on CUDA and
+        # fp32 otherwise. Recording the REQUEST for those families put "fp16" or "no" in the
+        # identity of a run that executed in bf16, and a later bf16 resume of it was then
+        # rejected as a precision mismatch between two runs that ran identically.
+        return "bf16" if torch.cuda.is_available() else "no"
+    if not torch.cuda.is_available():
+        return "no"
+    if requested == "bf16" and not native_bf16_supported():
+        return "fp16"
+    return requested
+
+
 def native_bf16_supported() -> bool:
     """True only when the live CUDA GPU provides NATIVE bf16 compute, not pre-Ampere emulation.
 
@@ -569,6 +594,14 @@ class DiffusionLoraConfig:
     weighting_scheme: str = "none"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
+    # Periodic resume-checkpoint interval, in optimizer steps. 0 (the default) writes no periodic
+    # checkpoints; a stop-and-save always writes one regardless, so the Resume action stays available.
+    save_steps: int = 0
+    # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
+    save_total_limit: int = 2
+    # Continue a previous run: the run's output_dir, or one of its checkpoint-<N> directories.
+    # The start route resolves and validates it before the trainer spawns.
+    resume_from_checkpoint: Optional[str] = None
     # Optional explicit family override; None = detect from base_model. ``resolved_family`` is filled by normalized() with the trainer family that will run.
     model_family: Optional[str] = None
     resolved_family: str = "sdxl"
@@ -614,6 +647,25 @@ class DiffusionLoraConfig:
             )
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
+        # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
+        try:
+            save_steps = int(self.save_steps or 0)
+            save_total_limit = int(self.save_total_limit or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"save_steps / save_total_limit must be whole numbers, got "
+                f"{self.save_steps!r} / {self.save_total_limit!r}"
+            ) from exc
+        if save_steps < 0:
+            raise ValueError("save_steps must be >= 0 (0 disables periodic checkpoints)")
+        if save_total_limit < 0:
+            raise ValueError("save_total_limit must be >= 0 (0 keeps every checkpoint)")
+        # A blank resume path (the Studio default when the field is present but unset) means "fresh run", not the outputs root.
+        resume_from_checkpoint = (
+            str(self.resume_from_checkpoint).strip()
+            if self.resume_from_checkpoint is not None
+            else ""
+        ) or None
         try:
             ema_decay = float(self.ema_decay or 0.0)
         except (TypeError, ValueError) as exc:
@@ -697,6 +749,11 @@ class DiffusionLoraConfig:
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
+        # A blank caption_column means the default, as the start route's own preflight already
+        # assumes ("or 'text'"). Without this the route and the trainer resolve different captions
+        # from a metadata.jsonl, so their dataset fingerprints disagree and a resume that the
+        # route accepted is then refused in the child -- after the GPU residents are freed.
+        caption_column = str(self.caption_column or "").strip() or "text"
         return replace(
             self,
             learning_rate = learning_rate,
@@ -704,8 +761,12 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            save_steps = save_steps,
+            save_total_limit = save_total_limit,
+            resume_from_checkpoint = resume_from_checkpoint,
             cond_cache_dir = cond_cache_dir,
             ema_decay = ema_decay,
             compile_transformer = compile_transformer,
@@ -766,6 +827,53 @@ class PermutationBatchSampler:
             out.extend(self._order[self._pos : self._pos + take])
             self._pos += take
         return out
+
+    def state_dict(self) -> dict[str, Any]:
+        """The position inside the current permutation cycle, for a resume checkpoint. The
+        order itself is stored (not just the position): it was drawn from the run's rng, and
+        restoring the rng alone would not reproduce a cycle that was already in progress."""
+        return {"n": self._n, "order": list(self._order), "pos": int(self._pos)}
+
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
+        """Restore a cycle saved by ``state_dict``. True when it was restored.
+
+        Refuses a state for a different dataset size (the resume preflight already rejects a
+        changed dataset; this keeps a manually edited checkpoint from indexing out of range)
+        and clamps a bad position. The BOOLEAN matters: silently leaving a fresh sampler in
+        place looks like a clean resume while the RNG -- already restored to a point after this
+        permutation was drawn -- generates a different order, so the run quietly reorders and
+        skips images.
+        """
+        if not isinstance(state, dict) or int(state.get("n") or 0) != self._n:
+            return False
+        order = state.get("order")
+        if not isinstance(order, (list, tuple)):
+            return False
+        try:
+            restored = [int(i) for i in order]
+        except (TypeError, ValueError):
+            return False
+        # A FULL permutation, or the initial empty state. A shortened or duplicate-carrying
+        # order is in range and the same length as nothing in particular: the cycle then
+        # reshuffles early or serves the same image twice, while the RNG has already been
+        # restored to a point after the original draw. That is the silent reorder this
+        # boolean exists to prevent, arriving through a truncated or hand-edited manifest
+        # instead of a missing one.
+        if restored and sorted(restored) != list(range(self._n)):
+            return False
+        self._order = restored
+        try:
+            pos = int(state.get("pos") or 0)
+        except (TypeError, ValueError):
+            return False
+        # A position outside 0..len(order) is not a rounding error, it is a damaged manifest,
+        # and clamping it re-serves the permutation from the top or ends the cycle early --
+        # behind an RNG already restored past the draw. The same silent repeat-or-skip the
+        # order check above refuses, so refuse it rather than quietly correcting it.
+        if not 0 <= pos <= len(self._order):
+            return False
+        self._pos = pos
+        return True
 
 
 def discover_image_caption_pairs(
@@ -1037,12 +1145,338 @@ def _assert_trusted_base_model(base_model: str) -> None:
     _assert_local_base_is_pipeline(base_model)
 
 
-def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Optional[str]:
+# ── resume checkpoints ────────────────────────────────────────────────────────
+# One writer and one reader for BOTH trainers, so an SDXL and a DiT run resume from the same
+# bundle shape. The family-specific part (the deployable adapter export) stays in the trainers.
+def trainable_state_dict(model: Any) -> dict[str, Any]:
+    """The trainable (LoRA) parameters of ``model``, keyed by parameter name.
+
+    Deliberately NOT the peft/diffusers export format: this is the checkpoint's private
+    copy of exactly the tensors the optimizer holds moments for, so restoring it and the
+    optimizer state together reproduces the run bit-for-bit. Parameter names are stable
+    across a re-attach and across regional torch.compile (which compiles submodules in
+    place without renaming), which is the same assumption ``LoRAEMA`` already makes."""
+    return {name: p.detach() for name, p in model.named_parameters() if p.requires_grad}
+
+
+def load_trainable_state_dict(model: Any, state: Optional[dict[str, Any]]) -> int:
+    """Copy a ``trainable_state_dict`` back into ``model`` in place, returning how many
+    parameters were restored. Copies rather than reassigns, so the optimizer's parameter
+    references (and their loaded moments) stay valid.
+
+    Every saved tensor must land. A partial match means the parameter NAMES moved (a different
+    adapter name, a wrapper that re-prefixes them), and because the optimizer state is keyed by
+    parameter INDEX it would still load cleanly -- leaving restored Adam moments and a restored
+    LR position driving freshly initialised LoRA weights, while the run reports a normal resume.
+    Raise instead."""
+    if not state:
+        return 0
+    import torch
+
+    restored = 0
+    trainable: set[str] = set()
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            trainable.add(name)
+            saved = state.get(name)
+            if saved is None:
+                continue
+            if tuple(saved.shape) != tuple(p.shape):
+                raise ValueError(
+                    f"Checkpoint tensor '{name}' has shape {tuple(saved.shape)} but this run "
+                    f"expects {tuple(p.shape)}; the LoRA configuration does not match."
+                )
+            p.copy_(saved.to(device = p.device, dtype = p.dtype))
+            restored += 1
+    # BOTH directions. Counting only the checkpoint's own tensors proves every saved tensor
+    # landed somewhere; it says nothing about a live trainable parameter the checkpoint never
+    # had. A truncated or hand-edited adapter file holding a strict SUBSET therefore passed,
+    # and the full optimizer state was then loaded on top: restored Adam moments driving
+    # freshly initialised weights, while the run reported a clean resume.
+    unsaved = sorted(trainable - set(state))
+    unknown = sorted(set(state) - trainable)
+    if unsaved or unknown:
+        detail = []
+        if unsaved:
+            detail.append(f"{len(unsaved)} not in the checkpoint (e.g. {', '.join(unsaved[:3])})")
+        if unknown:
+            detail.append(f"{len(unknown)} not in this run (e.g. {', '.join(unknown[:3])})")
+        raise ValueError(
+            f"This run has {len(trainable)} trainable tensors and the checkpoint has "
+            f"{len(state)}: {'; '.join(detail)}. The LoRA configuration does not match the one "
+            "it was saved from."
+        )
+    return restored
+
+
+def _json_safe_progress(progress: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Drop non-finite floats from the manifest's progress block. A diverged run pushes
+    ``running_loss`` to NaN/inf, which json.dumps writes as the JS-only NaN/Infinity tokens --
+    invalid strict JSON that a stricter reader (or a future consumer of these files) rejects."""
+    out: dict[str, Any] = {}
+    for key, value in (progress or {}).items():
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        out[key] = value
+    return out
+
+
+def write_resume_checkpoint(
+    cfg: DiffusionLoraConfig,
+    *,
+    step: int,
+    model: Any,
+    optimizer: Any,
+    lr_scheduler: Any,
+    identity: Any,
+    on_event: Optional[EventCb] = None,
+    ema: Any = None,
+    sampler: Any = None,
+    rng_streams: Optional[dict[str, Any]] = None,
+    progress: Optional[dict[str, Any]] = None,
+    discard_existing: bool = False,
+    preexisting: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Write one resume bundle for the run, returning ``(checkpoint_path, error)``.
+
+    Never raises: a checkpoint failure must not lose a training run that is otherwise fine,
+    so the error is returned (and emitted as a warning) for the caller to report as
+    ``resume_blocked_reason``. Used for BOTH the periodic ``save_steps`` saves and the
+    stop-and-save, so the two produce identical state.
+
+    ``discard_existing`` is set on the FIRST write of a run that did not resume, so bundles
+    left in the output dir by an earlier run of the same adapter name cannot outrank it."""
+    from core.training.diffusion_checkpoint import capture_rng_state, save_checkpoint
+    try:
+        path = save_checkpoint(
+            output_dir = cfg.output_dir,
+            step = step,
+            adapter_state = trainable_state_dict(model),
+            identity = identity,
+            target_steps = cfg.train_steps,
+            optimizer = optimizer,
+            lr_scheduler = lr_scheduler,
+            ema_state = ema.state_dict() if ema is not None else None,
+            ema_updates = int(getattr(ema, "updates", 0) or 0) if ema is not None else 0,
+            rng = capture_rng_state(rng_streams),
+            sampler_state = sampler.state_dict() if sampler is not None else None,
+            progress = _json_safe_progress(progress),
+            save_total_limit = int(cfg.save_total_limit or 0),
+            discard_existing = discard_existing,
+            # What this run resumed from, so the "step already written" shortcut can tell
+            # "we are re-saving the bundle we started from" apart from "another run left a
+            # bundle at this number".
+            source_checkpoint = getattr(cfg, "resume_from_checkpoint", None),
+            # Bundles that predated this run are never pruned to make room for its own: a
+            # branched resume beside higher-numbered checkpoints used to delete them on the
+            # first save, irreversibly.
+            preexisting = preexisting,
+        )
+        # Reported per save, not only at the end: a run that later CRASHES must still be known to
+        # have resumable state (and a run whose write failed must still be known to be blocked).
+        _emit(on_event, "checkpoint_saved", checkpoint_path = path, step = step)
+        return path, None
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal to the run
+        message = f"Could not write a resume checkpoint at step {step}: {exc}"
+        _emit(on_event, "checkpoint_failed", step = step, message = message)
+        return None, message
+
+
+def _reapply_lr_schedule(optimizer: Any, lr_scheduler: Any) -> None:
+    """Recompute the learning rate for the NEXT step from the LIVE schedule.
+
+    ``optimizer.load_state_dict`` restores the rate the checkpoint was written with and
+    ``LRScheduler.load_state_dict`` restores only the position, never re-evaluating the lambda,
+    so the first step after a resume runs at the OLD schedule's value. That is invisible while
+    ``train_steps`` is unchanged (the UI always replays it) but wrong the moment the target
+    moves -- continuing a finished cosine run by raising the step count would take its first
+    step at lr 0.0, leaving every parameter untouched.
+
+    Only for the closed-form ``LambdaLR`` diffusers' ``get_scheduler`` returns, and evaluated
+    from its own public ``lr_lambdas`` / ``base_lrs`` / ``last_epoch`` rather than ``get_lr()``
+    (which warns when called outside a step). A chainable scheduler derives its next rate from
+    the current one, so re-applying it there would double-step. Best-effort: a schedule we
+    cannot re-evaluate keeps the restored value."""
+    try:
+        import torch
+
+        if not isinstance(lr_scheduler, torch.optim.lr_scheduler.LambdaLR):
+            return
+        values = [
+            float(base * lmbda(lr_scheduler.last_epoch))
+            for lmbda, base in zip(lr_scheduler.lr_lambdas, lr_scheduler.base_lrs)
+        ]
+        for group, value in zip(optimizer.param_groups, values):
+            group["lr"] = value
+        lr_scheduler._last_lr = values
+    except Exception:  # noqa: BLE001 -- keeping the restored rate is a safe fallback
+        pass
+
+
+def restore_resume_state(
+    cfg: DiffusionLoraConfig,
+    *,
+    model: Any,
+    optimizer: Any,
+    lr_scheduler: Any,
+    identity: Any,
+    on_event: Optional[EventCb] = None,
+    ema: Any = None,
+    sampler: Any = None,
+    rng_streams: Optional[dict[str, Any]] = None,
+) -> Any:
+    """Load ``cfg.resume_from_checkpoint`` into a freshly built run.
+
+    Returns the ``LoadedCheckpoint`` (whose ``.step`` is the last COMPLETED optimizer step,
+    so the loop restarts at ``.step``), or None when no resume was requested.
+
+    Re-runs the full preflight in the child: the start route already validated the request
+    before evicting the GPU, but the trainer must not trust a config it did not check
+    itself. Raises ResumeError (a ValueError) on a mismatch, which the process adapter
+    surfaces as the run's error message."""
+    if not cfg.resume_from_checkpoint:
+        return None
+    from core.training.diffusion_checkpoint import (
+        ResumeError,
+        load_checkpoint,
+        optimizer_key,
+        preflight_resume,
+        restore_rng_state,
+    )
+
+    path, step = preflight_resume(
+        cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+    )
+    ckpt = load_checkpoint(path)
+    load_trainable_state_dict(model, ckpt.tensors("adapter"))
+    optimizer_state = ckpt.torch_state("optimizer")
+    if optimizer_state is not None:
+        # The trainers pick their optimizer from the HOST (bitsandbytes present, a fused kernel
+        # available, UNSLOTH_DIFFUSION_FP32_OPTIM), not from the config, so a checkpoint can
+        # legitimately arrive with foreign moments: AdamW8bit stores "state1"/"state2", torch
+        # AdamW stores "exp_avg"/"exp_avg_sq". Shapes and counts match, so load_state_dict
+        # accepts them and the first step dies on a bare KeyError. Refuse with a real reason.
+        saved_optimizer = ckpt.optimizer_class
+        live_optimizer = optimizer_key(optimizer)
+        if not saved_optimizer:
+            # This writer records the class whenever it writes moments, so an optimizer file
+            # with no class beside it is a hand-edited or half-written bundle -- and letting it
+            # through is the same failure the check below exists for: foreign moments load
+            # cleanly (shapes and counts match) and die on the first step, in the child, after
+            # the route preflight has already evicted the resident models.
+            raise ResumeError(
+                "This checkpoint does not record which optimizer wrote its state, so its "
+                "moments cannot be safely restored. Resume from an earlier checkpoint, or "
+                "start a new run."
+            )
+        if saved_optimizer != live_optimizer:
+            raise ResumeError(
+                f"This checkpoint's optimizer state was written by {saved_optimizer}, but this "
+                f"machine builds {live_optimizer}. Install the same optimizer backend (or unset "
+                f"UNSLOTH_DIFFUSION_FP32_OPTIM) to continue this run."
+            )
+        # Optimizer state is keyed by parameter POSITION, so load_state_dict rebinds the saved
+        # moments onto whatever order this process built. The adapter tensors above were restored
+        # by NAME, so a PEFT/diffusers upgrade that changes traversal order while keeping the same
+        # names leaves the two disagreeing: many LoRA projections share a shape, so every moment
+        # loads cleanly onto the wrong tensor and the continued trajectory is silently corrupt.
+        saved_names = ckpt.optimizer_param_names
+        live_names = list(trainable_state_dict(model))
+        if saved_names is not None and saved_names != live_names:
+            raise ResumeError(
+                "This checkpoint's optimizer state was written for a different parameter order "
+                "than this build produces, so its moments cannot be matched to this run's "
+                "tensors. Start a new run, or resume on the version that wrote it."
+            )
+        # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins
+        # over a changed cfg.learning_rate -- the same semantics as HF Trainer's resume, and the
+        # UI only ever replays the original run's config anyway.
+        optimizer.load_state_dict(optimizer_state)
+    elif optimizer is not None:
+        # The bundle lists no optimizer at all. Every bundle this writer produces for a real run
+        # has one, so this is a hand-edited or half-written directory -- and continuing would
+        # restart Adam's moments from zero at step N while reporting a clean resume, which looks
+        # like a resume and trains like a fresh run with a warm LR.
+        raise ResumeError(
+            "This checkpoint carries no optimizer state, so the run cannot be continued from "
+            "it: the moments would restart from zero at the resumed step. Start a new run."
+        )
+    scheduler_state = ckpt.torch_state("scheduler")
+    if scheduler_state is not None:
+        lr_scheduler.load_state_dict(scheduler_state)
+        _reapply_lr_schedule(optimizer, lr_scheduler)
+    elif lr_scheduler is not None:
+        # Same for the schedule: a fresh LambdaLR at step 0 would re-warm the learning rate the
+        # restored optimizer already moved past.
+        raise ResumeError(
+            "This checkpoint carries no learning-rate scheduler state, so the schedule would "
+            "restart from step 0. Start a new run."
+        )
+    if sampler is not None and not sampler.load_state_dict(ckpt.sampler_state):
+        # Every image checkpoint this format writes carries sampler state, so a bundle whose
+        # state is missing or malformed is not one this code wrote. Continuing would leave a
+        # fresh sampler behind an RNG restored to a point AFTER the saved permutation was
+        # drawn, so the next batch is a different order: images silently skipped or repeated,
+        # under a resume that reported success.
+        raise ResumeError(
+            "This checkpoint's dataset sampler state is missing or unreadable, so the image "
+            "order cannot be continued. Start a new run."
+        )
+    if ema is not None:
+        ema_state = ckpt.tensors("ema")
+        if ema_state:
+            missing = ema.missing_from(ema_state)
+            if missing:
+                # A readable but INCOMPLETE shadow set. load_state_dict keeps the freshly
+                # initialised shadow for anything it cannot match, so continuing here would
+                # blend restored EMA weights with initialisation noise for the rest -- and
+                # report a clean resume while doing it. There is no honest way to continue
+                # this run's EMA, so say so instead.
+                named = ", ".join(missing[:3]) + ("..." if len(missing) > 3 else "")
+                raise ResumeError(
+                    f"This checkpoint's EMA state is missing or mis-shaped for {len(missing)} "
+                    f"of this run's adapter tensors ({named}), so the averaged weights cannot "
+                    f"be continued. Resume with EMA disabled, or start a new run."
+                )
+            ema.load_state_dict(ema_state, updates = ckpt.ema_updates)
+        else:
+            # EMA is not part of the validated identity, so a resume may turn it on for a run
+            # that had it off. The EMA object is built BEFORE the adapter is restored, so its
+            # shadow holds freshly initialised LoRA weights and there is nothing saved to
+            # replace them with -- every later update, and the exported EMA adapter, would
+            # blend the restored weights with that initialisation. Start from what was restored.
+            ema.reseed_from(model)
+    restore_rng_state(ckpt.rng_json, ckpt.torch_state("rng"), rng_streams)
+    _emit(
+        on_event,
+        "resumed",
+        checkpoint_path = str(path),
+        step = step,
+        total_steps = cfg.train_steps,
+        # Which bundle THIS is, not just where it sat. Another run can write its own
+        # checkpoint-<N> over the same slot, and the pathname alone would then offer that
+        # replacement back as this run's lineage.
+        source_created_at = ckpt.manifest.get("created_at"),
+    )
+    return ckpt
+
+
+def _publish_to_lora_catalog(
+    lora_path: str,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
+) -> Optional[str]:
     """Best-effort copy of the trained adapter into the Studio diffusion LoRA directory so
     the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
     it without the user moving files. Also writes a ``<alias>.json`` metadata sidecar so the
     picker can family-gate the adapter (family, base model, trigger prompt, ...). Returns the
-    published path, or None on any failure."""
+    published path, or None on any failure.
+
+    ``steps`` is the step count the run actually REACHED, which is what the sidecar must
+    record: a run stopped at step 11 of 500 published an adapter claiming 500 steps. None
+    keeps the old behaviour for callers that do not know the reached step."""
     try:
         import shutil
 
@@ -1067,22 +1501,29 @@ def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Option
                 n += 1
         if src_resolved != dest.resolve():
             shutil.copy2(lora_path, dest)
-        _write_lora_sidecar(dest.with_suffix(".json"), cfg)
+        _write_lora_sidecar(dest.with_suffix(".json"), cfg, steps)
         return str(dest)
     except Exception:  # noqa: BLE001 -- the catalog mirror is best-effort, never fatal
         return None
 
 
-def _write_lora_sidecar(sidecar_path: Path, cfg: DiffusionLoraConfig) -> None:
+def _write_lora_sidecar(
+    sidecar_path: Path,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
+) -> None:
     """Write the adapter metadata sidecar read back by diffusion_lora._scan_local. Best
-    effort: a failure here must not fail publishing, so callers wrap it."""
+    effort: a failure here must not fail publishing, so callers wrap it.
+
+    ``steps`` records the step the run REACHED. It used to record ``cfg.train_steps``, the
+    CONFIGURED length, so an adapter saved by stopping at step 11 of 500 advertised 500."""
     meta = {
         "family": cfg.resolved_family,
         "families": [cfg.resolved_family],
         "base_model": cfg.base_model,
         "lora_rank": cfg.lora_rank,
         "lora_alpha": cfg.lora_alpha,
-        "steps": cfg.train_steps,
+        "steps": int(steps) if steps is not None else cfg.train_steps,
         "resolution": cfg.resolution,
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),

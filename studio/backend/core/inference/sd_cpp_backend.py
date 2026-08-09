@@ -1100,6 +1100,15 @@ class SdCppDiffusionBackend:
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants make different pixels.
                     "model_kind": "gguf",
                     "gguf_filename": state.gguf_filename,
+                    # The rest of the build the recipe records. The native engine has no dense
+                    # quant path and no memory-mode planner, so those two are honestly null -- but
+                    # the offload it ran under is real (sd-cli flags) and status() already derives
+                    # it the same way. Omitting them here persisted null for every native image and
+                    # left the recipe unable to say how the picture was produced.
+                    "transformer_quant": None,
+                    "text_encoder_quant": None,
+                    "memory_mode": None,
+                    "offload_policy": "active" if state.offload_flags else "none",
                 }
             except SdCppCancelled as exc:
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG) from exc
@@ -1444,6 +1453,7 @@ class SdCppDiffusionBackend:
                 "base_repo": None,
                 "device": None,
                 "dtype": None,
+                "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -1461,6 +1471,7 @@ class SdCppDiffusionBackend:
                 "workflows": [],
             }
         from core.inference import diffusion_lora
+        from hub.utils.gguf import extract_quant_token
 
         return {
             "loaded": True,
@@ -1469,6 +1480,9 @@ class SdCppDiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": "gguf",
+            "gguf_variant": extract_quant_token(state.gguf_filename)
+            if state.gguf_filename
+            else None,
             # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
             "cpu_offload": bool(state.offload_flags),
             "offload_policy": "active" if state.offload_flags else "none",
