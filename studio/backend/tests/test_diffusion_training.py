@@ -1483,9 +1483,7 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
     monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
 
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
@@ -1510,9 +1508,7 @@ def test_route_start_survives_a_diffusers_whose_lazy_submodule_cannot_import(
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
 
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
@@ -1536,9 +1532,7 @@ def test_route_start_is_unaffected_when_diffusers_is_absent(client, monkeypatch,
     monkeypatch.delitem(sys.modules, "diffusers", raising = False)
     monkeypatch.setattr(builtins, "__import__", _no_diffusers)
 
-    r = client.post(
-        "/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"}
-    )
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
     assert r.status_code == 200, r.text
 
 
