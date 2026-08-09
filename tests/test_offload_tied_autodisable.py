@@ -180,10 +180,10 @@ def _dispatched_model(execution_device = torch.device("cuda", 0)):
 
 
 def test_dispatch_device_reads_the_accelerate_hook():
-    assert dispatch_device(nn.Embedding(32, 8)) is None          # no hook at all
+    assert dispatch_device(nn.Embedding(32, 8)) is None  # no hook at all
     assert dispatch_device(_dispatched_model().get_input_embeddings()) is not None
     assert dispatch_device(_dispatched_model(None).get_input_embeddings()) is None
-    assert dispatch_device(None) is None                         # embeddings not exposed
+    assert dispatch_device(None) is None  # embeddings not exposed
 
 
 def test_dispatched_model_disables_offload():
