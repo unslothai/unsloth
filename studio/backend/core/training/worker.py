@@ -1562,10 +1562,9 @@ def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
     """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``.
 
     c10's ``CUDACachingAllocator::setMemoryFraction`` caps at
-    ``fraction * device_prop.totalGlobalMem`` from torch 2.10; through 2.9 it caps at
-    ``fraction * hipMemGetInfo total``. Unknown or unparsable versions answer True, so
-    a surprise version string keeps the property total rather than silently switching
-    denominators on hardware nobody can check.
+    ``fraction * device_prop.totalGlobalMem`` from torch 2.10, and at
+    ``fraction * hipMemGetInfo total`` through 2.9. Unparsable versions answer True,
+    so a surprise string keeps today's denominator rather than switching it.
     """
     release = str(torch_version or "").split("+", 1)[0].split(".")
     try:
@@ -1584,19 +1583,15 @@ def _rocm_memory_fraction(
 ) -> float:
     """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
 
-    ``total_bytes`` is the pool the reserve is carved out of, always
-    ``get_device_properties().total_memory``: on a unified APU that is the pool
-    the OS shares, while ``hipMemGetInfo``'s total is a runtime budget that can
-    span the GTT window and swing with TTM limits.
+    ``total_bytes`` is the pool the reserve comes out of, always
+    ``get_device_properties().total_memory``: on a unified APU that is what the OS
+    shares, while ``hipMemGetInfo``'s total is a runtime budget spanning GTT.
 
-    ``denominator_bytes`` is what the allocator itself multiplies the fraction by,
-    when that is a different number. An absolute byte reserve only lands where
-    intended if the two agree, and they do not on every torch: c10's
-    ``CUDACachingAllocator::setMemoryFraction`` scales
-    ``device_prop.totalGlobalMem`` from 2.10 on, but ``hipMemGetInfo``'s total
-    through 2.9 (see ``_allocator_divides_by_props_total``). Passing it re-solves the
-    cap so the same bytes stay free either way, floored at the historical cap so a
-    larger driver total can never make this tighter than the flat 0.80 it replaced.
+    ``denominator_bytes`` is what the allocator multiplies the fraction by, when that
+    is a different number (see ``_allocator_divides_by_props_total``). An absolute
+    byte reserve only lands where intended if the two agree, so passing it re-solves
+    the cap for the same allowed bytes, floored at the historical cap so a larger
+    driver total can never leave this tighter than the 0.80 it replaced.
 
     - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
       float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
@@ -1633,11 +1628,9 @@ def _rocm_memory_fraction(
         and denominator_bytes > 0
         and denominator_bytes != total_bytes
     ):
-        # The allocator scales its own total, so re-solve for the same allowed bytes
-        # against that one. Floored at the historical cap: a driver total larger than the
-        # property total would otherwise pull the cap below the flat 0.80 this replaced,
-        # and no host should come out of a loosening change tighter. Only on the byte arm:
-        # below the crossover the policy is a percentage, which is scale-free, and those
+        # Re-solve for the same allowed bytes against the total the allocator scales.
+        # Floored, so a larger driver total cannot leave a host tighter than the 0.80
+        # this replaced. Byte arm only: the percentage arm is scale-free, and those
         # small pools are the OOM-prone ones that must stay exactly as they were.
         fraction = max(
             fraction * total_bytes / denominator_bytes,
@@ -3751,12 +3744,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
                 # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
                 # (see _rocm_memory_fraction).
-                # props.total_memory is the pool the reserve comes out of. It is also what
-                # the allocator scales from torch 2.10 (CUDACachingAllocator's
-                # setMemoryFraction); through 2.9 it scales hipMemGetInfo's total instead,
-                # which on a unified APU is the runtime budget spanning GTT rather than the
-                # property carve-out. Hand the helper that number on those wheels so the
-                # reserve is the same bytes either way.
+                # props.total_memory is the pool the reserve comes out of, and from torch
+                # 2.10 also what the allocator scales. Through 2.9 it scales hipMemGetInfo's
+                # total, a different number on a unified APU, so hand that to the helper on
+                # those wheels and the reserve is the same bytes either way.
                 _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
                 _driver_total = 0
                 if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
@@ -3797,10 +3788,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     if _env_fraction is not None
                     else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
-                # Where the two totals differ, the cap above was solved against the driver's
-                # rather than the property total, so the printed budget is not the one being
-                # enforced. Report both and the headroom that actually results, which the
-                # 0.80 floor can leave under the intended reserve.
+                # When the totals differ the cap was solved against the driver's, so the
+                # budget printed above is not the one enforced. Give both, and the headroom
+                # that results, which the floor can leave under the intended reserve.
                 if (
                     _is_unified
                     and sys.platform != "win32"

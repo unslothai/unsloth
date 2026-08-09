@@ -359,11 +359,10 @@ class TestUnifiedLinuxReserve:
 
 
 class TestAllocatorDenominator:
-    """torch caps at fraction * props.total_memory from 2.10, and at fraction *
-    hipMemGetInfo total through 2.9. On a unified APU those are different numbers
-    (the property carve-out against the runtime budget spanning GTT), so an absolute
-    byte reserve only lands where intended if the fraction is solved for whichever
-    one the installed allocator uses."""
+    """torch caps at fraction * props.total_memory from 2.10 and at fraction *
+    hipMemGetInfo total through 2.9. Those differ on a unified APU (carve-out against
+    the GTT-spanning budget), so an absolute reserve only lands where intended when the
+    fraction is solved for whichever the installed allocator uses."""
 
     @pytest.mark.parametrize(
         "version, props_total",
@@ -383,8 +382,7 @@ class TestAllocatorDenominator:
 
     @pytest.mark.parametrize("version", [None, "", "unknown", "2", "two.ten", "+rocm"])
     def test_unparsable_versions_keep_the_property_total(self, version: str | None) -> None:
-        # Defaulting the other way would switch denominators on a surprise version string,
-        # on hardware no CI machine has.
+        # The other default would switch denominators on a surprise version string.
         assert _allocator_divides_by_props_total(version) is True
 
     def test_matching_denominator_changes_nothing(self) -> None:
@@ -395,8 +393,8 @@ class TestAllocatorDenominator:
 
     @pytest.mark.parametrize("driver_gib", [125, 126, 130, 134, 139])
     def test_reserve_is_solved_for_the_driver_total(self, driver_gib: int) -> None:
-        # The point of the parameter: the same bytes stay free whichever total the
-        # allocator scales. Only between the two bounds, which the next two tests own.
+        # The same bytes stay free whichever total the allocator scales. Between the
+        # two bounds only; those are the next two tests.
         total = 128 * GIB
         driver = driver_gib * GIB
         fraction = _rocm_memory_fraction(total, True, "linux", None, driver)
@@ -407,9 +405,8 @@ class TestAllocatorDenominator:
     def test_a_larger_driver_total_never_goes_below_the_historical_cap(
         self, driver_gib: int
     ) -> None:
-        # Solving for a much larger driver total would drive the fraction toward zero.
-        # This is a loosening change: no host may come out of it tighter than the flat
-        # 0.80 it replaces, even at the cost of the exact reserve.
+        # A much larger driver total drives the fraction toward zero. This is a
+        # loosening change: the floor wins over the exact reserve.
         fraction = _rocm_memory_fraction(128 * GIB, True, "linux", None, driver_gib * GIB)
         assert fraction >= _HISTORICAL_CAP
 
@@ -425,8 +422,8 @@ class TestAllocatorDenominator:
     def test_below_the_crossover_the_denominator_is_ignored(
         self, pool_gib: float, driver_gib: int
     ) -> None:
-        # The percentage arm is scale-free, and these small pools are the OOM-prone ones
-        # #5301 added the guard for: they must stay bit-identical to the flat 0.80.
+        # The percentage arm is scale-free, and these small pools are the OOM-prone
+        # ones the guard was added for: bit-identical to the flat 0.80.
         total = int(pool_gib * GIB)
         assert _rocm_memory_fraction(total, True, "linux", None, driver_gib * GIB) == (
             _HISTORICAL_CAP
