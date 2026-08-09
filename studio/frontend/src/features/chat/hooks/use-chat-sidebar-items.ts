@@ -289,6 +289,7 @@ export async function deleteChatItem(
   item: SidebarItem,
   activeId: string | undefined,
   onSelect: (view: { mode: "single"; newThreadNonce: string }) => void,
+  args: { deleteFiles?: boolean } = {},
 ) {
   const threadIds: string[] =
     item.type === "single"
@@ -319,7 +320,7 @@ export async function deleteChatItem(
   }
 
   try {
-    await deleteStoredChatThreads(threadIds);
+    await deleteStoredChatThreads(threadIds, args);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
     notifyChatHistoryUpdated();

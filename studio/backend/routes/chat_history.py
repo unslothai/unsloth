@@ -135,6 +135,9 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+    # Files a tool call wrote. Off by default: they are the user's and the chat
+    # card offers them as downloads. An empty sandbox is removed either way.
+    delete_files: bool = False
 
 
 class ChatCountResponse(BaseModel):
@@ -362,7 +365,31 @@ async def delete_threads(
 ):
     _cancel_active_research(request, payload.ids)
     delete_chat_threads(payload.ids)
-    return {"status": "deleted"}
+    # Keyed by thread id, so nothing can reference the folder once the thread
+    # is gone. Clean it up rather than leaking one per chat.
+    # In a worker: right after an upgrade this also runs the legacy move, and a
+    # cross-filesystem copy on the event loop stops every other request.
+    removed = await _remove_sandboxes(payload.ids, payload.delete_files)
+    return {"status": "deleted", "sandboxes_removed": removed}
+
+
+async def _remove_sandboxes(thread_ids, delete_files: bool) -> int:
+    """Drop each thread's sandbox off the event loop. Never raises."""
+    from starlette.concurrency import run_in_threadpool
+
+    def _remove() -> int:
+        from core.inference.tools import remove_session_sandbox
+        return sum(
+            1
+            for thread_id in thread_ids
+            if remove_session_sandbox(thread_id, delete_files = delete_files)
+        )
+
+    try:
+        return await run_in_threadpool(_remove)
+    except Exception:
+        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+        return 0
 
 
 @router.get("/attachments")
@@ -718,10 +745,23 @@ async def record_import_ledger(
 
 
 @router.delete("")
-async def clear_history(request: Request, current_subject: str = Depends(get_current_subject)):
-    _cancel_active_research(request, [thread["id"] for thread in list_chat_threads()])
-    clear_chat_history()
-    return {"status": "deleted"}
+async def clear_history(
+    request: Request,
+    delete_files: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    thread_ids = [thread["id"] for thread in list_chat_threads()]
+    _cancel_active_research(request, thread_ids)
+    # The clear reports what it deleted, which is what gets cleaned up: a thread
+    # added between the listing above and the delete is gone too, and its
+    # sandbox would otherwise be stranded.
+    cleared = clear_chat_history()
+    # "Clear all chats" is the common bulk delete, so it has to clean up the
+    # same folders DELETE /threads does; otherwise every sandbox is stranded.
+    # delete_files matches DELETE /threads: off by default, since the files are
+    # the user's, but a caller clearing everything can ask for them too.
+    removed = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    return {"status": "deleted", "sandboxes_removed": removed}
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)

@@ -201,6 +201,16 @@ import _platform_compat  # noqa: F401
 # unsloth-zoo import below, whose LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Same reason, same deadline: unsloth_zoo.compiler reads UNSLOTH_COMPILE_LOCATION
+# at import time, and without this a direct start falls back to a CWD-relative
+# unsloth_compiled_cache (on Windows that is the user profile).
+from utils.paths.storage_roots import setup_cache_env as _setup_cache_env
+
+try:
+    _setup_cache_env()
+except Exception:  # noqa: BLE001
+    pass
+
 try:
     _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
 except (OSError, ValueError):
@@ -603,6 +613,15 @@ async def lifespan(app: FastAPI):
 
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
+
+    # Move the legacy sandbox up here rather than from the first request: the
+    # copy can be minutes when the studio home is on another filesystem.
+    try:
+        from core.inference.tools import migrate_legacy_sandbox_in_background
+
+        migrate_legacy_sandbox_in_background()
+    except Exception:  # noqa: BLE001
+        pass
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"

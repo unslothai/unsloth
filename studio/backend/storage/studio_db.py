@@ -1755,15 +1755,22 @@ def delete_chat_threads(ids: list[str]) -> None:
         conn.close()
 
 
-def clear_chat_history() -> None:
+def clear_chat_history() -> "list[str]":
+    """Delete every chat thread. Returns the ids that were actually removed.
+
+    Taken inside the same transaction: another process can add a thread between
+    a listing and this call, and its sandbox has to be cleaned up too.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        removed = [str(row[0]) for row in conn.execute("SELECT id FROM chat_threads")]
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
+        return removed
     finally:
         conn.close()
 

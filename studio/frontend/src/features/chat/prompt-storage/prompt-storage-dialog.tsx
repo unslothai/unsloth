@@ -56,7 +56,7 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { isMcpImageToolResult } from "../api/chat-adapter";
+import { toolResultModelText } from "../api/chat-adapter";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import { createConversationMarkdownExporter } from "../utils/conversation-markdown-export";
@@ -166,9 +166,9 @@ function contentBlocksToText(content: unknown): string {
           parts.push("[thinking]\n" + thinkText + "\n[/thinking]");
         }
       } else if (p.type === "tool-call") {
-        // Keep base64 image payloads out of every export format: use the
-        // model-visible text for MCP image results (matches chat replay).
-        const result = isMcpImageToolResult(p.result) ? p.result.text : p.result;
+        // Keep base64 image payloads and sandbox card metadata out of every
+        // export format: use the model-visible text (matches chat replay).
+        const result = toolResultModelText(p.result);
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
@@ -261,8 +261,7 @@ function messageToText(msg: { content: unknown; attachments?: unknown }): string
 // Markdown counterpart to messageToText: same content and attachments, but each
 // part keeps its shape so the renderer can fence tool calls and collapse thinking.
 function messageToMarkdown(msg: { content: unknown; attachments?: unknown }): string {
-  const normalizeToolResult = (result: unknown): unknown =>
-    isMcpImageToolResult(result) ? result.text : result;
+  const normalizeToolResult = toolResultModelText;
   const blocks = contentBlocksToMarkdownBlocks(msg.content, normalizeToolResult);
   if (Array.isArray(msg.attachments)) {
     for (const attachment of msg.attachments as Array<{ content?: unknown }>) {
@@ -332,12 +331,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           // Keep base64 image payloads out of exports: MCP image results carry
           // their model-visible text alongside the data, so serialize the text
           // (matching chat replay) instead of the full object.
+          const modelText = toolResultModelText(p.result);
           const resultStr =
-            typeof p.result === "string"
-              ? p.result
-              : isMcpImageToolResult(p.result)
-                ? p.result.text
-                : JSON.stringify(p.result);
+            typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
         }
       }

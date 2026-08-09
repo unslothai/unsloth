@@ -733,13 +733,14 @@ export async function updateStoredChatThread(
 
 export async function deleteStoredChatThreads(
   idsToDelete: string[],
+  args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
   // Incognito threads were never stored, so there's nothing to delete --
   // drop them to skip the no-op backend DELETE (and the history-refresh
   // event it would fire) when the active temporary chat is closed.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (ids.length === 0) return;
-  await deleteChatThreads(ids);
+  await deleteChatThreads(ids, args);
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
