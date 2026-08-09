@@ -34,7 +34,7 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _INIT = _ROOT / "unsloth" / "__init__.py"
 _SOURCE = _INIT.read_text(encoding = "utf-8")
 
-_BROKEN_TF = 'raise ImportError("cannot import name \'runtime_version\' from \'google.protobuf\'")\n'
+_BROKEN_TF = "raise ImportError(\"cannot import name 'runtime_version' from 'google.protobuf'\")\n"
 
 
 def _fake_tensorflow(tmp_path):
@@ -50,20 +50,25 @@ def _fake_tensorflow(tmp_path):
     dist = site / "tensorflow-2.20.0.dist-info"
     dist.mkdir()
     (dist / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: tensorflow\nVersion: 2.20.0\n", encoding = "utf-8",
+        "Metadata-Version: 2.1\nName: tensorflow\nVersion: 2.20.0\n",
+        encoding = "utf-8",
     )
     return site
 
 
-def _run(code, site = None, **env):
+def _run(
+    code,
+    site = None,
+    **env,
+):
     """Run `code` in a fresh interpreter, so no module state leaks between cases."""
     path = [str(_ROOT)] + ([str(site)] if site is not None else [])
-    if os.environ.get("PYTHONPATH"): path.append(os.environ["PYTHONPATH"])
+    if os.environ.get("PYTHONPATH"):
+        path.append(os.environ["PYTHONPATH"])
     # Importing Unsloth sets USE_TF/USE_FLAX in this process, so an inherited
     # value would decide the case before the child starts. Each test says.
     clean = {
-        k: v for k, v in os.environ.items()
-        if k not in ("USE_TF", "USE_FLAX", "FORCE_TF_AVAILABLE")
+        k: v for k, v in os.environ.items() if k not in ("USE_TF", "USE_FLAX", "FORCE_TF_AVAILABLE")
     }
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -80,7 +85,8 @@ def _unsloth_is_importable():
 
 
 def _needs_unsloth():
-    if not _unsloth_is_importable(): pytest.skip("unsloth is not importable in this environment")
+    if not _unsloth_is_importable():
+        pytest.skip("unsloth is not importable in this environment")
 
 
 def _exec_guard(modules, environ):

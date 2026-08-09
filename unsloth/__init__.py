@@ -38,11 +38,14 @@ else:
         ("_tf_available", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
         ("_flax_available", ("flax", "jax"), ("USE_FLAX",)),
     ):
-        if any(_m in sys.modules for _m in _modules): continue
-        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins): continue
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
         try:
             # Absent on 5.x, and a module proxy can refuse the write.
-            if getattr(_import_utils, _flag, False): setattr(_import_utils, _flag, False)
+            if getattr(_import_utils, _flag, False):
+                setattr(_import_utils, _flag, False)
         except (AttributeError, TypeError):
             pass
     del _TRUE, _import_utils, _flag, _modules, _opt_ins
