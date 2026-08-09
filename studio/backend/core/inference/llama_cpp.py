@@ -1741,9 +1741,21 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         return sorted(main_files)
 
     try:
-        from utils.models.model_config import _extract_quant_label
+        from utils.models.model_config import _extract_quant_label, _gguf_variant_key
     except Exception:
         _extract_quant_label = None
+        _gguf_variant_key = None
+
+    if _gguf_variant_key is not None:
+        try:
+            # The variant's own files first. In a repo holding several checkpoints at
+            # one quant the label alone names all of them, and handing llama-server a
+            # mixed set makes it read another checkpoint's weights as a shard.
+            owned = sorted(f for f in main_files if _gguf_variant_key(f).lower() == variant_key)
+            if owned:
+                return owned
+        except Exception as e:
+            logger.warning("Failed to derive GGUF variant keys: %s", e)
 
     if _extract_quant_label is not None:
         try:

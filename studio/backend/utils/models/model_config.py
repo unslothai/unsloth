@@ -2292,6 +2292,77 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 )
 
 
+_FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+_QUANT_NAME_SEPARATORS = ("-", ".", "_", " ")
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+
+
+def _select_known_quant_match(text: str):
+    fallback = None
+    for match in _GGUF_KNOWN_QUANT_RE.finditer(text):
+        if match.group(2).upper() in _FLOAT_PRECISION_QUANTS:
+            if fallback is None:
+                fallback = match
+            continue
+        return match
+    return fallback
+
+
+def _gguf_variant_stem(filename: str) -> str:
+    basename = filename.rsplit("/", 1)[-1]
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
+
+
+def _gguf_variant_token(filename: str) -> Optional[str]:
+    match = _select_known_quant_match(_gguf_variant_stem(filename))
+    if not match and "/" in filename:
+        for segment in reversed(filename.rsplit("/", 1)[0].split("/")):
+            parent_match = _select_known_quant_match(segment)
+            if parent_match:
+                match = parent_match
+                break
+    return f"{match.group(1) or ''}{match.group(2)}" if match else None
+
+
+def _gguf_variant_family(filename: str) -> str:
+    stem = _gguf_variant_stem(filename)
+    if "/" not in filename:
+        return stem or "gguf"
+    parents = filename.rsplit("/", 1)[0].strip("/")
+    return f"{parents}/{stem}" if parents and stem else stem or "gguf"
+
+
+def _gguf_variant_key(filename: str) -> str:
+    """MIRROR of ``hub.utils.gguf.gguf_variant_key``; utils cannot import hub.
+
+    The two must change in lockstep: the hub builds the picker rows with its copy
+    and this one decides which file a chosen row loads, so a disagreement is a row
+    that resolves to another checkpoint's weights.
+    ``tests/test_gguf_variant_rows.py`` asserts they agree.
+    """
+    path = filename.replace("\\", "/")
+    quant = _gguf_variant_token(path)
+    if quant is None:
+        return _gguf_variant_family(path)
+    parents, _, basename = path.rpartition("/")
+    for segment in parents.split("/"):
+        if not segment:
+            continue
+        segment_match = _select_known_quant_match(segment)
+        names_quant = segment_match is not None and (
+            f"{segment_match.group(1) or ''}{segment_match.group(2)}".lower() == quant.lower()
+        )
+        if not names_quant:
+            return _gguf_variant_family(path)
+    if _gguf_variant_token(basename) is not None:
+        stem, wanted = _gguf_variant_stem(basename).lower(), quant.lower()
+        if stem != wanted and not (
+            stem.endswith(wanted) and stem[: -len(wanted)].endswith(_QUANT_NAME_SEPARATORS)
+        ):
+            return _gguf_variant_family(path)
+    return quant
+
+
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
@@ -2649,6 +2720,7 @@ def _find_local_gguf_by_variant(
     # Recurse so variants under a quant-named subdir (``BF16/foo-BF16-00001-of-00002.gguf``)
     # are found. Match the relative path so the quant label can come from the dir name.
     matches = []
+    owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
         if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
@@ -2668,7 +2740,15 @@ def _find_local_gguf_by_variant(
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
+        # A repo holding several checkpoints at one quant offers a row per checkpoint,
+        # and only one of them is this variant's. Name order alone would hand a request
+        # for the repo-root ``Q6_K`` the alphabetically earlier ``distilled/`` copy.
+        if _variant_matches(variant, _gguf_variant_key(rel)):
+            owned.append(f)
     matches.sort()
+    owned.sort()
+    if owned:
+        return str(_local_gguf_load_path(owned[0]))
     if matches:
         return str(_local_gguf_load_path(matches[0]))
     return None
