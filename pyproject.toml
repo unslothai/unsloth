@@ -69,6 +69,8 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
+    # Vendored truststore: not a package (no __init__.py), so it ships as data.
+    "backend/vendor/**/*",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
@@ -78,7 +80,14 @@ studio = [
 
 [tool.setuptools.packages.find]
 include = ["unsloth*", "unsloth_cli*", "studio", "studio.backend*"]
-exclude = ["images*", "tests*", "*.node_modules", "*.node_modules.*"]
+exclude = [
+    "images*",
+    "tests*",
+    "unsloth_compiled_cache*",
+    "*.unsloth_compiled_cache*",
+    "*.node_modules",
+    "*.node_modules.*",
+]
 
 [project.optional-dependencies]
 # Studio's server stack, mirroring studio/backend/requirements/studio.txt.
@@ -96,6 +105,7 @@ studio = [
     "pyjwt",
     "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
+    "urllib3>=2.3.0",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",
@@ -1430,6 +1440,8 @@ extend-exclude = [
     "*ollama_template_mappers.py",
     "*_auto_install.py",
     "*mapper.py",
+    # Vendored upstream source: reformatting it would break the digest test.
+    "studio/backend/vendor/",
 ]
 
 [tool.ruff.lint]

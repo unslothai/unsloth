@@ -62,6 +62,20 @@ from core.training.diffusion_train_common import (
     PermutationBatchSampler,
     repo_is_prequantized,
     resolve_train_steps,
+    restore_resume_state,
+    write_resume_checkpoint,
+)
+from core.training.diffusion_checkpoint import (
+    clear_own_checkpoints,
+    discard_preexisting_checkpoints,
+    retire_own_checkpoints,
+    resumed_into_this_dir,
+    snapshot_checkpoints,
+    identity_for_config,
+    with_cache_mode,
+    with_resolved_base_precision,
+    with_resolved_revision,
+    preflight_resume,
 )
 from core.training.diffusion_train_extras import (
     LoRAEMA,
@@ -1731,7 +1745,13 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and export it."""
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2)
+    and export it.
+
+    Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments, LR
+    position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle,
+    and the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
+    ``cfg.save_steps`` interval write such a bundle."""
     cfg = config.normalized()
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
@@ -1780,11 +1800,32 @@ def run_dit_lora_training(
     )
     # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream read agrees.
     cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    # Validate a resume request against this run's identity BEFORE the multi-GB phased load, so
+    # a mismatched checkpoint fails in seconds. The identity uses the RESOLVED LoRA targets,
+    # which for a DiT family are the spec's, not the generic default the config carries.
+    identity = identity_for_config(
+        cfg,
+        dataset_pairs = pairs,
+        resolved_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets),
+    )
+    if cfg.resume_from_checkpoint:
+        preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
     _emit(on_event, "model_load_started", num_images = len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
-            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+            on_event,
+            "complete",
+            output_dir = str(out_dir),
+            lora_path = None,
+            stopped = True,
+            steps_run = 0,
+            # Same disposition the full path reports. A stop with save=false is a DISCARD
+            # however early it lands, and without it the resume fallback offers the source
+            # bundle back as though the attempt were still live.
+            discarded = not save_on_stop,
         )
         return str(out_dir)
 
@@ -1801,12 +1842,15 @@ def run_dit_lora_training(
             on_event,
             _check_stop,
             lambda: save_on_stop,
+            identity,
         )
     finally:
         _restore_perf_flags(perf_snap)
 
 
-def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop):
+def _train_dit(
+    cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_stop, _save_on_stop, identity
+):
     """The body of ``run_dit_lora_training``, split out so the backend perf flags are
     snapshot/restored around it in exactly one place."""
     import torch
@@ -1896,6 +1940,10 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                     lora_path = None,
                     stopped = True,
                     steps_run = 0,
+                    # As above: a discard is a discard however early the stop lands.
+                    # _save_on_stop is the accessor this function is handed; the flag itself
+                    # lives in the caller's scope.
+                    discarded = not _save_on_stop(),
                 )
                 return str(out_dir)
     if latent_cache is not None and vae is not None:
@@ -1981,25 +2029,109 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     )
 
     _emit(on_event, "model_load_completed", compiled = compiled, base_precision = base_precision)
+    # See the SDXL trainer: the base is on disk now, so its commit can be read and written into
+    # every bundle this run saves. The identity built before the load says "unresolved" on the
+    # first run of an uncached repo, and an unresolved revision is not comparable, so a later
+    # resume could not tell that the repo had moved underneath it.
+    identity = with_resolved_revision(identity, cfg.base_model)
+    # See the SDXL trainer: the cache path the loop actually took, not the one requested.
+    identity = with_cache_mode(identity, latent_cache is not None)
+    # ...and the precision the frozen base ended up in. base_precision is still the request at
+    # this point ("auto" resolves here, and a failed fp8/mxfp8 conversion has already fallen
+    # back to bf16), so without this a bundle records a base it was never trained against.
+    identity = with_resolved_base_precision(identity, base_precision)
 
     transformer.train()
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
     # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle, so a short run covers the whole dataset. Uses the loop's own rng to stay seed-deterministic.
     index_sampler = PermutationBatchSampler(n_images, rng)
+
+    # Restore a previous run (adapter, optimizer moments, LR position, EMA shadow, sampler cycle,
+    # RNG streams) before the loop, so it picks up at `resumed + 1`. None for a fresh run.
+    rng_streams = {"loop": rng, "variant": variant_rng}
+    restored = restore_resume_state(
+        cfg,
+        model = transformer,
+        optimizer = optimizer,
+        lr_scheduler = lr_sched,
+        identity = identity,
+        on_event = on_event,
+        ema = ema,
+        sampler = index_sampler,
+        rng_streams = rng_streams,
+    )
+    resumed = restored.step if restored is not None else 0
+    # Whether this run's source bundle lives in THIS directory. Resuming from
+    # directory A into a reused output_dir B leaves B's existing bundles as foreign
+    # as they would be for a fresh run -- so the first save has to clear them, or a
+    # higher-numbered one survives and a later resume by B picks it over this run.
+    resumed_here = bool(resumed) and resumed_into_this_dir(cfg, out_dir)
+    # The bundles that were already here when this run started, so a discard below
+    # removes only what this run wrote. A resumed run shares its source's directory.
+    preexisting_checkpoints = snapshot_checkpoints(out_dir)
+    if restored is not None:
+        was = restored.progress.get("resolved_base_precision")
+        if was and was != base_precision:
+            # Not fatal: the LoRA tensors and their optimizer moments are precision-independent,
+            # only the frozen base's numerics change. But base_precision="auto" picks from free
+            # VRAM, so this can happen silently and is worth saying out loud.
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    f"Resuming a checkpoint trained with a {was} base in {base_precision}; "
+                    f"set base_precision explicitly to keep them identical."
+                ),
+            )
+
     stopped = False
-    running_loss = 0.0
+    # Carried over so avg_loss stays an average over the whole run, not just since the resume.
+    running_loss = restored.running_loss if restored is not None else 0.0
     peak_gb = 0.0
     t_start = time.time()
     t_steady = None
-    done = 0
+    # Starts at the resumed step so a no-op resume still reports the real step.
+    done = resumed
+
+    def _save_checkpoint(step: int) -> None:
+        # Outcome is reported by write_resume_checkpoint's own checkpoint_saved /
+        # checkpoint_failed events, so a run that crashes after a save is still known to be
+        # resumable (and one whose save failed is still known to be blocked).
+        _written, _error = write_resume_checkpoint(
+            cfg,
+            step = step,
+            model = transformer,
+            optimizer = optimizer,
+            lr_scheduler = lr_sched,
+            identity = identity,
+            on_event = on_event,
+            ema = ema,
+            sampler = index_sampler,
+            rng_streams = rng_streams,
+            # base_precision="auto" resolves from free VRAM at load time, so the identity (which
+            # records the REQUESTED mode) cannot tell nf4 from bf16 across two "auto" runs.
+            # Recorded here so a resume can at least report the change.
+            progress = {"running_loss": running_loss, "resolved_base_precision": base_precision},
+            # NOT discard_existing. A fresh run does own its output dir, but deleting the
+            # previous run's bundles at the FIRST periodic save spends them before this run
+            # has produced anything: "stop without saving" then removes only what this run
+            # wrote, leaves the previous adapter in place, and the run it belonged to is
+            # unresumable -- cancelling a retrain destroyed the thing being retrained. The
+            # clear happens on the completion path instead, once the new adapter is saved.
+            discard_existing = False,
+            # And the bundles that were here before this run: a branched resume must not
+            # prune the higher-numbered checkpoints it did not write.
+            preexisting = preexisting_checkpoints,
+        )
+
     # bf16 autocast around the forward + loss, matching the diffusers dreambooth scripts: it reconciles the fp32 LoRA params with the bnb 4-bit base matmuls. Without it the 4-bit backward on FLUX dies.
     autocast = (
         torch.autocast(device_type = "cuda", dtype = torch.bfloat16)
         if device == "cuda"
         else nullcontext()
     )
-    for opt_step in range(cfg.train_steps):
+    for opt_step in range(resumed, cfg.train_steps):
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
@@ -2070,17 +2202,20 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         running_loss += step_loss
         done = opt_step + 1
         now = time.time()
-        if done == 1:
+        # Rates count only the steps THIS process ran, so a resumed run does not divide by
+        # steps it never executed.
+        ran_here = done - resumed
+        if ran_here == 1:
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
         if done % cfg.log_every == 0 or done == cfg.train_steps:
             if device == "cuda":
                 peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
             per_step = batch_size * cfg.gradient_accumulation_steps
-            if t_steady is not None and done > 1:
-                sps = round((done - 1) * per_step / max(now - t_steady, 1e-6), 3)
+            if t_steady is not None and ran_here > 1:
+                sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
-                sps = round(done * per_step / max(now - t_start, 1e-6), 3)
+                sps = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
             _emit(
                 on_event,
                 "progress",
@@ -2093,7 +2228,17 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                 samples_per_second = sps,
                 peak_memory_gb = peak_gb or None,
             )
-        if _check_stop():
+        stop_now = _check_stop()
+        # Periodic resume point. Skipped on the final step (a finished run has nothing left to
+        # resume) and when stopping, since the stop path writes one at the exact step.
+        if (
+            not stop_now
+            and cfg.save_steps
+            and done % cfg.save_steps == 0
+            and done < cfg.train_steps
+        ):
+            _save_checkpoint(done)
+        if stop_now:
             stopped = True
             break
 
@@ -2102,10 +2247,16 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
     ema_path: Optional[str] = None
     if not (stopped and not _save_on_stop()):
         out_dir.mkdir(parents = True, exist_ok = True)
+        # Stopping early is exactly when the run should be resumable, so write the bundle BEFORE
+        # the adapter export: if that export then fails, the run still comes back. A completed run
+        # has nothing left to resume.
+        if stopped and done > 0:
+            _save_checkpoint(done)
         layers = get_peft_model_state_dict(transformer)
         spec.save(pipe, str(out_dir), layers)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
-        catalog_path = _publish_to_lora_catalog(lora_path, cfg)
+        # ``done`` (the step reached), not cfg.train_steps: a stop at 11/500 must not advertise 500.
+        catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
                 # Report the adapter FILE, like lora_path, so a caller can load it directly.
@@ -2113,6 +2264,30 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")
+        if not stopped:
+            # Same as the LoRA trainer: a completed run has nothing to resume, and the final
+            # iteration writes no bundle, so save_steps leaves the run's own checkpoint-400
+            # behind for a later resume to roll back to. An earlier run's bundles stay.
+            retire_own_checkpoints(out_dir, preexisting_checkpoints, resumed_here = resumed_here)
+        elif not resumed_here:
+            # Stopped WITH save on a fresh retrain: the stop bundle is a LOWER step than
+            # the leftovers of the earlier run in this directory, and resume-by-directory
+            # picks the newest by step -- so those would outrank the partial just saved
+            # and continue the wrong training. A resumed run keeps what it found.
+            discard_preexisting_checkpoints(out_dir, preexisting_checkpoints)
+    else:
+        # Discarded: the user asked to throw this run away. Before periodic checkpoints
+        # existed a discard left nothing behind, because the output directory was only ever
+        # created inside this save gate. save_steps now writes bundles as the run goes, so
+        # without this a discard leaves up to save_total_limit copies of the optimizer state
+        # in a directory the user never got an artifact from -- invisible to every scanner,
+        # unresumable (the record is marked discarded), and with no delete path in the UI.
+        clear_own_checkpoints(out_dir, preexisting_checkpoints)
+        try:
+            out_dir.rmdir()
+        except OSError:
+            # Not ours to remove if anything else is in it (a previous run's adapter).
+            pass
     _emit(
         on_event,
         "complete",
@@ -2125,6 +2300,10 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
         stopped = stopped,
         steps_run = done if cfg.train_steps else 0,
         wall_seconds = round(time.time() - t_start, 1),
+        resumed_from_step = resumed or None,
+        # "Stop without saving" discards the run, so its own periodic checkpoints must not keep
+        # offering to continue it.
+        discarded = bool(stopped and not _save_on_stop()),
     )
     return str(out_dir)
 
@@ -2132,9 +2311,16 @@ def _train_dit(cfg, spec, pairs, rng, device, weight_dtype, on_event, _check_sto
 def _make_optimizer(params, lr):
     """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy
     regression for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this
-    build/device lacks the fused kernel)."""
+    build/device lacks the fused kernel).
+
+    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for SDXL: the
+    accuracy guard wants the reference optimizer, and a host where the override means one
+    thing for one trainer and nothing for the other cannot answer "can this checkpoint be
+    resumed here" before the run starts."""
     import torch
 
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
     try:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(params, lr = lr)
