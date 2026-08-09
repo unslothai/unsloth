@@ -103,38 +103,42 @@ pub fn random_nonce() -> String {
     hex_bytes(&rand::random::<[u8; 16]>())
 }
 
+pub struct NativePathLeaseRequest {
+    pub operation: NativePathOperation,
+    pub canonical_path: String,
+    pub path_kind: NativePathKind,
+    pub path_type: NativePathType,
+    pub source_kind: NativePathSourceKind,
+    pub token: String,
+    pub display_label: String,
+    pub size_bytes: Option<u64>,
+    pub modified_ms: Option<u64>,
+}
+
 pub fn sign_path_lease(
     secret: &[u8],
-    operation: NativePathOperation,
-    canonical_path: String,
-    path_kind: NativePathKind,
-    path_type: NativePathType,
-    source_kind: NativePathSourceKind,
-    token: &str,
-    display_label: String,
-    size_bytes: Option<u64>,
-    modified_ms: Option<u64>,
+    request: NativePathLeaseRequest,
 ) -> Result<NativePathLeaseResponse, String> {
     let issued_at_ms = now_ms();
     let expires_at_ms = issued_at_ms + LEASE_TTL.as_millis() as u64;
     let payload = NativePathLeasePayload {
         version: LEASE_VERSION,
-        operation,
-        canonical_path,
-        path_kind,
-        path_type,
-        source_kind,
-        token_id_hash: token_hash(token),
+        operation: request.operation,
+        canonical_path: request.canonical_path,
+        path_kind: request.path_kind,
+        path_type: request.path_type,
+        source_kind: request.source_kind,
+        token_id_hash: token_hash(&request.token),
         issued_at_ms,
         expires_at_ms,
         nonce: random_nonce(),
-        display_label: display_label.clone(),
-        size_bytes,
-        modified_ms,
+        display_label: request.display_label.clone(),
+        size_bytes: request.size_bytes,
+        modified_ms: request.modified_ms,
     };
     sign_payload(secret, &payload).map(|native_path_lease| NativePathLeaseResponse {
         native_path_lease,
-        display_label,
+        display_label: request.display_label,
         expires_at_ms,
     })
 }
@@ -187,15 +191,17 @@ mod tests {
     fn signed_lease_has_two_base64url_parts() {
         let lease = sign_path_lease(
             b"01234567890123456789012345678901",
-            NativePathOperation::ValidateModel,
-            "/tmp/model.gguf".to_string(),
-            NativePathKind::Model,
-            NativePathType::File,
-            NativePathSourceKind::Dialog,
-            "token",
-            "model.gguf".to_string(),
-            Some(123),
-            Some(456),
+            NativePathLeaseRequest {
+                operation: NativePathOperation::ValidateModel,
+                canonical_path: "/tmp/model.gguf".to_string(),
+                path_kind: NativePathKind::Model,
+                path_type: NativePathType::File,
+                source_kind: NativePathSourceKind::Dialog,
+                token: "token".to_string(),
+                display_label: "model.gguf".to_string(),
+                size_bytes: Some(123),
+                modified_ms: Some(456),
+            },
         )
         .unwrap();
         let parts: Vec<&str> = lease.native_path_lease.split('.').collect();

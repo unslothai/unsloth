@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.8.8"
+__version__ = "2026.8.9"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -76,6 +76,7 @@ __all__ = [
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
+    "save_lora_adapter",
     "error_out_no_vllm",
     "dequantize_module_weight",
     "patch_hf_quantizer",
@@ -3647,6 +3648,28 @@ def fast_inference_setup(model_name, model_config):
     return fast_inference, model_name
 
 
+def save_lora_adapter(model, save_directory, *args, **kwargs):
+    """`save_pretrained` over the adapter, cast to the embedding dtype.
+
+    PEFT's own selection decides what an adapter contains, so it is handed the
+    whole state dict and only the adapter tensors are cast. Filtering down to
+    `.lora_A.`/`.lora_B.` first is what the Zoo helper does, and PEFT then looks
+    up `modules_to_save.<adapter>.weight` in what it was given and raises
+    `KeyError`; a DoRA run loses its `lora_magnitude_vector` the same way. Both
+    are reachable here without vLLM: `get_peft_model` adds `embed_tokens` and
+    `lm_head` to `modules_to_save` on its own once new tokens are trained.
+
+    The non-adapter entries are passed through by reference, so nothing is
+    copied that PEFT is going to drop anyway.
+    """
+    dtype = model.get_input_embeddings().weight.dtype
+    kwargs["state_dict"] = {
+        key: (value.to(dtype) if "lora_" in key else value)
+        for key, value in model.state_dict().items()
+    }
+    return model.save_pretrained(save_directory, *args, **kwargs)
+
+
 def patch_peft_fast_inference(model):
     vllm_engine = getattr(model.model, "vllm_engine", None)
     if vllm_engine is not None:
@@ -3654,11 +3677,29 @@ def patch_peft_fast_inference(model):
         model.fast_generate = model.model.fast_generate
         model.fast_generate_batches = model.model.fast_generate_batches
 
-        # Also saving and loading LoRA
-        from unsloth_zoo.vllm_utils import save_lora, load_lora
+        # load_lora copies into vLLM's own adapter tensors, so it needs an engine.
+        from unsloth_zoo.vllm_utils import load_lora
 
-        model.save_lora = functools.partial(save_lora, model)
         model.load_lora = functools.partial(load_lora, model)
+
+        # An engine keeps the Zoo helper it has always had: vLLM reads the saved
+        # adapter back through its own LoRA loader, so what that file may carry
+        # is its call, not one to change here.
+        if not hasattr(model, "save_lora"):
+            try:
+                from unsloth_zoo.vllm_utils import save_lora
+            except Exception:
+                save_lora = None
+            if save_lora is not None:
+                model.save_lora = functools.partial(save_lora, model)
+
+    # Without an engine there was no `save_lora` at all, and `save_lora` needs
+    # none: it is `save_pretrained` over the adapter. Gating it on the engine
+    # gave `fast_inference = False` GRPO runs `AttributeError:
+    # 'Lfm2ForCausalLM' object has no attribute 'save_lora'`.
+    # Set only when absent, so a model carrying its own keeps it.
+    if not hasattr(model, "save_lora"):
+        model.save_lora = functools.partial(save_lora_adapter, model)
 
 
 def error_out_no_vllm(*args, **kwargs):
