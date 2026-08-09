@@ -896,6 +896,9 @@ export const ko = {
         allowNetworkAccess: "Canvas 네트워크 접근 허용",
         allowNetworkAccessDescription:
           "Canvas 미리보기가 CDN에서 스크립트, 스타일, 폰트, 미디어 및 네트워크 리소스를 불러올 수 있게 합니다. 완전한 오프라인 미리보기를 위해서는 꺼 두세요.",
+        blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerAction: "이 Canvas에서 허용",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",

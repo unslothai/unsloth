@@ -922,6 +922,9 @@ export const es = {
         allowNetworkAccess: "Permitir acceso de red en Canvas",
         allowNetworkAccessDescription:
           "Permite que las vistas previas de Canvas carguen scripts, estilos, fuentes, medios y recursos de red desde CDNs. Mantenlo desactivado para vistas previas totalmente sin conexión.",
+        blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
+        blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
+        blockedBannerAction: "Permitir en este Canvas",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",
