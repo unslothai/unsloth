@@ -2338,6 +2338,16 @@ def _gguf_variant_family(filename: str) -> str:
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
 
 
+def _gguf_bpw_suffix(filename: str) -> str:
+    """``-3.53bpw`` when the shard-stripped basename ends in one, else ``""``.
+
+    MIRROR of ``hub.utils.gguf._gguf_bpw_suffix``; see ``_gguf_variant_key``.
+    """
+    stem = _gguf_variant_family(filename).rsplit("/", 1)[-1]
+    match = re.search(r"-[0-9]+(?:\.[0-9]+)?bpw$", stem, re.IGNORECASE)
+    return match.group(0) if match else ""
+
+
 def _gguf_variant_key(filename: str) -> str:
     """MIRROR of ``hub.utils.gguf.gguf_variant_key``; utils cannot import hub.
 
@@ -2355,7 +2365,8 @@ def _gguf_variant_key(filename: str) -> str:
         # directory naming something else is a different checkpoint and qualifies.
         if segment and _select_known_quant_match(segment) is None:
             return _gguf_variant_family(path)
-    return quant
+    # ... and the bpw modifier stays on, so two builds of one base quant keep two identities.
+    return f"{quant}{_gguf_bpw_suffix(path)}"
 
 
 def _qualified_variant_name(filename: str, label: str) -> str:

@@ -791,7 +791,14 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    return preferred_quant(variants)
+    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked
+    # against it: preferred_quant is order-sensitive, and once the map carried a key per
+    # checkpoint a repo with distilled/model-Q6_K beside model-Q6_K could serve the sibling for
+    # a bare id -- the same id that resolves to the root locally. Same filter
+    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way.
+    # A repo with nothing at the root falls back to the whole set rather than refusing.
+    unqualified = {name: size for name, size in variants.items() if "/" not in name}
+    return preferred_quant(unqualified or variants)
 
 
 async def _dispatch(

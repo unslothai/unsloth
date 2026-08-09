@@ -798,3 +798,55 @@ def test_a_qualified_key_whose_basename_ends_in_be_still_resolves_for_loading():
     assert is_main_gguf_variant_path(
         "distilled/Q4_K_M/foo-be.gguf", gguf_variant_key("distilled/Q4_K_M/foo-be.gguf")
     )
+
+
+def test_a_bpw_build_keeps_its_own_identity_everywhere():
+    """Two builds of one base quant at different bits-per-weight are two checkpoints. The loader's
+    label always kept the modifier; the variant key dropped it, so the local export lister
+    advertised IQ4_XS-3.53bpw while the plan, the auto-download map and the delete predicate all
+    said IQ4_XS -- the advertised name 404s and the collapsed one unlinks BOTH builds."""
+    from utils.models.model_config import _extract_quant_label as loader_label
+
+    a = "model-IQ4_XS-3.53bpw.gguf"
+    b = "model-IQ4_XS-3.97bpw.gguf"
+    for path in (a, b):
+        assert gguf_variant_key(path) == loader_label(path)
+        assert _gguf_variant_key(path) == gguf_variant_key(path)
+    assert gguf_variant_key(a) != gguf_variant_key(b)
+    # Shards of ONE bpw build still share a key.
+    assert gguf_variant_key("model-IQ4_XS-3.53bpw-00001-of-00002.gguf") == gguf_variant_key(a)
+    # Two rows, each sized on its own family rather than the sum of both.
+    grouped = group_gguf_variant_files([(a, 10), (b, 20)])
+    assert grouped == {"IQ4_XS-3.53bpw": (a, 10), "IQ4_XS-3.97bpw": (b, 20)}
+    # A plain quant is untouched, so every stored pin still resolves.
+    assert gguf_variant_key("model-Q4_K_M.gguf") == "Q4_K_M"
+    assert gguf_variant_key("distilled/model-Q6_K.gguf") == "distilled/model-Q6_K"
+
+
+def test_a_bpw_key_needs_no_scope_label():
+    """It reads as a label already, so the display pass must not append the whole filename to it
+    the way it does for a path-qualified key."""
+    variants = [
+        GgufVariantInfo(filename = "model-IQ4_XS-3.53bpw.gguf", quant = "IQ4_XS-3.53bpw", size_bytes = 1),
+        GgufVariantInfo(filename = "model-IQ4_XS-3.97bpw.gguf", quant = "IQ4_XS-3.97bpw", size_bytes = 2),
+        GgufVariantInfo(filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K", size_bytes = 3),
+    ]
+    _apply_gguf_display_labels(variants)
+    assert variants[0].display_label is None
+    assert variants[1].display_label is None
+    assert variants[2].display_label == "Q6_K · distilled"
+
+
+def test_a_bare_auto_download_stays_on_the_root_checkpoint():
+    """preferred_quant is order-sensitive, so once the map carried a key per checkpoint a bare
+    org/repo could pick distilled/model-Q6_K over the root model-Q6_K -- while the same id
+    resolves to the root locally, i.e. one model id serving two different sets of weights."""
+    from core.inference.openai_auto_download import _match_variant
+
+    both = {"distilled/model-Q6_K": 1, "Q6_K": 2}
+    assert _match_variant(None, both) == "Q6_K"
+    assert _match_variant(None, {"Q6_K": 2, "distilled/model-Q6_K": 1}) == "Q6_K"
+    # An explicit qualified ask still resolves to the sibling.
+    assert _match_variant("distilled/model-Q6_K", both) == "distilled/model-Q6_K"
+    # A repo with nothing at the root falls back to the whole set rather than refusing.
+    assert _match_variant(None, {"distilled/model-Q6_K": 1}) == "distilled/model-Q6_K"

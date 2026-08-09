@@ -279,6 +279,20 @@ def extract_quant_token(filename: str) -> Optional[str]:
     return None
 
 
+# A bits-per-weight modifier trailing the quant token. Two builds of one base quant at different
+# bpw are two checkpoints (byteshape ships IQ4_XS at 3.53, 3.97 and 4.19), and the loader's own
+# label keeps the modifier for exactly that reason. The variant KEY has to keep it too: without it
+# the lister advertises IQ4_XS-3.53bpw while the plan, the download map and the delete predicate
+# all say IQ4_XS, so the advertised name 404s and the collapsed one unlinks every build.
+_GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
+
+
+def _gguf_bpw_suffix(filename: str) -> str:
+    """``-3.53bpw`` when the shard-stripped basename ends in one, else ``""``."""
+    match = _GGUF_BPW_SUFFIX_RE.search(_gguf_stem(filename))
+    return match.group(0) if match else ""
+
+
 def _unknown_gguf_variant_key(filename: str) -> str:
     stem = _gguf_stem(filename)
     if "/" not in filename:
@@ -336,7 +350,7 @@ def gguf_variant_key(filename: str) -> str:
     parents = path.rpartition("/")[0]
     if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
         return _unknown_gguf_variant_key(path)
-    return quant
+    return f"{quant}{_gguf_bpw_suffix(path)}"
 
 
 def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
@@ -359,11 +373,17 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
     ambiguous = len(unknown_variants) > 1
+    # The bpw modifier is part of the key but reads perfectly well on its own
+    # ("IQ4_XS-3.53bpw"), so a key that is only the token plus its bpw suffix is NOT a
+    # path-qualified one and needs no scope label.
+    def _plain_key(variant) -> Optional[str]:
+        token = extract_quant_token(variant.filename)
+        return None if token is None else f"{token}{_gguf_bpw_suffix(variant.filename)}"
+
     qualified = [
         variant
         for variant in variants
-        if (token := extract_quant_token(variant.filename)) is not None
-        and variant.quant.lower() != token.lower()
+        if (plain := _plain_key(variant)) is not None and variant.quant.lower() != plain.lower()
     ]
     # A scope shared by two rows does not tell them apart, so those rows show the file too.
     scopes: dict[str, int] = {}
@@ -374,7 +394,7 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         token = extract_quant_token(variant.filename)
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
-        elif variant.quant.lower() != token.lower():
+        elif variant.quant.lower() != (_plain_key(variant) or "").lower():
             # A key qualified by path: show the quant, plus what distinguishes it.
             collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
             variant.display_label = (
