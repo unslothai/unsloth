@@ -3093,6 +3093,9 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     return json.dumps(merged)
 
 
+_WILDCARD_CHARS = frozenset("*?[")
+
+
 def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> bool:
     """Whether another host already owns the cmdlet family ``cmdlet`` belongs to.
 
@@ -3103,14 +3106,20 @@ def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> boo
     Windows credentials to a proxy whose own profile never asked for that, which is the exact
     thing the per-cmdlet rule exists to prevent. Overlap in either direction claims the family.
     """
+    wild = _WILDCARD_CHARS.intersection(cmdlet)
     for owned, owner in claimed.items():
         if owner is source:
             continue
-        if (
-            owned == cmdlet
-            or fnmatch.fnmatchcase(cmdlet, owned)
-            or fnmatch.fnmatchcase(owned, cmdlet)
-        ):
+        if owned == cmdlet:
+            return True
+        # Two patterns can share matches without either matching the other AS A STRING --
+        # Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest -- and settling that
+        # properly means intersecting two glob languages. Overlap is assumed instead: the cost
+        # is a second host's unrelated wildcard entry going unmerged, against handing setup a
+        # credential setting from a profile that never asked for one.
+        if wild and _WILDCARD_CHARS.intersection(owned):
+            return True
+        if fnmatch.fnmatchcase(cmdlet, owned) or fnmatch.fnmatchcase(owned, cmdlet):
             return True
     return False
 

@@ -116,10 +116,21 @@ function Install-UnslothStudio {
     # environment variable set here outlives the install -- including on every early-return
     # path -- and a later `unsloth studio update` from that console would reapply this JSON
     # long after the profile proxy changed or went away. It goes into the environment around
-    # the setup child and comes straight back out; assigned unconditionally so a second run in
-    # the same console cannot inherit the first one's value.
-    $script:UnslothProxyHandoffJson =
-        if ($_UnslothProxyHandoff.Count -gt 0) { $_UnslothProxyHandoff | ConvertTo-Json -Compress }
+    # the setup child and comes straight back out.
+    #
+    # FUNCTION-local, not $script:. This value can carry credentials (http://user:secret@proxy
+    # is the ordinary corporate form) and the installer returns from dozens of places --
+    # -ShortcutsOnly, an argument error, lock contention, a failed dependency install -- so any
+    # cleanup placed near the setup child covers only one of them. A local dies with the frame
+    # on every path, including a throw, and a second run in the same console cannot inherit it.
+    #
+    # Module-qualified serializer, for the same reason the probe's is: a profile alias or
+    # function named ConvertTo-Json would otherwise reshape this record or throw out of the
+    # prologue.
+    $UnslothProxyHandoffJson =
+        if ($_UnslothProxyHandoff.Count -gt 0) {
+            $_UnslothProxyHandoff | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
+        }
         else { $null }
 
     # PowerShell 7 only, and $false is its default: a profile that flips it on turns
@@ -4459,7 +4470,7 @@ exit 0
     # those profiles and reapply a stale proxy during setup: exactly the isolation those launch
     # paths asked for. An empty object says "the installer looked, and there is none".
     $env:_UNSLOTH_PS_PROXY_DEFAULTS =
-        if ($script:UnslothProxyHandoffJson) { $script:UnslothProxyHandoffJson } else { '{}' }
+        if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4484,11 +4495,10 @@ exit 0
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
         }
-        # ...and the script-scoped copy goes with it. Under "irm ... | iex" $script: IS the
-        # caller's session scope, so the serialized defaults -- http://user:secret@proxy is the
-        # ordinary corporate form -- stayed readable in that console after the installer
-        # returned. It has done its one job by here.
-        $script:UnslothProxyHandoffJson = $null
+        # ...and the copy this function holds goes with it, so it is not sitting in the frame
+        # for the rest of a long install. The variable is function-local, so every other exit
+        # path drops it too.
+        $UnslothProxyHandoffJson = $null
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue

@@ -844,7 +844,7 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     assert (
         "$env:_UNSLOTH_PS_PROXY_DEFAULTS =" not in prologue
     ), "the prologue publishes the handoff into the session it was invoked from"
-    assert "$script:UnslothProxyHandoffJson" in prologue, "the prologue must hold it instead"
+    assert "$UnslothProxyHandoffJson" in prologue, "the prologue must hold it instead"
     # Set beside the other child-scoped variables, and restored with them.
     assert "$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS" in source
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
@@ -1162,6 +1162,33 @@ def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
     assert merged == {
         "Invoke-Web*:Proxy": "http://seven.corp:8080",
         # An unrelated family from the second host is still merged.
+        "Invoke-RestMethod:Proxy": "http://five.corp:8080",
+    }
+
+
+def test_two_wildcards_that_share_a_cmdlet_are_one_family(monkeypatch):
+    """Matching either pattern against the other as a STRING does not establish whether their
+    match sets overlap: Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest and neither
+    matches the other. Overlap between two patterns is assumed, so the lower-priority profile
+    cannot slip ProxyUseDefaultCredentials in beside the other's proxy."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": _framed('{"Invoke-Web*:Proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed(
+            '{"*-WebRequest:ProxyUseDefaultCredentials": true,'
+            ' "Invoke-RestMethod:Proxy": "http://five.corp:8080"}'
+        ),
+    }
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
+
+    assert merged == {
+        "Invoke-Web*:Proxy": "http://seven.corp:8080",
         "Invoke-RestMethod:Proxy": "http://five.corp:8080",
     }
 
@@ -1536,15 +1563,28 @@ def test_the_probe_child_runs_with_no_profile(monkeypatch):
 
 
 def test_the_proxy_handoff_does_not_outlive_the_installer():
-    """Under the documented `irm ... | iex` path $script: IS the caller's session scope, so the
-    serialized defaults -- http://user:secret@proxy is the ordinary corporate form -- stayed
-    readable in that console after the installer returned. The environment copy was already
-    cleaned up in the finally; this one was not."""
+    """Under the documented `irm ... | iex` path $script: IS the caller's session scope, so a
+    serialized authenticated proxy stayed readable in that console after the installer
+    returned. Cleanup near the setup child covers one exit out of dozens -- -ShortcutsOnly, an
+    argument error, lock contention, a failed dependency install all return earlier -- so the
+    value is held in a FUNCTION-local, which dies with the frame on every path."""
     installer = INSTALL_PS1.read_text(encoding = "utf-8")
 
-    cleared = "$script:UnslothProxyHandoffJson = $null"
+    assert "$script:UnslothProxyHandoffJson" not in installer
+    assert "\n    $UnslothProxyHandoffJson =\n" in installer
+    # Still dropped explicitly once the child it exists for has run.
+    cleared = "$UnslothProxyHandoffJson = $null"
     assert cleared in installer
-    # In the finally that runs the setup child, after the env handoff is restored.
-    handoff = installer.index("$env:_UNSLOTH_PS_PROXY_DEFAULTS =\n")
-    child = installer.index("& $UnslothExe @studioArgs", handoff)
-    assert handoff < child < installer.index(cleared, child)
+    child = installer.index("& $UnslothExe @studioArgs")
+    assert child < installer.index(cleared, child)
+
+
+def test_the_installer_serializes_the_handoff_through_the_builtin():
+    """A profile alias or function named ConvertTo-Json would otherwise reshape this record or
+    throw out of the prologue, and setup then gets an empty proxy configuration on a host whose
+    only egress is that same profile proxy."""
+    installer = INSTALL_PS1.read_text(encoding = "utf-8")
+
+    assert "Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress" in installer
+    prologue = _extract_prologue()
+    assert "| ConvertTo-Json" not in prologue
