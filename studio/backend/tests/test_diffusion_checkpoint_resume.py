@@ -2708,10 +2708,14 @@ def test_the_first_preflight_does_not_pin_the_bundle_it_accepted(run_dir):
     _preflight_diffusion_resume(config, run.identity, 500)
     assert Path(config["resume_from_checkpoint"]).name == "checkpoint-4"
 
-    # And the start route asks for it that way round.
+    # And the start route asks for it that way round: no pin AND no target, since the
+    # target refusal is terminal and this pass cannot yet tell whose dataset the newest
+    # bundle belongs to.
     start = inspect.getsource(__import__("routes.training", fromlist = ["x"]))
-    first = start.index("0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps")
-    assert "pin = False" in start[first : first + 400]
+    call = start.index("_preflight_diffusion_resume,\n                config,\n                resume_identity,")
+    window = start[call : call + 900]
+    assert "pin = False" in window
+    assert "normalized_cfg.train_steps" not in window, "the first pass must carry no target"
 
 
 def test_a_read_does_not_undo_a_promotion_in_flight(run_dir):
@@ -2780,3 +2784,77 @@ def test_a_checkpoint_with_no_rng_state_is_not_written(run_dir, monkeypatch):
     assert error is not None and "random-number state" in error
     assert dc.list_checkpoints(run_dir) == []
     assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
+
+
+def test_a_cuda_capture_that_half_failed_is_not_a_capture(run_dir, monkeypatch):
+    """A secondary visible device erroring left the CPU half in place, so the result was
+    non-empty, the write-time check accepted it, and the preflight -- which only requires
+    torch_cpu -- offered it. The restore then left the CUDA generator at its freshly seeded
+    position, silently changing every latent, noise and timestep draw after the resume."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+
+    def _boom():
+        raise RuntimeError("CUDA error: device-side assert triggered")
+
+    monkeypatch.setattr(torch.cuda, "get_rng_state_all", _boom)
+
+    captured = dc.capture_rng_state(_STREAMS())
+    assert captured["tensors"] == {}, "a partial capture must not look like a capture"
+
+    # And the write refuses it rather than advertising an unresumable bundle.
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert path is None and error is not None and "random-number state" in error
+
+
+def test_the_resume_action_names_a_bundle_that_actually_loads(run_dir):
+    """read_checkpoint is a header scan, so the newest bundle can pass it and still fail the
+    required-state or torch.load checks. Naming THAT one pinned it: the UI sends the exact
+    checkpoint_path back, the preflight treats it as explicit and cannot scan past it, and the
+    directory fallback built for exactly this case never runs."""
+    run = _Run(run_dir, save_total_limit = 0)
+    run.save(4)
+    run.step_once(0.5)
+    newest, error = run.save(8)
+    assert error is None and newest is not None
+
+    state = Path(newest) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(state.read_text(encoding = "utf-8"))
+    manifest["rng"].pop("streams")
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    described = dc.describe_resume_state(str(run_dir))
+
+    assert described["can_resume"] is True
+    assert Path(described["checkpoint_path"]).name == "checkpoint-4"
+    assert described["checkpoint_step"] == 4
+    # And the path it names really does resume.
+    path, step = dc.preflight_resume(
+        described["checkpoint_path"], identity = run.identity, target_steps = 500
+    )
+    assert Path(path).name == "checkpoint-4" and step == 4
+
+
+def test_a_displaced_bundle_is_stamped_when_it_is_moved_aside(run_dir):
+    """os.replace does NOT restamp the directory -- the inode keeps the mtime the bundle was
+    written with. An old checkpoint moved aside therefore looked long-abandoned the instant it
+    arrived, and a concurrent read handed it back into the slot the writer was about to fill."""
+    run = _Run(run_dir, save_total_limit = 0)
+    written, error = run.save(4)
+    assert error is None and written is not None
+    # Make the bundle plainly old, the way a checkpoint from an earlier session is.
+    old = time.time() - 3600
+    os.utime(written, (old, old))
+
+    run.step_once(1.0)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+    run.save(4, preexisting = preexisting)
+
+    displaced = list(run_dir.glob(f"{dc._STAGING_PREFIX}replaced-4-*"))
+    assert len(displaced) == 1
+    age = time.time() - displaced[0].stat().st_mtime
+    assert age < dc._LIVE_REPLACEMENT_GRACE_SECONDS, (
+        "the swap-aside must stamp the entry, or the grace protects nothing"
+    )

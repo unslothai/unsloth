@@ -2807,10 +2807,13 @@ async def start_diffusion_training(
                 _preflight_diffusion_resume,
                 config,
                 resume_identity,
-                0 if normalized_cfg.num_epochs > 0 else normalized_cfg.train_steps,
-                # Fail fast on an impossible resume, but leave the request pointing at what the
-                # user gave: the dataset-aware pass below is the one that may need to scan the
-                # directory for an older bundle matching the current images.
+                # No target either. The "already at the target" refusal is TERMINAL, and this
+                # pass has no dataset fingerprint -- so a newest bundle belonging to a different
+                # dataset, already at the count, aborted the scan before the dataset-aware pass
+                # could find the older checkpoint that does match the requested images.
+                0,
+                # And leave the request pointing at what the user gave, for the same reason:
+                # that pass is the one that may need to scan the directory.
                 pin = False,
             )
         except ResumeError as e:

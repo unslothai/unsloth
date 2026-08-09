@@ -52,7 +52,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional, Iterable
+from typing import Any, Callable, Optional, Iterable
 
 # Bumped only for a breaking layout change. A reader refuses a version it does not know.
 CHECKPOINT_FORMAT = "unsloth-diffusion-checkpoint"
@@ -601,10 +601,18 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
         import torch
         tensors["torch_cpu"] = torch.get_rng_state()
         if torch.cuda.is_available():
-            for i, state in enumerate(torch.cuda.get_rng_state_all()):
-                tensors[f"torch_cuda_{i}"] = state
+            try:
+                for i, state in enumerate(torch.cuda.get_rng_state_all()):
+                    tensors[f"torch_cuda_{i}"] = state
+            except Exception:  # noqa: BLE001 -- one device erroring loses the whole capture
+                # ALL OR NOTHING on a CUDA host. Keeping the CPU half made the result non-empty,
+                # so the write-time check accepted it and the preflight (which only requires
+                # torch_cpu) offered it -- and the restore then left the CUDA generator at its
+                # freshly seeded position, silently changing every latent, noise and timestep
+                # draw from the resumed step on. An empty result fails the write instead.
+                tensors = {}
     except Exception:  # noqa: BLE001 -- torch RNG capture is best-effort
-        pass
+        tensors = {}
     return {"json": payload, "tensors": tensors}
 
 
@@ -1008,6 +1016,12 @@ def _promote(staging: Path, root: Path, step: int) -> Path:
     if final.exists():
         displaced = root / f"{_STAGING_PREFIX}replaced-{step}-{uuid.uuid4().hex[:8]}"
         os.replace(final, displaced)
+        # os.replace does NOT restamp the directory: the inode keeps whatever mtime the bundle
+        # was written with, so an old checkpoint moved aside looked long-abandoned the instant
+        # it arrived and a concurrent read handed it straight back into the slot we are about to
+        # fill. Stamp it with the moment of the swap, which is what the grace is measuring.
+        with contextlib.suppress(OSError):
+            os.utime(displaced, None)
     try:
         os.replace(staging, final)
     except OSError:
@@ -1485,6 +1499,7 @@ def latest_valid_checkpoint(
     output_dir: str | os.PathLike[str],
     not_before: Optional[float] = None,
     not_after: Optional[float] = None,
+    usable: "Optional[Callable[[Path, dict], bool]]" = None,
 ) -> Optional[tuple[Path, dict]]:
     """The newest complete bundle under ``output_dir`` as ``(path, manifest)``, or None.
     Scans newest-first and skips any bundle that fails validation, so one corrupt
@@ -1527,6 +1542,9 @@ def latest_valid_checkpoint(
             # it predates the field, and refusing it would make an old run unresumable.
             if created and created > float(not_after):
                 continue
+        # An extra gate for callers whose answer PINS the bundle it names.
+        if usable is not None and not usable(candidate, manifest):
+            continue
         return candidate, manifest
     return None
 
@@ -1553,6 +1571,23 @@ _UNRESUMABLE_STATUS = {
     "completed": "This run finished its full step count, so there is nothing left to train.",
     "running": "This run is still training.",
 }
+
+
+def _fully_loadable(path: Path, manifest: dict[str, Any]) -> bool:
+    """Whether ``path`` passes every non-identity gate ``preflight_resume`` applies.
+
+    ``read_checkpoint`` is a header scan, so the newest bundle can pass it and still fail the
+    required-state check or a real torch.load. Advertising THAT one as the run's resume point
+    pinned it: the UI sends back the exact checkpoint_path, which the preflight then treats as
+    explicit and cannot scan past -- defeating the directory fallback built for this case.
+    """
+    try:
+        _assert_required_state(path, manifest)
+        _assert_optimizer_buildable(path, manifest)
+        _assert_loadable(path, manifest)
+    except ResumeError:
+        return False
+    return True
 
 
 def _source_checkpoint_bundle(
@@ -1634,7 +1669,15 @@ def describe_resume_state(
                 }
             found = recovered
         else:
-            found = latest_valid_checkpoint(root, not_before = started_at, not_after = ended_at)
+            found = latest_valid_checkpoint(
+                root,
+                not_before = started_at,
+                not_after = ended_at,
+                # The action this answer drives sends the exact path back, which the preflight
+                # then treats as explicit and cannot scan past -- so the bundle named here has
+                # to be one that will actually load, not merely one whose header parses.
+                usable = _fully_loadable,
+            )
         if found is None and source_checkpoint:
             # This run RESUMED and then ended before writing a bundle of its own -- an OOM on
             # the first restored step is the usual way. The source it was validated against is
