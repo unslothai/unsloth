@@ -1735,34 +1735,42 @@ def test_one_malformed_record_does_not_stop_the_whole_sweep(tmp_path, monkeypatc
 
     monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path))
     victim = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session = True,
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session = True,
     )
     # Live, so its identity is readable and the record's is what gets compared
     # against it. Unverifiable, so it must survive the sweep.
     decoy = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session = True,
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        start_new_session = True,
     )
     try:
         for index, shape in enumerate((123, ["a"], {"b": 1}, None)):
             (tmp_path / f"bad_{index}.json").write_text(
-                json.dumps({
-                    "owner_pid": 999_001,
-                    "owner_identity": shape,
-                    "children": [{"pid": decoy.pid, "identity": shape, "pgid": None}],
-                }),
+                json.dumps(
+                    {
+                        "owner_pid": 999_001,
+                        "owner_identity": shape,
+                        "children": [{"pid": decoy.pid, "identity": shape, "pgid": None}],
+                    }
+                ),
                 encoding = "utf-8",
             )
         # A real orphan behind them, from an owner that is gone.
         (tmp_path / "good.json").write_text(
-            json.dumps({
-                "owner_pid": 999_003,
-                "owner_identity": "1",
-                "children": [{
-                    "pid": victim.pid,
-                    "identity": lifetime._pid_identity(victim.pid),
-                    "pgid": victim.pid,
-                }],
-            }),
+            json.dumps(
+                {
+                    "owner_pid": 999_003,
+                    "owner_identity": "1",
+                    "children": [
+                        {
+                            "pid": victim.pid,
+                            "identity": lifetime._pid_identity(victim.pid),
+                            "pgid": victim.pid,
+                        }
+                    ],
+                }
+            ),
             encoding = "utf-8",
         )
 
@@ -1796,14 +1804,16 @@ def test_a_group_of_zombies_does_not_hold_up_the_startup_sweep(monkeypatch):
     from utils import process_lifetime as lifetime
 
     leader = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session = True,
     )
     try:
         # As a non-reaping pid 1 leaves things: signalled, exited, still listed.
         alive = {"value": True}
         real_members = lifetime._group_member_pids
         monkeypatch.setattr(
-            lifetime, "_group_member_pids",
+            lifetime,
+            "_group_member_pids",
             lambda pgid: real_members(pgid) if alive["value"] else [],
         )
         monkeypatch.setattr(lifetime, "_pid_is_zombie", lambda pid: not alive["value"])
