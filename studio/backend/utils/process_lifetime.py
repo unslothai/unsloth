@@ -1122,6 +1122,8 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
     except Exception:
         return
     deadline = time.monotonic() + max(0.0, timeout)
+    group = killer is getattr(os, "killpg", None)
+    next_state_check = 0.0
     while time.monotonic() < deadline:
         try:
             killer(pid, 0)  # still alive?
@@ -1129,6 +1131,16 @@ def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
             return
         except Exception:
             break
+        now = time.monotonic()
+        if now >= next_state_check:
+            # An exited child nobody has waited on answers signal 0 exactly like
+            # a live one, so without this the whole timeout is spent on a process
+            # that is already gone. Reading the state costs a fork off Linux,
+            # hence twice a second rather than at the poll rate.
+            next_state_check = now + 0.5
+            gone = (not _group_has_members(pid)) if group else _pid_is_zombie(pid)
+            if gone:
+                return
         time.sleep(0.05)
     try:
         killer(pid, signal.SIGKILL)

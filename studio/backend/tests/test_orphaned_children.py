@@ -9,6 +9,7 @@ reaped only the wrapper on Windows, and the orphaned venv python then made
 """
 
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -1456,6 +1457,83 @@ def test_the_diffusion_group_goes_down_with_an_ordinary_stop():
     assert "_kill_process_group(_pgid)" in source
     # Captured before the wait: getpgid stops answering once the leader is reaped.
     assert source.index("_leading_process_group") < source.index("self._process.terminate()")
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix termination path")
+def test_an_exited_child_does_not_burn_the_shutdown_timeout():
+    """A child that exited but has not been waited on answers signal 0 like a
+    live one, so the wait would spend its whole budget on a dead process. With
+    several tracked, that is the whole shutdown."""
+    from utils.process_lifetime import _pid_is_zombie, _posix_terminate
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        for _ in range(100):
+            if _pid_is_zombie(proc.pid):
+                break
+            time.sleep(0.05)
+        assert _pid_is_zombie(proc.pid), "the child never became reapable"
+
+        started = time.monotonic()
+        _posix_terminate(proc.pid, timeout = 5.0)
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"waited {elapsed:.1f}s on a process that had exited"
+        # Still ours to reap: the wait must not consume the exit status the
+        # owner is about to read.
+        assert proc.wait(timeout = 5) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix termination path")
+def test_a_running_child_is_still_terminated():
+    """The shortcut above must not stop the ordinary kill."""
+    from utils.process_lifetime import _posix_terminate
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        started = time.monotonic()
+        _posix_terminate(proc.pid, timeout = 5.0)
+        assert time.monotonic() - started < 5.0
+        assert proc.wait(timeout = 5) != 0, "exited on its own, so this proves nothing"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_a_group_is_waited_on_while_a_member_is_still_running():
+    """The leader going first must not cut the wait short: the group is what
+    holds the GPU, and a live member is the reason for the SIGKILL."""
+    from utils.process_lifetime import _posix_terminate
+
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys, time;"
+            "subprocess.Popen([sys.executable, '-c', 'import signal, time;"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)']);"
+            "time.sleep(30)",
+        ],
+        start_new_session = True,
+    )
+    try:
+        time.sleep(1.0)  # let the grandchild exist before anything is signalled
+        started = time.monotonic()
+        _posix_terminate(leader.pid, timeout = 2.0)
+        elapsed = time.monotonic() - started
+        assert elapsed >= 1.5, f"gave up after {elapsed:.1f}s with a member still running"
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except Exception:
+            pass
+        if leader.poll() is None:
+            leader.wait(timeout = 5)
 
 
 if __name__ == "__main__":
