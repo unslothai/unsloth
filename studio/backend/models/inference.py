@@ -2443,7 +2443,9 @@ class DiffusionLoadRequest(BaseModel):
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
         "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
-        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode.",
+        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode. "
+        "Fails CLOSED when NOTHING could be cast (409, or a load-progress error); an int8 request "
+        "downgraded to fp8 loads and is reported through the status resolved record instead.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2454,7 +2456,11 @@ class DiffusionLoadRequest(BaseModel):
             "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
             "falling back to the GGUF when the device, VRAM or disk cannot take "
             "it. none/off pins running the GGUF as-is; an explicit scheme forces "
-            "that scheme. Dense path needs CUDA + bf16.",
+            "that scheme. Dense path needs CUDA + bf16. An EXPLICIT scheme fails "
+            "CLOSED: where it cannot be honored the load is refused (409, or an "
+            "error phase on load-progress for the footprint-dependent declines) "
+            "rather than silently running the GGUF at another precision. Only "
+            "auto falls back.",
         )
     )
     transformer_quant_fast_accum: Optional[bool] = Field(
@@ -2814,6 +2820,19 @@ class GalleryImage(BaseModel):
         description = "Transformer quantisation scheme actually engaged on the dense fast path "
         "(int8/fp8/nvfp4/mxfp8), or null when the GGUF ran as-is",
     )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quantisation actually engaged (fp8/fp8_dynamic/int8/nvfp4), "
+        "or null when the dense bf16 encoder ran. Absent on records written before this existed.",
+    )
+    memory_mode: Optional[str] = Field(
+        None, description = "Memory mode the load ran under: auto | fast | balanced | low_vram"
+    )
+    offload_policy: Optional[str] = Field(
+        None,
+        description = "Offload policy actually engaged: none | group | model | sequential. Part of "
+        "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
     baked_loras: list[str] = Field(
         default_factory = list,
         description = "Adapter ids baked into the transformer AT LOAD TIME (before quantize + "
@@ -2887,12 +2906,30 @@ class DiffusionResolvedControl(BaseModel):
     control is off, or ``true``/``false`` for cpu_offload), so it is typed ``Any``.
     ``source`` is "auto" when this backend decided it or "explicit" when the caller did;
     ``reason`` is the short human-readable why the frontend shows as a tooltip.
+
+    ``requested`` and ``status`` carry the OTHER half: what was asked for and whether it was
+    honored. Without them a declined request was indistinguishable from an honored one -- the
+    engaged value was reported truthfully, but the ask it replaced was gone, so the UI kept
+    advertising a precision that never engaged.
     """
 
     value: Any = Field(
         None, description = "The engaged value: a string, a boolean (cpu_offload), or null."
     )
+    requested: Any = Field(
+        None,
+        description = "What the caller asked for, verbatim (a string, a boolean for cpu_offload), "
+        "or null when they left this control to the backend. Compare with ``value`` to see "
+        "whether the request survived.",
+    )
     source: str = Field(..., description = '"auto" (backend decided) or "explicit" (caller set it)')
+    status: str = Field(
+        "applied",
+        description = 'Whether the request was honored: "applied" (it was, or there was no '
+        'request), "fell_back" (an explicit request was declined and something else engaged) or '
+        '"unsupported" (an explicit request cannot run on this host / model at all). Defaulted '
+        "so a client reading an older backend's payload still parses.",
+    )
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
 
 
@@ -3262,6 +3299,32 @@ class GalleryVideo(BaseModel):
     seed: int = Field(..., description = "Seed used")
     has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    # The load-time BUILD, mirroring GalleryImage: the repo id alone does not say which checkpoint
+    # ran or at what precision, so a clip could not be told apart from one rendered at another. All
+    # optional, so sidecars written before this existed still list.
+    model_kind: Optional[str] = Field(
+        None, description = "How the model was loaded: gguf, single_file or pipeline"
+    )
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The single-file checkpoint the load committed, for a gguf/single_file load",
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Dense DiT quantisation actually engaged (int8/fp8/nvfp4/mxfp8), or null "
+        "when the DiT(s) ran at their loaded bf16 precision",
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quantisation actually engaged (fp8/fp8_dynamic/int8/nvfp4), "
+        "or null when the dense bf16 encoder ran",
+    )
+    memory_mode: Optional[str] = Field(
+        None, description = "Memory mode the load ran under: auto | fast | balanced | low_vram"
+    )
+    offload_policy: Optional[str] = Field(
+        None, description = "Offload policy actually engaged: none | group | model | sequential"
+    )
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
 
 

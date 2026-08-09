@@ -14,6 +14,11 @@ export function registerBundlerResolver(): void {
   register("../bundler-resolver.mjs", import.meta.url);
 }
 
+/** Register the bundler resolver with store dependency stubs. */
+export function registerStoreStubResolver(): void {
+  register("../store-stub-resolver.mjs", import.meta.url);
+}
+
 export type StorageFake = {
   getItem: (key: string) => string | null;
   setItem: (key: string, value: string) => void;
@@ -40,7 +45,13 @@ export function installLocalStorageFake(): {
   };
   Object.assign(globalThis, {
     // A location too: lib/api-base reads its protocol, pulled in transitively.
-    window: { localStorage: storage, location: { protocol: "http:" } },
+    // Stores that sync across tabs subscribe to "storage" on construction.
+    window: {
+      localStorage: storage,
+      location: { protocol: "http:" },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    },
     localStorage: storage,
   });
   return { store, storage };
