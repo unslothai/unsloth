@@ -340,7 +340,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "MiniMaxAI/MiniMax-H3",
     displayName: "MiniMax H3",
-    description: "Text-to-video with synchronized audio",
+    description: "Text, image and reference to video with synchronized audio",
     scope: "video",
     aliases: ["Comfy-Org/MiniMax-H3"],
     capabilities: { audio: true },

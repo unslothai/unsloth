@@ -90,7 +90,11 @@ class SdCppGenParams:
 
 @dataclass(frozen = True)
 class SdCppVideoGenParams:
-    """Video generation parameters for sd-cli's ``vid_gen`` mode."""
+    """Video generation parameters for sd-cli's ``vid_gen`` mode.
+
+    Keyframes and Ref2VA references use separate denoiser partitions. Reference videos are
+    frame directories, and their WAV soundtracks are paired by index.
+    """
 
     prompt: str
     width: int
@@ -100,6 +104,14 @@ class SdCppVideoGenParams:
     steps: Optional[int] = None
     cfg_scale: float = 1.0
     seed: Optional[int] = None
+    init_img: Optional[str] = None
+    end_img: Optional[str] = None
+    ref_images: tuple[str, ...] = ()
+    ref_videos: tuple[str, ...] = ()
+    ref_video_audios: tuple[str, ...] = ()
+    ref_audios: tuple[str, ...] = ()
+    # sd.cpp exposes only the video schedule shift.
+    flow_shift: Optional[float] = None
 
 
 @dataclass(frozen = True)
@@ -319,7 +331,7 @@ def build_sd_cpp_video_command(
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
-    """Build one MiniMax-H3 text-to-audio-video ``sd-cli`` command."""
+    """Build one MiniMax-H3 audio-video ``sd-cli`` command (text-only, or keyframe-conditioned)."""
     if not files.diffusion_model:
         raise ValueError("diffusion_model path is required")
     if not files.vae:
@@ -345,6 +357,30 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
+    # Reject incompatible partitions before loading the model.
+    if (params.init_img or params.end_img) and (
+        params.ref_images or params.ref_videos or params.ref_audios
+    ):
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    if len(params.ref_video_audios) > len(params.ref_videos):
+        raise ValueError("each reference video soundtrack needs a reference video to pair with")
+    # Keyframes before the sampling flags, matching the img_gen builder's ordering.
+    if params.init_img:
+        cmd += ["--init-img", params.init_img]
+    if params.end_img:
+        cmd += ["--end-img", params.end_img]
+    # Preserve the model's image, video, soundtrack, then standalone-audio order.
+    for ref in params.ref_images:
+        cmd += ["--ref-image", ref]
+    for ref in params.ref_videos:
+        cmd += ["--ref-video", ref]
+    for ref in params.ref_video_audios:
+        cmd += ["--ref-video-audio", ref]
+    for ref in params.ref_audios:
+        cmd += ["--ref-audio", ref]
     cmd += [
         "--prompt",
         params.prompt,
@@ -363,6 +399,8 @@ def build_sd_cpp_video_command(
     ]
     if params.steps is not None:
         cmd += ["--steps", str(int(params.steps))]
+    if params.flow_shift is not None:
+        cmd += ["--flow-shift", _fmt_float(params.flow_shift)]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]

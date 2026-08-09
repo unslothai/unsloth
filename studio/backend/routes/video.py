@@ -159,6 +159,7 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            h3_task = request.h3_task,
         )
         # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()
@@ -181,6 +182,7 @@ async def load_video_model(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
+                h3_task = request.h3_task,
             )
 
         if device != "cpu":
@@ -235,6 +237,14 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
+            first_frame = request.first_frame,
+            last_frame = request.last_frame,
+            reference_images = request.reference_images,
+            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+            reference_audios = request.reference_audios,
+            reference_image_size = request.reference_image_size,
+            flow_shift = request.flow_shift,
+            audio_flow_shift = request.audio_flow_shift,
         )
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.

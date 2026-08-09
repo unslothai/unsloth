@@ -3033,30 +3033,38 @@ def test_the_h3_native_load_never_puts_the_vae_on_the_cpu():
 
 
 def test_h3_rejects_companion_checkpoints_as_the_transformer():
-    """Only an fl2va denoiser is a valid T2VA pick, and the mirror ships more than that.
+    """Only a released DENOISER partition is a valid pick, and the mirror ships more than that.
 
-    The Qwen3-VL encoder quants now live in the same repo as the denoisers, so the picker lists
-    both and a user can name either. Loading the encoder as the transformer would waste a ~12 GB
-    download and fail deep inside sd-cli rather than at the boundary. Ref2VA is a different
-    workflow entirely.
+    The Qwen3-VL encoder quants live in the same repo as the denoisers, so the picker lists both
+    and a user can name either. Loading the encoder as the transformer would waste a ~12 GB
+    download and fail deep inside sd-cli rather than at the boundary. Both fl2va and ref2va are
+    valid picks -- which one is picked IS the task -- and each names its own task.
 
     The accept cases include the dynamic rung names specifically: the guard is a prefix/suffix
     check, and `-UD-Q2_K_XL` is a shape it had never seen when it was written.
     """
-    from core.inference.video_minimax_h3 import validate_h3_transformer_filename
+    from core.inference.video_minimax_h3 import (
+        H3_TASK_KEYFRAMES,
+        H3_TASK_REFERENCES,
+        h3_transformer_task,
+        validate_h3_transformer_filename,
+    )
 
-    for good in (
-        "minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf",
-        "minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf",
-        "minimax_h3_fl2va_pruned-Q4_K.gguf",
-        "minimax_h3_fl2va-Q4_K_M.gguf",
+    for good, task in (
+        ("minimax_h3_fl2va_pruned-UD-Q2_K_XL.gguf", H3_TASK_KEYFRAMES),
+        ("minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf", H3_TASK_KEYFRAMES),
+        ("minimax_h3_fl2va_pruned-Q4_K.gguf", H3_TASK_KEYFRAMES),
+        ("minimax_h3_fl2va-Q4_K_M.gguf", H3_TASK_KEYFRAMES),
+        ("minimax_h3_ref2va_pruned-Q2_K_M.gguf", H3_TASK_REFERENCES),
+        ("minimax_h3_ref2va-Q4_K_M.gguf", H3_TASK_REFERENCES),
     ):
         validate_h3_transformer_filename(good)
+        assert h3_transformer_task(good) == task
 
     for bad in (
         "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
         "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
-        "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
+        "minimax_h3_video_vae_fp16.safetensors",
         "minimax_h3_fl2va_pruned_bf16.safetensors",
     ):
         with pytest.raises(ValueError):
@@ -3343,3 +3351,713 @@ def test_h3_vae_trim_survives_a_renamed_attribute():
     assert trim_h3_video_vae(None, workflow = "t2va") == {"encoder_freed": 0, "decoder_freed": 0}
     bare = torch.nn.Module()
     assert trim_h3_video_vae(bare, workflow = "t2va")["decoder_freed"] == 0
+
+
+# ── MiniMax-H3 keyframes (image-to-video) ────────────────────────────────────
+
+
+def test_h3_canvas_follows_the_released_checkpoint_rule():
+    from core.inference.video_minimax_h3 import h3_canvas_for_aspect
+
+    # The area cap brings 16:9 to the checkpoint's 1344x768 default.
+    assert h3_canvas_for_aspect(1920, 1080) == (1344, 768)
+    assert h3_canvas_for_aspect(1080, 1920) == (768, 1344)
+    assert h3_canvas_for_aspect(1000, 1000) == (768, 768)
+    # 4:3 stays under the cap, so the short edge is honoured exactly.
+    assert h3_canvas_for_aspect(1024, 768) == (1024, 768)
+    # Only the ratio matters, so a thumbnail and a 4K frame of the same shape agree.
+    assert h3_canvas_for_aspect(160, 90) == h3_canvas_for_aspect(3840, 2160)
+    # Outside the trained 1:4 - 4:1 band, refuse rather than generate off-distribution.
+    with pytest.raises(ValueError, match = "aspect ratios"):
+        h3_canvas_for_aspect(2000, 400)
+    with pytest.raises(ValueError, match = "aspect ratio"):
+        h3_canvas_for_aspect(0, 100)
+
+
+def test_h3_keyframe_fit_stretches_the_first_and_crops_the_last():
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference.video_minimax_h3 import (
+        H3_ANCHOR_FIRST,
+        H3_ANCHOR_LAST,
+        fit_h3_keyframe,
+    )
+
+    # A 2:1 source on a square canvas distinguishes stretch from center crop.
+    source = Image.new("RGB", (200, 100), (0, 0, 0))
+    for x in range(200):
+        for y in range(100):
+            source.putpixel((x, y), (255, 0, 0) if x < 20 or x >= 180 else (0, 0, 255))
+
+    first = fit_h3_keyframe(source, 128, 128, anchor = H3_ANCHOR_FIRST)
+    assert first.size == (128, 128)
+    assert first.getpixel((2, 64))[0] > 200  # the red margin was squeezed in, not cut
+
+    last = fit_h3_keyframe(source, 128, 128, anchor = H3_ANCHOR_LAST)
+    assert last.size == (128, 128)
+    assert last.getpixel((2, 64))[2] > 200  # the red margin fell outside the centre crop
+
+    with pytest.raises(ValueError, match = "anchor"):
+        fit_h3_keyframe(source, 64, 64, anchor = "middle")
+
+
+def _h3_native_backend(monkeypatch, calls):
+    """A backend with an H3 sd.cpp state whose engine records the params it was handed."""
+    from core.inference.video import _VideoLoadState
+    from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
+
+    class _Engine:
+        def generate_video(self, files, params, **kwargs):
+            from PIL import Image
+
+            # The staged PNGs live in a scratch dir the run deletes, so measure them here.
+            def staged_size(path):
+                if path is None:
+                    return None
+                with Image.open(path) as image:
+                    return image.size
+
+            calls.append(
+                {
+                    "files": files,
+                    "params": params,
+                    "init_size": staged_size(params.init_img),
+                    "end_size": staged_size(params.end_img),
+                    **kwargs,
+                }
+            )
+            return Path("/tmp/does-not-exist.webm")
+
+    backend = VideoBackend()
+    fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    backend._state = _VideoLoadState(
+        pipe = MiniMaxH3NativeRuntime(engine = _Engine(), files = object(), offload_flags = ()),
+        family = fam,
+        repo_id = "unsloth/MiniMax-H3-GGUF",
+        base_repo = fam.base_repo,
+        device = "cuda",
+        dtype = "Q4_K_M",
+        kind = "gguf",
+        engine = "sd_cpp",
+        h3_task = "fl2va",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+    # Imported inside _generate_h3_native, so patched at their own module.
+    from core.inference import video_minimax_h3 as h3_mod
+
+    monkeypatch.setattr(h3_mod, "inspect_video", lambda path: (1344, 768, 124, True))
+    monkeypatch.setattr(h3_mod, "transcode_video_to_mp4", lambda path, fps: b"MP4")
+    return backend
+
+
+def _data_url(width, height):
+    import base64
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (10, 20, 30)).save(buf, format = "PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_h3_native_generate_stages_both_keyframes_on_the_canvas(monkeypatch):
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(
+        prompt = "a fox runs through snow",
+        width = 960,
+        height = 544,
+        first_frame = _data_url(1920, 1080),
+        last_frame = _data_url(400, 400),
+    )
+
+    assert calls[0]["params"].init_img and calls[0]["params"].end_img
+    # Both staged images already use the requested canvas.
+    assert calls[0]["init_size"] == (960, 544)
+    assert calls[0]["end_size"] == (960, 544)
+    assert result["conditioning"] == "fl2va"
+
+
+def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    image = _data_url(640, 360)
+
+    assert backend.generate(prompt = "p", width = 960, height = 544)["conditioning"] == "t2va"
+    assert calls[-1]["params"].init_img is None and calls[-1]["params"].end_img is None
+
+    assert (
+        backend.generate(prompt = "p", width = 960, height = 544, first_frame = image)[
+            "conditioning"
+        ]
+        == "i2va"
+    )
+    assert calls[-1]["params"].end_img is None
+
+    assert (
+        backend.generate(prompt = "p", width = 960, height = 544, last_frame = image)[
+            "conditioning"
+        ]
+        == "l2va"
+    )
+    assert calls[-1]["params"].init_img is None
+
+
+def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    backend.generate(prompt = "p", first_frame = _data_url(1920, 1080))
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+
+    # With no first frame the last one drives it, matching the Diffusers blocks.
+    backend.generate(prompt = "p", last_frame = _data_url(1080, 1920))
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (768, 1344)
+    assert calls[-1]["end_size"] == (768, 1344)
+
+    # Without a keyframe there is nothing to match, so the family's first preset still wins.
+    backend.generate(prompt = "p")
+    assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+
+
+def test_keyframes_are_refused_by_a_family_that_has_none(fake_runtime, tmp_path):
+    # Silently dropping the image would render a text-only clip with nothing to do with it.
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    with pytest.raises(ValueError, match = "no first or last frame"):
+        backend.begin_generate(prompt = "a sloth", first_frame = _data_url(64, 64))
+    with pytest.raises(ValueError, match = "no first or last frame"):
+        backend.generate(prompt = "a sloth", last_frame = _data_url(64, 64))
+    # The refusal must not leave the busy flag set, or every later generation 409s.
+    assert backend.generate_progress()["active"] is False
+
+
+def test_begin_generate_rejects_an_undecodable_keyframe(monkeypatch):
+    # begin_generate returns before the job runs, so a bad image has to fail on the POST.
+    backend = _h3_native_backend(monkeypatch, [])
+    with pytest.raises(ValueError):
+        backend.begin_generate(prompt = "p", first_frame = "data:image/png;base64,notanimage")
+    assert backend.generate_progress()["active"] is False
+
+
+def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tmp_path):
+    # Restrict components without pruning t2va/fl2va routing blocks.
+    import types
+
+    from core.inference.video import VideoBackend
+
+    seen: dict = {}
+
+    class _FakeModularPipeline:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            seen["from_pretrained"] = {"repo": repo, **kwargs}
+            return cls()
+
+        def load_components(self, **kwargs):
+            seen["load_components"] = kwargs
+
+        def to(self, device):
+            return self
+
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: types.SimpleNamespace(
+            enable_auto_cpu_offload = lambda **kwargs: seen.setdefault("offload", kwargs)
+        ),
+        ModularPipeline = _FakeModularPipeline,
+    )
+    torch = types.SimpleNamespace(bfloat16 = "bf16")
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+
+    backend = VideoBackend()
+    status = backend._load_h3_modular_pipeline(
+        diffusers = diffusers,
+        torch = torch,
+        fam = fam,
+        repo_id = "MiniMaxAI/MiniMax-H3",
+        base = fam.base_repo,
+        kind = "pipeline",
+        dtype = torch.bfloat16,
+        device = "cuda",
+        hf_token = None,
+        memory_mode = None,
+        _load_token = None,
+        _base_local_dir = None,
+    )
+
+    assert "workflow" not in seen["from_pretrained"]
+    assert seen["load_components"]["workflow"] == "fl2va"
+    assert status["supports_keyframes"] is True
+    assert status["defaults"]["canvas_short_edge"] == 768
+
+
+def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
+    # Replay real log shapes to isolate the denoise progress bar.
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    transcript = [
+        "[INFO ] stable-diffusion.cpp:4365 - sampling using Euler method",
+        "[INFO ] stable-diffusion.cpp:6107 - MiniMax-H3 I2VA",
+        # keyframe VAE encode: same shape, its own loop
+        "  |==============>       | 3/6 - 9.17it/s",
+        "[INFO ] stable-diffusion.cpp:6899 - generate_video 640x384x124",
+        # the denoiser's own weights streaming in, rated in GB/s
+        "  |======================| 532/532 - 3.81GB/s",
+        "  |=====>                | 1/4 - 1.63it/s",
+        "  |==========>           | 2/4 - 1.70it/s",
+        "[INFO ] stable-diffusion.cpp:6997 - sampling completed, taking 13.20s",
+        # VAE decode tiles, after the denoise window closed
+        "  |======================| 6/6 - 9.17it/s",
+    ]
+
+    class _ReplayEngine:
+        def generate_video(self, files, params, *, on_log, **kwargs):
+            seen = []
+            for line in transcript:
+                on_log(line)
+                seen.append((backend._gen["step"], backend._gen["total"]))
+            calls.append(seen)
+            return Path("/tmp/does-not-exist.webm")
+
+    from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
+
+    # Install the replay runtime into the frozen load state.
+    object.__setattr__(
+        backend._state,
+        "pipe",
+        MiniMaxH3NativeRuntime(engine = _ReplayEngine(), files = object(), offload_flags = ()),
+    )
+    backend.generate(prompt = "p", width = 640, height = 384, steps = 4)
+
+    seen = calls[-1]
+    # Only bars inside the denoise window update progress.
+    assert seen[2] == (0, 4)
+    assert seen[4] == (0, 4)
+    assert seen[5] == (1, 4)
+    assert seen[6] == (2, 4)
+    assert seen[8] == (2, 4)
+
+
+# ── MiniMax-H3 references (Ref2VA) ───────────────────────────────────────────
+
+
+def _h3_ref_backend(monkeypatch, calls):
+    """The native backend with the Ref2VA partition resident instead of FL2VA."""
+    backend = _h3_native_backend(monkeypatch, calls)
+    object.__setattr__(backend._state, "h3_task", "ref2va")
+    object.__setattr__(
+        backend._state, "gguf_filename", "minimax_h3_ref2va_pruned-Q4_K_M.gguf"
+    )
+    return backend
+
+
+def _reference_video_data_url(seconds=3.0, fps=24, size=(160, 96), with_audio=True):
+    """A real encoded MP4, so the decode path is exercised rather than stubbed."""
+    import base64
+    import io
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+
+    buf = io.BytesIO()
+    with av.open(buf, mode="w", format="mp4") as out:
+        video = out.add_stream("libx264", rate=fps)
+        video.width, video.height = size
+        video.pix_fmt = "yuv420p"
+        audio = None
+        if with_audio:
+            audio = out.add_stream("aac", rate=44_100)
+            audio.layout = "stereo"
+        for index in range(int(seconds * fps)):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((size[1], size[0], 3), index % 255, dtype=np.uint8), format="rgb24"
+            )
+            for packet in video.encode(frame):
+                out.mux(packet)
+        if audio is not None:
+            written = 0
+            total = int(seconds * 44_100)
+            while written < total:
+                count = min(1024, total - written)
+                samples = np.zeros((1, count * 2), dtype=np.int16)
+                frame = av.AudioFrame.from_ndarray(samples, format="s16", layout="stereo")
+                frame.sample_rate = 44_100
+                for packet in audio.encode(frame):
+                    out.mux(packet)
+                written += count
+            for packet in audio.encode():
+                out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+    return "data:video/mp4;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_h3_reference_video_decodes_onto_the_models_own_clock():
+    pytest.importorskip("av")
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    import base64
+
+    blob = base64.b64decode(_reference_video_data_url(seconds=3.0, fps=30).split(",", 1)[1])
+    frames, waveform, sample_rate = decode_h3_reference_video(blob)
+    # 3 seconds at 24 fps whatever the container's own rate was.
+    assert len(frames) == 72
+    assert waveform is not None and sample_rate == 44_100
+    # And onto the canvas its own aspect ratio resolves to, never upscaled past the source.
+    assert frames[0].size == (160, 96)
+
+
+def test_h3_reference_video_refuses_a_clip_below_the_trained_window():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(_reference_video_data_url(seconds=0.5).split(",", 1)[1])
+    with pytest.raises(ValueError, match = "2 to 15 seconds"):
+        decode_h3_reference_video(blob)
+
+
+def test_h3_reference_video_refuses_instead_of_silently_truncating_a_long_clip():
+    pytest.importorskip("av")
+    import base64
+
+    from core.inference.video_minimax_h3 import decode_h3_reference_video
+
+    blob = base64.b64decode(
+        _reference_video_data_url(seconds=15.1, fps=24, with_audio=False).split(",", 1)[1]
+    )
+    with pytest.raises(ValueError, match = "longer than 15s"):
+        decode_h3_reference_video(blob)
+
+
+def test_h3_native_refuses_a_later_video_soundtrack_after_a_silent_video(monkeypatch):
+    pytest.importorskip("av")
+    backend = _h3_ref_backend(monkeypatch, [])
+
+    with pytest.raises(ValueError, match = "Video 2 has audio after a silent earlier video"):
+        backend.begin_generate(
+            prompt = "match <Video 1> and <Video 2>",
+            reference_videos = [
+                {"video": _reference_video_data_url(with_audio=False)},
+                {"video": _reference_video_data_url(with_audio=True)},
+            ],
+        )
+
+
+def test_h3_reference_images_are_fitted_to_the_requested_policy():
+    Image = pytest.importorskip("PIL.Image")
+    from core.inference.video_minimax_h3 import fit_h3_reference_image
+
+    source = Image.new("RGB", (6000, 3000), (0, 0, 0))
+    # "match" brings the reference down to the generation's pixel area, aspect kept.
+    matched = fit_h3_reference_image(source, width=960, height=544, policy="match")
+    assert matched.size[0] / matched.size[1] == pytest.approx(2.0, abs=0.05)
+    assert matched.size[0] * matched.size[1] <= 960 * 544 * 1.1
+    # "max" targets the reference pipeline's own 2048px short edge instead.
+    biggest = fit_h3_reference_image(source, width=960, height=544, policy="max")
+    assert min(biggest.size) == 2048 and max(biggest.size) == 4096
+    # Neither ever upscales a source already under its target; it only snaps to 32.
+    small = Image.new("RGB", (128, 128), (0, 0, 0))
+    assert fit_h3_reference_image(small, width=1344, height=768, policy="max").size == (128, 128)
+    with pytest.raises(ValueError, match = "policy"):
+        fit_h3_reference_image(source, width=960, height=544, policy="huge")
+
+
+def test_h3_native_generate_stages_every_reference_kind(monkeypatch, tmp_path):
+    pytest.importorskip("av")
+    calls: list = []
+    backend = _h3_ref_backend(monkeypatch, calls)
+
+    staged: dict = {}
+
+    class _Engine:
+        def generate_video(self, files, params, **kwargs):
+            # The scratch dir is deleted with the run, so read it here.
+            staged["images"] = [Path(p).name for p in params.ref_images]
+            staged["video_frames"] = sorted(Path(params.ref_videos[0]).iterdir())
+            staged["video_audios"] = [Path(p).name for p in params.ref_video_audios]
+            staged["audios"] = [Path(p).name for p in params.ref_audios]
+            staged["wav_ok"] = all(
+                Path(p).read_bytes()[:4] == b"RIFF" for p in params.ref_video_audios + params.ref_audios
+            )
+            staged["keyframes"] = (params.init_img, params.end_img)
+            return Path("/tmp/does-not-exist.webm")
+
+    from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
+
+    object.__setattr__(
+        backend._state,
+        "pipe",
+        MiniMaxH3NativeRuntime(engine = _Engine(), files = object(), offload_flags = ()),
+    )
+
+    result = backend.generate(
+        prompt = "the cat from <Picture 1> surfing, matching <Video 1>",
+        width = 960,
+        height = 544,
+        reference_images = [_data_url(1200, 800), _data_url(640, 640)],
+        reference_videos = [{"video": _reference_video_data_url()}],
+        reference_audios = [_data_url_wav()],
+    )
+
+    assert staged["images"] == ["ref-image-00.png", "ref-image-01.png"]
+    # A reference video is a DIRECTORY of frames sd-cli reads lexicographically, at 24 fps.
+    assert len(staged["video_frames"]) == 72
+    assert [p.name for p in staged["video_frames"][:2]] == ["00000.png", "00001.png"]
+    assert staged["video_audios"] == ["ref-video-audio-00.wav"]
+    assert staged["audios"] == ["ref-audio-00.wav"]
+    assert staged["wav_ok"]
+    assert staged["keyframes"] == (None, None)
+    assert result["conditioning"] == "ref2va"
+
+
+def _data_url_wav(seconds=1.0, rate=32_000):
+    import base64
+    import io
+    import math
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as handle:
+        handle.setnchannels(2)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        frames = bytearray()
+        for i in range(int(seconds * rate)):
+            value = int(8000 * math.sin(2 * math.pi * 440 * i / rate))
+            frames += int(value).to_bytes(2, "little", signed=True) * 2
+        handle.writeframes(bytes(frames))
+    return "data:audio/wav;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def test_h3_partitions_refuse_each_others_conditioning(monkeypatch):
+    # The resident partition decides which conditioning is valid.
+    keyframe_backend = _h3_native_backend(monkeypatch, [])
+    with pytest.raises(ValueError, match = "Load a minimax_h3_ref2va checkpoint"):
+        keyframe_backend.generate(prompt = "p", reference_images = [_data_url(64, 64)])
+
+    reference_backend = _h3_ref_backend(monkeypatch, [])
+    with pytest.raises(ValueError, match = "Load a minimax_h3_fl2va checkpoint"):
+        reference_backend.generate(prompt = "p", first_frame = _data_url(64, 64))
+
+
+def test_h3_native_refuses_the_max_reference_policy(monkeypatch):
+    # sd.cpp cannot preserve the 2048px "max" policy.
+    backend = _h3_ref_backend(monkeypatch, [])
+    with pytest.raises(ValueError, match = "needs the Diffusers engine"):
+        backend.generate(
+            prompt = "p", reference_images = [_data_url(64, 64)], reference_image_size = "max"
+        )
+
+
+def test_h3_status_reports_the_resident_partition(monkeypatch):
+    keyframe_backend = _h3_native_backend(monkeypatch, [])
+    status = keyframe_backend.status()
+    assert status["h3_task"] == "fl2va"
+    assert status["supports_keyframes"] is True and status["supports_references"] is False
+
+    reference_backend = _h3_ref_backend(monkeypatch, [])
+    status = reference_backend.status()
+    assert status["h3_task"] == "ref2va"
+    assert status["supports_keyframes"] is False and status["supports_references"] is True
+
+
+def test_h3_load_refuses_a_task_that_contradicts_the_picked_checkpoint():
+    backend = VideoBackend()
+    backend.validate_load_request(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        h3_task = "ref2va",
+    )
+    with pytest.raises(ValueError, match = "is the ref2va partition"):
+        backend.validate_load_request(
+            "unsloth/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
+            family_override = "minimax-h3",
+            h3_task = "fl2va",
+        )
+
+
+def test_h3_modular_load_brings_up_the_requested_partition(monkeypatch):
+    import types
+
+    seen: dict = {}
+
+    class _FakeModularPipeline:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            return cls()
+
+        def load_components(self, **kwargs):
+            seen["workflow"] = kwargs.get("workflow")
+
+        def to(self, device):
+            return self
+
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: types.SimpleNamespace(
+            enable_auto_cpu_offload = lambda **kwargs: None
+        ),
+        ModularPipeline = _FakeModularPipeline,
+    )
+    torch = types.SimpleNamespace(bfloat16 = "bf16")
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+
+    backend = VideoBackend()
+    status = backend._load_h3_modular_pipeline(
+        diffusers = diffusers, torch = torch, fam = fam, repo_id = "MiniMaxAI/MiniMax-H3",
+        base = fam.base_repo, kind = "pipeline", dtype = torch.bfloat16, device = "cuda",
+        hf_token = None, memory_mode = None, h3_task = "ref2va",
+    )
+    assert seen["workflow"] == "ref2va"
+    assert status["supports_references"] is True and status["supports_keyframes"] is False
+
+
+def test_h3_flow_shift_defaults_to_the_released_schedule(monkeypatch):
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "p", width = 640, height = 384)
+    assert calls[-1]["params"].flow_shift == 12.0
+    assert (result["flow_shift"], result["audio_flow_shift"]) == (12.0, 3.0)
+
+    backend.generate(prompt = "p", width = 640, height = 384, flow_shift = 6.5)
+    assert calls[-1]["params"].flow_shift == 6.5
+
+    # sd.cpp accepts only the released audio shift it already applies.
+    backend.generate(prompt = "p", width = 640, height = 384, audio_flow_shift = 3.0)
+    with pytest.raises(ValueError, match = "Diffusers engine"):
+        backend.generate(prompt = "p", width = 640, height = 384, audio_flow_shift = 5.0)
+
+    status = backend.status()
+    assert status["defaults"]["flow_shift"] == 12.0
+    assert status["defaults"]["audio_flow_shift"] == 3.0
+    assert status["defaults"]["supports_audio_flow_shift"] is False
+
+
+def test_schedule_shifts_are_refused_by_families_that_do_not_expose_them():
+    fam = _detect_load_family("Lightricks/LTX-2", None, None)
+
+    with pytest.raises(ValueError, match = "does not expose a video flow_shift"):
+        VideoBackend._resolve_flow_shifts(fam, "diffusers", 5.0, None)
+    with pytest.raises(ValueError, match = "does not expose an audio_flow_shift"):
+        VideoBackend._resolve_flow_shifts(fam, "diffusers", None, 3.0)
+
+
+def test_h3_modular_generate_sets_both_schedule_shifts(fake_runtime, monkeypatch):
+    # Scheduler components must receive both shifts on every run.
+    import contextlib
+    import types
+
+    from core.inference.video import _VideoLoadState
+
+    shifts: dict = {}
+
+    class _Scheduler:
+        def __init__(self, name):
+            self._name = name
+
+        def set_shift(self, value):
+            shifts[self._name] = value
+
+        def step(self, *args, **kwargs):
+            return None
+
+    class _ModularPipe:
+        scheduler = _Scheduler("video")
+        audio_scheduler = _Scheduler("audio")
+
+        def __call__(self, **kwargs):
+            shifts["called"] = True
+            return {"videos": [[object()]], "audio": None, "sampling_rate": None}
+
+    backend = VideoBackend()
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    backend._state = _VideoLoadState(
+        pipe = _ModularPipe(), family = fam, repo_id = "MiniMaxAI/MiniMax-H3",
+        base_repo = fam.base_repo, device = "cpu", dtype = "bfloat16", kind = "pipeline",
+        engine = "diffusers", h3_task = "fl2va",
+    )
+    monkeypatch.setattr(
+        VideoBackend, "_encode_mp4", staticmethod(lambda *a, **k: b"MP4")
+    )
+    monkeypatch.setattr("core.inference.video.contextlib", contextlib)
+
+    result = backend.generate(prompt = "p", width = 960, height = 544, steps = 2)
+    assert shifts["video"] == 12.0 and shifts["audio"] == 3.0
+
+    backend.generate(
+        prompt = "p", width = 960, height = 544, steps = 2, flow_shift = 7.0,
+        audio_flow_shift = 4.0,
+    )
+    assert shifts["video"] == 7.0 and shifts["audio"] == 4.0
+    assert result["flow_shift"] == 12.0
+
+
+def test_h3_begin_generate_refuses_an_unhonourable_audio_shift(monkeypatch):
+    # Reject unsupported shifts before the asynchronous job starts.
+    backend = _h3_native_backend(monkeypatch, [])
+    with pytest.raises(ValueError, match = "Diffusers engine"):
+        backend.begin_generate(prompt = "p", audio_flow_shift = 6.0)
+    assert backend.generate_progress()["active"] is False
+    # The released value is not a request to change anything, so it must still start.
+    backend.begin_generate(prompt = "p", audio_flow_shift = 3.0)
+
+
+def test_h3_ref2va_partition_refuses_a_reference_less_request(monkeypatch):
+    """A Ref2VA load fetched only `transformer_ref`, and only the reference branch reads it.
+
+    A text-only request routes to the t2va branch, finds `transformer` unloaded and dies inside
+    the Diffusers blocks with "'NoneType' object has no attribute 'forward'" -- caught running
+    the real BF16 weights. Refused at the boundary instead, on both engines, so the rule does
+    not depend on which one is active.
+    """
+    backend = _h3_ref_backend(monkeypatch, [])
+    with pytest.raises(ValueError, match = "Add at least one reference"):
+        backend.generate(prompt = "a fox in snow", width = 640, height = 384)
+    with pytest.raises(ValueError, match = "Add at least one reference"):
+        backend.begin_generate(prompt = "a fox in snow")
+    assert backend.generate_progress()["active"] is False
+    # The FL2VA partition is where text-only belongs, and it still takes it.
+    keyframe_backend = _h3_native_backend(monkeypatch, [])
+    assert keyframe_backend.generate(
+        prompt = "a fox in snow", width = 640, height = 384
+    )["conditioning"] == "t2va"
+
+
+def test_h3_vae_trim_keeps_the_encoder_for_the_workflows_that_encode():
+    """The encoder drop is gated on t2va, and neither workflow Studio loads is text-only.
+
+    fl2va encodes its keyframes and ref2va its references, both through this VAE, so dropping the
+    encoder half would break image conditioning outright. The decoder pre-cast -- the larger of
+    the two savings -- is unconditional and must still happen for either.
+    """
+    torch = pytest.importorskip("torch")
+    from core.inference.video_minimax_h3 import trim_h3_video_vae
+
+    def _vae():
+        vae = types.SimpleNamespace()
+        vae.encoder = torch.nn.Conv2d(3, 8, 3)
+        vae.quant_conv = torch.nn.Conv2d(8, 8, 1)
+        vae.decoder = torch.nn.Conv2d(8, 3, 3)
+        vae.post_quant_conv = torch.nn.Conv2d(8, 8, 1)
+        return vae
+
+    for workflow in ("fl2va", "ref2va"):
+        vae = _vae()
+        report = trim_h3_video_vae(vae, workflow = workflow)
+        assert vae.encoder is not None, workflow
+        assert vae.quant_conv is not None, workflow
+        assert report["encoder_freed"] == 0, workflow
+        # The decoder is still pre-cast to float16, which is where the bulk of the saving is.
+        assert report["decoder_freed"] > 0, workflow
+        assert vae.decoder.weight.dtype is torch.float16, workflow
+
+    # The gate itself still works for a text-only load, so the saving is not lost, only unused.
+    vae = _vae()
+    assert trim_h3_video_vae(vae, workflow = "t2va")["encoder_freed"] > 0
+    assert vae.encoder is None

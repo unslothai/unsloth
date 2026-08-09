@@ -13,6 +13,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
 import { usePlatformStore } from "@/config/env";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
@@ -68,9 +69,13 @@ import { cn } from "@/lib/utils";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import { toast } from "@/lib/toast";
 
+import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
+import { hasReferenceCapacity } from "./reference-budget";
+import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
+  type VideoReferenceVideo,
   type VideoLoadProgress,
   type VideoStatus,
   cancelVideoGeneration,
@@ -204,7 +209,15 @@ function formatTimestamp(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
-// A terse clip descriptor for the gallery card / player caption: duration + resolution.
+// Labels for conditioned MiniMax-H3 tasks. Text-only and older clips need none.
+const CONDITIONING_LABELS: Record<string, string> = {
+  i2va: "From start frame",
+  l2va: "To end frame",
+  fl2va: "Start to end frame",
+  ref2va: "From references",
+};
+
+// Keep the narrow gallery caption to duration and resolution.
 function clipMeta(video: GalleryVideo): string {
   const secs = video.duration_s > 0 ? `${video.duration_s.toFixed(1)}s` : `${video.num_frames}f`;
   return `${secs} · ${video.width}×${video.height}`;
@@ -451,11 +464,27 @@ function RecipePopover({
             <RecipeRow label="Negative" value={video.negative_prompt} wrap />
           ) : null}
           {video.model ? <RecipeRow label="Model" value={video.model} /> : null}
+          {CONDITIONING_LABELS[video.conditioning ?? ""] ? (
+            <RecipeRow
+              label="Source"
+              value={CONDITIONING_LABELS[video.conditioning ?? ""]}
+            />
+          ) : null}
           <RecipeRow label="Size" value={`${video.width} × ${video.height}`} />
           <RecipeRow label="Frames" value={`${video.num_frames} @ ${video.fps} fps`} />
           <RecipeRow label="Duration" value={`${video.duration_s.toFixed(2)}s`} />
           <RecipeRow label="Steps" value={String(video.steps)} />
           <RecipeRow label="Guidance" value={String(video.guidance)} />
+          {video.flow_shift != null ? (
+            <RecipeRow
+              label="Shift"
+              value={
+                video.audio_flow_shift != null
+                  ? `${video.flow_shift} video / ${video.audio_flow_shift} audio`
+                  : String(video.flow_shift)
+              }
+            />
+          ) : null}
           <RecipeRow label="Seed" value={String(video.seed)} mono />
         </div>
         <div className="border-t border-border/60 px-3 py-2.5">
@@ -561,8 +590,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
-  // The chosen resolution preset index into the current preset list.
+  // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
   const [resolutionIdx, setResolutionIdx] = useState(0);
+  // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
+  const [firstFrame, setFirstFrame] = useState<string | null>(null);
+  const [lastFrame, setLastFrame] = useState<string | null>(null);
+  // Natural pixel size of whichever keyframe drives the canvas, for the "match source" preview.
+  const [keyframeAspect, setKeyframeAspect] = useState<[number, number] | null>(null);
+  // Separate lists preserve Ref2VA's image, video, then audio request order.
+  const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const [referenceVideos, setReferenceVideos] = useState<
+    Array<{ video: ReferenceMedia; audio: ReferenceMedia | null }>
+  >([]);
+  const [referenceAudios, setReferenceAudios] = useState<ReferenceMedia[]>([]);
+  const [referenceImageSize, setReferenceImageSize] = useState<"match" | "max">("match");
+  // Null until the loaded family provides released schedule shifts.
+  const [flowShift, setFlowShift] = useState<number | null>(null);
+  const [audioFlowShift, setAudioFlowShift] = useState<number | null>(null);
   // The chosen frame count must lie on the family's temporal lattice.
   const [numFrames, setNumFrames] = useState(
     FALLBACK_FRAME_STEP * 3 + FALLBACK_FRAME_OFFSET,
@@ -689,8 +733,85 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   // Keep the resolution / frame-count selections valid when the loaded family changes.
   useEffect(() => {
-    setResolutionIdx((idx) => (idx < resolutionPresets.length ? idx : 0));
+    setResolutionIdx((idx) =>
+      idx === MATCH_SOURCE_RESOLUTION || idx < resolutionPresets.length ? idx : 0,
+    );
   }, [resolutionPresets.length]);
+
+  // ── keyframes ──────────────────────────────────────────────────────────────
+  const supportsKeyframes = status?.supports_keyframes === true;
+  // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.
+  const canvasKeyframe = firstFrame ?? lastFrame;
+
+  const supportsReferences = status?.supports_references === true;
+  const hasReferenceRoom = hasReferenceCapacity(
+    referenceImages.length,
+    referenceVideos.length,
+    referenceAudios.length,
+  );
+  // Only Diffusers supports the 2048px reference policy.
+  const canPickReferenceSize = supportsReferences && status?.engine !== "sd_cpp";
+
+  // Drop conditioning that the newly loaded partition cannot accept.
+  useEffect(() => {
+    if (status?.loaded && !supportsKeyframes) {
+      setFirstFrame(null);
+      setLastFrame(null);
+    }
+  }, [status?.loaded, supportsKeyframes]);
+  useEffect(() => {
+    if (status?.loaded && !supportsReferences) {
+      setReferenceImages([]);
+      setReferenceVideos([]);
+      setReferenceAudios([]);
+    }
+  }, [status?.loaded, supportsReferences]);
+  useEffect(() => {
+    if (!canPickReferenceSize) setReferenceImageSize("match");
+  }, [canPickReferenceSize]);
+
+  // Measure the keyframe that drives the canvas preview.
+  useEffect(() => {
+    if (!canvasKeyframe) {
+      setKeyframeAspect(null);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (!cancelled) setKeyframeAspect([img.naturalWidth, img.naturalHeight]);
+    };
+    img.onerror = () => {
+      if (!cancelled) setKeyframeAspect(null);
+    };
+    img.src = canvasKeyframe;
+    return () => {
+      cancelled = true;
+    };
+  }, [canvasKeyframe]);
+
+  // Resolved "match source" canvas, when valid.
+  const matchedResolution = useMemo(
+    () =>
+      keyframeAspect
+        ? matchedCanvas(keyframeAspect[0], keyframeAspect[1], status?.defaults)
+        : null,
+    [keyframeAspect, status?.defaults],
+  );
+
+  // Select "match source" only after the staged keyframe passes the aspect-ratio check.
+  const hadKeyframeRef = useRef(false);
+  useEffect(() => {
+    const has = canvasKeyframe != null;
+    if (has === hadKeyframeRef.current) return;
+    if (has && !matchedResolution) return;
+    hadKeyframeRef.current = has;
+    setResolutionIdx((idx) => {
+      if (has) return MATCH_SOURCE_RESOLUTION;
+      return idx === MATCH_SOURCE_RESOLUTION ? 0 : idx;
+    });
+  }, [canvasKeyframe, matchedResolution]);
+
   const loadedFamily = status?.loaded ? status.family : null;
   const familyDefaultFrames = status?.defaults?.num_frames;
   const prevFamilyRef = useRef<string | null>(null);
@@ -730,6 +851,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       setGuidance(defaultGuidance);
     }
   }, [loadedModelKey, defaultSteps, defaultGuidance]);
+
+  // Reset schedule shifts when the loaded model changes.
+  const defaultFlowShift = status?.defaults?.flow_shift ?? null;
+  const defaultAudioFlowShift = status?.defaults?.audio_flow_shift ?? null;
+  const canPickAudioFlowShift = status?.defaults?.supports_audio_flow_shift === true;
+  useEffect(() => {
+    setFlowShift(defaultFlowShift);
+  }, [defaultFlowShift, loadedModelKey]);
+  useEffect(() => {
+    setAudioFlowShift(defaultAudioFlowShift);
+  }, [defaultAudioFlowShift, loadedModelKey]);
 
   // Mint (once) a playable link for a record's MP4, cached across remounts. Unlike the images gallery this does NOT download
   // the file: the link goes straight into the <video> element, which streams ranges, so playback starts and seeking works.
@@ -909,6 +1041,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       if (restoredNegative) setNegativeOpen(true);
       setSteps(video.steps);
       setGuidance(video.guidance);
+      if (video.flow_shift != null) setFlowShift(video.flow_shift);
+      if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
       // Snap the resolution to the matching preset when one exists; else leave as is.
       const presetIdx = resolutionPresets.findIndex(
@@ -1413,6 +1547,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       toast.error("Prompt is empty");
       return;
     }
+    if (supportsReferences && referenceImages.length === 0 && referenceVideos.length === 0) {
+      toast.error("Add a reference picture or video for this checkpoint");
+      return;
+    }
     // Resolve a base seed up front: with a random one we still pick a concrete seed now so the recipe records it.
     let resolvedSeed: number | undefined;
     if (seed.trim()) {
@@ -1426,8 +1564,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       resolvedSeed = Math.floor(Math.random() * 2 ** 32);
     }
 
+    // Omitting both dimensions delegates "match source" to the backend.
+    const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
     const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
-    const [w, h] = preset;
 
     setBusy("generating");
     setGenStep(null);
@@ -1441,13 +1580,38 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: w,
-        height: h,
+        width: matchSource ? undefined : preset[0],
+        height: matchSource ? undefined : preset[1],
         num_frames: numFrames,
         fps,
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
+        first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
+        last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
+        reference_images:
+          supportsReferences && referenceImages.length > 0 ? referenceImages : undefined,
+        reference_videos:
+          supportsReferences && referenceVideos.length > 0
+            ? referenceVideos.map(
+                (entry): VideoReferenceVideo => ({
+                  video: entry.video.dataUrl,
+                  audio: entry.audio?.dataUrl,
+                }),
+              )
+            : undefined,
+        reference_audios:
+          supportsReferences && referenceAudios.length > 0
+            ? referenceAudios.map((entry) => entry.dataUrl)
+            : undefined,
+        reference_image_size: canPickReferenceSize ? referenceImageSize : undefined,
+        // Send only overrides of the released schedule.
+        flow_shift:
+          flowShift != null && flowShift !== defaultFlowShift ? flowShift : undefined,
+        audio_flow_shift:
+          canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
+            ? audioFlowShift
+            : undefined,
       });
     } catch (err) {
       if (!isMounted.current) return;
@@ -1469,6 +1633,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     fps,
     steps,
     status?.supports_cfg,
+    supportsKeyframes,
+    firstFrame,
+    lastFrame,
+    supportsReferences,
+    referenceImages,
+    referenceVideos,
+    referenceAudios,
+    canPickReferenceSize,
+    referenceImageSize,
+    flowShift,
+    defaultFlowShift,
+    audioFlowShift,
+    defaultAudioFlowShift,
+    canPickAudioFlowShift,
     startGenPoll,
   ]);
 
@@ -1640,7 +1818,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               Create videos
             </h2>
             <p className="text-xs leading-snug text-muted-foreground">
-              Generate a video from a prompt
+              {supportsReferences
+                ? "Generate a video from a prompt and reference pictures, videos or audio"
+                : supportsKeyframes
+                  ? "Generate a video from a prompt, or from a start and end frame"
+                  : "Generate a video from a prompt"}
             </p>
           </div>
 
@@ -1651,6 +1833,200 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+
+          {supportsKeyframes && (
+            <div className="grid gap-2">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Start and end frame
+                <InfoHint>
+                  Optional. A start frame animates that picture; an end frame makes the clip land
+                  on one; both make it travel between them. Text-to-video is what you get with
+                  neither. The start frame is stretched onto the canvas and the end frame is
+                  centre-cropped, which is how the model was conditioned.
+                </InfoHint>
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="grid gap-1.5">
+                  <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
+                  <ImageDropzone
+                    value={firstFrame}
+                    onChange={setFirstFrame}
+                    label="Click or drop"
+                    removeLabel="Remove start frame"
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <span className="text-ui-11 text-muted-foreground/70">End frame</span>
+                  <ImageDropzone
+                    value={lastFrame}
+                    onChange={setLastFrame}
+                    label="Click or drop"
+                    removeLabel="Remove end frame"
+                  />
+                </div>
+              </div>
+              {canvasKeyframe && !matchedResolution && (
+                // Surface the same aspect-ratio rejection before Generate.
+                <p className="text-ui-11 leading-snug text-destructive">
+                  This picture is too far from square for MiniMax-H3, which was trained between
+                  1:4 and 4:1. Crop it, or pick a resolution preset to stretch it onto.
+                </p>
+              )}
+            </div>
+          )}
+
+          {supportsReferences && (
+            <div className="grid gap-2">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                References
+                <InfoHint>
+                  Lock the clip to a character, style, motion, camera move or voice. Name them in
+                  the prompt by the tags below -- "use the cat from &lt;Picture 1&gt;, match the
+                  shot rhythm of &lt;Video 1&gt;" -- since order is what the model reads them by.
+                  At most 9 pictures, 3 videos and 3 audio clips, 12 in all. Audio needs a picture
+                  or a video to go with it.
+                </InfoHint>
+              </span>
+
+              <div className="grid grid-cols-3 gap-2">
+                {referenceImages.map((image, index) => (
+                  // Index IS the identity here: the tag in the prompt is the position.
+                  // biome-ignore lint/suspicious/noArrayIndexKey: position is the reference's name
+                  <div key={`picture-${index}`} className="grid gap-1">
+                    <span className="text-ui-11 text-muted-foreground/70">
+                      Picture {index + 1}
+                    </span>
+                    <ImageDropzone
+                      value={image}
+                      onChange={(next) =>
+                        setReferenceImages((prev) =>
+                          next
+                            ? prev.map((item, i) => (i === index ? next : item))
+                            : prev.filter((_, i) => i !== index),
+                        )
+                      }
+                      removeLabel={`Remove picture ${index + 1}`}
+                      className="h-20"
+                    />
+                  </div>
+                ))}
+                {referenceImages.length < 9 && hasReferenceRoom && (
+                  <div className="grid gap-1">
+                    <span className="text-ui-11 text-muted-foreground/70">
+                      Picture {referenceImages.length + 1}
+                    </span>
+                    <ImageDropzone
+                      value={null}
+                      onChange={(next) => next && setReferenceImages((prev) => [...prev, next])}
+                      label="Add"
+                      className="h-20"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-1.5">
+                {referenceVideos.map((entry, index) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: position is the reference's name
+                  <div key={`video-${index}`} className="grid gap-1">
+                    <span className="text-ui-11 text-muted-foreground/70">Video {index + 1}</span>
+                    <ReferenceMediaPicker
+                      kind="video"
+                      value={entry.video}
+                      label={`Video ${index + 1}`}
+                      onChange={(next) =>
+                        setReferenceVideos((prev) =>
+                          next
+                            ? prev.map((item, i) => (i === index ? { ...item, video: next } : item))
+                            : prev.filter((_, i) => i !== index),
+                        )
+                      }
+                    />
+                    <ReferenceMediaPicker
+                      kind="audio"
+                      compact={true}
+                      value={entry.audio}
+                      label="Replace its soundtrack (optional)"
+                      onChange={(next) =>
+                        setReferenceVideos((prev) =>
+                          prev.map((item, i) => (i === index ? { ...item, audio: next } : item)),
+                        )
+                      }
+                    />
+                  </div>
+                ))}
+                {referenceVideos.length < 3 && hasReferenceRoom && (
+                  <ReferenceMediaPicker
+                    kind="video"
+                    value={null}
+                    label={`Add video ${referenceVideos.length + 1}`}
+                    onChange={(next) =>
+                      next && setReferenceVideos((prev) => [...prev, { video: next, audio: null }])
+                    }
+                  />
+                )}
+              </div>
+
+              <div className="grid gap-1.5">
+                {referenceAudios.map((audio, index) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: position is the reference's name
+                  <div key={`audio-${index}`} className="grid gap-1">
+                    <span className="text-ui-11 text-muted-foreground/70">Audio {index + 1}</span>
+                    <ReferenceMediaPicker
+                      kind="audio"
+                      value={audio}
+                      label={`Audio ${index + 1}`}
+                      onChange={(next) =>
+                        setReferenceAudios((prev) =>
+                          next
+                            ? prev.map((item, i) => (i === index ? next : item))
+                            : prev.filter((_, i) => i !== index),
+                        )
+                      }
+                    />
+                  </div>
+                ))}
+                {referenceAudios.length < 3 &&
+                  hasReferenceRoom &&
+                  (referenceImages.length > 0 || referenceVideos.length > 0) && (
+                    <ReferenceMediaPicker
+                      kind="audio"
+                      value={null}
+                      label={`Add audio ${referenceAudios.length + 1}`}
+                      onChange={(next) => next && setReferenceAudios((prev) => [...prev, next])}
+                    />
+                  )}
+              </div>
+
+              {referenceImages.length === 0 && referenceVideos.length === 0 && (
+                // Ref2VA cannot generate without an image or video reference.
+                <p className="text-ui-11 leading-snug text-muted-foreground/70">
+                  This checkpoint generates from references. Add a picture or a video, or load a
+                  first/last-frame checkpoint for plain text-to-video.
+                </p>
+              )}
+
+              {canPickReferenceSize && (
+                <Field
+                  label="Reference detail"
+                  hint="How reference pictures are sized. Match keeps them at the clip's own pixel area. Max encodes them at 2048px for stronger identity fidelity, and rides every sampling step, so it can be several times slower."
+                >
+                  <Select
+                    value={referenceImageSize}
+                    onValueChange={(v) => setReferenceImageSize(v as "match" | "max")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="match">Match the clip</SelectItem>
+                      <SelectItem value="max">Max (2048px, slower)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
+            </div>
+          )}
 
           {status?.supports_cfg !== false && (
             <NegativePromptField
@@ -1664,7 +2040,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
           <Field
             label="Resolution"
-            hint="The frame size. Presets come from the loaded model; portrait presets are marked."
+            hint="The frame size. Presets come from the loaded model; portrait presets are marked. With a keyframe staged, Match source keeps the picture's own shape."
           >
             <Select
               value={String(resolutionIdx)}
@@ -1674,6 +2050,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {canvasKeyframe && (
+                  <SelectItem value={String(MATCH_SOURCE_RESOLUTION)}>
+                    Match source
+                    {matchedResolution
+                      ? ` · ${matchedResolution[0]} × ${matchedResolution[1]}`
+                      : ""}
+                  </SelectItem>
+                )}
                 {resolutionPresets.map(([w, h], i) => (
                   <SelectItem key={`${w}x${h}`} value={String(i)}>
                     {w} × {h}
@@ -1731,6 +2115,28 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
               max={20}
               step={0.5}
               onChange={setGuidance}
+            />
+          )}
+          {flowShift != null && (
+            <SliderField
+              label="Motion shift"
+              hint="Sigma shift of the video schedule. Higher spends more of the schedule at high noise, which reads as more motion and less fine detail. MiniMax-H3 ships 12."
+              value={flowShift}
+              min={1}
+              max={30}
+              step={0.5}
+              onChange={setFlowShift}
+            />
+          )}
+          {canPickAudioFlowShift && audioFlowShift != null && (
+            <SliderField
+              label="Audio shift"
+              hint="Sigma shift of the audio schedule, which MiniMax-H3 runs alongside the video one. Ships at 3."
+              value={audioFlowShift}
+              min={1}
+              max={30}
+              step={0.5}
+              onChange={setAudioFlowShift}
             />
           )}
           {/* A slider row ends flush with its track, so the label below needs room. */}
@@ -1946,6 +2352,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   {video.prompt}
                   <span className="mt-0.5 block opacity-70">
                     seed {video.seed} - {clipMeta(video)}
+                    {CONDITIONING_LABELS[video.conditioning ?? ""]
+                      ? ` - ${CONDITIONING_LABELS[video.conditioning ?? ""]}`
+                      : ""}
                   </span>
                 </TooltipContent>
                 </Tooltip>

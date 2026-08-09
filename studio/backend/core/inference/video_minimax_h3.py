@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,375 @@ def trim_h3_video_vae(vae: Any, *, workflow: str) -> dict[str, int]:
     return report
 
 
+# ── canvas geometry ──────────────────────────────────────────────────────────
+#
+# MiniMax-H3's upstream canvas rule, shared by both engines.
+H3_CANVAS_SHORT_EDGE = 768
+H3_CANVAS_MAX_PIXELS = 768 * 1344
+H3_CANVAS_MULTIPLE = 32
+# Trained aspect-ratio range.
+H3_MIN_ASPECT_RATIO = 1 / 4
+H3_MAX_ASPECT_RATIO = 4
+
+# Upstream stretches the first frame and center cover-crops the last.
+H3_ANCHOR_FIRST = "first"
+H3_ANCHOR_LAST = "last"
+
+
+def h3_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[int, int]:
+    """Resolve MiniMax-H3's canvas for an aspect ratio.
+
+    Raises ValueError outside the trained 1:4 to 4:1 range.
+    """
+    if aspect_width <= 0 or aspect_height <= 0:
+        raise ValueError(
+            f"The source image has no usable aspect ratio ({aspect_width}x{aspect_height})."
+        )
+    ratio = aspect_width / aspect_height
+    if not H3_MIN_ASPECT_RATIO <= ratio <= H3_MAX_ASPECT_RATIO:
+        raise ValueError(
+            f"MiniMax-H3 supports aspect ratios from 1:4 to 4:1; this image is "
+            f"{aspect_width:g}x{aspect_height:g} ({ratio:.2f}:1). Crop it first."
+        )
+    if ratio >= 1.0:
+        width, height = H3_CANVAS_SHORT_EDGE * ratio, float(H3_CANVAS_SHORT_EDGE)
+    else:
+        width, height = float(H3_CANVAS_SHORT_EDGE), H3_CANVAS_SHORT_EDGE / ratio
+    area = width * height
+    if area > H3_CANVAS_MAX_PIXELS:
+        scale = math.sqrt(H3_CANVAS_MAX_PIXELS / area)
+        width, height = width * scale, height * scale
+    snap = lambda v: max(  # noqa: E731
+        H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
+    )
+    return snap(width), snap(height)
+
+
+def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
+    """Fit a keyframe using MiniMax-H3's asymmetric first/last-frame rules."""
+    from PIL import Image
+
+    target = (max(1, int(width)), max(1, int(height)))
+    if anchor == H3_ANCHOR_FIRST:
+        return image.resize(target, Image.LANCZOS)
+    if anchor != H3_ANCHOR_LAST:
+        raise ValueError(f"Unknown keyframe anchor {anchor!r}.")
+    source_w, source_h = image.size
+    scale = max(target[0] / source_w, target[1] / source_h)
+    crop_w = min(source_w, math.ceil(target[0] / scale))
+    crop_h = min(source_h, math.ceil(target[1] / scale))
+    left = (source_w - crop_w) // 2
+    top = (source_h - crop_h) // 2
+    return image.resize(target, Image.LANCZOS, box = (left, top, left + crop_w, top + crop_h))
+
+
+# ── omni references (Ref2VA) ─────────────────────────────────────────────────
+#
+# Ref2VA uses a separate transformer partition selected at load time.
+H3_TASK_KEYFRAMES = "fl2va"
+H3_TASK_REFERENCES = "ref2va"
+
+# Upstream request limits.
+H3_MAX_REF_IMAGES = 9
+H3_MAX_REF_VIDEOS = 3
+H3_MAX_REF_AUDIOS = 3
+H3_MAX_REFERENCES = 12
+# A reference video's trained window, in seconds.
+H3_REF_VIDEO_MIN_SECONDS = 2.0
+H3_REF_VIDEO_MAX_SECONDS = 15.0
+H3_FPS = 24
+
+# "match" uses the generation area. Diffusers-only "max" uses a 2048px short edge.
+H3_REF_SIZE_MATCH = "match"
+H3_REF_SIZE_MAX = "max"
+H3_REF_IMAGE_SHORT_EDGE = 2048
+
+
+def h3_transformer_task(filename: str) -> str:
+    """Which H3 task a picked GGUF denoiser serves, from its published name."""
+    name = Path(filename).name.lower()
+    return H3_TASK_REFERENCES if name.startswith("minimax_h3_ref2va") else H3_TASK_KEYFRAMES
+
+
+def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) -> Any:
+    """Scale a reference to its policy limit without changing its aspect ratio or upscaling."""
+    from PIL import Image
+
+    source_w, source_h = image.size
+    if policy == H3_REF_SIZE_MAX:
+        scale = min(1.0, H3_REF_IMAGE_SHORT_EDGE / max(1, min(source_w, source_h)))
+    elif policy == H3_REF_SIZE_MATCH:
+        scale = min(1.0, math.sqrt((width * height) / max(1, source_w * source_h)))
+    else:
+        raise ValueError(f"Unknown reference image size policy {policy!r}.")
+    snap = lambda v: max(  # noqa: E731
+        H3_CANVAS_MULTIPLE, round(v * scale / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
+    )
+    return image.resize((snap(source_w), snap(source_h)), Image.LANCZOS)
+
+
+def h3_reference_frame_size(source_w: int, source_h: int) -> tuple[int, int]:
+    """Resolve a reference-video frame size without upscaling."""
+    width, height = h3_canvas_for_aspect(source_w, source_h)
+    if source_w * source_h < width * height:
+        snap = lambda v: max(  # noqa: E731
+            H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
+        )
+        width, height = snap(source_w), snap(source_h)
+    return width, height
+
+
+def decode_h3_reference_video(blob: bytes) -> tuple[list, Optional[Any], Optional[int]]:
+    """Decode one uploaded video to 24 fps frames plus its soundtrack, if it carries one.
+
+    Returns ``(frames, waveform, sample_rate)``. The frames land on MiniMax-H3's own 24 fps by
+    whole-frame drop and duplicate -- the selection ffmpeg's fps filter made in the reference
+    implementation, and the one the Diffusers blocks make from a declared rate -- so both
+    engines receive a stream that is already on the model's clock. The waveform is float32
+    ``(samples, channels)`` at the container's own rate; both engines resample it themselves.
+    """
+    import io
+
+    import av
+    import numpy as np
+
+    with av.open(io.BytesIO(blob)) as container:
+        if not container.streams.video:
+            raise ValueError("That reference file carries no video track.")
+        stream = container.streams.video[0]
+        source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS)
+        if source_fps <= 0:
+            source_fps = float(H3_FPS)
+        # Select, resample, and resize incrementally to bound memory for 4K inputs.
+        from PIL import Image
+
+        frames = []
+        decoded_count = 0
+        next_target = 0
+        fitted_size = None
+        max_source_frames = math.floor(H3_REF_VIDEO_MAX_SECONDS * source_fps + 1e-6)
+        for source_index, frame in enumerate(container.decode(video = 0)):
+            decoded_count = source_index + 1
+            if decoded_count > max_source_frames:
+                raise ValueError(
+                    f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
+                    f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is longer than "
+                    f"{H3_REF_VIDEO_MAX_SECONDS:g}s. Trim it first."
+                )
+            target_source = int(next_target * source_fps / H3_FPS)
+            if target_source > source_index:
+                continue
+            image = frame.to_image().convert("RGB")
+            if fitted_size is None:
+                fitted_size = h3_reference_frame_size(*image.size)
+            if image.size != fitted_size:
+                image = image.resize(fitted_size, Image.LANCZOS)
+            while int(next_target * source_fps / H3_FPS) <= source_index:
+                frames.append(image)
+                next_target += 1
+
+    if decoded_count == 0:
+        raise ValueError("That reference video decoded to no frames.")
+    duration = decoded_count / source_fps
+    if duration + 1e-6 < H3_REF_VIDEO_MIN_SECONDS:
+        raise ValueError(
+            f"MiniMax-H3 reference videos run {H3_REF_VIDEO_MIN_SECONDS:g} to "
+            f"{H3_REF_VIDEO_MAX_SECONDS:g} seconds; this one is {duration:.1f}s."
+        )
+    frames = frames[: int(round(duration * H3_FPS))]
+
+    waveform, sample_rate = (None, None)
+    with av.open(io.BytesIO(blob)) as container:
+        if container.streams.audio:
+            waveform, sample_rate = _decode_audio_stream(container, np)
+    return frames, waveform, sample_rate
+
+
+def decode_h3_reference_audio(blob: bytes) -> tuple[Any, int]:
+    """Decode one uploaded audio file to a float32 ``(samples, channels)`` waveform + its rate."""
+    import io
+
+    import av
+    import numpy as np
+
+    with av.open(io.BytesIO(blob)) as container:
+        if not container.streams.audio:
+            raise ValueError("That reference file carries no audio track.")
+        waveform, sample_rate = _decode_audio_stream(container, np)
+    if waveform is None:
+        raise ValueError("That reference audio decoded to no samples.")
+    return waveform, sample_rate
+
+
+def _decode_audio_stream(container: Any, np: Any) -> tuple[Optional[Any], Optional[int]]:
+    """The container's first audio stream as float32 ``(samples, channels)`` at its own rate."""
+    import av
+
+    stream = container.streams.audio[0]
+    sample_rate = int(stream.codec_context.sample_rate or 48_000)
+    # One resampler pass gives interleaved float32 whatever the source layout/format was.
+    resampler = av.AudioResampler(format = "flt", layout = stream.layout.name, rate = sample_rate)
+    channels = len(stream.layout.channels)
+    chunks = []
+    for frame in container.decode(audio = 0):
+        for resampled in resampler.resample(frame):
+            chunks.append(resampled.to_ndarray().reshape(-1, channels))
+    for resampled in resampler.resample(None):
+        chunks.append(resampled.to_ndarray().reshape(-1, channels))
+    if not chunks:
+        return None, None
+    return np.concatenate(chunks, axis = 0).astype("float32"), sample_rate
+
+
+def write_h3_reference_wav(path: Path, waveform: Any, sample_rate: int) -> None:
+    """Write a reference waveform as the 16-bit PCM WAV sd-cli's --ref-audio loader reads."""
+    import wave
+
+    import numpy as np
+
+    samples = np.clip(np.asarray(waveform, dtype = "float32"), -1.0, 1.0)
+    if samples.ndim == 1:
+        samples = samples[:, None]
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(int(samples.shape[1]))
+        handle.setsampwidth(2)
+        handle.setframerate(int(sample_rate))
+        handle.writeframes((samples * 32767.0).astype("<i2").tobytes())
+
+
+@dataclass(frozen = True)
+class MiniMaxH3References:
+    """Decoded references in model order: images, videos, then standalone audio."""
+
+    # Canvas-sized reference images, in <Picture i> order.
+    images: tuple = ()
+    # (frames, waveform, sample_rate) per <Video k>; waveform is None when silent.
+    videos: tuple = ()
+    # (waveform, sample_rate) per standalone reference, in <Audio j> order.
+    audios: tuple = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.images or self.videos or self.audios)
+
+    def count(self) -> int:
+        return len(self.images) + len(self.videos) + len(self.audios)
+
+
+@dataclass(frozen = True)
+class MiniMaxH3StagedReferences:
+    """``MiniMaxH3References`` written to disk the way sd-cli reads them back."""
+
+    images: tuple[str, ...] = ()
+    # Frame DIRECTORIES: sd-cli reads a reference video as images sorted lexicographically.
+    videos: tuple[str, ...] = ()
+    video_audios: tuple[str, ...] = ()
+    audios: tuple[str, ...] = ()
+
+
+def stage_h3_references(references: MiniMaxH3References, scratch: Path) -> MiniMaxH3StagedReferences:
+    """Stage references in sd-cli's positional file layout.
+
+    Video soundtracks must form a prefix because sd-cli pairs them by index.
+    """
+    images: list[str] = []
+    for index, image in enumerate(references.images):
+        path = scratch / f"ref-image-{index:02d}.png"
+        image.save(path, format = "PNG")
+        images.append(str(path))
+
+    videos: list[str] = []
+    video_audios: list[str] = []
+    pairing_holds = True
+    for index, (frames, waveform, sample_rate) in enumerate(references.videos):
+        directory = scratch / f"ref-video-{index:02d}"
+        directory.mkdir()
+        for frame_index, frame in enumerate(frames):
+            frame.save(directory / f"{frame_index:05d}.png", format = "PNG")
+        videos.append(str(directory))
+        if waveform is None:
+            # Positional pairing cannot express "skip this one", so stop pairing here.
+            pairing_holds = False
+            continue
+        if not pairing_holds:
+            raise ValueError(
+                "stable-diffusion.cpp reference-video soundtracks must form a leading "
+                "sequence without silent gaps."
+            )
+        path = scratch / f"ref-video-audio-{index:02d}.wav"
+        write_h3_reference_wav(path, waveform, sample_rate)
+        video_audios.append(str(path))
+
+    audios: list[str] = []
+    for index, (waveform, sample_rate) in enumerate(references.audios):
+        path = scratch / f"ref-audio-{index:02d}.wav"
+        write_h3_reference_wav(path, waveform, sample_rate)
+        audios.append(str(path))
+
+    return MiniMaxH3StagedReferences(
+        images = tuple(images),
+        videos = tuple(videos),
+        video_audios = tuple(video_audios),
+        audios = tuple(audios),
+    )
+
+
+def h3_diffusers_references(references: MiniMaxH3References) -> list:
+    """``MiniMaxH3References`` as the Diffusers blocks' reference dataclasses, same order.
+
+    Every rate travels with its media: the frames are already on the model's 24 fps and each
+    waveform carries the rate it was decoded at, so nothing is re-guessed downstream.
+    """
+    import torch
+    from diffusers.modular_pipelines.minimax_h3 import (
+        MiniMaxH3AudioReference,
+        MiniMaxH3ImageReference,
+        MiniMaxH3VideoReference,
+    )
+
+    def waveform_tensor(waveform: Any) -> Any:
+        # The blocks take a (channels, samples) tensor; the decoder produces (samples, channels).
+        return torch.from_numpy(waveform).transpose(0, 1).contiguous()
+
+    built: list = []
+    for image in references.images:
+        built.append(MiniMaxH3ImageReference(image = image))
+    for frames, waveform, sample_rate in references.videos:
+        built.append(
+            MiniMaxH3VideoReference(
+                frames = list(frames),
+                fps = float(H3_FPS),
+                audio = None if waveform is None else waveform_tensor(waveform),
+                sample_rate = sample_rate,
+            )
+        )
+    for waveform, sample_rate in references.audios:
+        built.append(
+            MiniMaxH3AudioReference(
+                audio = waveform_tensor(waveform), sample_rate = sample_rate
+            )
+        )
+    return built
+
+
+def h3_conditioning_mode(
+    *, has_first: bool = False, has_last: bool = False, has_references: bool = False
+) -> str:
+    """The task name for one request's conditioning, as MiniMax-H3 and sd.cpp name them.
+
+    Recorded on the gallery clip so a restored recipe says which workflow produced it, and
+    used in messages, so the five spellings live in one place.
+    """
+    if has_references:
+        return H3_TASK_REFERENCES
+    if has_first and has_last:
+        return H3_TASK_KEYFRAMES
+    if has_first:
+        return "i2va"
+    if has_last:
+        return "l2va"
+    return "t2va"
+
+
 def is_h3_native(family: Any, kind: str) -> bool:
     return getattr(family, "name", None) == "minimax-h3" and kind == "gguf"
 
@@ -128,11 +498,18 @@ def h3_text_encoder_filename(transformer_filename: str) -> str:
 
 
 def validate_h3_transformer_filename(filename: str) -> None:
+    """Accept either released denoiser partition, and nothing else from the same repo.
+
+    FL2VA serves text-to-video and first/last-frame video; Ref2VA serves omni-reference video.
+    Which one is picked IS the task, so both are valid picks -- but the Qwen3-VL encoder and the
+    VAEs share the repo and are companions, never denoisers."""
     name = Path(filename).name.lower()
-    if not name.startswith("minimax_h3_fl2va") or not name.endswith(".gguf"):
+    partitions = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+    if not name.startswith(partitions) or not name.endswith(".gguf"):
         raise ValueError(
-            "MiniMax-H3 text-to-video needs a minimax_h3_fl2va*.gguf transformer. "
-            "The Qwen encoder and Ref2VA checkpoints are companion models, not T2VA picks."
+            "MiniMax-H3 needs a minimax_h3_fl2va*.gguf transformer (text-to-video and "
+            "first/last-frame video) or a minimax_h3_ref2va*.gguf one (reference video). The "
+            "Qwen encoder and the VAEs are companion models, not picks for either."
         )
 
 

@@ -169,8 +169,10 @@ def test_supported_names():
 def test_minimax_h3_family_and_frame_lattice():
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert fam is not None and fam.name == "minimax-h3"
-    assert fam.modular_workflow == "t2va"
+    # fl2va loads the superset that also serves text-only requests.
+    assert fam.modular_workflow == "fl2va"
     assert fam.has_audio is True
+    assert fam.supports_keyframes is True
     assert fam.supports_cfg is False
     assert fam.frame_step == 17
     assert fam.frame_offset == 5
@@ -366,3 +368,26 @@ def test_curated_gguf_repos_are_unsloth_mirrors():
     curated = {fam.name: fam.gguf_repo for fam in _FAMILIES if fam.gguf_repo}
     assert curated["wan2.2-ti2v-5b"] == "unsloth/Wan2.2-TI2V-5B-GGUF"
     assert all(repo.startswith("unsloth/") for repo in curated.values()), curated
+
+
+def test_minimax_h3_offers_every_advertised_aspect_ratio():
+    from core.inference.video_minimax_h3 import H3_CANVAS_MAX_PIXELS, h3_canvas_for_aspect
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    presets = fam.resolution_presets
+    ratios = {round(w / h, 3) for w, h in presets}
+    # The six ratios advertised by the model card.
+    for aspect in ((21, 9), (16, 9), (4, 3), (1, 1), (3, 4), (9, 16)):
+        derived = h3_canvas_for_aspect(*aspect)
+        assert round(derived[0] / derived[1], 3) in ratios, f"{aspect} has no preset"
+    assert fam.resolution_presets[0] == (1344, 768), "16:9 stays the default"
+
+    # Reduced tiers may be smaller than the resolved canvas. The legacy 1024 square is the
+    # only entry above the area cap.
+    for width, height in presets:
+        assert width % 32 == 0 and height % 32 == 0, (width, height)
+        if (width, height) == (1024, 1024):
+            continue
+        assert width * height <= H3_CANVAS_MAX_PIXELS, (width, height)
+        rule_width, rule_height = h3_canvas_for_aspect(width, height)
+        assert width <= rule_width and height <= rule_height, (width, height)

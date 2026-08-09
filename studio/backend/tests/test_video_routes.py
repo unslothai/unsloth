@@ -86,7 +86,20 @@ class _FakeBackend(video_module.VideoBackend):
 
     @loaded.setter
     def loaded(self, value: bool) -> None:
-        self._state = object() if value else None
+        # Minimal committed state required by inherited generation validation.
+        import types
+
+        from core.inference.video_families import detect_video_family
+
+        self._state = (
+            types.SimpleNamespace(
+                family = detect_video_family("Lightricks/LTX-2"),
+                h3_task = None,
+                engine = "diffusers",
+            )
+            if value
+            else None
+        )
 
     def loading_repo_ids(self) -> tuple:
         return tuple(self.loading)
@@ -101,6 +114,7 @@ class _FakeBackend(video_module.VideoBackend):
         model_kind = None,
         transformer_quant = None,
         text_encoder_quant = None,
+        h3_task = None,
     ):
         # Mirror the real backend cheap validation so the route validate-before-evict ordering is exercised.
         from pathlib import Path
@@ -170,6 +184,10 @@ class _FakeBackend(video_module.VideoBackend):
             "fps": kwargs.get("fps") or 24,
             "duration_s": 5.0,
             "has_audio": True,
+            # Include every field persisted to the gallery sidecar.
+            "conditioning": "t2va",
+            "flow_shift": None,
+            "audio_flow_shift": None,
             "steps": kwargs.get("steps") or 40,
             "guidance": 4.0 if kwargs.get("guidance") is None else kwargs.get("guidance"),
         }

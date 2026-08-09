@@ -626,3 +626,85 @@ def test_minimax_h3_video_command_has_all_joint_av_components():
     assert _pair(cmd, "--cfg-scale") == "1"
     assert "--rng" in cmd and _pair(cmd, "--rng") == "cpu"
     assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]
+
+
+def _h3_video_cmd(**params):
+    return build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        SdCppModelFiles(
+            diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+            vae = "/m/video.safetensors",
+            audio_vae = "/m/audio.safetensors",
+            llm = "/m/qwen.gguf",
+        ),
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            **params,
+        ),
+        output_path = "/out/result.webm",
+    )
+
+
+def test_minimax_h3_video_command_omits_keyframe_flags_for_text_only():
+    cmd = _h3_video_cmd()
+    assert "--init-img" not in cmd
+    assert "--end-img" not in cmd
+
+
+def test_minimax_h3_video_command_carries_each_keyframe():
+    # Each keyframe combination maps to its sd.cpp flags.
+    assert _pair(_h3_video_cmd(init_img = "/k/first.png"), "--init-img") == "/k/first.png"
+    assert "--end-img" not in _h3_video_cmd(init_img = "/k/first.png")
+
+    end_only = _h3_video_cmd(end_img = "/k/last.png")
+    assert _pair(end_only, "--end-img") == "/k/last.png"
+    assert "--init-img" not in end_only
+
+    both = _h3_video_cmd(init_img = "/k/first.png", end_img = "/k/last.png")
+    assert _pair(both, "--init-img") == "/k/first.png"
+    assert _pair(both, "--end-img") == "/k/last.png"
+
+
+def test_minimax_h3_video_command_packs_references_in_reading_order():
+    # Preserve the model's reference order.
+    cmd = _h3_video_cmd(
+        ref_images = ("/r/cat.png", "/r/style.png"),
+        ref_videos = ("/r/motion", "/r/orbit"),
+        ref_video_audios = ("/r/motion.wav",),
+        ref_audios = ("/r/voice.wav",),
+    )
+    assert [c for c in cmd if c.startswith("--ref")] == [
+        "--ref-image",
+        "--ref-image",
+        "--ref-video",
+        "--ref-video",
+        "--ref-video-audio",
+        "--ref-audio",
+    ]
+    assert cmd[cmd.index("--ref-image") + 1] == "/r/cat.png"
+    assert cmd[cmd.index("--ref-video") + 1] == "/r/motion"
+    assert cmd[cmd.index("--ref-audio") + 1] == "/r/voice.wav"
+
+
+def test_minimax_h3_video_command_refuses_keyframes_with_references():
+    # sd.cpp refuses the pair itself, but only once the model is resident.
+    with pytest.raises(ValueError, match = "different denoiser partitions"):
+        _h3_video_cmd(init_img = "/k/first.png", ref_images = ("/r/cat.png",))
+    with pytest.raises(ValueError, match = "different denoiser partitions"):
+        _h3_video_cmd(end_img = "/k/last.png", ref_audios = ("/r/voice.wav",))
+
+
+def test_minimax_h3_video_command_refuses_an_unpairable_soundtrack():
+    # Reject soundtrack flags without a video at the same position.
+    with pytest.raises(ValueError, match = "reference video to pair with"):
+        _h3_video_cmd(ref_videos = ("/r/motion",), ref_video_audios = ("/r/a.wav", "/r/b.wav"))
+
+
+def test_minimax_h3_video_command_carries_the_video_flow_shift():
+    # sd.cpp derives the audio schedule against a hardcoded 3.0, so only the video shift is a flag.
+    assert "--flow-shift" not in _h3_video_cmd()
+    assert _pair(_h3_video_cmd(flow_shift = 8.5), "--flow-shift") == "8.5"
+    assert _pair(_h3_video_cmd(flow_shift = 12.0), "--flow-shift") == "12"
