@@ -518,3 +518,30 @@ def test_the_real_index_records_where_the_conditioner_comes_from():
     # A derivative that retrained its conditioner names itself here and is refused, even though
     # its own repo id would pass the tail-segment comparison.
     assert not te_base_equivalent("MiniMaxAI/MiniMax-H3", "someone/MiniMax-H3-anime")
+
+
+def test_the_index_compare_has_no_tail_name_tolerance():
+    """The plan-side gate uses te_base_equivalent, which accepts a matching final path segment.
+    That tolerance is the hole this gate closes, so it must not be reused here: someone/MiniMax-H3
+    is a different repo with different weights."""
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+    from core.inference.video import _h3_te_canonical
+
+    # What the tolerant helper accepts and this one must not.
+    for other in ("someone/MiniMax-H3", "/models/MiniMax-H3", "someone/minimax-h3"):
+        assert te_base_equivalent(H3_BASE, other), "precondition: the tolerant helper accepts it"
+        assert _h3_te_canonical(other) != _h3_te_canonical(H3_BASE)
+    # The canonical id, in any casing or with stray whitespace, still matches.
+    for same in (H3_BASE, H3_BASE.lower(), f"  {H3_BASE} "):
+        assert _h3_te_canonical(same) == _h3_te_canonical(H3_BASE)
+    assert _h3_te_canonical(None) == ""
+
+
+def test_a_known_mirror_is_still_the_same_conditioner():
+    """canonical_base folds a mirror onto the id it copies, so tightening the compare must not
+    refuse one. Skipped when no mirror is registered rather than asserting a table entry."""
+    from core.inference.diffusion_families import _MIRROR_UPSTREAM
+    from core.inference.video import _h3_te_canonical
+
+    for mirror, upstream in _MIRROR_UPSTREAM.items():
+        assert _h3_te_canonical(mirror) == _h3_te_canonical(upstream)

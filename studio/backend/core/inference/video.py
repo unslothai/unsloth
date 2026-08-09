@@ -479,6 +479,15 @@ class _VideoLoadingState:
     asset_repos: tuple[str, ...] = ()
 
 
+def _h3_te_canonical(repo_id: Optional[str]) -> str:
+    """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
+    then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
+    is a different repo with different weights."""
+    from .diffusion_families import canonical_base
+
+    return canonical_base(repo_id).strip().lower()
+
+
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
 
@@ -2839,8 +2848,15 @@ class VideoBackend:
         te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
         te_index_declined = False
         if te_scheme is not None:
-            from .diffusion_te_prequant import te_base_equivalent
-            if te_index_source is None or not te_base_equivalent(fam.base_repo, te_index_source):
+            # EXACT here, unlike the plan-side comparison. te_base_equivalent falls through to
+            # _same_base_model, which accepts a matching final path segment, and that tolerance is
+            # the hole this gate exists to close: someone/MiniMax-H3 is a different repo with
+            # different weights and would have passed it. canonical_base still folds a known mirror
+            # onto the id it copies, so mirrors are not collateral. A pipeline re-saved locally
+            # names local paths here and is refused, which costs the optimisation, not correctness.
+            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
+                fam.base_repo
+            ):
                 te_scheme = None
                 te_index_declined = True
         if text_encoder_quant is not None and te_scheme is None:
