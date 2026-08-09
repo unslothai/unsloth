@@ -4370,6 +4370,8 @@ def test_h3_vae_trim_keeps_the_encoder_for_the_workflows_that_encode():
     vae = _vae()
     assert trim_h3_video_vae(vae, workflow = "t2va")["encoder_freed"] > 0
     assert vae.encoder is None
+
+
 # ── text-encoder budgeting ───────────────────────────────────────────────────
 # The plan sizes companions from the family's bf16 (transformer, text_encoder, vae) table. A pick
 # that takes its encoder PRE-CAST from a hosted fp8 checkpoint loads roughly half that encoder, and

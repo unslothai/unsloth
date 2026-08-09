@@ -997,6 +997,8 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
     assert apply_small_m_padding(object(), TQ_INT8, None) == ()
     with pytest.raises(ImportError):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
+
+
 def test_the_training_deny_is_a_superset_of_the_inference_deny():
     # The two tables are separate because rendering evidence is not training evidence, but the
     # relationship must only ever go one way: anything inference refuses, training refuses too.

@@ -1418,6 +1418,8 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
     ckpt = _good_ckpt(scheme = "int8")
     ckpt["metadata"]["family"] = "minimax-h3"
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is None
+
+
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
