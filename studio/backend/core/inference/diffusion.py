@@ -913,15 +913,20 @@ def _dense_transformer_cached(
       the mirror.
 
     ``companion_files`` is the base-repo listing WITHOUT ``transformer/`` and ``transformer_files``
-    is the rest, both from the Hub listing the plan is being built from. The mirror decision only
-    ever turns on the companions -- the transformer shards are cached under whichever repo wins, or
-    they are not -- so deciding it here gives the same repo the widened list decides later. No
-    listing means no evidence, and no evidence declines. Never raises."""
+    is the rest, both from the Hub listing the plan is being built from. The mirror decision is
+    taken over BOTH halves, because that is the set ``_predownload_base`` hands
+    ``prefer_ungated_mirror``: the upstream only wins when it can satisfy the whole widened fetch,
+    so companions cached upstream beside a dense transformer cached under the mirror pick the
+    mirror here exactly as the fetch does. Judging on the companions alone kept the upstream and
+    then found no shards under it, declining the fast path for weights already on disk. No listing
+    means no evidence, and no evidence declines. Never raises."""
     base = (base_repo or "").strip()
     if not base or not transformer_files:
         return False
     try:
-        fetch_repo = prefer_ungated_mirror(base, files = companion_files)
+        fetch_repo = prefer_ungated_mirror(
+            base, files = [*(companion_files or ()), *transformer_files]
+        )
         return cache_holds_files(fetch_repo, transformer_files)
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not a verdict
         return False
@@ -2124,8 +2129,22 @@ class DiffusionBackend:
             kind = kind,
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
             # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo.
-            include_transformer = kind == "gguf"
-            and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
+            # Deferred exactly as _run_load defers it. Called eagerly this runs before the base
+            # listing exists, so the cache gate sees no transformer shards, always declines, and
+            # the plan scopes narrower than the load: the registry then reports
+            # scope_file_mismatch and the plan cannot adopt the load's own in-flight job.
+            include_transformer = (
+                (
+                    lambda companions, transformer_files: self._dense_quant_prefetch_needed(
+                        fam,
+                        {**load_kwargs, "base_repo": base},
+                        companion_files = companions,
+                        transformer_files = transformer_files,
+                    )
+                )
+                if kind == "gguf"
+                else False
+            ),
             sizes_out = sizes,
             file_sizes_out = file_sizes,
             shas_out = shas,

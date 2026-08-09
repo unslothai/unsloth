@@ -4929,9 +4929,10 @@ def test_dense_transformer_cached_asks_the_repo_the_fetch_will_use(
     fake_runtime, monkeypatch, tmp_path
 ):
     # A gated base and its ungated mirror are two independently addressed caches, and
-    # prefer_ungated_mirror picks between them from the COMPANION listing. Shards resident under
-    # the upstream id spare nothing when the fetch resolves to the mirror, so the probe has to
-    # follow that decision rather than union the two.
+    # prefer_ungated_mirror picks between them from the WIDENED listing -- companions plus the
+    # transformer shards -- because that is the set _predownload_base hands it. Shards resident
+    # under the upstream id spare nothing when the fetch resolves to the mirror, so the probe has
+    # to follow that decision rather than union the two.
     from core.inference import diffusion as dmod
 
     asked: list = []
@@ -4970,6 +4971,45 @@ def test_dense_transformer_cached_asks_the_repo_the_fetch_will_use(
     )
     assert asked[0][0] == "black-forest-labs/FLUX.2-dev"
     assert asked[1][0] == "unsloth/FLUX.2-dev"
+
+
+def test_dense_transformer_cached_follows_the_mirror_the_widened_fetch_picks(
+    fake_runtime, monkeypatch
+):
+    # The upstream only wins when it can satisfy the WHOLE widened fetch. With the companions
+    # cached upstream and the dense transformer cached under the ungated mirror, judging the
+    # mirror decision on the companions alone kept the upstream, found no shards there and
+    # declined the fast path -- for weights that are already on disk, one repo over.
+    from core.inference import diffusion as dmod
+
+    companions = ("vae/config.json", "text_encoder/model.safetensors")
+    shards = ("transformer/diffusion_pytorch_model-00001-of-00001.safetensors",)
+    upstream_cache = set(companions)
+    mirror_cache = set(shards)
+
+    # The real rule: keep the upstream only when its cache holds every file about to be fetched.
+    monkeypatch.setattr(
+        dmod,
+        "prefer_ungated_mirror",
+        lambda base, *a, files = None: (
+            base if files and set(files) <= upstream_cache else "unsloth/FLUX.2-dev"
+        ),
+    )
+    monkeypatch.setattr(
+        dmod,
+        "cache_holds_files",
+        lambda repo_id, files: set(files)
+        <= (mirror_cache if repo_id == "unsloth/FLUX.2-dev" else upstream_cache),
+    )
+
+    assert (
+        dmod._dense_transformer_cached(
+            "black-forest-labs/FLUX.2-dev",
+            companion_files = companions,
+            transformer_files = shards,
+        )
+        is True
+    )
 
 
 def test_dense_transformer_cached_requires_every_shard(fake_runtime, monkeypatch, tmp_path):
@@ -6088,7 +6128,7 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
 
@@ -6113,6 +6153,50 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     # Sized per repo, so each download job gets its own expected bytes.
     assert base["bytes"] < 24 * GB
     assert plan["total_bytes"] == checkpoint["bytes"] + base["bytes"]
+
+
+def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
+    # The plan's gate is DEFERRED, exactly as _run_load defers it. Called eagerly it runs before
+    # the base listing exists, so the cache probe inside _dense_quant_prefetch_needed sees no
+    # transformer shards and always declines: the plan then scopes narrower than the load it
+    # describes, the registry reports scope_file_mismatch, and the plan cannot adopt the load's
+    # own in-flight job for the same base.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    _no_cache(monkeypatch)
+
+    seen: list[tuple] = []
+
+    def _gate(self, fam, kwargs, *, companion_files = None, transformer_files = None):
+        seen.append((tuple(companion_files or ()), tuple(transformer_files or ())))
+        return bool(transformer_files)
+
+    monkeypatch.setattr(DiffusionBackend, "_dense_quant_prefetch_needed", _gate)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    # The gate saw the listing, split the way _run_load splits it ...
+    assert seen, "the deferred gate was never called with the base listing"
+    companions, transformer_files = seen[-1]
+    assert transformer_files == (
+        "transformer/diffusion_pytorch_model-00001-of-00003.safetensors",
+    )
+    assert "text_encoder/model.safetensors" in companions
+    assert not any(f.startswith("transformer/") for f in companions)
+    # ... and the shards it admitted are in the plan the load will match against.
+    base = next(e for e in plan["entries"] if not e["repo_id"].endswith("-GGUF"))
+    assert "transformer/diffusion_pytorch_model-00001-of-00003.safetensors" in base["files"]
 
 
 def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
@@ -6161,7 +6245,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     # The pick resolves one hosted pre-cast encoder for text_encoder_2 (flux.1 hosts its T5-XXL).
     monkeypatch.setattr(
@@ -6213,7 +6297,7 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     # An upstream that already satisfies the load keeps its id, so the plan stages the cache the
     # user already paid for.
@@ -6240,7 +6324,7 @@ def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavaila
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     monkeypatch.setattr(
         "core.inference.diffusion_te_prequant.te_prequant_sources",
@@ -6809,7 +6893,7 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
     monkeypatch.setattr(
@@ -6840,7 +6924,7 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
     # Everything but the checkpoint repo is cached.
@@ -6998,7 +7082,7 @@ def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, t
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     # No mirror swap, so the staged id and the probed commit are the vendor's own.
     _all_cached(monkeypatch)
@@ -7038,7 +7122,7 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base)
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _all_cached(monkeypatch)
     for name in _FLUX_BASE_SIBLINGS_BY_NAME:
@@ -7098,7 +7182,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
     # The manifest is on disk, the VAE is not; the checkpoint repo is untouched.
@@ -7152,7 +7236,7 @@ def test_download_plan_files_do_not_shrink_as_a_repo_warms(monkeypatch):
                 lambda *a, **k: "black-forest-labs/FLUX.1-dev",
             )
             mp.setattr(
-                DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+                DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
             )
             _no_cache(mp)
             mp.setattr(
@@ -7225,7 +7309,7 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
     seen: list = []
@@ -7262,7 +7346,7 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         lambda *a, **k: "black-forest-labs/FLUX.1-dev",
     )
     monkeypatch.setattr(
-        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _no_cache(monkeypatch)
     revisions: list = []
