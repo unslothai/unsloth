@@ -3408,6 +3408,15 @@ class VideoGenerateRequest(BaseModel):
     @model_validator(mode = "after")
     def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
         # Omit both axes for "match source", or provide both for an explicit canvas.
+        # KEYFRAME requests only. There a half-specified canvas is silently discarded:
+        # _resolve_keyframes matches the source aspect whenever either axis is missing, so the
+        # axis that was sent never reaches the render and the API would accept one recipe and
+        # draw another. Without a keyframe the backend deliberately resolves the missing axis
+        # from the family's default preset -- validate_video_request_shape and generate() both
+        # document and implement that -- so applying the rule to every request would reject
+        # half-specified LTX, Wan, Hunyuan and prompt-only H3 calls that have always been valid.
+        if not (self.first_frame or self.last_frame):
+            return self
         if (self.width is None) != (self.height is None):
             raise ValueError("width and height must be sent together, or both omitted")
         return self
