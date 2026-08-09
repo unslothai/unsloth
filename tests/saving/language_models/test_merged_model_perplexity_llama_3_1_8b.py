@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
@@ -30,48 +43,13 @@ from tests.utils.perplexity_eval import (
 )
 
 
-alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-### Instruction:
-{}
-
-### Input:
-{}
-
-### Response:
-{}"""
-
-
 def formatting_prompts_func(examples):
-    instructions = []
-    inputs = []
-    outputs = []
-    texts = []
-
-    for conversation in examples["messages"]:
-        user_message = ""
-        assistant_message = ""
-
-        for turn in conversation:
-            if turn["role"] == "user":
-                user_message = turn["content"]
-            elif turn["role"] == "assistant":
-                assistant_message = turn["content"]
-
-        instruction = "Complete the statement"
-        instructions.append(instruction)
-        inputs.append(user_message)
-        outputs.append(assistant_message)
-
-        text = alpaca_prompt.format(instruction, user_message, assistant_message)
-        texts.append(text)
-
-    return {
-        "instruction": instructions,
-        "input": inputs,
-        "output": outputs,
-        "text": texts,
-    }
+    convos = examples["messages"]
+    texts = [
+        tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+        for convo in convos
+    ]
+    return {"text": texts}
 
 
 def load_and_compute_8bit_ppl(
@@ -79,71 +57,38 @@ def load_and_compute_8bit_ppl(
     load_in_4bit = False,
     load_in_8bit = False,
 ):
-    """Load model and compute perplexity in subprocess."""
+    """Load model and compute perplexity in subprocess"""
     from unsloth import FastLanguageModel
+    from unsloth.chat_templates import get_chat_template
     from tests.utils.perplexity_eval import ppl_model
 
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
+        model_name = "./unsloth_out/merged_llama_text_model",
         max_seq_length = 2048,
         load_in_4bit = load_in_4bit,
         load_in_8bit = load_in_8bit,
     )
-    # Set up tokenizer
-    # merged_tokenizer = get_chat_template(
-    #     merged_tokenizer,
-    #     chat_template="llama-3.1",
-    # )
+    merged_tokenizer = get_chat_template(
+        merged_tokenizer,
+        chat_template = "llama-3.1",
+    )
 
+    # Load dataset fresh in subprocess
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
-    alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-    ### Instruction:
-    {}
-
-    ### Input:
-    {}
-
-    ### Response:
-    {}"""
-
     def formatting_prompts_func(examples):
-        instructions = []
-        inputs = []
-        outputs = []
-        texts = []
-
-        for conversation in examples["messages"]:
-            user_message = ""
-            assistant_message = ""
-
-            for turn in conversation:
-                if turn["role"] == "user":
-                    user_message = turn["content"]
-                elif turn["role"] == "assistant":
-                    assistant_message = turn["content"]
-
-            instruction = "Complete the statement"
-            instructions.append(instruction)
-            inputs.append(user_message)
-            outputs.append(assistant_message)
-
-            text = alpaca_prompt.format(instruction, user_message, assistant_message)
-            texts.append(text)
-
-        return {
-            "instruction": instructions,
-            "input": inputs,
-            "output": outputs,
-            "text": texts,
-        }
+        convos = examples["messages"]
+        texts = [
+            merged_tokenizer.apply_chat_template(convo, tokenize = False, add_generation_prompt = False)
+            for convo in convos
+        ]
+        return {"text": texts}
 
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Coerce to a Python float.
+    # Convert to a Python float (tensor / numpy / other)
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):
@@ -153,12 +98,11 @@ def load_and_compute_8bit_ppl(
 
     result_queue.put(ppl_value)
 
-    # Clean up
-    # del merged_model
-    # del merged_tokenizer
-    # del dataset_ppl
-    # torch.cuda.empty_cache()
-    # gc.collect()
+    del merged_model
+    del merged_tokenizer
+    del dataset_ppl
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 if __name__ == "__main__":
@@ -171,7 +115,7 @@ if __name__ == "__main__":
     attn_implementation = "flash_attention_2" if HAS_FLASH_ATTENTION else "sdpa"
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "unsloth/Qwen2.5-7B-Instruct",
+        model_name = "unsloth/Llama-3.1-8B-Instruct",
         max_seq_length = 2048,
         dtype = compute_dtype,
         load_in_4bit = True,
@@ -180,11 +124,21 @@ if __name__ == "__main__":
         attn_implementation = attn_implementation,
     )
 
+    tokenizer = get_chat_template(
+        tokenizer,
+        chat_template = "llama-3.1",
+    )
+
+    from unsloth.chat_templates import standardize_sharegpt
+
     dataset_train = load_dataset("allenai/openassistant-guanaco-reformatted", split = "train")
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     dataset_train = dataset_train.map(formatting_prompts_func, batched = True)
     dataset_ppl = dataset_ppl.map(formatting_prompts_func, batched = True)
+
+    print("\n dataset sample [0]")
+    print(dataset_train[0])
 
     add_to_comparison("Base model 4 bits", ppl_model(model, tokenizer, dataset_ppl))
 
@@ -208,6 +162,8 @@ if __name__ == "__main__":
         use_rslora = False,
         loftq_config = None,
     )
+
+    from unsloth import is_bfloat16_supported
 
     trainer = SFTTrainer(
         model = model,
@@ -235,13 +191,24 @@ if __name__ == "__main__":
         ),
     )
 
+    from unsloth.chat_templates import train_on_responses_only
+
+    trainer = train_on_responses_only(
+        trainer,
+        instruction_part = "<|start_header_id|>user<|end_header_id|>\n\n",
+        response_part = "<|start_header_id|>assistant<|end_header_id|>\n\n",
+    )
+
+    tokenizer.decode(trainer.train_dataset[0]["input_ids"])
+
     trainer_stats = trainer.train()
 
     add_to_comparison("Qlora model", ppl_model(model, tokenizer, dataset_ppl))
 
+    # save and merge the model to local disk
     print("merge and save to local disk")
     model.save_pretrained_merged(
-        save_directory = "./unsloth_out/merged_qwen_text_model", tokenizer = tokenizer
+        save_directory = "./unsloth_out/merged_llama_text_model", tokenizer = tokenizer
     )
 
     # print("cleaning")
@@ -252,7 +219,7 @@ if __name__ == "__main__":
 
     print("Loading merged model in 4 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
+        model_name = "./unsloth_out/merged_llama_text_model",
         max_seq_length = 2048,
         load_in_4bit = True,
         load_in_8bit = False,
@@ -273,7 +240,7 @@ if __name__ == "__main__":
 
     print("Loading merged model in 16 bit for perplexity test")
     merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "./unsloth_out/merged_qwen_text_model",
+        model_name = "./unsloth_out/merged_llama_text_model",
         max_seq_length = 2048,
         load_in_4bit = False,
         load_in_8bit = False,
