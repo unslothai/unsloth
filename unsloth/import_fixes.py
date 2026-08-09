@@ -20,6 +20,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
+from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
 import logging
@@ -1076,6 +1077,7 @@ def torchvision_compatibility_check():
 def _unsatisfied_transformers_requirements():
     """Return [(name, specifier, installed_version), ...] for the base (no-extras)
     requirements transformers itself declares that the environment does not satisfy.
+    ``installed_version`` is None when the package is absent altogether.
 
     The requirement set is read from the installed distribution's own metadata, so
     it is always whatever the installed transformers actually asks for - a git-main
@@ -1114,15 +1116,22 @@ def _unsatisfied_transformers_requirements():
             except Exception:
                 continue  # Undecidable marker - assume it does not apply.
 
-        if not requirement.specifier:
-            continue  # Bare dependency with no floor, e.g. `filelock`.
-
         try:
             installed = importlib_version(requirement.name)
-        except Exception:
-            # Not installed. transformers only imports these lazily for the code
-            # paths that need them, so an absent package is not our warning to give.
+        except PackageNotFoundError:
+            # Absent entirely, which `--no-deps` causes just as readily as a stale
+            # version. transformers checks its base requirements during its own root
+            # import and raises `PackageNotFoundError: The 'safetensors>=0.4.3'
+            # distribution was not found ...` carrying the very hint this warning
+            # exists to correct, so an absent one belongs in the list. Floor or no
+            # floor: a base requirement is not optional to transformers.
+            unsatisfied.append((requirement.name, str(requirement.specifier), None))
             continue
+        except Exception:
+            continue  # Metadata unreadable - we cannot judge it, so stay quiet.
+
+        if not requirement.specifier:
+            continue  # Installed, and no floor it could fall below.
 
         try:
             # Parse explicitly: SpecifierSet.contains() reports a non-PEP440 version
@@ -1193,10 +1202,12 @@ def check_transformers_dependency_versions():
     ]
     upgrades = []
     for name, specifier, installed in unsatisfied:
-        lines.append(f"    {name}{specifier} is required, but found {name}=={installed}")
+        found = f"found {name}=={installed}" if installed is not None else "it is not installed"
+        lines.append(f"    {name}{specifier} is required, but {found}")
         upgrades.append(f'"{name}{specifier}"')
     lines.append("")
-    lines.append("Upgrade the dependencies, not transformers:")
+    verb = "Upgrade" if all(i is not None for _, _, i in unsatisfied) else "Install or upgrade"
+    lines.append(f"{verb} the dependencies, not transformers:")
     lines.append(f"    pip install --upgrade {' '.join(upgrades)}")
     lines.append("")
     lines.append(

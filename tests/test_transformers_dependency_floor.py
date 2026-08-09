@@ -237,14 +237,55 @@ def test_applicable_environment_marker_is_still_checked(monkeypatch, caplog):
 
 # ------------------------------------------------------------ absent package
 
-def test_absent_optional_package_is_not_reported(monkeypatch, caplog):
-    """transformers imports these lazily; a package the user simply does not have
-    is not a floor violation and must not be warned about."""
+def test_an_absent_base_requirement_is_reported_like_a_stale_one(monkeypatch, caplog):
+    """`--no-deps` leaves a dependency missing at least as often as it leaves it old.
+
+    transformers checks its base requirements during its own root import and raises
+    `PackageNotFoundError: The 'safetensors>=0.8.0' distribution was not found and is
+    required by this application. Try: pip install transformers -U ...` - the same
+    misleading remedy this check exists to correct. Skipping the absent case left the
+    user with only that message, which is the one outcome the feature has to prevent.
+    """
     _install_env(
         monkeypatch,
-        ["safetensors>=0.8.0", "typer", "typer-slim>=1.0"],
-        {"transformers": "5.15.0.dev0", "safetensors": "0.9.0"},
+        ["safetensors>=0.8.0", "typer", "tqdm>=4.27", 'fugashi>=1.0; extra == "ja"'],
+        {"transformers": "5.15.0.dev0", "tqdm": "4.67.3"},
     )
+    assert IF._unsatisfied_transformers_requirements() == [
+        ("safetensors", ">=0.8.0", None),
+        ("typer", "", None),
+    ]
+    warning = "\n".join(_run_check(caplog))
+    assert "safetensors>=0.8.0 is required, but it is not installed" in warning
+    assert "typer is required, but it is not installed" in warning
+    assert 'pip install --upgrade "safetensors>=0.8.0" "typer"' in warning
+    assert "Install or upgrade the dependencies, not transformers" in warning
+    # An extras-only requirement stays out of it: not having it is correct.
+    assert "fugashi" not in warning
+    # Satisfied requirements stay out of it too.
+    assert "tqdm" not in warning
+
+
+def test_an_absent_extras_only_package_is_not_reported(monkeypatch, caplog):
+    """Optional extras are opt-in; a package the user is right not to have is silent."""
+    _install_env(
+        monkeypatch,
+        ['torch>=2.2; extra == "torch"', 'jax>=0.4.1; extra == "flax"'],
+        {"transformers": "5.15.0.dev0"},
+    )
+    assert IF._unsatisfied_transformers_requirements() == []
+    assert _run_check(caplog) == []
+
+
+def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
+    """Only a real PackageNotFoundError counts as absent. Any other metadata error
+    means we cannot tell, and guessing would warn about a working install."""
+    _install_env(monkeypatch, ["safetensors>=0.8.0"], {"transformers": "5.15.0.dev0"})
+
+    def broken_version(name):
+        raise OSError("dist-info unreadable")
+
+    monkeypatch.setattr(IF, "importlib_version", broken_version)
     assert IF._unsatisfied_transformers_requirements() == []
     assert _run_check(caplog) == []
 
