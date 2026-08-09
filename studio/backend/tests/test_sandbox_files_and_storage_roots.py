@@ -3379,7 +3379,8 @@ def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypa
         "_session_dir",
         lambda root, session_id: (
             str(workdir)
-            if session_id.casefold() == "foo_chat1" else real_session_dir(root, session_id)
+            if session_id.casefold() == "foo_chat1"
+            else real_session_dir(root, session_id)
         ),
     )
 
