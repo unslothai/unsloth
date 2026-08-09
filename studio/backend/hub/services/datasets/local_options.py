@@ -1910,12 +1910,11 @@ def _snapshot_card_options(
                 entry
                 for entry in options
                 if entry[0] not in deterministic
-                and entry not in _empty_declared_options(collapsed, required, declared_files, snapshot)
+                and entry
+                not in _empty_declared_options(collapsed, required, declared_files, snapshot)
             }
         dead = (
-            unresolvable
-            | deterministic
-            | _mismatched_configs(collapsed, required, declared_files)
+            unresolvable | deterministic | _mismatched_configs(collapsed, required, declared_files)
         )
         options = {
             entry
