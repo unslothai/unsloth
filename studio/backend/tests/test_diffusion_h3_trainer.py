@@ -1112,7 +1112,6 @@ def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypat
     class _Frame:
         def to_image(self):
             from PIL import Image
-
             return Image.new("RGB", (64, 64))
 
     class _Stream:
@@ -1133,13 +1132,13 @@ def test_an_over_long_clip_says_that_only_its_opening_trains(tmp_path, monkeypat
         def decode(self, video = 0):
             return [_Frame() for _ in range(10 * clips.H3_FPS)]
 
-    monkeypatch.setattr(clips, "av", types.SimpleNamespace(open = lambda p: _Container()),
-                        raising = False)
-    monkeypatch.setitem(
-        sys.modules, "av", types.SimpleNamespace(open = lambda p: _Container())
-    )
     monkeypatch.setattr(
-        clips, "_decode_clip_audio",
+        clips, "av", types.SimpleNamespace(open = lambda p: _Container()), raising = False
+    )
+    monkeypatch.setitem(sys.modules, "av", types.SimpleNamespace(open = lambda p: _Container()))
+    monkeypatch.setattr(
+        clips,
+        "_decode_clip_audio",
         lambda path, target, av, np_: np.zeros((clips.H3_AUDIO_CHANNELS, target), "float32"),
     )
 
