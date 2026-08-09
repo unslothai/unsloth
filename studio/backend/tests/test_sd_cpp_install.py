@@ -1310,3 +1310,41 @@ def test_a_serverless_deferred_install_still_lands_after_teardown(tmp_path, monk
     # And a matching tree is not reinstalled on the next deferred load.
     assert backend._upgrade_server_after_teardown(None) is None
     assert len(installs) == 1
+
+
+def test_a_server_still_starting_also_holds_the_tree(tmp_path, monkeypatch):
+    """The startup window: between spawning sd-server and committing it to _state, the load has
+    published only _pending_server. A second /images/load asking for a different accelerator would
+    read the tree as idle and extract over the executable that is starting -- and start() blocks
+    for as long as the checkpoint takes to load, so the window is minutes, not milliseconds."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        server.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return root / "sd-bin" / "sd-cli"
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    starting = bk.SdCppDiffusionBackend()
+    starting._state = None  # not committed yet
+    starting._pending_server = object()
+    monkeypatch.setattr(bk, "_sd_cpp_backend", starting)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert installs == [], "the starting server's file may not be overwritten"
+    assert server.read_bytes() == b"cpu-build"
+
+    # Once it has committed and been torn down, the upgrade lands.
+    starting._pending_server = None
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert [k["accelerator"] for k in installs] == ["cuda"]

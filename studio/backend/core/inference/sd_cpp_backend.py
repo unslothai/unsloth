@@ -188,13 +188,20 @@ def _note_failed_upgrade(accelerator: str) -> None:
 
 
 def _tree_in_use(backend: Any) -> bool:
-    """True while ``backend`` may still have a native process executing out of the managed tree:
-    a resident sd-server, or a generation that has been signalled to cancel but not yet finished."""
+    """True while ``backend`` may still have a native process executing out of the managed tree.
+
+    Three windows, and all three are live processes running the files an install would replace:
+    the resident sd-server; a server that has been spawned but has not committed to ``_state``
+    yet (``_pending_server``, which is exactly the ``SdCppServer.start()`` span -- minutes on a
+    large checkpoint, and the load that owns it has published nothing else to look at); and a
+    generation that has been signalled to cancel but has not finished."""
     if backend is None:
         return False
     state = getattr(backend, "_state", None)
     if state is not None and getattr(state, "server", None) is not None:
         return True  # the resident sd-server is executing its own file
+    if getattr(backend, "_pending_server", None) is not None:
+        return True  # a server is starting from that same file
     return getattr(backend, "_active_generate_cancel", None) is not None
 
 
