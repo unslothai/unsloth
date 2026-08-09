@@ -2813,6 +2813,7 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
     fake_runtime, tmp_path, monkeypatch
 ):
     from core.inference import diffusion as dmod
+    from core.inference.diffusion_precision import TEQuantOutcome
 
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
@@ -2821,7 +2822,10 @@ def test_load_refines_component_placement_after_text_encoder_quantization(
 
     def _quantize(*args, **kwargs):
         seen["quantized"] = True
-        return None
+        # The real pass reports what it did and the loader reads `.mode` off that report, so a
+        # bare None here is a shape the production function can no longer return. A None mode
+        # keeps this stub's meaning: the encoders were left dense.
+        return TEQuantOutcome(None)
 
     def _refine(pipe, plan):
         assert seen["quantized"] is True
@@ -5012,6 +5016,47 @@ def test_dense_transformer_cached_survives_an_unreadable_cache(fake_runtime, mon
         )
         is False
     )
+def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
+    # The reported bug: picking a GGUF at Q8_0 showed "BF16" in the loaded models row, because
+    # dtype is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. gguf_variant is
+    # what distinguishes the file that was downloaded and opened.
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+    )
+    status = backend.status()
+    assert status["model_kind"] == "gguf"
+    assert status["transformer_quant"] is None  # the GGUF ran as-is
+    assert status["gguf_variant"] == "Q8_0"
+
+
+def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A GGUF pick the dense fast path took over denoises with a torchao build of the BASE
+    # transformer, and the .gguf on disk is never opened. transformer_quant is what describes
+    # that build, so the row must prefer it over the picked file's quant.
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    _stub_dense_quant(monkeypatch, scheme = "fp8")
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert backend.status()["transformer_quant"] == "fp8"
+
+
+def test_status_carries_no_gguf_variant_when_nothing_is_loaded():
+    # The unloaded payload must declare every key the loaded one does, or the row keeps the
+    # previous model's quant after an eject.
+    assert DiffusionBackend().status()["gguf_variant"] is None
 
 
 def test_diffusion_status_response_carries_resolved():
@@ -7307,3 +7352,204 @@ def test_the_cache_probe_sees_a_moved_cache_root():
 
     src = inspect.getsource(cache_holds_files)
     assert "other_root = True" in src
+# ── generate cancellation (issue #8187) ──────────────────────────────────────
+#
+# The denoise loop already honoured the per-generation cancel event, but only unload() and a
+# superseding load could set it, so there was no way for a user to stop a run. These cover the
+# public cancel_generate() across EVERY image workflow, since all five UI surfaces (Create,
+# Transform, Inpaint, Extend, Upscale) funnel through the same generate() and would otherwise
+# be assumed to work from a Create-only test.
+
+
+def _stepping_call(record):
+    """A pipeline __call__ that actually steps, so a cancel can be observed mid-denoise.
+
+    The fake pipes return immediately, which cannot distinguish "the sampler stopped" from
+    "the sampler finished". This mirrors diffusers: invoke callback_on_step_end each step and
+    break out when the callback sets ``_interrupt``, exactly as the real denoise loop does."""
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        record["steps_run"] = 0
+        self._interrupt = False
+        for index in range(record["total_steps"]):
+            if callback_on_step_end is not None:
+                callback_on_step_end(self, index, index, {})
+            record["steps_run"] = index + 1
+            record["reached"].set()
+            if getattr(self, "_interrupt", False):
+                break
+            record["resume"].wait(5)
+        n = kwargs.get("num_images_per_prompt", 1)
+        return types.SimpleNamespace(images = [_FakeImage() for _ in range(n)])
+
+    return _call
+
+
+@pytest.mark.parametrize(
+    "surface,gen_kwargs",
+    [
+        ("create", {}),
+        ("transform", {"init_image": _tiny_png_b64(), "strength": 0.5}),
+        # Extend is the Images page's outpaint tab: it pads the canvas client-side and sends the
+        # result down the SAME inpaint path, so inpaint covers both surfaces.
+        ("inpaint", {"init_image": _tiny_png_b64(), "mask_image": _mask_b64(64)}),
+        ("extend", {"init_image": _tiny_png_b64(), "mask_image": _mask_b64(64)}),
+        ("upscale", {"init_image": _tiny_png_b64(), "upscale": 2.0}),
+    ],
+)
+def test_cancel_generate_stops_every_workflow(
+    fake_runtime, tmp_path, monkeypatch, surface, gen_kwargs
+):
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    record = {
+        "total_steps": 8,
+        "steps_run": 0,
+        "reached": threading.Event(),
+        "resume": threading.Event(),
+    }
+    stepping = _stepping_call(record)
+    for cls in (_FakePipe, _FakeImg2ImgPipe, _FakeInpaintPipe):
+        monkeypatch.setattr(cls, "__call__", stepping)
+
+    # Nothing in flight yet, so there is nothing to stop.
+    assert backend.cancel_generate() is False
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            outcome["result"] = backend.generate(
+                prompt = "a sloth", steps = record["total_steps"], **gen_kwargs
+            )
+        except BaseException as exc:  # noqa: BLE001 -- the test asserts on the exact type/text
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert record["reached"].wait(5), f"{surface}: the denoise never started"
+
+    assert backend.cancel_generate() is True
+    record["resume"].set()
+    worker.join(10)
+    assert not worker.is_alive(), f"{surface}: the denoise did not unwind"
+
+    # The sampler stopped rather than ran to completion, and nothing was returned to persist.
+    assert "result" not in outcome, f"{surface}: a cancelled run still produced images"
+    assert isinstance(outcome["error"], RuntimeError)
+    assert str(outcome["error"]) == DIFFUSION_CANCELLED_MSG
+    assert record["steps_run"] < record["total_steps"], (
+        f"{surface}: ran {record['steps_run']}/{record['total_steps']} steps, so the cancel "
+        "never reached the sampler"
+    )
+    # The progress state is cleared on every exit, so the page does not stay stuck at "generating".
+    assert backend.generate_progress()["active"] is False
+    # Deregistered, so a second cancel does not poke a finished generation.
+    assert backend.cancel_generate() is False
+
+
+def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path, monkeypatch):
+    # The contract is best-effort at the NEXT step boundary, the same one the video backend
+    # documents. Pin it: a cancel raised during step 1 must not let step 3 run.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    seen: list[int] = []
+
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        self._interrupt = False
+        for index in range(20):
+            if callback_on_step_end is not None:
+                callback_on_step_end(self, index, index, {})
+            seen.append(index)
+            if getattr(self, "_interrupt", False):
+                break
+            if index == 1:
+                backend.cancel_generate()
+        return types.SimpleNamespace(images = [_FakeImage()])
+
+    monkeypatch.setattr(_FakePipe, "__call__", _call)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "x", steps = 20)
+    # Cancelled during step index 1: index 2 is the step whose callback observes it, and nothing runs after.
+    assert seen == [0, 1, 2]
+
+
+def test_cancel_generate_during_the_post_denoise_save_still_cancels(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The cancel event stays registered through the compile-cache save, and progress still reads
+    # active, so the page still shows Stop. Before the final recheck, a Stop landing there was
+    # answered cancelled = true and then contradicted: generate() returned the images and the
+    # route persisted them. The two answers have to agree, so the run unwinds as cancelled.
+    from core.inference import diffusion_compile_cache as compile_cache
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    def _save(ctx, logger = None):
+        # Stop pressed while the bundle is being written: the route's cancel reaches the SAME
+        # event, and it must still be registered here or the button would have reported False.
+        assert backend.cancel_generate() is True
+
+    monkeypatch.setattr(compile_cache, "save", _save)
+
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        backend.generate(prompt = "x", steps = 2)
+
+
+def test_a_completed_generation_stops_advertising_itself_as_cancellable(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The final check and the deregistration are one critical section under the same lock
+    # cancel_generate takes, so there is no sliver between "the result is committed" and "the
+    # event is gone" in which Stop could answer true for a generation that then returns images.
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path), gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image"
+    )
+
+    from core.inference import diffusion as diffusion_module
+
+    seen: list[bool] = []
+    real_baked = diffusion_module._baked_lora_names
+
+    def _baked(pipe):
+        # Runs after the final check, while the old code still had the event registered.
+        seen.append(backend.cancel_generate())
+        return real_baked(pipe)
+
+    monkeypatch.setattr(diffusion_module, "_baked_lora_names", _baked)
+
+    out = backend.generate(prompt = "x", steps = 2)
+    assert out["images"]
+    assert seen == [False]
+
+
+def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
+    # The route calls this unconditionally, so an idle backend must answer False, not raise.
+    assert DiffusionBackend().cancel_generate() is False
