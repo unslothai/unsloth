@@ -77,6 +77,18 @@ import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
 import {
+  PRECISION_REFUSAL_TITLE,
+  denseTextEncoderBuildLabel,
+  denseTransformerBuildLabel,
+  isNativeEngineStatus,
+  formatResolvedValue,
+  isPrecisionRefusal,
+  memoryRecipeValue,
+  resolvedBadge,
+  resolvedSeedKey,
+  resolvedSelectValue,
+} from "@/lib/resolved-precision";
+import {
   routedGgufFilename,
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
@@ -554,18 +566,9 @@ function Field({
   );
 }
 
-// The engaged value of a resolved Advanced control, formatted for its "Auto: X" badge.
-function formatResolvedValue(key: string, value: string | boolean | null): string {
-  if (key === "cpu_offload") return value ? "On" : "Off";
-  if (value === null || value === "") return "Off";
-  if (typeof value === "boolean") return value ? "On" : "Off";
-  if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
-  // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
-  if (value === "deferred") return "On from 3rd image";
-  return value.toUpperCase();
-}
-
-// The "Auto: X" badge for one Advanced control, rendered only when source === "auto"; the reason is a hover tooltip.
+// The badge for one Advanced control. "Auto: X" when the backend decided it; "FP8 -> OFF" in a
+// warning tone when an EXPLICIT request was declined -- that case used to render nothing at all
+// while the dropdown kept showing the request, so a Q4_K_M GGUF could advertise FP8 it never ran.
 function ResolvedBadge({
   status,
   controlKey,
@@ -573,18 +576,25 @@ function ResolvedBadge({
   status: DiffusionStatus | null;
   controlKey: string;
 }) {
-  const resolved = status?.resolved?.[controlKey];
-  if (!resolved || resolved.source !== "auto") return null;
+  const info = resolvedBadge(controlKey, status?.resolved?.[controlKey]);
+  if (!info) return null;
   const badge = (
-    <span className="shrink-0 rounded-sm bg-muted px-1 py-px text-ui-9 font-medium uppercase tracking-wider text-muted-foreground">
-      Auto: {formatResolvedValue(controlKey, resolved.value)}
+    <span
+      className={cn(
+        "shrink-0 rounded-sm px-1 py-px text-ui-9 font-medium uppercase tracking-wider",
+        info.tone === "warn"
+          ? "bg-destructive/15 text-destructive"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {info.label}
     </span>
   );
-  if (!resolved.reason) return badge;
+  if (!info.tooltip) return badge;
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
-      <TooltipContent>{resolved.reason}</TooltipContent>
+      <TooltipContent>{info.tooltip}</TooltipContent>
     </Tooltip>
   );
 }
@@ -1027,6 +1037,24 @@ function RecipePopover({
           {image.transformer_quant ? (
             <RecipeRow label="Quant" value={image.transformer_quant} />
           ) : null}
+          {/* The ENGAGED text-encoder precision and memory placement: the encoder is often the
+              largest resident component and its cast changes the conditioning, and the memory mode
+              decides whether the torchao encoder modes could run at all. */}
+          {image.text_encoder_quant ? (
+            <RecipeRow label="TE quant" value={image.text_encoder_quant} />
+          ) : null}
+          {/* Either field is placement information. The native engine reports no memory_mode at
+              all (it has no torchao path to choose one for) while still recording an active
+              offload, so gating on memory_mode hid the offload on exactly the configuration
+              this row was extended for. Absent memory_mode stays absent: substituting "auto"
+              there would claim the memory planner picked a mode on a path that never ran it. */}
+          {image.memory_mode ||
+          (image.offload_policy && image.offload_policy !== "none") ? (
+            <RecipeRow
+              label="Memory"
+              value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
           {image.baked_loras?.length ? (
             <RecipeRow label="Baked" value={image.baked_loras.join(", ")} wrap />
           ) : null}
@@ -1044,6 +1072,98 @@ function RecipePopover({
       </PopoverContent>
     </Popover>
   );
+}
+
+// One "what actually ran" line in the loaded-build summary below.
+function BuildRow({ label, value, badge }: { label: string; value: string; badge?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-muted-foreground">
+        {label}
+        {badge}
+      </span>
+      <span className="min-w-0 truncate text-foreground">{value}</span>
+    </div>
+  );
+}
+
+/**
+ * What the LOADED model is actually running, read from status (never from the request): the
+ * transformer and text-encoder precision, the memory mode with its resolved offload behaviour, and
+ * the attention backend. The Advanced selects above say what was ASKED for; this says what
+ * happened, and any control whose request was declined carries its reason in the badge tooltip.
+ * Without it a successful load said nothing at all about the precision it ran at.
+ */
+function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
+  if (!status?.loaded) return null;
+  const offload = status.offload_policy ?? "none";
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border/60 px-2.5 py-2 text-ui-11">
+      <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
+        Loaded build
+        <InfoHint>
+          What the loaded model is actually running, reported by the backend. A control whose
+          requested value could not be used shows it next to that control, with the reason.
+        </InfoHint>
+      </div>
+      <BuildRow
+        label="Transformer"
+        value={
+          status.transformer_quant
+            ? formatResolvedValue("transformer_quant", status.transformer_quant)
+            // No dense quant ran, so the row reports what the checkpoint itself carries.
+            : denseTransformerBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
+      />
+      <BuildRow
+        label="Text encoder"
+        value={
+          status.text_encoder_quant
+            ? formatResolvedValue("text_encoder_quant", status.text_encoder_quant)
+            // No runtime TE quant engaged, which on the native engine is not the same as bf16.
+            : denseTextEncoderBuildLabel(status)
+        }
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+      />
+      <BuildRow
+        label="Memory"
+        value={
+          offload === "none"
+            ? `${status.memory_mode ?? "auto"} · resident`
+            : `${status.memory_mode ?? "auto"} · ${offload} offload`
+        }
+      />
+      <BuildRow
+        label="Attention"
+        value={
+          status.attention_backend
+            ? formatResolvedValue("attention_backend", status.attention_backend)
+            : // The sd.cpp engine reports no backend because it has none of ours: its attention
+              // is chosen by native flags, not by the diffusers/PyTorch dispatcher, so calling it
+              // "Native SDPA" is wrong on the default CPU image path.
+              isNativeEngineStatus(status)
+              ? "sd.cpp built-in"
+              : "Native SDPA"
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * Report a failed load. A refused precision is a long actionable sentence ("Choose Auto ... or
+ * Off ..."), so it becomes a toast description under a short title rather than one unreadable
+ * line. Nothing is left half-loaded either way: the backend refuses before it starts the load, or
+ * has already torn the partial build down by the time it reports the error.
+ */
+function reportLoadFailure(message: string | null | undefined, fallback: string): void {
+  const text = (message || "").trim();
+  if (text && isPrecisionRefusal(text)) {
+    toast.error(PRECISION_REFUSAL_TITLE, { description: text });
+    return;
+  }
+  toast.error(text || fallback);
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
@@ -1632,7 +1752,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       if (p.phase === "error") {
         dismissLoadToast();
-        toast.error(p.error || "Failed to load model");
+        reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the optimistic quant label back.
         if (quantRevert.current) {
@@ -1783,6 +1903,38 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [status?.loaded, status?.repo_id, status?.base_repo, status?.model_kind]);
 
+  // Reseed the Advanced selects from the LOADED build, so they stop being pure local request state.
+  // An honored request re-selects itself (a no-op); a declined one snaps to what actually engaged,
+  // which is the input-side half of P1-2: the Precision dropdown must never go on advertising a
+  // scheme the loaded model is not running. Keyed on the LOAD-TIME half of the resolved record, so
+  // a user edit made after the load survives until the next load replaces it -- the backend
+  // rewrites the speed/attention/cache entries at GENERATION time, and serializing the whole record
+  // made the 3rd image of a session throw away a Precision the user had picked but not yet loaded.
+  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  useEffect(() => {
+    const record = status?.loaded ? status.resolved : null;
+    if (!record) return;
+    const quant = resolvedSelectValue(record.transformer_quant, (v) =>
+      // The engaged value spells "no quant" as "off"; the select's option for it is "none".
+      (["auto", "none", "int8", "fp8", "nvfp4", "mxfp8"] as const).find(
+        (o) => o === v || (o === "none" && v === "off"),
+      ) ?? null,
+    );
+    if (quant) setTransformerQuant(quant);
+    const memory = resolvedSelectValue(record.memory_mode, (v) =>
+      (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
+    );
+    if (memory) setMemoryMode(memory);
+    const attention = resolvedSelectValue(record.attention_backend, (v) =>
+      // The engaged value uses the dispatcher's own name; map it back to the option.
+      (["auto", "native", "cudnn", "flash3", "sage"] as const).find(
+        (o) => o === v || `_native_${o}` === v,
+      ) ?? null,
+    );
+    if (attention) setAttentionBackend(attention);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- resolvedKey stands for the record
+  }, [resolvedKey]);
+
   // The adapter list a load of *repoId* would BAKE into the build, shared by the load and the download plan: a torchao int8/fp8 transformer
   // takes adapters only before quantize_ + compile. Only a reload of the SAME target bakes, and it reads lastLoad.current, so call it first.
   const bakedLorasFor = useCallback(
@@ -1863,7 +2015,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          transformer_quant: advanced.transformer_quant,
+          // GGUF picks only: the dense fast path replaces a GGUF transformer, every other kind runs
+          // the precision its checkpoint carries. The Precision control is hidden for those kinds,
+          // but the state persists across picks, so a stale scheme would reach a load that can only
+          // decline it -- and the backend now refuses a request it cannot honor.
+          transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
@@ -1874,7 +2030,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         setCanReapply(prevLastLoad != null);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        toast.error(err instanceof Error ? err.message : "Failed to start load");
+        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return false;
@@ -1955,7 +2111,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           hf_token: hfApiToken(getHfToken()),
           cpu_offload: advanced.cpu_offload,
           speed_mode: advanced.speed_mode,
-          transformer_quant: advanced.transformer_quant,
+          // Dropped for the non-GGUF kinds exactly as handleLoad drops it, so the plan describes
+          // the load that will actually run.
+          transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
           memory_mode: advanced.memory_mode,
           // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the dense build path. Omitting it
           // planned a quantized file set and staged too little. Same list handleLoad bakes.
@@ -2613,6 +2771,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         </span>
         <Switch checked={cpuOffload} onCheckedChange={setCpuOffload} />
       </div>
+      <LoadedBuildSummary status={status} />
       {/* A resident full pipeline is reloadable by repo id alone, so it keeps Reapply even before a user-initiated load; GGUF/single_file residents hide the button. */}
       {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
         <Tooltip>
