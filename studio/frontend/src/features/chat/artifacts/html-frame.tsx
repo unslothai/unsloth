@@ -109,14 +109,16 @@ export function ArtifactHtmlFrame({
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
+  // Identifies this load to the frame, which stamps its blocked reports with it.
+  const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
   const src = useMemo(() => {
-    const query = new URLSearchParams({ v: hashArtifactCode(code) });
+    const query = new URLSearchParams({ v: codeVersion });
     // Never put the auth token in the URL: in-frame code can read location.href.
     if (networkAllowed) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [networkAllowed, code]);
+  }, [networkAllowed, codeVersion]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -138,6 +140,12 @@ export function ArtifactHtmlFrame({
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
       if (event.data?.type === "unsloth:artifact-blocked") {
+        // event.source survives the swap navigation, so a report from the
+        // outgoing canvas would otherwise be tagged with the incoming code and
+        // prompt a grant for a canvas that never hit the CSP. The frame stamps
+        // the load it was served for; anything else is from a document we have
+        // already navigated away from.
+        if (event.data.v !== codeVersion) return;
         const uri = event.data.blockedURI;
         const host = blockedHost(uri);
         if (!host) return;
@@ -154,9 +162,9 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-    // `code` is listed so the handler always closes over the canvas on screen,
-    // rather than relying on postArtifactHtml changing with it.
-  }, [postArtifactHtml, code]);
+    // `code`/`codeVersion` are listed so the handler always closes over the
+    // canvas on screen, rather than relying on postArtifactHtml changing.
+  }, [postArtifactHtml, code, codeVersion]);
 
   const showBlockedBanner = !networkAllowed && blockedForCanvas.uris.length > 0;
   const shownHosts = blockedForCanvas.hosts

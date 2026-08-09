@@ -247,6 +247,27 @@ function readBlockedAppendUpdater(): string {
   return text;
 }
 
+// event.source survives the swap navigation and the handler closes over the NEW
+// code, so an in-flight report from the outgoing canvas would be stored as the
+// incoming one's and prompt a grant for a canvas that never hit the CSP. The
+// frame stamps each report with the load it was served for.
+test("blocked reports from a stale frame load are rejected", () => {
+  const source = sourceFile(FRAME);
+  let guarded = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      /event\.data\.v !== codeVersion/.test(node.expression.getText()) &&
+      node.thenStatement.getText().includes("return")
+    ) {
+      guarded = true;
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(guarded, "reports are not matched against the current load");
+});
+
 // The canvas picks the blocked URIs, so an uncapped list is memory growth and a
 // parent re-render per message, both driven from inside the sandbox. The cap is
 // checked BEFORE the duplicate scan so that past the cap the work is O(1) too,

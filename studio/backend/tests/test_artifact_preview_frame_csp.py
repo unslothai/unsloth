@@ -56,3 +56,19 @@ def test_the_shell_reports_blocked_resources():
         shell.index('document.addEventListener("securitypolicyviolation"'),
     )
     assert write < listen
+
+
+def test_blocked_reports_carry_the_load_they_came_from():
+    # event.source still matches the iframe across the swap navigation, so a
+    # report from the outgoing canvas would read as the incoming one's and
+    # prompt a network grant for a canvas that never hit the CSP. The stamp is
+    # read once at load, not per report, so a rewritten document cannot forge a
+    # different one.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert 'get("v")' in shell
+    assert "v: loadVersion," in shell
+    read, report = (
+        shell.index("const loadVersion"),
+        shell.index("const reportBlocked"),
+    )
+    assert read < report
