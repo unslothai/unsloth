@@ -154,6 +154,17 @@ export function ProjectSourceDropzone({
   stagedRef.current = staged;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Radix unmounts the dialog's content on close, so a cancel takes this
+  // component down before the reset below reaches it. Set on setup, not just
+  // cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
+  // otherwise leave this false forever.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   // The dialog stays mounted across close, so an unmount flag cannot see a
   // cancel. Identity, not length, marks a drop as superseded: `reset()` swaps
   // in a fresh array even when it was already empty, which a nonzero→zero
@@ -180,6 +191,9 @@ export function ProjectSourceDropzone({
   const pending = useRef(0);
   const addPending = useCallback((delta: number) => {
     pending.current += delta;
+    // A drop from a previous mount must not answer for the live dropzone: its
+    // "done" would re-enable Create while the current drop is still pending.
+    if (!mounted.current) return;
     onPendingChangeRef.current?.(pending.current > 0);
   }, []);
 
@@ -258,9 +272,10 @@ export function ProjectSourceDropzone({
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
       ).finally(() => addPending(-1));
-      // The panel was cleared while this was registering: the user is done with
-      // this drop, so let the tokens lapse instead of refilling the panel.
-      if (claimed !== generation.current) return;
+      // The panel was cleared or closed while this was registering: the user is
+      // done with this drop, so let the tokens lapse instead of refilling a
+      // draft that a later dialog would open on.
+      if (!mounted.current || claimed !== generation.current) return;
       const staged = settled.flatMap((result) =>
         result.status === "fulfilled" ? [stagedFromIntent(result.value)] : [],
       );
