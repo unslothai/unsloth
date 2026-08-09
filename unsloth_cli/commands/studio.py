@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import contextlib
+import fnmatch
 import importlib.util
 import hashlib
 import hmac
@@ -2866,20 +2867,33 @@ _PS_PROXY_PROBE = (
     # sourcing only the current-user pair reported no proxy on exactly the locked-down host
     # that has one. Order matters as well as membership -- the user's profile is entitled to
     # override the machine's, which it only does if it runs last.
+    #
+    # The named host profile is ADDED, never substituted. TERM_PROGRAM=vscode is set by every
+    # VS Code integrated terminal, not only the PowerShell extension's own host, so a plain
+    # pwsh terminal in VS Code loads Microsoft.PowerShell_profile.ps1 -- and swapping in the
+    # VS Code host's profile missed the proxy that terminal actually has. Both are read, and
+    # the current-host profile runs LAST so the ordinary case keeps the final word.
     "$__unslothHostProfileName = $env:_UNSLOTH_PS_HOST_PROFILE; "
     "try { $__unslothProfiles = @($PROFILE.AllUsersAllHosts); "
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.AllUsersCurrentHost) "
-    "$__unslothHostProfileName) } else { "
-    "$__unslothProfiles += $PROFILE.AllUsersCurrentHost }; "
+    "$__unslothHostProfileName) }; "
+    "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; "
     "$__unslothProfiles += $PROFILE.CurrentUserAllHosts; "
     "if ($__unslothHostProfileName) { "
     "$__unslothProfiles += (Join-Path (Split-Path -Parent $PROFILE.CurrentUserCurrentHost) "
-    "$__unslothHostProfileName) } else { "
-    "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost }; "
+    "$__unslothHostProfileName) }; "
+    "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; "
     "foreach ($__unslothProfile in ($__unslothProfiles | Select-Object -Unique)) { "
     "if ($__unslothProfile -and (Test-Path -LiteralPath $__unslothProfile -PathType Leaf)) { "
     "try { . $__unslothProfile } catch { } } } } catch { }; "
+    # Re-pinned, because a profile setting [Console]::OutputEncoding is an ordinary
+    # customization and it overrides the pin above. The parent decodes this stream as UTF-8, so
+    # a profile that leaves the console on UTF-16 or a legacy code page corrupts the framed
+    # record -- and a non-ASCII proxy URI with it.
+    "try { [Console]::OutputEncoding = "
+    "New-Object System.Text.UTF8Encoding $false } catch { }; "
+    "try { $OutputEncoding = [Console]::OutputEncoding } catch { }; "
     "$out = @{}; "
     "foreach ($k in @($PSDefaultParameterValues.Keys)) { "
     "if ($k -is [string] -and [regex]::IsMatch($k, ':Proxy(Credential|UseDefaultCredentials)?$', "
@@ -2905,9 +2919,14 @@ _PS_PROXY_PROBE = (
     # a dictionary -- and the caller's proxy is then dropped on the host that needed it. Same
     # for anything else the table aims at Write-Output or ConvertTo-Json.
     "$PSDefaultParameterValues = @{}; "
+    # Module-qualified, for the same reason the uv lookup is: an alias or function named
+    # ConvertTo-Json or Write-Output in the profile shadows the bare name, and a wrapper that
+    # reshapes the output produces a frame the reader cannot parse -- which costs a standalone
+    # update its only proxy. Clearing the defaults table does not cover a command override.
     f"if ($out.Count -gt 0) {{ "
-    f"Write-Output '{_PROXY_PROBE_BEGIN}'; $out | ConvertTo-Json -Compress; "
-    f"Write-Output '{_PROXY_PROBE_END}' }}"
+    f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_BEGIN}'; "
+    f"$out | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress; "
+    f"Microsoft.PowerShell.Utility\\Write-Output '{_PROXY_PROBE_END}' }}"
 )
 
 
@@ -3061,7 +3080,7 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
                 continue
             cmdlet = key.split(":", 1)[0].casefold()
             folded = key.casefold()
-            if cmdlet in claimed and claimed[cmdlet] is not parsed:
+            if _cmdlet_claimed_elsewhere(cmdlet, claimed, parsed):
                 continue
 
             if folded in seen_keys:
@@ -3072,6 +3091,26 @@ def _probe_profile_proxy_defaults(powershell: "str | list[str]") -> Optional[str
     if not merged:
         return None
     return json.dumps(merged)
+
+
+def _cmdlet_claimed_elsewhere(cmdlet: str, claimed: dict, source: object) -> bool:
+    """Whether another host already owns the cmdlet family ``cmdlet`` belongs to.
+
+    A literal comparison is not enough: the command half of a $PSDefaultParameterValues key may
+    be a wildcard, and PowerShell applies such an entry to every cmdlet it matches. One host
+    supplying ``Invoke-Web*:Proxy`` and the other ``Invoke-WebRequest:ProxyUseDefaultCredentials``
+    therefore configures ONE invocation from two profiles -- the merged pair offering the user's
+    Windows credentials to a proxy whose own profile never asked for that, which is the exact
+    thing the per-cmdlet rule exists to prevent. Overlap in either direction claims the family.
+    """
+    for owned, owner in claimed.items():
+        if owner is source:
+            continue
+        if owned == cmdlet or fnmatch.fnmatchcase(cmdlet, owned) or fnmatch.fnmatchcase(
+            owned, cmdlet
+        ):
+            return True
+    return False
 
 
 _PS_PROXY_DEFAULTS_PRELUDE = (

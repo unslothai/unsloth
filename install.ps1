@@ -4484,6 +4484,11 @@ exit 0
         } else {
             Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
         }
+        # ...and the script-scoped copy goes with it. Under "irm ... | iex" $script: IS the
+        # caller's session scope, so the serialized defaults -- http://user:secret@proxy is the
+        # ordinary corporate form -- stayed readable in that console after the installer
+        # returned. It has done its one job by here.
+        $script:UnslothProxyHandoffJson = $null
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue

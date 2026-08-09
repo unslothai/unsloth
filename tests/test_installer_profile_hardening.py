@@ -1137,6 +1137,78 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
     }
 
 
+def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
+    """The command half of a $PSDefaultParameterValues key may be a wildcard, and PowerShell
+    applies such an entry to every cmdlet it matches. Comparing the strings literally let
+    Invoke-Web*:Proxy from one host merge with Invoke-WebRequest:ProxyUseDefaultCredentials from
+    the other -- one invocation configured from two profiles, offering the user's Windows
+    credentials to a proxy whose own profile never asked for that."""
+    from unsloth_cli.commands import studio as studio_cmd
+
+    class _Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = {
+        "pwsh.exe": _framed('{"Invoke-Web*:Proxy": "http://seven.corp:8080"}'),
+        "powershell.exe": _framed(
+            '{"Invoke-WebRequest:ProxyUseDefaultCredentials": true,'
+            ' "Invoke-RestMethod:Proxy": "http://five.corp:8080"}'
+        ),
+    }
+    monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
+    merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
+
+    assert merged == {
+        "Invoke-Web*:Proxy": "http://seven.corp:8080",
+        # An unrelated family from the second host is still merged.
+        "Invoke-RestMethod:Proxy": "http://five.corp:8080",
+    }
+
+
+def test_the_probe_re_pins_utf8_after_the_profiles_have_run():
+    """A profile setting [Console]::OutputEncoding is an ordinary customization and it
+    overrides the pin at the top of the probe. The parent decodes this stream as UTF-8, so a
+    profile that leaves the console on UTF-16 or a legacy code page corrupts the framed record
+    and a non-ASCII proxy URI goes with it."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
+
+    pin = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false"
+    assert probe.count(pin) == 2, "pinned before the profiles and again after them"
+    assert probe.index(pin) < probe.index("$__unslothProfile") < probe.rindex(pin)
+    assert probe.rindex(pin) < probe.index("ConvertTo-Json")
+
+
+def test_the_record_is_emitted_through_the_builtin_cmdlets():
+    """An alias or function named ConvertTo-Json or Write-Output in the profile shadows the bare
+    name, and clearing $PSDefaultParameterValues does not cover a command override. A wrapper
+    that reshapes the output produces a frame the reader cannot parse, which costs a standalone
+    update its only proxy."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
+
+    assert probe.count("Microsoft.PowerShell.Utility\\Write-Output") == 2
+    assert "Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress" in probe
+    # No bare invocation left to be shadowed.
+    assert "; Write-Output " not in probe
+    assert "| ConvertTo-Json" not in probe
+
+
+def test_a_vscode_terminal_still_reads_its_own_host_profile():
+    """TERM_PROGRAM=vscode is set by EVERY VS Code integrated terminal, not only the PowerShell
+    extension's host. Substituting Microsoft.VSCode_profile.ps1 for the current-host profile
+    therefore missed the proxy a plain pwsh terminal in VS Code actually has, while applying an
+    unrelated one. Both are read, current-host last."""
+    from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
+
+    assert "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; " in probe
+    assert "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; " in probe
+    # The named host profile is an addition, never an else-branch replacement.
+    assert "} else { " not in probe.split("$out = @{}")[0]
+    assert probe.index("Split-Path -Parent $PROFILE.CurrentUserCurrentHost") < probe.index(
+        "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; "
+    )
+
+
 def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatch):
     from unsloth_cli.commands import studio as studio_cmd
 
@@ -1461,3 +1533,18 @@ def test_the_probe_child_runs_with_no_profile(monkeypatch):
     assert "-NoProfile" in seen[0]
     # Ahead of -Command, like every other PowerShell child in the tree spells it.
     assert seen[0].index("-NoProfile") < seen[0].index("-Command")
+
+
+def test_the_proxy_handoff_does_not_outlive_the_installer():
+    """Under the documented `irm ... | iex` path $script: IS the caller's session scope, so the
+    serialized defaults -- http://user:secret@proxy is the ordinary corporate form -- stayed
+    readable in that console after the installer returned. The environment copy was already
+    cleaned up in the finally; this one was not."""
+    installer = INSTALL_PS1.read_text(encoding = "utf-8")
+
+    cleared = "$script:UnslothProxyHandoffJson = $null"
+    assert cleared in installer
+    # In the finally that runs the setup child, after the env handoff is restored.
+    handoff = installer.index("$env:_UNSLOTH_PS_PROXY_DEFAULTS =\n")
+    child = installer.index("& $UnslothExe @studioArgs", handoff)
+    assert handoff < child < installer.index(cleared, child)
