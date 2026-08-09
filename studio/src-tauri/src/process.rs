@@ -1395,6 +1395,10 @@ async fn generic_backend_health_ok(port: u16) -> bool {
     live && service
 }
 
+/// Gap between port-verification probes. Each probe already costs up to
+/// LOCAL_HTTP_TIMEOUT, so this only paces a backend that is busy, not stuck.
+const PORT_VALIDATION_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 async fn validate_candidate_port(
     app: AppHandle,
     state: BackendState,
@@ -1421,19 +1425,52 @@ async fn validate_candidate_port(
         }
     };
 
-    let valid = if let Some(owner) = owner {
-        matches!(
-            crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false).await,
-            crate::desktop_backend_owner::OwnedBackendProbe::Verified(
-                crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
-            ) if verified_port == port
-        )
-    } else {
-        generic_backend_health_ok(port).await
+    // The backend announces its port once. That line arrives while it is still
+    // importing torch, so a single probe races a backend that cannot answer
+    // inside LOCAL_HTTP_TIMEOUT yet: on a cold CPU-only machine /api/liveness
+    // has been seen taking 2.1 s against a 2 s budget. Discarding the only
+    // announcement left the window waiting out BACKEND_START_DEADLINE on the
+    // port the backend had already reported it could not bind. Keep probing
+    // until the backend answers or that same deadline passes.
+    let deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
+    let mut attempts = 0u32;
+    let valid = loop {
+        attempts += 1;
+        let ok = if let Some(owner) = owner.clone() {
+            matches!(
+                crate::desktop_backend_owner::probe_owned_backend_state(owner, Some(port), false)
+                    .await,
+                crate::desktop_backend_owner::OwnedBackendProbe::Verified(
+                    crate::desktop_backend_owner::VerifiedOwnedBackend { port: verified_port, .. }
+                ) if verified_port == port
+            )
+        } else {
+            generic_backend_health_ok(port).await
+        };
+        if ok {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(PORT_VALIDATION_RETRY_DELAY).await;
+        // Stop once this generation is gone or another path claimed the port,
+        // so a restarted backend does not keep an old probe alive. Bound the
+        // guard to this statement: the future must stay Send across the await.
+        let still_current = match state.lock() {
+            Ok(proc) => proc.generation == generation && proc.port.is_none(),
+            Err(_) => false,
+        };
+        if !still_current {
+            return;
+        }
     };
 
     if !valid {
-        warn!("Ignoring unverified TAURI_PORT candidate {}", port);
+        warn!(
+            "Ignoring unverified TAURI_PORT candidate {} after {} attempts",
+            port, attempts
+        );
         return;
     }
 
