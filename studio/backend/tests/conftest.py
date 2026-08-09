@@ -31,6 +31,12 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 # The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
 # the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+# The on-demand attention-backend installer defaults to "auto", so ANY test that loads a
+# pipeline with attention_backend="xformers"/"sage"/"flash" would shell out to a real pip
+# (up to 600s) and, for xformers, a real torch probe. test_diffusion_attention.py disables
+# it per-test; pin the default off for the whole suite so a new test elsewhere cannot
+# reintroduce that by accident. setdefault, so an explicit override still wins.
+os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 
 
 @pytest.fixture(scope = "session")
