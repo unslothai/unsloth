@@ -38,10 +38,12 @@ def _load(*names):
 _NS = _load(
     "_embeddings_are_tied",
     "_offload_embedding_unsupported_platform",
+    "_embedding_dispatch_device",
     "_resolve_offload_embedding",
 )
 resolve = _NS["_resolve_offload_embedding"]
 unsupported_platform = _NS["_offload_embedding_unsupported_platform"]
+dispatch_device = _NS["_embedding_dispatch_device"]
 
 _WSL_VARS = ("WSL_DISTRO_NAME", "WSL_INTEROP")
 
@@ -164,6 +166,43 @@ def test_resolved_before_multidevice_hooks():
 
 def test_no_tied_embedding_raise_remains():
     assert "is not supported for models with tied word" not in _SRC
+
+
+class _Hook:
+    def __init__(self, execution_device):
+        self.execution_device = execution_device
+
+
+def _dispatched_model(execution_device = torch.device("cuda", 0)):
+    m = _untied_model()
+    m.get_input_embeddings()._hf_hook = _Hook(execution_device)
+    return m
+
+
+def test_dispatch_device_reads_the_accelerate_hook():
+    assert dispatch_device(nn.Embedding(32, 8)) is None          # no hook at all
+    assert dispatch_device(_dispatched_model().get_input_embeddings()) is not None
+    assert dispatch_device(_dispatched_model(None).get_input_embeddings()) is None
+    assert dispatch_device(None) is None                         # embeddings not exposed
+
+
+def test_dispatched_model_disables_offload():
+    # accelerate re-sends the ids to its recorded device after the offload pre-hook has
+    # sent them to the CPU weight, so the lookup gets ids and weight on different devices.
+    with _as_platform("posix"):
+        assert resolve(_dispatched_model(), True) is False
+
+
+def test_hook_without_execution_device_keeps_offload():
+    # A hook that never moves anything cannot undo the offload.
+    with _as_platform("posix"):
+        assert resolve(_dispatched_model(None), True) is True
+
+
+def test_undispatched_model_keeps_offload():
+    # The single-GPU path must not lose the VRAM saving.
+    with _as_platform("posix"):
+        assert resolve(_untied_model(), True) is True
 
 
 if __name__ == "__main__":
