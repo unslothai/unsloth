@@ -30,6 +30,7 @@ from .import_fixes import (
     fix_torchao_torch_symbol_skew,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
+    check_transformers_dependency_versions,
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
@@ -80,6 +81,12 @@ fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector
 # is a subprocess that imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
+# Warn, do not raise: by the time transformers is imported the mismatch is
+# already fatal and transformers prints its own (misleading) remedy. A warning
+# landing just before that message adds the correct one without taking a
+# metadata-derived floor - which may be advisory for a given code path - and
+# turning it into a hard import failure.
+check_transformers_dependency_versions()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 fix_diffusers_warnings()
@@ -93,6 +100,7 @@ del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
+del check_transformers_dependency_versions
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub

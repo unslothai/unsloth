@@ -1073,6 +1073,143 @@ def torchvision_compatibility_check():
     raise ImportError(message)
 
 
+def _unsatisfied_transformers_requirements():
+    """Return [(name, specifier, installed_version), ...] for the base (no-extras)
+    requirements transformers itself declares that the environment does not satisfy.
+
+    The requirement set is read from the installed distribution's own metadata, so
+    it is always whatever the installed transformers actually asks for - a git-main
+    checkout, 4.57.x or 5.x alike - and never a hardcoded table that would rot.
+    Returns [] on anything unexpected; this must never raise.
+    """
+    try:
+        from importlib.metadata import requires as _dist_requires
+        from packaging.requirements import Requirement
+    except Exception:
+        return []
+
+    try:
+        raw_requirements = _dist_requires("transformers")
+    except Exception:
+        # transformers not installed, or its dist-info is missing / unreadable.
+        return []
+    if not raw_requirements:
+        return []
+
+    unsatisfied = []
+    for raw_requirement in raw_requirements:
+        try:
+            requirement = Requirement(raw_requirement)
+        except Exception:
+            continue  # Unparseable requirement line - ignore it, never guess.
+
+        # Environment markers: evaluate with extra = "" so optional-extra
+        # requirements (extra == "torch", extra == "ja", ...) and inapplicable
+        # python_version / sys_platform gates are skipped. Otherwise we would
+        # warn about packages the user is correct not to have.
+        if requirement.marker is not None:
+            try:
+                if not requirement.marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:
+                continue  # Undecidable marker - assume it does not apply.
+
+        if not requirement.specifier:
+            continue  # Bare dependency with no floor, e.g. `filelock`.
+
+        try:
+            installed = importlib_version(requirement.name)
+        except Exception:
+            # Not installed. transformers only imports these lazily for the code
+            # paths that need them, so an absent package is not our warning to give.
+            continue
+
+        try:
+            # Parse explicitly: SpecifierSet.contains() reports a non-PEP440 version
+            # as "not contained" rather than raising, which would be a false positive.
+            installed_version = TrueVersion(installed)
+        except Exception:
+            continue  # Not a PEP 440 version - we cannot judge it, so stay quiet.
+
+        try:
+            # prereleases = True so a legitimate 1.0.0rc1 does not read as a violation.
+            if requirement.specifier.contains(installed_version, prereleases = True):
+                continue
+        except Exception:
+            continue  # Bad specifier - stay quiet.
+
+        unsatisfied.append((requirement.name, str(requirement.specifier), installed))
+
+    return unsatisfied
+
+
+def check_transformers_dependency_versions():
+    """Warn when transformers' own declared dependency floors are unmet.
+
+    Notebooks that need a bleeding-edge model install transformers from git with
+    `--no-deps` on purpose, so pip cannot re-resolve torch:
+
+        pip install --no-deps git+https://github.com/huggingface/transformers.git
+
+    `--no-deps` also means pip never enforces what that transformers actually
+    requires; it prints a WARNING and the install "succeeds". The failure lands
+    later, at import:
+
+        safetensors>=0.8.0 is required for a normal functioning of this module,
+        but found safetensors==0.7.0.
+        Try: `pip install transformers -U` or `pip install -e '.[dev]'` ...
+
+    That remedy is wrong for this situation: the user is deliberately on
+    transformers main, so `pip install transformers -U` either downgrades them off
+    the model support they installed main for, or loops. What they need is to
+    upgrade the dependency. This check runs before transformers is imported and
+    says so, naming the dependency.
+
+    Warns rather than raises - see the note at the call site in _gpu_init.py.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK", "0").lower() in (
+        "1",
+        "true",
+    ):
+        return
+    if importlib.util.find_spec("transformers") is None:
+        return
+
+    try:
+        unsatisfied = _unsatisfied_transformers_requirements()
+    except Exception:
+        return
+    if not unsatisfied:
+        return
+
+    try:
+        transformers_version = importlib_version("transformers")
+    except Exception:
+        transformers_version = "unknown"
+
+    lines = [
+        f"Unsloth: transformers=={transformers_version} declares dependencies that "
+        f"your environment does not satisfy:"
+    ]
+    upgrades = []
+    for name, specifier, installed in unsatisfied:
+        lines.append(f"    {name}{specifier} is required, but found {name}=={installed}")
+        upgrades.append(f'"{name}{specifier}"')
+    lines.append("")
+    lines.append("Upgrade the dependencies, not transformers:")
+    lines.append(f"    pip install --upgrade {' '.join(upgrades)}")
+    lines.append("")
+    lines.append(
+        "transformers may suggest `pip install transformers -U` instead. Ignore that "
+        "if you installed transformers from git main on purpose (for example with "
+        "`pip install --no-deps git+https://github.com/huggingface/transformers.git` "
+        "for a new model) - upgrading transformers would only undo the install you "
+        "wanted. Set UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK=1 to silence this."
+    )
+
+    logger.warning("\n".join(lines))
+
+
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
 def fix_openenv_no_vllm():
     spec = importlib.util.find_spec("trl")
