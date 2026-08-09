@@ -1556,18 +1556,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
-  const routeSearch = useSearch({ strict: false }) as {
-    model?: string;
-    quant?: string;
-    ggufQuant?: string;
-  };
+  // This route's own match, never `strict: false`: that resolves to the ROOT match, whose search is whatever route is live, and
+  // /hub names its selection with the same param. `active` cannot fence that off, since it lags the matches by a render.
+  const routeSearch = useSearch({ from: "/video", shouldThrow: false });
   const navigateSelf = useNavigate();
   const handledRouteModel = useRef<string | null>(null);
   useEffect(() => {
-    // Only the page being shown consumes the query: this hook is loose and both diffusion pages stay mounted, so the hidden one
-    // saw /images?model= too and raced that page, trying to load an image checkpoint as a video model.
+    // A hidden page owns no query: both diffusion pages stay mounted.
     if (!active) return;
-    const wanted = routeSearch.model;
+    const wanted = routeSearch?.model;
     // Model AND quant, released once the query is gone: this page stays mounted, so a marker that outlived the query made re-picking a dead click.
     if (!wanted) {
       handledRouteModel.current = null;
@@ -1575,10 +1572,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     }
     // `quant` is used verbatim as a filename; a label there (a hand-built link, an older producer) is resolved instead.
     // The two fields, not the object: `routeSearch` is rebuilt every render, so it would churn the deps.
-    const routed = { quant: routeSearch.quant, ggufQuant: routeSearch.ggufQuant };
+    const routed = { quant: routeSearch?.quant, ggufQuant: routeSearch?.ggufQuant };
     const routedFilename = routedGgufFilename(routed);
     const routedLabel = routedGgufLabel(routed);
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}`;
+    const key = `${wanted}|${routeSearch?.quant ?? ""}|${routeSearch?.ggufQuant ?? ""}`;
     if (handledRouteModel.current === key) return;
     handledRouteModel.current = key;
     // This arrival owns the page like a direct pick, so a download staged by an earlier one cannot land on top.
@@ -1607,9 +1604,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     void loadOrStage(pick.repoId, pick.opts, false, token);
   }, [
     active,
-    routeSearch.model,
-    routeSearch.quant,
-    routeSearch.ggufQuant,
+    routeSearch?.model,
+    routeSearch?.quant,
+    routeSearch?.ggufQuant,
     loadOrStage,
     loadGgufRepoPick,
     navigateSelf,
