@@ -1110,6 +1110,10 @@ pub fn start_backend(
         crate::windows_job::resume_after_update_installer().map_err(|error| {
             format!("Refusing to start the backend with crash cleanup disarmed: {error}")
         })?;
+        // The same pair the UI's resume does: the pre-exit hook has already run
+        // its cleanup, and leaving that guard set means the next attempt's hook
+        // suspends kill-on-close without stopping this backend first.
+        crate::reset_termination_cleanup();
     }
 
     let bin = match resolve_backend_binary() {

@@ -8,6 +8,7 @@ reaped only the wrapper on Windows, and the orphaned venv python then made
 `unsloth studio update` refuse to run until it was killed by hand.
 """
 
+import json
 import os
 import signal
 import subprocess
@@ -1725,6 +1726,120 @@ def test_a_backend_never_starts_under_a_disarmed_job():
     assert "resume_after_update_installer()" in process_rs[start:spawn]
     # Fail closed: a re-arm that will not take must stop the start.
     assert "Refusing to start the backend with crash cleanup disarmed" in process_rs
+
+
+def test_one_malformed_record_does_not_stop_the_whole_sweep(tmp_path, monkeypatch):
+    """A record is a file on disk: anything that parses as JSON reaches the
+    identity comparison, and the sweep runs inside one try in run_server."""
+    from utils import process_lifetime as lifetime
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_CHILD_RECORD", str(tmp_path))
+    victim = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session = True,
+    )
+    # Live, so its identity is readable and the record's is what gets compared
+    # against it. Unverifiable, so it must survive the sweep.
+    decoy = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session = True,
+    )
+    try:
+        for index, shape in enumerate((123, ["a"], {"b": 1}, None)):
+            (tmp_path / f"bad_{index}.json").write_text(
+                json.dumps({
+                    "owner_pid": 999_001,
+                    "owner_identity": shape,
+                    "children": [{"pid": decoy.pid, "identity": shape, "pgid": None}],
+                }),
+                encoding = "utf-8",
+            )
+        # A real orphan behind them, from an owner that is gone.
+        (tmp_path / "good.json").write_text(
+            json.dumps({
+                "owner_pid": 999_003,
+                "owner_identity": "1",
+                "children": [{
+                    "pid": victim.pid,
+                    "identity": lifetime._pid_identity(victim.pid),
+                    "pgid": victim.pid,
+                }],
+            }),
+            encoding = "utf-8",
+        )
+
+        killed = lifetime.reap_recorded_children(timeout = 5.0)
+        assert victim.pid in killed, killed
+        victim.wait(timeout = 10)
+        assert decoy.poll() is None, "signalled a pid it could not verify"
+    finally:
+        for proc in (victim, decoy):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout = 5)
+
+
+def test_a_malformed_identity_is_never_treated_as_a_match():
+    """Unverifiable has to stay unverifiable: an identity that compares equal to
+    anything would signal whatever holds that pid now."""
+    from utils.process_lifetime import _recorded_identity, _same_identity
+
+    for shape in (123, ["1"], {"a": 1}, None, ""):
+        assert _recorded_identity(shape) is None, shape
+        assert _same_identity(shape, "1") is False
+        assert _same_identity("1", shape) is False
+    assert _recorded_identity("1") == "1"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_a_group_of_zombies_does_not_hold_up_the_startup_sweep(monkeypatch):
+    """Where pid 1 does not reap (a container), a member that exits on the
+    SIGTERM keeps answering killpg(pgid, 0) for the rest of the grace period."""
+    from utils import process_lifetime as lifetime
+
+    leader = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+    )
+    try:
+        # As a non-reaping pid 1 leaves things: signalled, exited, still listed.
+        alive = {"value": True}
+        real_members = lifetime._group_member_pids
+        monkeypatch.setattr(
+            lifetime, "_group_member_pids",
+            lambda pgid: real_members(pgid) if alive["value"] else [],
+        )
+        monkeypatch.setattr(lifetime, "_pid_is_zombie", lambda pid: not alive["value"])
+
+        def fake_killpg(pgid, sig):
+            if sig == signal.SIGTERM:
+                alive["value"] = False  # it exited, and nobody waited on it
+            return None  # the pid is still in the table, so the probe succeeds
+
+        monkeypatch.setattr(lifetime.os, "killpg", fake_killpg)
+
+        started = time.monotonic()
+        assert lifetime._reap_orphaned_group(leader.pid, leader.pid, 5.0) is True
+        elapsed = time.monotonic() - started
+        assert elapsed < 2.0, f"waited {elapsed:.1f}s on a group that had already exited"
+    finally:
+        leader.kill()
+        leader.wait(timeout = 5)
+
+
+def test_rearming_on_backend_start_also_clears_the_cleanup_guard():
+    """Re-enabling the job is only half of it: the pre-exit hook has already run
+    its cleanup, and the guard left set makes the next attempt suspend
+    kill-on-close without stopping this backend first."""
+    process_rs = (
+        Path(__file__).resolve().parents[2] / "src-tauri" / "src" / "process.rs"
+    ).read_text(encoding = "utf-8")
+
+    start = process_rs.index("pub fn start_backend(")
+    spawn = process_rs.index("resolve_backend_binary()", start)
+    guard = process_rs[start:spawn]
+    assert "resume_after_update_installer()" in guard
+    assert "reset_termination_cleanup()" in guard, "re-armed the job but left the guard set"
+    assert guard.index("resume_after_update_installer()") < guard.index(
+        "reset_termination_cleanup()"
+    )
 
 
 if __name__ == "__main__":
