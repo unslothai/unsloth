@@ -134,6 +134,9 @@ class _FakeBackend:
         # Idle by default; the persist-window override lives in the route, not here.
         return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
 
+    def cancel_generate(self):
+        return False
+
     def unload(self):
         self.loaded = False
         return _unloaded_status()
@@ -304,6 +307,43 @@ def test_generate_holds_progress_active_during_persist(client, monkeypatch):
     assert seen["during"] >= 1
     assert inf._diffusion_persist_active == 0
     assert client.get("/api/inference/images/generate-progress").json()["active"] is False
+
+
+def test_cancel_generation_route(client):
+    resp = client.post("/api/inference/images/generate/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_cancel_running_generation(client):
+    import threading
+
+    from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    cancel = threading.Event()
+
+    def _blocking_generate(**kwargs):
+        assert cancel.wait(5)
+        raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+
+    backend.generate = _blocking_generate
+    backend.cancel_generate = lambda: cancel.set() or True
+
+    result: dict = {}
+
+    def _run_generate():
+        result["resp"] = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+
+    worker = threading.Thread(target = _run_generate)
+    worker.start()
+    cancelled = client.post("/api/inference/images/generate/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["cancelled"] is True
+    worker.join(10)
+    resp = result["resp"]
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == DIFFUSION_CANCELLED_MSG
 
 
 def test_load_rejects_untrusted_base_repo(client):

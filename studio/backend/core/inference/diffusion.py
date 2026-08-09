@@ -3994,6 +3994,15 @@ class DiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
+    def cancel_generate(self) -> bool:
+        """Signal the in-flight generation to stop at its next step callback."""
+        with self._lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
+
     def unload(self) -> dict[str, Any]:
         with self._lock:
             # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py: begin_load

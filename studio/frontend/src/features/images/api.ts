@@ -221,6 +221,13 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
   return parseJson(await authFetch("/api/inference/images/generate-progress"));
 }
 
+/** Request a cancel. Best-effort: the backend stops at the next step boundary and raises the cancelled sentinel, which the caller maps to a 409. */
+export async function cancelImageGeneration(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/images/generate/cancel", { method: "POST" }),
+  );
+}
+
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
   // Announced so the loaded models indicator shows the load for as long as the
   // toast does, rather than up to one 5s poll later. This POST only starts the

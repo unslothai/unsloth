@@ -20563,6 +20563,14 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+@studio_router.post("/images/generate/cancel")
+async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    cancelled = await asyncio.to_thread(get_active_diffusion_engine().cancel_generate)
+    return {"cancelled": cancelled}
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Studio Image tab uses the richer /images/generate above; this is the spec shape.

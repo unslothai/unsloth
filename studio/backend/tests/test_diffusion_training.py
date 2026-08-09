@@ -1284,6 +1284,7 @@ def test_keepwarm_tracks_image_video_generation_paths():
     assert _is_inference_path("/v1/images/generations")
     assert _is_inference_path("/api/inference/video/generate")
     assert not _is_inference_path("/api/inference/images/generate-progress")
+    assert not _is_inference_path("/api/inference/images/generate/cancel")
     assert not _is_inference_path("/api/inference/video/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate/cancel")
 

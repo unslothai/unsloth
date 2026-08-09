@@ -95,6 +95,7 @@ import {
   type GalleryImage,
   type LoraSpecInput,
   GenerateResponseLostError,
+  cancelImageGeneration,
   deleteGalleryImage,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
@@ -2281,6 +2282,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     }
   }, [refreshStatus, dropResidentState]);
 
+  const handleCancelGenerate = useCallback(async () => {
+    try {
+      await cancelImageGeneration();
+    } catch {
+      // The generation may have already finished; the poll/finally clears the UI.
+    }
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -2483,7 +2492,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // so without a refresh the LoRA picker stays enabled and the next LoRA run fails. Cheap status GET.
       if (isMounted.current) void refreshStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Image generation failed");
+      const msg = err instanceof Error ? err.message : "Image generation failed";
+      // The user's own Cancel surfaces as the backend's cancelled sentinel; not an error.
+      if (!msg.toLowerCase().includes("cancelled")) toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -3277,16 +3288,24 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
-            <Button
-              className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-              onClick={handleGenerate}
-              disabled={busy !== null || !status?.loaded}
-            >
-              {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-              {busy === "generating" && genDone != null && count > 1
-                ? `Generating ${genDone}/${count}…`
-                : "Generate"}
-            </Button>
+            {busy === "generating" ? (
+              <Button
+                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                variant="outline"
+                onClick={handleCancelGenerate}
+              >
+                <Spinner className="mr-2 size-4" />
+                Cancel
+              </Button>
+            ) : (
+              <Button
+                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleGenerate}
+                disabled={busy !== null || !status?.loaded}
+              >
+                Generate
+              </Button>
+            )}
           </div>
         </div>
 
