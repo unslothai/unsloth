@@ -416,9 +416,16 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             sandbox_removal_deferred,
             session_sandbox_has_files,
         )
+        from storage.studio_db import sandbox_is_referenced_elsewhere
 
         removed, kept = 0, []
         for thread_id in thread_ids:
+            # A fork clones the message content, cards and all, so the source
+            # chat's files are still on screen in a chat the user kept.
+            if delete_files and sandbox_is_referenced_elsewhere(thread_id):
+                if session_sandbox_has_files(thread_id):
+                    kept.append(thread_id)
+                continue
             if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
             # A removal that had to wait for a running tool call is reported as
@@ -626,7 +633,10 @@ async def delete_project(
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    project = delete_chat_project(project_id, delete_files = delete_files)
+    # Rows first, files last: a member chat can still be running a tool in the
+    # workspace, and its cwd disappearing mid-call either kills the call or
+    # leaves what it writes next in a directory no project owns.
+    project = delete_chat_project(project_id, delete_files = False)
     if project is None:
         raise HTTPException(
             status_code = 404,
@@ -639,6 +649,12 @@ async def delete_project(
     member_ids = list(project.get("memberIds") or [])
     _cancel_active_research(request, member_ids)
     _cancel_active_generations(member_ids)
+    if delete_files:
+        from starlette.concurrency import run_in_threadpool
+
+        from storage.studio_db import delete_project_workspace
+
+        await run_in_threadpool(delete_project_workspace, project)
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)

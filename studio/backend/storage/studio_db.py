@@ -124,6 +124,48 @@ def _ensure_project_workspace(root_path: str) -> str:
     return str(root_resolved)
 
 
+def sandbox_is_referenced_elsewhere(session_id: str) -> bool:
+    """Whether a surviving chat still shows file cards for this sandbox.
+
+    Forking clones the message content verbatim, so the fork's cards keep the
+    source chat's session id. Deleting the source's files would leave those
+    cards downloading nothing, in a chat the user did not delete.
+    """
+    if not session_id:
+        return False
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT 1 FROM chat_messages
+            WHERE thread_id != ? AND content_json LIKE ? ESCAPE '\\'
+            LIMIT 1
+            """,
+            (session_id, f"%{_like_escape(session_id)}%"),
+        ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def _like_escape(value: str) -> str:
+    for char in ("\\", "%", "_"):
+        value = value.replace(char, "\\" + char)
+    return value
+
+
+def delete_project_workspace(project: dict) -> None:
+    """Remove a deleted project's workspace directory.
+
+    Separate from the row delete so the caller can stop the tool calls running
+    in there first: pulling the working directory out from under a live
+    subprocess is how a half-written file ends up outside any project.
+    """
+    _delete_project_workspace(project)
+
+
 def _delete_project_workspace(project: dict) -> None:
     root_path = project.get("rootPath")
     if not root_path:

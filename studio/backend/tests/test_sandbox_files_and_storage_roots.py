@@ -3797,5 +3797,139 @@ def test_the_client_reads_the_file_line_only_from_the_sandbox_tools():
     assert guarded.index("SANDBOX_FILE_TOOLS.has(") < guarded.index("extractCreatedFiles(")
 
 
+def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):
+    """Before this change every id the filesystem could not hold shared one
+    directory, so it belongs to no single chat and must not travel as one."""
+    fake_home = tmp_path / "userprofile"
+    bucket = fake_home / "studio_sandbox" / "_invalid"
+    bucket.mkdir(parents = True)
+    (bucket / "old.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+    session = "client.v1"  # what the old regex rejected
+    assert tools._usable_session_id(session) is False
+
+    served = Path(tools.resolve_sandbox_workdir(session))
+    assert (served / "old.csv").is_file(), f"the chat lost its files: {served}"
+
+    tools._migrate_legacy_sandbox(tools.sandbox_root())
+    assert (bucket / "old.csv").is_file(), "a shared bucket was moved as one chat's"
+    assert not (Path(tools.sandbox_root()) / "_invalid").exists()
+    # And still readable once the pass has run.
+    assert (Path(tools.resolve_sandbox_workdir(session)) / "old.csv").is_file()
+
+
+def test_a_chat_cannot_claim_another_chats_directory(tmp_path, monkeypatch):
+    """Tool code runs inside the sandbox and can write anything into the marker,
+    so adopting on the marker alone hands one chat another chat's files."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    attacker, victim = "__LOCALID_aaa1111", "__LOCALID_bbb2222"
+    theirs = Path(tools.get_sandbox_workdir(attacker))
+    (theirs / "private.csv").write_text("the attacker's own", encoding = "utf-8")
+    # What a tool running in there can do.
+    (theirs / tools._SANDBOX_MARKER).write_text(
+        tools._sandbox_name(victim), encoding = "utf-8",
+    )
+
+    _forget_sandbox_state(tools)
+    landed = Path(tools.get_sandbox_workdir(victim))
+    assert landed != theirs, "one chat was handed another chat's directory"
+    assert not (landed / "private.csv").exists()
+    assert theirs.is_dir(), "and the other chat's folder was taken from it"
+
+
+def test_a_users_own_marker_file_survives_the_migration(tmp_path, monkeypatch):
+    """The name was not reserved before this change, so a chat that wrote its
+    own .unsloth_sandbox has a real file there."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_marker1"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / ".unsloth_sandbox").write_text("notes the user wrote", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+
+    landed = Path(tools.get_sandbox_workdir(session))
+    saved = list(landed.glob(".unsloth_sandbox.saved*"))
+    assert saved, sorted(p.name for p in landed.iterdir())
+    assert saved[0].read_text(encoding = "utf-8") == "notes the user wrote"
+    assert tools._marker_owner(str(landed)) == tools._sandbox_name(session)
+
+
+def test_a_project_workspace_goes_after_its_tools_are_stopped():
+    """The member chats' calls run with their cwd in there, and pulling it out
+    from under a live subprocess strands whatever it writes next."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert "delete_chat_project(project_id, delete_files = False)" in route
+    assert route.index("_cancel_active_generations(member_ids)") < route.index(
+        "delete_project_workspace"
+    )
+
+
+def test_a_forked_chat_keeps_the_files_its_cards_point_at(tmp_path, monkeypatch):
+    """Forking clones the message content verbatim, so the fork's cards still
+    name the source chat's sandbox."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+
+    _forget_sandbox_state(tools)
+    source = "__LOCALID_source1"
+    workdir = Path(tools.get_sandbox_workdir(source))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    import storage.studio_db as studio_db
+
+    monkeypatch.setattr(
+        studio_db, "sandbox_is_referenced_elsewhere", lambda session_id: session_id == source
+    )
+
+    removed, kept = (
+        asyncio.new_event_loop()
+        .run_until_complete(chat_history._remove_sandboxes([source], True))
+    )
+
+    assert removed == 0, removed
+    assert kept == [source], kept
+    assert (workdir / "report.csv").is_file(), "a surviving fork's cards now 404"
+
+
+def test_the_research_loop_keeps_a_pages_file_line():
+    """The persisted excerpt is what a resumed run reads back, and a fetched
+    page ending in that line is content, not an envelope."""
+    import inspect
+
+    from core import research_runs
+
+    source = inspect.getsource(research_runs)
+    assert "strip_result_for_model(result)" not in source
+    assert source.count('strip_result_for_model(result, "web_search")') == 2
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

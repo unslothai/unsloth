@@ -7226,6 +7226,26 @@ def _sandbox_name(session_id: str) -> str:
     return _DERIVED_PREFIX + hashlib.sha256(encoded).hexdigest()[:16]
 
 
+def _preserve_foreign_marker(workdir: str) -> None:
+    """Move aside a marker-named entry that is not one of ours.
+
+    This name was not reserved before this change, so a chat that wrote its own
+    .unsloth_sandbox before the upgrade would have it truncated by the marker
+    the migration writes. Renamed rather than removed: the file is the user's.
+    """
+    marker = os.path.join(workdir, _SANDBOX_MARKER)
+    if not os.path.lexists(marker) or _marker_owner(workdir) is not None:
+        return
+    for n in range(1, 100):
+        kept = f"{marker}.saved" if n == 1 else f"{marker}.saved-{n}"
+        if not os.path.lexists(kept):
+            try:
+                os.rename(marker, kept)
+            except OSError:
+                logger.warning("Could not preserve %s", marker)
+            return
+
+
 def _mark_sandbox(workdir: str, session_id: str) -> None:
     """(Re)write the marker. Never through a link.
 
@@ -7382,24 +7402,32 @@ def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
     user pointed us at can hold a lot of their own folders.
     """
     name = _sandbox_name(session_id)
-    # The names this chat could have taken, checked directly: they are derived
-    # from the id, so this works whatever else the root holds.
-    for candidate in _fallback_candidates(root, session_id):
-        if _marker_owner(candidate) == name:
-            return candidate
-    # Then the scan, which still finds a folder from an older build or one that
-    # a rename left under a name of its own.
-    try:
-        entries = sorted(os.listdir(root))[:_MAX_SNAPSHOT_DIRS]
-    except OSError:
-        return None
-    for entry in entries:
-        candidate = os.path.join(root, entry)
-        if os.path.islink(candidate) or not os.path.isdir(candidate):
-            continue
-        if _marker_owner(candidate) == name:
-            return candidate
+    # Only names derived from this id, and the staging name a migration of it
+    # would have used. The marker alone is not enough to adopt on: tool code
+    # runs inside a sandbox and can write any owner it likes into that file, so
+    # a scan for "whoever claims to be me" would hand one chat another chat's
+    # directory, and then its files.
+    # The plain name too: a migration that could not rename its staging tree
+    # into place left it beside that name.
+    candidates = [os.path.join(root, name), *_fallback_candidates(root, session_id)]
+    for candidate in candidates:
+        for path in [candidate, *_staging_variants(candidate)]:
+            if os.path.islink(path) or not os.path.isdir(path):
+                continue
+            if _marker_owner(path) == name:
+                return path
     return None
+
+
+def _staging_variants(candidate: str) -> "list[str]":
+    """Staging names a move onto *candidate* could have left behind."""
+    root, base = os.path.split(candidate)
+    try:
+        entries = os.listdir(root)
+    except OSError:
+        return []
+    prefix = f"{base}{_STAGING_SUFFIX}"
+    return [os.path.join(root, e) for e in sorted(entries) if e.startswith(prefix)]
 
 
 def _free_fallback_dir(root: str, session_id: str) -> "str | None":
@@ -7538,6 +7566,7 @@ def _staged_move(source: str, target: str, name: str) -> None:
     # Marked here, not after the rename: across filesystems the move has already
     # removed the legacy copy, so from this instant the staging tree is the only
     # one there is and a kill before the marker would leave it unfindable.
+    _preserve_foreign_marker(staging)
     _mark_sandbox(staging, name)
     try:
         os.rename(staging, target)
@@ -7572,18 +7601,28 @@ def _legacy_lock_for(name: str) -> threading.Lock:
         return _legacy_session_locks.setdefault(name, threading.Lock())
 
 
+# Where every id the old code could not use as a directory name went. One
+# bucket for all of them, which is what this change stops doing, so it is never
+# moved up as though it were a chat: several chats' files are in there.
+_LEGACY_SHARED_BUCKET = "_invalid"
+
+
 def _legacy_session_dir(session_id: str) -> "str | None":
     """This session's directory at the legacy root, while one is still there.
 
     Both names, like the migration itself: a chat from before the upgrade whose
     id starts with the derived prefix kept its folder under the literal id.
     """
-    if _legacy_sandbox_migrated:
-        return None
     legacy_root = _legacy_sandbox_root()
     names = [_sandbox_name(session_id)]
     if _usable_session_id(session_id) and session_id not in names:
         names.append(session_id)
+    else:
+        # Before this change an id the filesystem could not hold shared one
+        # bucket with every other such chat. Those files are read from where
+        # they are; nothing moves or deletes them, since they are not this
+        # chat's alone.
+        names.append(_LEGACY_SHARED_BUCKET)
     for name in names:
         candidate = os.path.join(legacy_root, name)
         if os.path.isdir(candidate) and not os.path.islink(candidate):
@@ -7670,6 +7709,8 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
             # is a directory outside both roots.
             if os.path.islink(source) or not os.path.isdir(source):
                 continue
+            if name == _LEGACY_SHARED_BUCKET:
+                continue  # several chats' files, not one chat's
             # The same choice the request path makes: at a shared root both
             # derived names can be the user's, and skipping here while still
             # reporting the pass complete stranded that chat's files for good.
