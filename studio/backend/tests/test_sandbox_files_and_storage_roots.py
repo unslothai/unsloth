@@ -2634,7 +2634,9 @@ def test_a_migration_target_from_another_root_is_not_used(tmp_path, monkeypatch)
     tools._legacy_sandbox_migrated = False
     # What the interrupted run wrote down, back when the root was elsewhere.
     tools._record_workdir(
-        "__LOCALID_stale11", str(old_root / "__LOCALID_stale11"), tools._MIGRATING,
+        "__LOCALID_stale11",
+        str(old_root / "__LOCALID_stale11"),
+        tools._MIGRATING,
     )
 
     tools._migrate_legacy_sandbox(str(new_root))

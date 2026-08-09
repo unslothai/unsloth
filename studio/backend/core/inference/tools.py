@@ -7434,8 +7434,7 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         # the marker says; and a marker naming nobody is one a tool wrote over,
         # which at our own root nothing else could have put here.
         if (
-            _recorded_workdir(session_id) == workdir
-            and not _claimed_by_other(workdir, session_id)
+            _recorded_workdir(session_id) == workdir and not _claimed_by_other(workdir, session_id)
         ) or (_root_is_ours() and _marker_owner(workdir) is None):
             _mark_sandbox(workdir, session_id)
             _record_workdir(session_id, workdir)
