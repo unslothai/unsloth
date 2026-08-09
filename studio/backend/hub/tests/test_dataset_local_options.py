@@ -3167,8 +3167,11 @@ def test_snapshot_options_reject_a_wildcard_reaching_out_of_the_cache(tmp_path):
 
 def test_snapshot_options_check_csv_parameters_under_a_tsv_module(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
-                    "- config_name: comma\n  data_files: b/train.csv\n  chunksize: 0\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+        "- config_name: comma\n  data_files: b/train.csv\n  chunksize: 0\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
     (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")
@@ -3180,8 +3183,11 @@ def test_snapshot_options_check_csv_parameters_under_a_tsv_module(tmp_path):
 
 def test_snapshot_options_infer_a_csv_config_under_a_tsv_module(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
-                    "- config_name: comma\n  data_dir: b\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+        "- config_name: comma\n  data_dir: b\n",
+    )
     for name in ("a", "b"):
         (snapshot / name).mkdir()
     (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")
@@ -3211,8 +3217,11 @@ def test_snapshot_options_accept_an_empty_converters_mapping(tmp_path):
 
 def test_snapshot_options_reject_supervised_keys_the_loader_cannot_build(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  supervised_keys:\n    bogus: x\n"
-                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  supervised_keys:\n    bogus: x\n"
+        "  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()
@@ -3220,8 +3229,11 @@ def test_snapshot_options_reject_supervised_keys_the_loader_cannot_build(tmp_pat
 
 def test_snapshot_options_accept_well_formed_supervised_keys(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  supervised_keys:\n    input: a\n    output: b\n"
-                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  supervised_keys:\n    input: a\n    output: b\n"
+        "  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == {("default", "train")}
@@ -3229,9 +3241,12 @@ def test_snapshot_options_accept_well_formed_supervised_keys(tmp_path):
 
 def test_snapshot_options_reject_post_processed_features_it_cannot_build(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "dataset_info:\n  post_processed:\n    features:\n      x:\n"
-                    "        _type: Value\n        dtype: nope\n"
-                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    _card(
+        snapshot,
+        "dataset_info:\n  post_processed:\n    features:\n      x:\n"
+        "        _type: Value\n        dtype: nope\n"
+        "  splits:\n  - name: train\n    num_examples: 1\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert local_options._snapshot_options(snapshot) == set()

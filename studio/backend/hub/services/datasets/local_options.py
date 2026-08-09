@@ -674,9 +674,7 @@ def _valid_post_processed(value: Any) -> bool:
     if not isinstance(value, dict) or set(value) > {"features", "resources_checksums"}:
         return False
     features = value.get("features")
-    return features is None or (
-        isinstance(features, dict) and _valid_info_features(features)
-    )
+    return features is None or (isinstance(features, dict) and _valid_info_features(features))
 
 
 def _valid_supervised_keys(value: Any) -> bool:
