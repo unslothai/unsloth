@@ -16,6 +16,8 @@ import io
 import os
 import sys
 import tarfile
+import threading
+import time
 import types
 from contextlib import contextmanager
 from pathlib import Path
@@ -428,7 +430,7 @@ def test_reader_captures_url_and_registration():
     )
     assert t.url == "https://words-here-abc.trycloudflare.com"
     assert t.ready is True
-    assert t.wait_for_ready(0) == t.url
+    assert t.wait_for_ready(0) is None
     assert t.error == "cloudflared exited"
     assert exited == [t]
 
@@ -513,7 +515,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5) is True
     assert len(calls) == 3
     assert "name=words.trycloudflare.com" in calls[0]
     # The tunnel provider already knows the hostname it just issued; no one else does.
@@ -523,7 +525,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
     _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b'{"Status":3}'))
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05) is False
 
 
 def test_wait_for_dns_retries_transient_doh_error(monkeypatch):
@@ -550,7 +552,7 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
 
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5) is None
     assert len(calls) == ct._DNS_MAX_DOH_ERRORS
 
 
@@ -885,6 +887,45 @@ def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatc
     assert ct.start_studio_tunnel(8080) is None
     assert attempts == [None]
     assert ct._active_tunnel is None
+
+
+def test_starting_a_tunnel_starts_watching_its_hostname(monkeypatch):
+    watched = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+
+        def start(self):
+            self.url = "https://app.example.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+    monkeypatch.setattr(
+        ct, "_watch_hostname_resolution", lambda url, generation: watched.append((url, generation))
+    )
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://app.example.com"
+        for _ in range(200):
+            if watched:
+                break
+            time.sleep(0.01)
+        assert [u for u, _g in watched] == ["https://app.example.com"]
+        assert watched[0][1] == ct._tunnel_generation
+    finally:
+        ct.stop_studio_tunnel()
 
 
 def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
@@ -1560,6 +1601,104 @@ class _Proc:
         if self.alive:
             raise ct.subprocess.TimeoutExpired("cloudflared", timeout)
         return 0
+
+
+class _WatchStopped(Exception):
+    pass
+
+
+def _one_watch_pass(monkeypatch, url, generation):
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: (_ for _ in ()).throw(_WatchStopped()))
+    try:
+        ct._watch_hostname_resolution(url, generation)
+    except _WatchStopped:
+        pass
+
+
+def test_a_slower_watcher_does_not_erase_a_newer_tunnels_answer(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_dns", (0, "unknown"))
+    monkeypatch.setattr(ct, "_tunnel_generation", 4)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://new.example.com")
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **k: True)
+    ct._watch_hostname_resolution("https://new.example.com", 4)
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **k: False)
+    _one_watch_pass(monkeypatch, "https://old.example.com", 3)
+    assert ct.get_studio_tunnel_status()["dns"] == "resolved"
+
+
+def test_an_expired_deadline_issues_no_request(monkeypatch):
+    calls = []
+
+    def blocked(req):
+        calls.append(1)
+        raise OSError("blocked")
+
+    _patch_urlopen(monkeypatch, blocked)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() - 1) is None
+    assert calls == []
+
+
+def test_the_readiness_probe_ignores_an_ambient_proxy(monkeypatch):
+    import urllib.request
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    openers = []
+    real_build = urllib.request.build_opener
+
+    def build_opener(*handlers):
+        opener = real_build(*handlers)
+        openers.append(opener)
+        opener.open = lambda *a, **k: (_ for _ in ()).throw(OSError("no connector here"))
+        return opener
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    assert ct._connector_reports_ready("127.0.0.1:20241", 1.0) is False
+    assert openers
+    proxies = [
+        h.proxies for o in openers for h in o.handlers if isinstance(h, urllib.request.ProxyHandler)
+    ]
+    assert not any(proxies)
+
+
+def test_the_watch_deadline_does_not_drift_outward(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_generation", 12)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://h.example.com")
+    monkeypatch.setattr(ct, "_tunnel_dns", (0, "unknown"))
+    monkeypatch.setattr(ct, "_DNS_WATCH_TOTAL", 1.0)
+    given = []
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 0.1
+        return clock[0]
+
+    def wait(host, deadline):
+        given.append(deadline)
+        return False
+
+    monkeypatch.setattr(ct, "_wait_for_dns", wait)
+    monkeypatch.setattr(ct.time, "monotonic", monotonic)
+    _one_watch_pass(monkeypatch, "https://h.example.com", 12)
+    assert given and all(d <= 0.1 + ct._DNS_WATCH_TOTAL for d in given)
+
+
+def test_a_watch_that_outran_its_total_publishes_nothing(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_generation", 14)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://h.example.com")
+    monkeypatch.setattr(ct, "_tunnel_dns", (14, "unknown"))
+    monkeypatch.setattr(ct, "_DNS_WATCH_TOTAL", 1.0)
+    clock = [0.0]
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    def wait(host, deadline):
+        clock[0] += ct._DNS_WATCH_TOTAL + 1.0
+        return False
+
+    monkeypatch.setattr(ct, "_wait_for_dns", wait)
+    ct._watch_hostname_resolution("https://h.example.com", 14)
+    assert ct._tunnel_dns == (14, "unknown")
 
 
 _TUNNEL_ID = "11111111-2222-3333-4444-5555aabbccdd"

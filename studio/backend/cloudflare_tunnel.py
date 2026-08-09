@@ -52,6 +52,8 @@ _URL_RE = re.compile(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com")
 # we wait for it before advertising the URL.
 _REGISTERED_MARKER = "Registered tunnel connection"
 
+_METRICS_RE = re.compile(r"metrics server on (\[[0-9a-fA-F:]+\]:[0-9]+|[0-9.]+:[0-9]+)")
+
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 _READY_TIMEOUT = 15.0  # seconds to wait for the URL + a registered edge connection
@@ -73,12 +75,15 @@ _PUBLIC_PROBE_RETRY_DELAY = 1.0
 _DNS_POLL_DELAY = 2.0
 # Retry transient DoH failures, but give up fast when DoH is blocked outright.
 _DNS_MAX_DOH_ERRORS = 3
+_DNS_ATTEMPT_TIMEOUT = 5.0
 _DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
 # The resolver negative-caches a miss of its own, so a query sent before the
 # record can exist blinds the poll for that cache's lifetime. Hold off first.
 _DNS_INITIAL_GRACE = 3.0
 # A blinded poll cannot recover, so bound its share of the shared deadline.
 _DNS_WAIT_MAX = 20.0
+# Outlive typical negative DNS caches before giving up on propagation.
+_DNS_WATCH_TOTAL = 2100.0
 
 # Cloudflare's edge routes by TLS SNI, so it serves the tunnel as soon as the
 # connection registers -- before the hostname resolves anywhere. Probing there
@@ -272,7 +277,7 @@ def ensure_cloudflared() -> Optional[str]:
         return None
 
 
-def _wait_for_dns(host: str, deadline: float) -> None:
+def _wait_for_dns(host: str, deadline: float) -> Optional[bool]:
     import json
     import urllib.request
 
@@ -281,26 +286,33 @@ def _wait_for_dns(host: str, deadline: float) -> None:
     if deadline > now:
         time.sleep(min(_DNS_INITIAL_GRACE, deadline - now))
     errors = 0
+    heard_negative = False
     while True:
-        answered = False
+        resolved = False
+        if time.monotonic() >= deadline:
+            return False if heard_negative else None
         try:
             req = urllib.request.Request(
                 _DOH_URL.format(host = host),
                 headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
             )
-            with urllib.request.urlopen(req, timeout = 5) as response:
-                answered = bool(json.loads(response.read(65536)).get("Answer"))
+            attempt = max(0.0, min(_DNS_ATTEMPT_TIMEOUT, deadline - time.monotonic()))
+            with urllib.request.urlopen(req, timeout = attempt) as response:
+                payload = json.loads(response.read(65536))
+            status = payload.get("Status")
+            # Only NOERROR and NXDOMAIN are authoritative DNS answers.
+            if status not in (0, 3):
+                raise RuntimeError("resolver could not answer")
+            resolved = status == 0 and bool(payload.get("Answer"))
+            heard_negative = heard_negative or not resolved
             errors = 0
         except Exception:
             errors += 1
             if errors >= _DNS_MAX_DOH_ERRORS:
-                return
-        if answered:
-            return
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return
-        time.sleep(min(_DNS_POLL_DELAY, remaining))
+                return None
+        if resolved:
+            return True
+        time.sleep(max(0.0, min(_DNS_POLL_DELAY, deadline - time.monotonic())))
 
 
 def _edge_addresses() -> list:
@@ -344,13 +356,35 @@ def _probe_edge(
                 tls.sendall(request)
                 response = http.client.HTTPResponse(tls, method = "GET")
                 response.begin()
+                status = response.status
                 body = response.read(4096)
     except Exception:
         return None
+    if status != 200:
+        return False
     try:
         return json.loads(body).get("service") == _PUBLIC_PROBE_MARKER
     except Exception:
         return False
+
+
+def _hostname_of(url: str) -> Optional[str]:
+    from urllib.parse import urlsplit
+    return urlsplit(url).hostname
+
+
+def _connector_reports_ready(address: str, timeout: float) -> bool:
+    import json
+    import urllib.request
+
+    # Never proxy cloudflared's loopback readiness endpoint.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://{address}/ready", timeout = timeout) as response:
+            body = json.loads(response.read(4096))
+    except Exception:
+        return False
+    return int(body.get("readyConnections") or 0) > 0
 
 
 def _verify_through_edge(host: str, deadline: float) -> bool:
@@ -510,8 +544,10 @@ class CloudflareTunnel:
         self._stopped = False
         self._url_event = threading.Event()
         self._ready_event = threading.Event()
+        self._exit_event = threading.Event()
         self.url: Optional[str] = url
         self.ready = False
+        self._metrics_address: Optional[str] = None
         self.error: Optional[str] = None
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
@@ -594,6 +630,10 @@ class CloudflareTunnel:
                         if match:
                             self.url = match.group(0)
                             self._url_event.set()
+                    if self._metrics_address is None:
+                        found = _METRICS_RE.search(line)
+                        if found:
+                            self._metrics_address = found.group(1)
                     if not self.ready and _REGISTERED_MARKER in line:
                         self.ready = True
                         self._ready_event.set()
@@ -613,6 +653,7 @@ class CloudflareTunnel:
             with self._lock:
                 self._reader_exited = True
                 callback = self.on_exit
+            self._exit_event.set()
             if _process_exited(proc):
                 _set_studio_tunnel_runtime_active(self, False)
             if callback is not None:
@@ -624,8 +665,29 @@ class CloudflareTunnel:
 
         Returns the URL only when ready, so callers never advertise a URL that
         would return Cloudflare error 1033 (HTTP 530)."""
+        deadline = time.monotonic() + timeout
         self._ready_event.wait(timeout)
-        return self.url if self.ready else None
+        if not self.ready or self.url is None:
+            return None
+        while True:
+            with self._lock:
+                done = self._reader_exited or self._stopped
+            remaining = deadline - time.monotonic()
+            if done or remaining <= 0:
+                return None
+            address = self._metrics_address
+            serving = address is not None and _connector_reports_ready(
+                address,
+                min(remaining, _PUBLIC_PROBE_ATTEMPT_TIMEOUT),
+            )
+            remaining = deadline - time.monotonic()
+            with self._lock:
+                if self._reader_exited or self._stopped or remaining <= 0:
+                    return None
+                if serving:
+                    return self.url
+            if self._exit_event.wait(min(_EDGE_PROBE_RETRY_DELAY, remaining)):
+                return None
 
     def stop(self) -> bool:
         """Terminate the tunnel and report whether process exit was confirmed."""
@@ -633,6 +695,9 @@ class CloudflareTunnel:
             # Mark stopped so a start() racing behind us refuses to spawn.
             self._stopped = True
             proc, self._proc = self._proc, None
+        self._exit_event.set()
+        self._url_event.set()
+        self._ready_event.set()
         if proc is None:
             active = _studio_tunnel_runtime_active(self)
             if active:
@@ -704,6 +769,8 @@ _start_lock = threading.Lock()
 # attempts aborts the loop instead of starting a tunnel nobody will ever stop.
 _shutdown_requested = False
 _tunnel_generation = 0
+# DNS observations belong only to the tunnel generation that requested them.
+_tunnel_dns: Tuple[int, str] = (0, "unknown")
 _tunnel_lifecycle = 0
 _accepting_starts = True
 _tunnel_state = "off"
@@ -812,7 +879,39 @@ def get_studio_tunnel_status() -> dict:
             "error": _tunnel_error,
             "port": _tunnel_port,
             "stop_pending": bool(_tunnels_pending_stop_snapshot()),
+            "dns": _tunnel_dns[1] if _tunnel_dns[0] == _tunnel_generation else "unknown",
         }
+
+
+def _watch_wanted(generation: int, give_up: float, url: str) -> bool:
+    recorded_generation, recorded_state = _tunnel_dns
+    return (
+        time.monotonic() < give_up
+        and _tunnel_url == url
+        and generation == _tunnel_generation
+        and not (recorded_generation == generation and recorded_state == "resolved")
+    )
+
+
+def _watch_hostname_resolution(url: str, generation: int) -> None:
+    global _tunnel_dns
+    host = _hostname_of(url)
+    give_up = time.monotonic() + _DNS_WATCH_TOTAL
+    while True:
+        with _active_lock:
+            if not _watch_wanted(generation, give_up, url):
+                return
+        resolved = (
+            _wait_for_dns(host, min(give_up, time.monotonic() + _DNS_WAIT_MAX)) if host else None
+        )
+        state = {True: "resolved", False: "pending"}.get(resolved, "unknown")
+        with _active_lock:
+            if not _watch_wanted(generation, give_up, url):
+                return
+            _tunnel_dns = (generation, state)
+        if resolved is True or not host:
+            return
+        time.sleep(max(0.0, min(_DNS_POLL_DELAY, give_up - time.monotonic())))
 
 
 def _set_failed(generation: int, owner: str, port: int, error: str) -> None:
@@ -829,7 +928,7 @@ def _set_failed(generation: int, owner: str, port: int, error: str) -> None:
 
 def _active_tunnel_exited(tunnel: CloudflareTunnel) -> None:
     global _active_tunnel, _tunnel_state, _tunnel_owner, _tunnel_kind
-    global _tunnel_url, _tunnel_error, _tunnel_port
+    global _tunnel_url, _tunnel_error, _tunnel_port, _tunnel_generation
     with _active_lock:
         if _active_tunnel is not tunnel:
             return
@@ -844,23 +943,29 @@ def _active_tunnel_exited(tunnel: CloudflareTunnel) -> None:
     stopped = tunnel.stop() is not False
     with _active_lock:
         stopped = stopped or not _studio_tunnel_runtime_active(tunnel)
+        was_current = generation == _tunnel_generation
+        ended = False
         if not stopped and (_active_tunnel is None or _active_tunnel is tunnel):
             _active_tunnel = tunnel
             _tunnel_state = "error"
             _tunnel_owner = exit_owner
             _tunnel_error = "cloudflared could not be stopped"
             _tunnel_port = exit_port
-        elif generation == _tunnel_generation:
+        elif was_current:
+            ended = True
             _active_tunnel = None
             _tunnel_state = "error"
             _tunnel_error = exit_error
         elif stopped and _active_tunnel is tunnel:
+            ended = True
             _active_tunnel = None
             _tunnel_state = "off"
             _tunnel_owner = None
             _tunnel_kind = None
             _tunnel_error = None
             _tunnel_port = None
+        if was_current and ended:
+            _tunnel_generation += 1
 
 
 def _set_online_locked(url: str) -> None:
@@ -1000,6 +1105,12 @@ def start_studio_tunnel(
                 if hasattr(tunnel, "is_running") and not tunnel.is_running():
                     _active_tunnel_exited(tunnel)
                     return None
+                threading.Thread(
+                    target = _watch_hostname_resolution,
+                    args = (url, generation),
+                    name = "tunnel-dns-watch",
+                    daemon = True,
+                ).start()
                 return url
             saw_url = tunnel.url is not None
             with _active_lock:
@@ -1437,6 +1548,15 @@ def _end_previous_connector(record: object) -> bool:
 
 
 def reclaim_at_launch() -> None:
+    try:
+        with certificate_state_claim("cleanup"):
+            _settle(None)
+    except ProvisioningError as exc:
+        if exc.code != "certificate_state_busy":
+            logger.warning("Cloudflare setup reclaim stopped: %s", exc.detail)
+    except Exception:
+        logger.warning("Cloudflare setup reclaim stopped.", exc_info = True)
+
     try:
         reservation = reserve_connector()
         if reservation is not None:

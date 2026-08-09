@@ -2523,6 +2523,9 @@ def run_server(
         is_colab = _IS_COLAB,
         launch_managed = _launch_tunnel_managed,
     )
+    from cloudflare_tunnel import reclaim_at_launch
+
+    reclaim_at_launch()
 
     # Expose a shutdown callable before the server accepts requests so
     # /api/shutdown is ready as soon as readiness publishes.
