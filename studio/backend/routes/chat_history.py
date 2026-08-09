@@ -570,11 +570,22 @@ def _delete_project_with_rag_retirement(
 
     scope = rag_store.project_scope(project_id)
     with folder_sync.scope_lock(scope):
-        folders = _retire_project_rag_sources(project_id)
+        folders = []
+        retired = False
+
+        def retire_rag_scope() -> None:
+            nonlocal retired
+            folders.extend(_retire_project_rag_sources(project_id))
+            retired = True
+
         try:
-            project = delete_chat_project(project_id, delete_files = delete_files)
+            project = delete_chat_project(
+                project_id,
+                delete_files = delete_files,
+                before_delete = retire_rag_scope,
+            )
         except Exception:
-            if get_chat_project(project_id) is not None:
+            if retired and get_chat_project(project_id) is not None:
                 _restore_project_rag_sources(project_id, folders)
             raise
         return project, folders

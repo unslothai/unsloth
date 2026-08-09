@@ -219,15 +219,17 @@ impl NativeIntakeState {
         let token = random_token("path_");
         let lease = sign_path_lease(
             &self.lease_secret,
-            NativePathOperation::LinkDocuments,
-            portable_path_string(&classified.canonical_path),
-            classified.path_kind,
-            classified.path_type,
-            NativePathSourceKind::Dialog,
-            &token,
-            classified.display_label,
-            classified.size_bytes,
-            None,
+            NativePathLeaseRequest {
+                operation: NativePathOperation::LinkDocuments,
+                canonical_path: portable_path_string(&classified.canonical_path),
+                path_kind: classified.path_kind,
+                path_type: classified.path_type,
+                source_kind: NativePathSourceKind::Dialog,
+                token,
+                display_label: classified.display_label,
+                size_bytes: classified.size_bytes,
+                modified_ms: None,
+            },
         )?;
         Ok(NativeDocumentFolderSelection {
             token: lease.native_path_lease,
@@ -707,7 +709,7 @@ pub async fn read_native_attachment_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

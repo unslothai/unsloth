@@ -85,10 +85,16 @@ def get_kb(conn: sqlite3.Connection, kb_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
+def delete_kb(
+    conn: sqlite3.Connection,
+    kb_id: str,
+    *,
+    commit: bool = True,
+) -> None:
     """Delete a knowledge base and every document (+ chunks) under it."""
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        if commit:
+            conn.execute("BEGIN IMMEDIATE")
         scope = kb_scope(kb_id)
         doc_ids = [
             r["id"]
@@ -97,9 +103,11 @@ def delete_kb(conn: sqlite3.Connection, kb_id: str) -> None:
         for doc_id in doc_ids:
             delete_document(conn, doc_id, commit = False)
         conn.execute("DELETE FROM knowledge_bases WHERE id=?", (kb_id,))
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         raise
 
 

@@ -214,15 +214,17 @@ mod tests {
     fn document_folder_lease_payload_has_backend_contract_values() {
         let lease = sign_path_lease(
             b"01234567890123456789012345678901",
-            NativePathOperation::LinkDocuments,
-            "/tmp/knowledge".to_string(),
-            NativePathKind::DocumentFolder,
-            NativePathType::Directory,
-            NativePathSourceKind::Dialog,
-            "path_token",
-            "knowledge".to_string(),
-            None,
-            Some(456),
+            NativePathLeaseRequest {
+                operation: NativePathOperation::LinkDocuments,
+                canonical_path: "/tmp/knowledge".to_string(),
+                path_kind: NativePathKind::DocumentFolder,
+                path_type: NativePathType::Directory,
+                source_kind: NativePathSourceKind::Dialog,
+                token: "path_token".to_string(),
+                display_label: "knowledge".to_string(),
+                size_bytes: None,
+                modified_ms: None,
+            },
         )
         .unwrap();
         let payload = decode_payload(&lease.native_path_lease);
@@ -236,5 +238,6 @@ mod tests {
         let expires_at_ms = payload["expires_at_ms"].as_u64().unwrap();
         assert!(expires_at_ms > issued_at_ms);
         assert_eq!(expires_at_ms - issued_at_ms, 120_000);
+        assert!(payload["modified_ms"].is_null());
     }
 }

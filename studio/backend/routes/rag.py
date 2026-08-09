@@ -406,38 +406,19 @@ def update_knowledge_base(
 @router.delete("/knowledge-bases/{kb_id}")
 def delete_knowledge_base(kb_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    conn = _rag_connection()
-    try:
-        if store.get_kb(conn, kb_id) is None:
-            raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-        scope = store.kb_scope(kb_id)
-        with folder_sync.scope_lock(scope):
-            if store.get_kb(conn, kb_id) is None:
-                raise HTTPException(status_code = 404, detail = "Knowledge base not found")
-            folders = folder_sync.retire_scope(scope)
-            try:
-                stored_paths = [
-                    row["stored_path"]
-                    for row in conn.execute(
-                        "SELECT stored_path FROM documents WHERE scope=?", (scope,)
-                    )
-                ]
-                store.delete_kb(conn, kb_id)
-            except Exception:
-                folder_sync.restore_scope(scope, folders)
-                raise
-        for folder in folders:
-            try:
-                folder_sync.delete_folder(folder["id"])
-            except Exception:
-                logger.warning(
-                    "failed to delete retired linked folder %s", folder["id"], exc_info = True
-                )
-        for stored_path in stored_paths:
-            _remove_stored_upload(stored_path)
-        return {"ok": True}
-    finally:
-        conn.close()
+    with _rag_unavailable_as_503():
+        deleted = folder_sync.retire_and_delete_kb(kb_id)
+    if deleted is None:
+        raise HTTPException(status_code = 404, detail = "Knowledge base not found")
+    folders, stored_paths = deleted
+    for folder in folders:
+        try:
+            folder_sync.delete_folder(folder["id"])
+        except Exception:
+            logger.warning("failed to delete retired linked folder %s", folder["id"], exc_info = True)
+    for stored_path in stored_paths:
+        _remove_stored_upload(stored_path)
+    return {"ok": True}
 
 
 def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being deleted") -> None:

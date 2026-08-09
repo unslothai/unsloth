@@ -424,6 +424,47 @@ def _metadata_table_columns(conn, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _retire_scope_rows(conn, scope: str, folders: list[dict]) -> None:
+    folders_exist = _metadata_table_exists(conn, "linked_folders")
+    jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
+    jobs_have_rebuild_request = False
+    if jobs_exist:
+        jobs_have_rebuild_request = "rebuild_requested" in _metadata_table_columns(
+            conn, "linked_folder_sync_jobs"
+        )
+        active_jobs = conn.execute(
+            "SELECT j.* FROM linked_folder_sync_jobs j "
+            "JOIN linked_folders f ON f.id=j.folder_id WHERE f.scope=? "
+            "AND j.status IN ('pending','running')",
+            (scope,),
+        ).fetchall()
+        jobs_by_folder: dict[str, list[dict]] = {}
+        for job in active_jobs:
+            jobs_by_folder.setdefault(job["folder_id"], []).append(dict(job))
+        for folder in folders:
+            folder["_retired_active_jobs"] = jobs_by_folder.get(folder["id"], [])
+    conn.execute(
+        "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
+        (scope, _now()),
+    )
+    if folders_exist:
+        conn.execute(
+            "UPDATE linked_folders SET auto_sync=0, status='retired', "
+            "last_error='Owning scope was removed', updated_at=? WHERE scope=?",
+            (_now(), scope),
+        )
+    if jobs_exist:
+        rebuild_reset = ", rebuild_requested=0" if jobs_have_rebuild_request else ""
+        rebuild_filter = " OR rebuild_requested=1" if jobs_have_rebuild_request else ""
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
+            f"error='Owning scope was removed'{rebuild_reset}, completed_at=? "
+            "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
+            f"AND (status IN ('pending','running'){rebuild_filter})",
+            (_now(), scope),
+        )
+
+
 def retire_scope(scope: str) -> list[dict]:
     """Stop all future work, even when the vector extension cannot load."""
     with _scope_lock(scope), ExitStack() as locks:
@@ -444,47 +485,46 @@ def retire_scope(scope: str) -> list[dict]:
         conn = _retirement_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            folders_exist = _metadata_table_exists(conn, "linked_folders")
-            jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
-            jobs_have_rebuild_request = False
-            if jobs_exist:
-                jobs_have_rebuild_request = "rebuild_requested" in _metadata_table_columns(
-                    conn, "linked_folder_sync_jobs"
-                )
-                active_jobs = conn.execute(
-                    "SELECT j.* FROM linked_folder_sync_jobs j "
-                    "JOIN linked_folders f ON f.id=j.folder_id WHERE f.scope=? "
-                    "AND j.status IN ('pending','running')",
-                    (scope,),
-                ).fetchall()
-                jobs_by_folder: dict[str, list[dict]] = {}
-                for job in active_jobs:
-                    jobs_by_folder.setdefault(job["folder_id"], []).append(dict(job))
-                for folder in folders:
-                    folder["_retired_active_jobs"] = jobs_by_folder.get(folder["id"], [])
-            conn.execute(
-                "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) "
-                "VALUES(?, ?)",
-                (scope, _now()),
-            )
-            if folders_exist:
-                conn.execute(
-                    "UPDATE linked_folders SET auto_sync=0, status='retired', "
-                    "last_error='Owning scope was removed', updated_at=? WHERE scope=?",
-                    (_now(), scope),
-                )
-            if jobs_exist:
-                rebuild_reset = ", rebuild_requested=0" if jobs_have_rebuild_request else ""
-                rebuild_filter = " OR rebuild_requested=1" if jobs_have_rebuild_request else ""
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-                    f"error='Owning scope was removed'{rebuild_reset}, completed_at=? "
-                    "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
-                    f"AND (status IN ('pending','running'){rebuild_filter})",
-                    (_now(), scope),
-                )
+            _retire_scope_rows(conn, scope, folders)
             conn.commit()
             return folders
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def retire_and_delete_kb(kb_id: str) -> tuple[list[dict], list[str | None]] | None:
+    """Atomically retire a KB scope and delete its indexed database state."""
+    scope = store.kb_scope(kb_id)
+    with _scope_lock(scope), ExitStack() as locks:
+        conn = rag_db.get_connection()
+        try:
+            if store.get_kb(conn, kb_id) is None:
+                return None
+            folders = [
+                dict(row)
+                for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
+            ]
+            for folder in sorted(folders, key = lambda row: row["id"]):
+                locks.enter_context(_folder_lock(folder["id"]))
+            conn.execute("BEGIN IMMEDIATE")
+            if store.get_kb(conn, kb_id) is None:
+                conn.rollback()
+                return None
+            folders = [
+                dict(row)
+                for row in conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,))
+            ]
+            _retire_scope_rows(conn, scope, folders)
+            stored_paths = [
+                row["stored_path"]
+                for row in conn.execute("SELECT stored_path FROM documents WHERE scope=?", (scope,))
+            ]
+            store.delete_kb(conn, kb_id, commit = False)
+            conn.commit()
+            return folders, stored_paths
         except Exception:
             conn.rollback()
             raise

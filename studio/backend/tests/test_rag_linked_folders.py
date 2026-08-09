@@ -1153,10 +1153,16 @@ def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
         "_retire_project_rag_sources",
         lambda project_id: (calls.append(("retire", threading.get_ident())), [dict(id = "f1")])[1],
     )
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        calls.append(("delete", threading.get_ident()))
+        return project
+
     monkeypatch.setattr(
         chat_history,
         "delete_chat_project",
-        lambda *args, **kwargs: (calls.append(("delete", threading.get_ident())), project)[1],
+        delete,
     )
     monkeypatch.setattr(
         chat_history,
@@ -1187,10 +1193,15 @@ def test_project_rag_retirement_failure_prevents_project_deletion(monkeypatch):
         "_retire_project_rag_sources",
         lambda project_id: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
     )
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        deleted.append(True)
+
     monkeypatch.setattr(
         chat_history,
         "delete_chat_project",
-        lambda *args, **kwargs: deleted.append(True),
+        delete,
     )
 
     with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
@@ -1218,10 +1229,15 @@ def test_project_postcommit_file_cleanup_failure_keeps_scope_retired(monkeypatch
         "_restore_project_rag_sources",
         lambda project_id, folders: restored.append(project_id),
     )
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        raise OSError("workspace cleanup failed")
+
     monkeypatch.setattr(
         chat_history,
         "delete_chat_project",
-        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("workspace cleanup failed")),
+        delete,
     )
 
     with pytest.raises(OSError, match = "workspace cleanup failed"):
@@ -1255,10 +1271,16 @@ def test_project_deletion_persists_retirement_when_rag_runtime_is_unavailable(
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        deleted.append(True)
+        return project
+
     monkeypatch.setattr(
         chat_history,
         "delete_chat_project",
-        lambda *args, **kwargs: (deleted.append(True), project)[1],
+        delete,
     )
 
     result = asyncio.run(
@@ -1303,10 +1325,15 @@ def test_project_deletion_restores_scope_when_project_delete_fails(rag_home, mon
     monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: project)
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda **kwargs: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
+
+    def delete(*args, before_delete, **kwargs):
+        before_delete()
+        raise sqlite3.OperationalError("database is busy")
+
     monkeypatch.setattr(
         chat_history,
         "delete_chat_project",
-        lambda *args, **kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("database is busy")),
+        delete,
     )
 
     with pytest.raises(sqlite3.OperationalError, match = "database is busy"):
@@ -1318,6 +1345,50 @@ def test_project_deletion_restores_scope_when_project_delete_fails(rag_home, mon
     assert restored["status"] == folder["status"]
     assert restored["last_error"] == folder["last_error"]
     assert folder_sync.get_job(pending_job)["status"] == "pending"
+
+
+@requires_sqlite_vec
+def test_project_writer_contention_fails_before_rag_retirement(rag_home, monkeypatch):
+    from routes import chat_history
+    from storage import studio_db
+
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "p1",
+            "name": "Project",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    source = rag_home / "locked-project-delete"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "project", scope_id = project["id"], path = str(source)
+    )
+    blocker = studio_db.get_connection()
+    original_get_connection = studio_db.get_connection
+
+    def short_timeout_connection():
+        conn = original_get_connection()
+        conn.execute("PRAGMA busy_timeout = 10")
+        return conn
+
+    blocker.execute("BEGIN IMMEDIATE")
+    monkeypatch.setattr(studio_db, "get_connection", short_timeout_connection)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match = "database is locked"):
+            asyncio.run(
+                chat_history.delete_project(
+                    project["id"], SimpleNamespace(), current_subject = "test"
+                )
+            )
+        assert folder_sync.scope_retired(store.project_scope(project["id"])) is False
+        persisted = folder_sync.get_folder(folder["id"])
+        assert persisted["auto_sync"] == folder["auto_sync"]
+        assert persisted["status"] == folder["status"]
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 def test_project_upload_cleans_saved_file_when_scope_retires_after_save(rag_home, monkeypatch):
@@ -1450,7 +1521,7 @@ def test_kb_deletion_retires_scope_before_best_effort_folder_cleanup(
 
 
 @requires_sqlite_vec
-def test_kb_deletion_restores_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
+def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
     from routes import rag as rag_routes
 
     conn = rag_db.get_connection()
@@ -1491,6 +1562,53 @@ def test_kb_deletion_restores_scope_before_any_folder_cleanup_on_failure(rag_hom
         assert store.get_kb(conn, "knowledge") is not None
     finally:
         conn.close()
+
+
+@requires_sqlite_vec
+def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home, monkeypatch):
+    from routes import rag as rag_routes
+
+    conn = rag_db.get_connection()
+    try:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    finally:
+        conn.close()
+    source = rag_home / "locked-kb-delete"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "knowledge_base", scope_id = "knowledge", path = str(source)
+    )
+    blocker = rag_db.get_metadata_connection()
+    original_get_connection = rag_db.get_connection
+
+    def short_timeout_connection():
+        conn = original_get_connection()
+        conn.execute("PRAGMA busy_timeout = 10")
+        return conn
+
+    blocker.execute("BEGIN IMMEDIATE")
+    monkeypatch.setattr(rag_db, "get_connection", short_timeout_connection)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match = "database is locked"):
+            rag_routes.delete_knowledge_base("knowledge", subject = "test")
+        assert (
+            blocker.execute("SELECT 1 FROM knowledge_bases WHERE id='knowledge'").fetchone()
+            is not None
+        )
+        assert (
+            blocker.execute(
+                "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?",
+                (store.kb_scope("knowledge"),),
+            ).fetchone()
+            is None
+        )
+        persisted = blocker.execute(
+            "SELECT auto_sync, status FROM linked_folders WHERE id=?", (folder["id"],)
+        ).fetchone()
+        assert dict(persisted) == {"auto_sync": folder["auto_sync"], "status": folder["status"]}
+    finally:
+        blocker.rollback()
+        blocker.close()
 
 
 @requires_sqlite_vec

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 
 from utils.paths import (
@@ -1884,7 +1884,12 @@ def list_chat_projects(include_archived: bool = False) -> list[dict]:
         conn.close()
 
 
-def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
+def delete_chat_project(
+    id: str,
+    delete_files: bool = False,
+    *,
+    before_delete: Callable[[], None] | None = None,
+) -> Optional[dict]:
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1894,6 +1899,8 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
             conn.rollback()
             return None
         project = _chat_project_from_row(row)
+        if before_delete is not None:
+            before_delete()
         thread_ids = {
             thread["id"]
             for thread in conn.execute(
