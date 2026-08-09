@@ -401,6 +401,9 @@ export const ar = {
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
         showLlamaUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
+        showLoadedModels: "مؤشر النماذج المحمّلة",
+        showLoadedModelsDescription:
+          "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",

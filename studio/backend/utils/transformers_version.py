@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -274,11 +275,17 @@ TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma4-12b",
 )
 
-# Lowercase substrings for models that require the Gemma 4 transformers 5.5 sidecar.
+# Lowercase substrings for models that require the transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
     "qwen3.6",
+    "kimi-k3",
+    "kimik3",
+    "locate-anything",
+    "locateanything",
+    "diffusion-gemma",
+    "diffusiongemma",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -295,10 +302,16 @@ _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
 
 # Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
+    "DiffusionGemmaForBlockDiffusion",
     "Gemma4ForConditionalGeneration",
+    "KimiK3ForConditionalGeneration",
+    "LocateAnythingForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
+    "diffusion_gemma",
     "gemma4",
+    "kimi_k3",
+    "locateanything",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).
@@ -987,7 +1000,7 @@ def _config_needs_530(cfg: dict) -> bool:
 
 
 def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> bool:
-    """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
+    """True if ``config.json`` needs transformers 5.5.0. Local first, else
     fetched (authenticated with ``hf_token``); cached by (model, token) only for a definitive
     read so a transient miss retries. False on error.
     """
@@ -1405,9 +1418,18 @@ _PROBE_TIER_ORDER = ("530", "550", "510")
 _PROBE_TIMEOUT_SECS = 60
 
 # config.json-only parse in a sidecar: built-in parser, no repo code, no weights, exit 0 = parses.
-_PROBE_CONFIG_SCRIPT = r"""
+_PROBE_CONFIG_SCRIPT = (
+    r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# This -c child cannot import backend modules, and AutoConfig.from_pretrained
+# below may download from the Hub, so it carries the gate as generated source.
+# repr() the path: a Windows backslash or a space must survive into the source.
+_TRUSTSTORE_VENDOR = """
+    + repr(vendor_dir())
+    + "\n"
+    + inline_gate_source()
+    + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
     sys.path.insert(0, target_dir)
@@ -1421,6 +1443,7 @@ except Exception as exc:
     sys.stderr.buffer.write((type(exc).__name__ + ": " + str(exc)).encode("utf-8", "replace"))
     sys.exit(1)
 """
+)
 
 # stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
 _PROBE_TRANSIENT_MARKERS = (
@@ -1672,7 +1695,7 @@ def get_transformers_tier(
     """Return the transformers tier required for *model_name*.
 
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
-    ``"550"`` for models needing transformers 5.5.0 (Gemma 4),
+    ``"550"`` for models needing transformers 5.5.0 (e.g. Gemma 4 or mlx-vlm processors),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 

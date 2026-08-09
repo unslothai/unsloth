@@ -36,6 +36,7 @@ import os
 import tempfile
 import threading
 import time
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -43,8 +44,10 @@ from typing import Any, Optional
 from loggers import get_logger
 
 from .diffusion_attention import (
+    SDPA_MATH_ONLY_MESSAGE,
     apply_attention_backend,
     install_hunyuan_attention_trim,
+    sdpa_math_only,
     select_attention_backend,
 )
 from .diffusion_cache import (
@@ -75,15 +78,32 @@ from .diffusion_speed import (
     restore_backend_flags,
     snapshot_backend_flags,
 )
-from .diffusion_auto_policy import _QUANT_STEADY_FACTOR, build_resolved_record
+from .diffusion_auto_policy import (
+    _QUANT_STEADY_FACTOR,
+    RESOLVED_APPLIED,
+    RESOLVED_FELL_BACK,
+    RESOLVED_UNSUPPORTED,
+    build_resolved_record,
+    precision_fallback_allowed,
+    precision_refusal_message,
+)
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     dense_transformer_supported,
+    explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders
+from .diffusion import _memory_request_forces_offload
+from .diffusion_precision import (
+    effective_te_quant,
+    normalize_te_quant,
+    quantize_text_encoders,
+    te_quant_needs_resident_weights,
+    te_quant_supported,
+    torchao_quantize_importable,
+)
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -135,6 +155,109 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     if not gguf_filename:
         return "pipeline"
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
+
+
+def assert_video_precision_available(
+    fam: Any,
+    *,
+    model_kind: str,
+    transformer_quant: Optional[str] = None,
+    text_encoder_quant: Optional[str] = None,
+    memory_mode: Optional[str] = None,
+) -> None:
+    """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
+
+    The image twin, ``DiffusionBackend.assert_precision_available``: only the network-free
+    host-level impossibilities (wrong load kind, no dense-quant path, a scheme this GPU or family
+    rules out). Footprint-dependent declines belong to ``load_pipeline``; ``auto`` is never
+    refused.
+
+    Public because the ROUTE has to make this call itself, before it takes the GPU: the copy in
+    ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock before the
+    register callback."""
+    if precision_fallback_allowed():
+        return
+    pinned = normalize_transformer_quant(transformer_quant)
+    te_mode = normalize_te_quant(text_encoder_quant)
+    if pinned is None and te_mode is None:
+        return
+    # One probe for both checks (it reads the live device).
+    target = resolve_diffusion_device_target()
+    if pinned is not None and pinned != TQ_AUTO:
+        reason = None
+        if model_kind != "pipeline":
+            reason = (
+                f"the dense DiT quant applies to full-pipeline loads only, and this is a "
+                f"'{model_kind}' load, which runs the precision its checkpoint carries"
+            )
+        elif not dense_transformer_supported(target):
+            reason = "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+        elif _memory_request_forces_offload(memory_mode, False):
+            # balanced and low_vram name their offload policy without measuring anything, and
+            # offload hooks move modules with Module.to(), which torchao tensors do not survive.
+            # load_pipeline therefore skips the dense build and the strict refusal landed after
+            # acquire_for and the teardown had already evicted the resident model.
+            reason = (
+                f"'{normalize_memory_mode(memory_mode)}' memory places the DiT under CPU "
+                "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+            )
+        elif (
+            select_transformer_quant_scheme(
+                target,
+                pinned,
+                family = getattr(fam, "name", None),
+                # Pre-eviction: an OOM in the smoke probe is the resident model, not the scheme.
+                unproven_ok = True,
+            )
+            is None
+        ):
+            # An explicit scheme is never swapped for another, so a None means the family's
+            # measured deny list, a torchao that cannot run here, or a GPU without the kernels.
+            # They read the same to the selector and need different fixes from the user.
+            reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
+        if reason is not None:
+            raise RuntimeError(
+                precision_refusal_message(
+                    "transformer_quant", pinned, reason, off_label = "Off to run the DiT at bf16"
+                )
+            )
+    # The mode the loader will ACTUALLY attempt, not the raw request: an explicit int8
+    # on a family with no keep-bf16 schedule is rewritten to layerwise fp8 before
+    # support is consulted, and that path needs no torchao. Refusing on the raw int8
+    # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
+    # where the torchao stub kills int8 while fp8 still works.
+    te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+    te_reason = None
+    if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
+        # Same as the image gate: the casters import torchao only after the pipeline is built.
+        te_reason = (
+            "torchao is not importable on this install, and these encoder modes are torchao "
+            "quantisations"
+        )
+    elif te_effective is not None and not te_quant_supported(target, te_effective):
+        te_reason = (
+            "this device does not have the tensor cores that backend needs (a CUDA GPU in "
+            "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
+        )
+    elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
+        memory_mode, False
+    ):
+        # Same fence on the encoder: the loader reports those modes unsupported once offload is
+        # active, and by then the resident model is gone. Layerwise fp8 is a dtype cast.
+        te_reason = (
+            f"'{normalize_memory_mode(memory_mode)}' memory places the text encoder under CPU "
+            "offload, and torchao quantised tensors cannot be moved by the offload hooks"
+        )
+    if te_reason is not None:
+        raise RuntimeError(
+            precision_refusal_message(
+                "text_encoder_quant",
+                te_mode,
+                te_reason,
+                off_label = "leave it unset to keep the dense bf16 encoder",
+                auto_available = False,
+            )
+        )
 
 
 def _is_trusted_video_repo(repo_id: str) -> bool:
@@ -344,6 +467,80 @@ def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     return (pipe,)
 
 
+def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseException) -> None:
+    """Record WHAT was being generated when it failed, next to the exception.
+
+    ``video.generate_failed`` logs the error and nothing else, which for the OOM in #8225 meant the
+    only server-side evidence was "Tried to allocate 66.54 GiB" -- the resolution and frame count
+    behind it had to be recovered by dividing that number by the head count. This is the missing
+    half of that record.
+
+    Cancels and "not loaded" are outcomes, not failures, so they are not reported. Never raises:
+    logging a failure must not replace it with a different one."""
+    if request_shape is None:
+        return
+    try:
+        if str(exc) in (VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG):
+            return
+        if type(exc).__name__ == "_VideoGenerationCancelled":
+            return
+        # A ValueError is client input feedback here, exactly as _run_generate treats it: it is
+        # returned to the caller as a validation message and deliberately gets no
+        # video.generate_failed record. Logging the request shape at ERROR for one would turn a
+        # rejected resolution or frame count into a server-error entry.
+        if isinstance(exc, ValueError):
+            return
+        logger.error(
+            "video.generate_failed_request: %s",
+            " ".join(f"{k}={v}" for k, v in request_shape.items()),
+        )
+        # An OOM under the math SDPA backend is the #8225 shape exactly: the score matrix is
+        # quadratic in the token count, so the fix is fewer tokens, not a smaller checkpoint.
+        # Named here so the next report arrives with the diagnosis already in it.
+        #
+        # Only when the run was on NATIVE SDPA. A recorded attention_backend means an explicit
+        # kernel (AITER, xFormers, ...) engaged and torch's own dispatch was not what ran, so
+        # probing native kernels would answer about code this generation never executed -- on a
+        # ROCm card with AITER active that turns every OOM into a confident false diagnosis.
+        if (
+            _is_out_of_memory(exc)
+            and request_shape.get("attention_backend") is None
+            and sdpa_math_only(_probe_target(request_shape))
+        ):
+            logger.error("video.generate_failed_request: %s", SDPA_MATH_ONLY_MESSAGE)
+    except Exception:  # noqa: BLE001 — diagnostics never mask the real failure
+        pass
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is an allocator failure, by name and text rather than by class: torch
+    raises ``torch.OutOfMemoryError`` on CUDA and a plain RuntimeError on some backends."""
+    if any(cls.__name__ in ("OutOfMemoryError", "OutOfMemoryError_") for cls in type(exc).__mro__):
+        return True
+    text = str(exc).lower()
+    return "out of memory" in text or "tried to allocate" in text
+
+
+def _probe_target(request_shape: dict[str, Any]) -> Any:
+    """A minimal device target for the SDPA probe, built from the recorded request.
+
+    Carries the dtype the failed generation actually ran in. Leaving it None defaults the probe to
+    fp16, but every video family promotes a resolved fp16 to fp32, so the probe would answer for a
+    precision the run never used -- and the fused kernels are half-precision only, so that is the
+    difference between "fused kernels exist here" and "this run had none"."""
+    dtype = None
+    recorded = request_shape.get("dtype")
+    if recorded:
+        try:
+            import torch
+            candidate = getattr(torch, str(recorded).replace("torch.", ""), None)
+            if isinstance(candidate, torch.dtype):
+                dtype = candidate
+        except Exception:  # noqa: BLE001 — fall back to the probe's own default
+            dtype = None
+    return types.SimpleNamespace(device = request_shape.get("device"), dtype = dtype)
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -502,6 +699,17 @@ class VideoBackend:
             base_repo = base_repo,
             family_override = family_override,
             model_kind = model_kind,
+            transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
+        )
+        # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the
+        # route answers 409 with the reason instead of evicting the resident model and pulling
+        # tens of GB first. Footprint-dependent declines still surface via load-progress. The
+        # ROUTE makes the same call earlier still (see assert_video_precision_available): this one
+        # runs inside acquire_for, which has already evicted chat by the time it fires.
+        assert_video_precision_available(
+            fam,
+            model_kind = resolve_video_model_kind(gguf_filename, model_kind),
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
         )
@@ -1147,6 +1355,13 @@ class VideoBackend:
         # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator.
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
+        # What the CALLER asked for, before the rewrite below. The record has to report this, not
+        # the internal value: an omitted precision under speed_mode="off" becomes "off" here, and
+        # reporting that as the request makes the resolved record say the user pinned bf16. The
+        # frontend then hides the Auto badge and reseeds the Precision select to none, so after
+        # the user changes Speed and reloads, quantisation stays pinned off for no reason they
+        # can see.
+        transformer_quant_requested = transformer_quant
         # Precision tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins dense bf16; an explicit scheme pins it. Pipeline-kind only.
         if transformer_quant is None or str(transformer_quant).strip().lower() in (
             "",
@@ -1160,79 +1375,108 @@ class VideoBackend:
         device_memory = snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
-        if kind == "pipeline":
-            model_dense_mib = (
-                int(sum(components) * mib_per_gb * dtype_scale) if components is not None else None
-            )
-            companion_mib = None
-        else:
+        # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its
+        # encoder PRE-CAST from a hosted fp8 checkpoint, the bf16 entry over-states what is loaded
+        # by ~11 GB for ltx-2's Gemma3-12B, which drags every budget below with it. The VAE is
+        # never quantised (quantize_text_encoders touches text encoders only, and vae_force_fp32
+        # families widen it), so only components[1] is scaled.
+        from .diffusion_te_prequant import te_prequant_budget_scale
+
+        te_scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+        transformer_mib: Optional[int] = None
+        if kind != "pipeline":
             checkpoint_path = self._resolve_checkpoint_path(repo_id, gguf_filename, hf_token)
             size_mib = file_size_mib(str(checkpoint_path))
-            model_dense_mib = None
             if kind == "gguf":
                 transformer_mib = estimate_gguf_resident_mib(size_mib)
             else:
                 transformer_mib = estimate_safetensors_dense_mib(size_mib)
                 if transformer_mib is not None:
                     transformer_mib = int(transformer_mib * dtype_scale)
-            companion_mib = (
-                int((components[1] + components[2]) * mib_per_gb * dtype_scale)
-                if components is not None
-                else None
-            )
-            # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
-            model_dense_mib = (
-                transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
-            )
         runtime_mib = estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
             height = fam.resolution_presets[0][1],
             num_frames = fam.default_num_frames,
         )
-        plan = plan_diffusion_memory(
-            target = target,
-            device_memory = device_memory,
-            model_dense_mib = model_dense_mib,
-            runtime_headroom_mib = runtime_mib,
-            companion_dense_mib = companion_mib,
-            requested_mode = normalize_memory_mode(memory_mode),
-        )
-        # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
-        bf16_plan = plan
-        quant_replanned = False
-        if (
-            kind == "pipeline"
-            and plan.offload_policy != "none"
-            and normalize_transformer_quant(transformer_quant) is not None
-            and dense_transformer_supported(target)
-            and components is not None
-        ):
-            scheme_preview = select_transformer_quant_scheme(
-                target, transformer_quant, family = fam.name
+
+        def _plan_for_te_scale(scale: float, *, log: bool) -> tuple[Any, Any, bool]:
+            """``(plan, bf16_plan, quant_replanned)`` for a text-encoder budget of ``scale`` x
+            its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
+            dense-encoder plan can be rebuilt below if the pre-cast injection does not land."""
+            text_encoder_gb = components[1] * scale if components is not None else 0.0
+            companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+            if log and scale != 1.0 and components is not None:
+                logger.info(
+                    "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
+                    "bf16 (%.1f GB instead of %.1f GB)",
+                    text_encoder_quant,
+                    scale,
+                    text_encoder_gb,
+                    components[1],
+                )
+            if kind == "pipeline":
+                model_dense_mib = (
+                    int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                    if components is not None
+                    else None
+                )
+                companion_mib = None
+            else:
+                companion_mib = (
+                    int(companions_gb * mib_per_gb * dtype_scale)
+                    if components is not None
+                    else None
+                )
+                # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
+                model_dense_mib = (
+                    transformer_mib + (companion_mib or 0) if transformer_mib is not None else None
+                )
+            planned = plan_diffusion_memory(
+                target = target,
+                device_memory = device_memory,
+                model_dense_mib = model_dense_mib,
+                runtime_headroom_mib = runtime_mib,
+                companion_dense_mib = companion_mib,
+                requested_mode = normalize_memory_mode(memory_mode),
             )
-            factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
-            if factor is not None:
-                quant_mib = int(
-                    (components[0] * factor + components[1] + components[2]) * mib_per_gb
+            # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
+            dense_plan = planned
+            replanned_for_quant = False
+            if (
+                kind == "pipeline"
+                and planned.offload_policy != "none"
+                and normalize_transformer_quant(transformer_quant) is not None
+                and dense_transformer_supported(target)
+                and components is not None
+            ):
+                scheme_preview = select_transformer_quant_scheme(
+                    target, transformer_quant, family = fam.name
                 )
-                replanned = plan_diffusion_memory(
-                    target = target,
-                    device_memory = device_memory,
-                    model_dense_mib = quant_mib,
-                    runtime_headroom_mib = runtime_mib,
-                    companion_dense_mib = None,
-                    requested_mode = normalize_memory_mode(memory_mode),
-                )
-                if replanned.offload_policy == "none":
-                    logger.info(
-                        "video.transformer_quant: %s fits resident (%d MiB steady); "
-                        "dropping the bf16 plan's '%s' offload",
-                        scheme_preview,
-                        quant_mib,
-                        plan.offload_policy,
+                factor = _QUANT_STEADY_FACTOR.get(scheme_preview) if scheme_preview else None
+                if factor is not None:
+                    quant_mib = int((components[0] * factor + companions_gb) * mib_per_gb)
+                    replanned = plan_diffusion_memory(
+                        target = target,
+                        device_memory = device_memory,
+                        model_dense_mib = quant_mib,
+                        runtime_headroom_mib = runtime_mib,
+                        companion_dense_mib = None,
+                        requested_mode = normalize_memory_mode(memory_mode),
                     )
-                    plan = replanned
-                    quant_replanned = True
+                    if replanned.offload_policy == "none":
+                        if log:
+                            logger.info(
+                                "video.transformer_quant: %s fits resident (%d MiB steady); "
+                                "dropping the bf16 plan's '%s' offload",
+                                scheme_preview,
+                                quant_mib,
+                                planned.offload_policy,
+                            )
+                        planned = replanned
+                        replanned_for_quant = True
+            return planned, dense_plan, replanned_for_quant
+
+        plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = True)
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
@@ -1247,17 +1491,27 @@ class VideoBackend:
         # A hosted pre-cast fp8 text encoder skips the dense TE download (for LTX Gemma3-27B, ~50 GB). The cast re-applies idempotently.
         from .diffusion_te_prequant import te_prequant_pipe_kwargs
 
-        pipe_kwargs.update(
-            te_prequant_pipe_kwargs(
-                fam,
-                repo_id if kind == "pipeline" else base,
-                te_quant_mode = text_encoder_quant,
-                target = target,
-                dtype = dtype,
-                hf_token = hf_token,
-                logger = logger,
-            )
+        te_injected = te_prequant_pipe_kwargs(
+            fam,
+            repo_id if kind == "pipeline" else base,
+            te_quant_mode = text_encoder_quant,
+            target = target,
+            dtype = dtype,
+            hf_token = hf_token,
+            logger = logger,
         )
+        pipe_kwargs.update(te_injected)
+        # The fp8-sized budget is valid only once the pre-cast encoder is actually in hand. Injection is best-effort
+        # (an unreachable / corrupt / base-mismatched checkpoint falls back to the dense encoder), and a dense encoder
+        # under an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that
+        # OOMs. Placement is applied post-assembly (apply_memory_plan below), so re-plan at bf16 here, exactly as the
+        # dense-quant fallback below restores bf16_plan.
+        if te_scale != 1.0 and not te_injected:
+            logger.warning(
+                "video.te_prequant_budget: no pre-cast encoder was injected; re-planning "
+                "memory at the dense bf16 text-encoder size"
+            )
+            plan, bf16_plan, quant_replanned = _plan_for_te_scale(1.0, log = False)
         # Injection is best-effort (a missing checkpoint falls back to the dense encoder), but the scoped pre-download already dropped those
         # shards and from_pretrained cannot re-fetch from a local snapshot dir, so top them up here. ltx23 never reaches this: it gets the hub id.
         missing_dense = [c for c in (_te_prequant_skipped or ()) if c not in pipe_kwargs]
@@ -1324,6 +1578,26 @@ class VideoBackend:
         # low-precision tensor cores. CUDA + bf16 only, best-effort. Quant must precede compile (eager is ~30x slower).
         transformer_quant_engaged: Optional[str] = None
         quant_skipped_for_offload = False
+        # An EXPLICIT scheme (not auto, not off) is a contract, so a decline below must be reported
+        # and -- unless the escape hatch is set -- must stop the load rather than quietly running
+        # the DiT at bf16 while the Precision dropdown still reads FP8.
+        transformer_quant_pinned = normalize_transformer_quant(transformer_quant)
+        if transformer_quant_pinned == TQ_AUTO:
+            transformer_quant_pinned = None
+        # Why the quant did not engage, in the caller's terms; threaded into `resolved`.
+        transformer_quant_decline: Optional[str] = None
+        transformer_quant_decline_status = RESOLVED_FELL_BACK
+        if transformer_quant_pinned is not None and kind != "pipeline":
+            transformer_quant_decline = (
+                f"the dense DiT quant applies to full-pipeline loads only, and this is a "
+                f"'{kind}' load, which runs the precision its checkpoint carries"
+            )
+            transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+        elif transformer_quant_pinned is not None and not dense_transformer_supported(target):
+            transformer_quant_decline = (
+                "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+            )
+            transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         if (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
@@ -1338,6 +1612,11 @@ class VideoBackend:
                 plan.offload_policy,
             )
             quant_skipped_for_offload = True
+            transformer_quant_decline = (
+                f"the memory plan picked '{plan.offload_policy}' offload, which moves the DiT via "
+                "Module.to(); torchao quantized tensors reject that. Pin a resident memory mode "
+                "(Fast) to combine quant with this model"
+            )
         elif (
             kind == "pipeline"
             and normalize_transformer_quant(transformer_quant) is not None
@@ -1365,12 +1644,38 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
+            elif transformer_quant_pinned is not None:
+                transformer_quant_decline = (
+                    f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "
+                    "GPU (the scheme is unsupported here, or the family's measured deny list "
+                    "rules it out); see the server log"
+                )
+                transformer_quant_decline_status = RESOLVED_UNSUPPORTED
         # The quant-sized plan is valid only when quant engaged; a dense fallback keeps bf16 placement.
         if quant_replanned and transformer_quant_engaged is None:
             plan = bf16_plan
 
+        # Fail closed on a declined EXPLICIT precision, mirroring the image loader: a clip rendered
+        # at bf16 under a Precision dropdown still reading FP8 is not evidence the request ran.
+        if (
+            transformer_quant_engaged is None
+            and transformer_quant_pinned is not None
+            and not precision_fallback_allowed()
+        ):
+            del pipe
+            clear_gpu_cache()
+            raise RuntimeError(
+                precision_refusal_message(
+                    "transformer_quant",
+                    transformer_quant_pinned,
+                    transformer_quant_decline
+                    or "the quantised DiT build did not engage on this host",
+                    off_label = "Off to run the DiT at bf16",
+                )
+            )
+
         # dense text-encoder quant (opt-in): the companion encoder is often the largest resident, so quantise it in place before placement, for every kind. Best-effort.
-        text_encoder_quant_engaged = quantize_text_encoders(
+        text_encoder_outcome = quantize_text_encoders(
             pipe,
             target,
             mode = text_encoder_quant,
@@ -1378,6 +1683,28 @@ class VideoBackend:
             offload_active = plan.offload_policy != "none",
             logger = logger,
         )
+        text_encoder_quant_engaged = text_encoder_outcome.mode
+        # Same contract for the other half of "the requested precision": an explicit encoder mode
+        # that engaged NOTHING leaves a dense bf16 encoder the caller did not ask for, and a
+        # PARTIAL cast leaves conditioning split across quantised and dense towers. A mode that
+        # engaged something ELSE (int8 -> fp8) is reported by the badge instead: the encoder is
+        # quantised, just not the way asked, and the reason says so.
+        if (
+            (text_encoder_quant_engaged is None or text_encoder_outcome.partial)
+            and normalize_te_quant(text_encoder_quant) is not None
+            and not precision_fallback_allowed()
+        ):
+            del pipe
+            clear_gpu_cache()
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    normalize_te_quant(text_encoder_quant) or "",
+                    text_encoder_outcome.reason or "no text encoder could be cast",
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
 
         # optimisation layers in the image backend order: step cache FIRST (compile keys fullgraph off an active cache),
         # then attention, speed, placement. A clip denoise runs minutes, so even a dense load amortises the compile.
@@ -1455,6 +1782,11 @@ class VideoBackend:
                     target, attention_backend, speed_active = effective_speed != SPEED_OFF
                 ),
                 logger = logger,
+                # The probe behind this must see the dtype the pipeline actually RUNS in. Every
+                # video family promotes a resolved fp16 to fp32 above, and the fused SDPA kernels
+                # are half-precision only, so probing the pre-promotion fp16 would report a healthy
+                # device for a generation that is in fact dispatching to the quadratic math backend.
+                target = types.SimpleNamespace(device = target.device, dtype = dtype),
             )
             applied = apply_speed_optims(
                 view,
@@ -1514,25 +1846,38 @@ class VideoBackend:
                         cache_reason,
                     ),
                     "transformer_quant": (
-                        transformer_quant,
+                        transformer_quant_requested,
                         transformer_quant_engaged or "off",
                         # Honest framing: the shipped torchao schemes cut load time and resident memory ~2x, but per-step GEMMs are at best bf16 parity.
                         "DiT(s) quantised (halves resident weights; hosted checkpoints cut "
                         "load time; per-step speed is roughly bf16 parity)"
                         if transformer_quant_engaged is not None
+                        # A recorded decline names WHY; the generic strings are the fallback.
                         else (
-                            "skipped: offload moves the DiT, unsupported for torchao "
-                            "tensors; pin a resident memory mode to combine them"
-                            if quant_skipped_for_offload
-                            else "not engaged (dense bf16 DiT loaded)"
+                            transformer_quant_decline
+                            or (
+                                "skipped: offload moves the DiT, unsupported for torchao "
+                                "tensors; pin a resident memory mode to combine them"
+                                if quant_skipped_for_offload
+                                else "not engaged (dense bf16 DiT loaded)"
+                            )
                         ),
+                        # Honored when the quant engaged AND when the ask was "off" (bf16 is what
+                        # that asks for). Only reached with the escape hatch set for a pinned ask.
+                        RESOLVED_APPLIED
+                        if transformer_quant_engaged is not None or transformer_quant_pinned is None
+                        else transformer_quant_decline_status,
                     ),
                     "text_encoder_quant": (
                         text_encoder_quant,
                         text_encoder_quant_engaged or "off",
-                        "dense text encoder quantised in place"
-                        if text_encoder_quant_engaged is not None
-                        else "not engaged (dense bf16 text encoder loaded)",
+                        text_encoder_outcome.reason
+                        or (
+                            "dense text encoder quantised in place"
+                            if text_encoder_quant_engaged is not None
+                            else "not engaged (dense bf16 text encoder loaded)"
+                        ),
+                        text_encoder_outcome.status,
                     ),
                 }
             )
@@ -1743,6 +2088,15 @@ class VideoBackend:
                     "seed": result["seed"],
                     "has_audio": result["has_audio"],
                     "model": result["repo_id"],
+                    # The load-time build, so a clip's recipe still names the precision it ran at
+                    # once the model is unloaded. All engaged values; absent keys read back as null
+                    # on sidecars written before this existed (they are not in _REQUIRED_META).
+                    "model_kind": result.get("model_kind"),
+                    "gguf_filename": result.get("gguf_filename"),
+                    "transformer_quant": result.get("transformer_quant"),
+                    "text_encoder_quant": result.get("text_encoder_quant"),
+                    "memory_mode": result.get("memory_mode"),
+                    "offload_policy": result.get("offload_policy"),
                     "created_at": created_at,
                 },
             )
@@ -1818,6 +2172,9 @@ class VideoBackend:
                 if state is None:
                     raise RuntimeError(VIDEO_NOT_LOADED_MSG)
                 self._active_generate_cancel = cancel
+            # Bound below, once the request is resolved. None means the failure beat the
+            # resolution, and there is nothing truthful to report.
+            request_shape: Optional[dict[str, Any]] = None
             try:
                 fam = state.family
                 width, height = snap_video_size(
@@ -1840,6 +2197,32 @@ class VideoBackend:
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
+
+                # The RESOLVED request, snapshotted the moment it is known, so a failure logs what
+                # actually ran rather than the caller's Nones. Without it the whole server-side
+                # record of a failed video is the exception string: #8225 reported an OOM whose
+                # resolution and frame count had to be reverse-engineered out of the allocation
+                # size by hand. No prompt text -- a length is enough to tell an empty prompt from
+                # a long one, and the log is not the place for user content.
+                request_shape = {
+                    "family": fam.name,
+                    "repo_id": state.repo_id,
+                    "gguf": state.gguf_filename,
+                    "width": width,
+                    "height": height,
+                    "frames": frames,
+                    "fps": out_fps,
+                    "steps": steps,
+                    "guidance": guidance,
+                    "guidance_2": guidance_2,
+                    "seed": int(seed),
+                    "prompt_chars": len(prompt or ""),
+                    "negative_prompt_chars": len(negative_prompt or ""),
+                    "device": state.device,
+                    "dtype": state.dtype,
+                    "offload": state.offload_policy,
+                    "attention_backend": state.attention_backend,
+                }
 
                 pipe = state.pipe
                 call_params = inspect.signature(pipe.__call__).parameters
@@ -1980,9 +2363,19 @@ class VideoBackend:
                     "has_audio": bool(audio_track is not None),
                     "steps": steps,
                     "guidance": guidance,
+                    # The BUILD this clip came off, read from the ENGAGED state and never from the
+                    # request, so a saved MP4 can never be labelled with a precision that did not
+                    # run. Mirrors what the image gallery already records.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                 }
-            except Exception:
+            except Exception as exc:
                 self._gen = {"active": False}
+                _log_failed_generation(request_shape, exc)
                 raise
             finally:
                 with self._lock:
@@ -2109,6 +2502,7 @@ class VideoBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "gguf_variant": None,
                 "offload_policy": None,
                 "vae_tiling": False,
                 "memory_mode": None,
@@ -2122,6 +2516,8 @@ class VideoBackend:
                 "defaults": None,
                 "resolved": None,
             }
+        from hub.utils.gguf import extract_quant_token
+
         fam = state.family
         default_steps, default_guidance = default_video_generation_params(
             state.gguf_filename,
@@ -2137,6 +2533,12 @@ class VideoBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            # As on the image runtime: dtype is compute precision, which labelled a Q4_K_M BF16.
+            "gguf_variant": (
+                extract_quant_token(state.gguf_filename)
+                if state.kind == "gguf" and state.gguf_filename
+                else None
+            ),
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,

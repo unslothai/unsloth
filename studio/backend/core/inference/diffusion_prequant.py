@@ -144,6 +144,50 @@ def resolve_prequant_source(
     return None
 
 
+_LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def local_prequant_scheme(path: str) -> Optional[str]:
+    """The scheme a local pre-quant checkpoint records, or None when it cannot be read.
+
+    ``resolve_prequant_source`` hands back a ``path`` source for ANY override, whatever scheme was
+    asked for: the file is never inspected. That is fine when the caller named the scheme, but
+    under ``auto`` the ladder picks one and an override baked for a different scheme then reads as
+    an available pre-quant. Planning skips staging the dense transformer, the loader reaches the
+    same ``metadata.scheme`` check that runs at load time, refuses the file, and with no dense
+    fallback the pick silently drops to GGUF.
+
+    Cheap despite the file size: ``mmap`` plus ``map_location = "meta"`` maps the storages instead
+    of reading them, so only the pickle structure is parsed (~1s on a 34 GB checkpoint). Cached on
+    (path, mtime, size) because the auto ladder asks once per candidate scheme. ``weights_only``
+    has to be False for the torchao subclasses, which is what the loader already does, and the
+    path is allowlisted before we get here, so this opens nothing new."""
+    import os
+
+    try:
+        real = os.path.expanduser(path)
+        st = os.stat(real)
+        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same
+        # second would otherwise reuse the previous scheme for the life of the process, and int8
+        # and fp8 checkpoints of one model are exactly that shape.
+        key = (real, st.st_mtime_ns, int(st.st_size))
+    except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
+        return None
+    if key in _LOCAL_PREQUANT_SCHEME:
+        return _LOCAL_PREQUANT_SCHEME[key]
+    scheme: Optional[str] = None
+    try:
+        import torch
+        obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
+        if isinstance(obj, dict) and obj.get("format") == PREQUANT_FORMAT:
+            recorded = (obj.get("metadata") or {}).get("scheme")
+            scheme = str(recorded) if recorded else None
+    except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
+        scheme = None
+    _LOCAL_PREQUANT_SCHEME[key] = scheme
+    return scheme
+
+
 def usable_prequant_source(
     fam: Any,
     scheme: str,
@@ -152,13 +196,22 @@ def usable_prequant_source(
     base_repo: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would
-    accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
-    memory planning falls back to dense-fit checks up front, instead of the loader refusing
-    the path only after the resident pipeline was evicted and dense bf16 materialises under
-    a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
+    accept it: inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise
+    resolves to None so memory planning falls back to dense-fit checks up front, instead of the
+    loader refusing the path only after the resident pipeline was evicted and dense bf16
+    materialises under a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are
+    unaffected.
+
+    The scheme check matters most under ``auto``, which picks a scheme the user never named: an
+    int8 override must not read as an available fp8 pre-quant just because the file exists. A
+    checkpoint whose scheme cannot be read is treated as not usable, matching every other unknown
+    here, since the loader would reject it too."""
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
-    if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
-        return None
+    if src is not None and src.kind == "path":
+        if not local_prequant_path_ready(src.location):
+            return None
+        if local_prequant_scheme(src.location) != scheme:
+            return None
     return src
 
 
@@ -484,6 +537,37 @@ def _load_transformer_config(
     raise last  # type: ignore[misc]
 
 
+def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
+    """True unless some fp8 tensor was quantised with no activation lower bound.
+
+    Only the first quantised tensor is inspected: the builder applies one config to the whole
+    module, so the floor is uniform. A state dict with no fp8 tensor at all is left to the other
+    checks (an empty or wrong-scheme artifact is their business, not this one)."""
+    from .diffusion_transformer_quant import TQ_FP8
+
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for name, tensor in items:
+            kwargs = getattr(tensor, "act_quant_kwargs", None)
+            if kwargs is None:
+                continue
+            if getattr(kwargs, "hp_value_lb", None):
+                return True
+            _warn(
+                logger,
+                TQ_FP8,
+                ValueError(
+                    f"fp8 checkpoint has no activation scale floor on {name!r} "
+                    "(built before activation_value_lb); a zero activation row renders black. "
+                    "Rebuild it"
+                ),
+            )
+            return False
+    except Exception:  # noqa: BLE001 -- an unreadable state dict is the other checks' problem
+        return True
+    return True
+
+
 def _validate_checkpoint(
     ckpt: Any,
     scheme: str,
@@ -523,6 +607,15 @@ def _validate_checkpoint(
                 f"{FP8_GRANULARITY!r} (stale per-tensor artifact); rebuild it"
             ),
         )
+        return False
+    # fp8 also REQUIRES the activation scale floor, and this is checked on the loaded TENSORS, not
+    # on metadata. torchao's per-row activation quantiser divides by each row's amax, so a zero row
+    # (qwen's text stream emits them) gives scale 0 and NaN qdata unless activation_value_lb floors
+    # it. That floor is serialised per tensor as act_quant_kwargs.hp_value_lb, so an artifact built
+    # before the fix stays broken however it is loaded, and it predates any metadata field we could
+    # stamp -- and "absent is accepted for back-compat", the convention every check above follows,
+    # is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
+    if scheme == TQ_FP8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
         return False
     ckpt_base = meta.get("base_model_id")
     if base:

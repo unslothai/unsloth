@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -817,6 +818,10 @@ def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeyp
     # The wiring half of the same bug: the 2.3 branch does not use pipe_kwargs, so the loader must pass the pre-cast encoder across explicitly.
     from core.inference import diffusion_te_prequant, video_ltx2
 
+    # The CPU stub cannot cast the encoder, which the strict default now refuses; this test is
+    # about the WIRING, so keep the legacy silent-fallback behaviour for it.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+
     precast = object()
     monkeypatch.setattr(
         diffusion_te_prequant, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": precast}
@@ -1343,6 +1348,17 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     assert status["speed_mode"] == "off"
     backend.unload()
 
+    # ...and the RECORD still says the user asked for nothing. The suppression rewrites the
+    # internal value to "off" before the resolved record is built, and reporting that as the
+    # request makes the record claim an explicit pin: the Auto badge disappears and the Precision
+    # select reseeds to none, so after the user changes Speed and reloads, quantisation stays
+    # pinned off for no reason they can see.
+    resolved = status["resolved"]["transformer_quant"]
+    assert (
+        resolved["requested"] is None
+    ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
+    assert resolved["source"] == "auto"
+
     # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     assert calls == [True]
@@ -1366,6 +1382,37 @@ def test_video_step_cache_auto_from_default_schedule(fake_runtime, tmp_path):
     assert status2["transformer_cache"] is None
     assert status2["resolved"]["transformer_cache"]["source"] == "auto"
     backend.unload()
+
+
+def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
+    fake_runtime, tmp_path
+):
+    filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf"
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+
+    assert status["gguf_variant"] == "Q4_K_M"
+    assert backend.unload()["gguf_variant"] is None
+    # A pipeline load has no checkpoint quant to name.
+    assert (
+        backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")[
+            "gguf_variant"
+        ]
+        is None
+    )
+    backend.unload()
+
+
+def test_video_status_response_carries_gguf_variant():
+    from models.inference import VideoStatusResponse
+    assert VideoStatusResponse(loaded = True, gguf_variant = "Q4_K_M").gguf_variant == "Q4_K_M"
 
 
 def test_video_step_cache_auto_toggles_on_actual_steps(fake_runtime):
@@ -1521,9 +1568,12 @@ def test_wan_a14b_dense_quant_applies_to_both_dits(fake_runtime, monkeypatch):
 
 
 def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
-    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload policy must SKIP quant: the load succeeds dense and the record explains why.
+    # Offload hooks move modules with Module.to(), which torchao tensors reject, so any offload
+    # policy must SKIP quant. With the legacy escape hatch set the load still succeeds dense and the
+    # record explains why; the strict default refuses instead (see the test below).
     import core.inference.video as video_mod
 
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     quantised = []
 
@@ -1563,7 +1613,80 @@ def test_dense_quant_skipped_under_offload(fake_runtime, monkeypatch):
     assert status["offload_policy"] == "model"
     assert quantised == []
     assert status["transformer_quant"] is None
-    assert "offload moves the DiT" in status["resolved"]["transformer_quant"]["reason"]
+    resolved = status["resolved"]["transformer_quant"]
+    assert "moves the DiT" in resolved["reason"]
+    # BOTH sides of the story survive: the ask, the outcome, and that they disagree.
+    assert resolved["requested"] == "int8"
+    assert resolved["value"] == "off"
+    assert resolved["status"] == "fell_back"
+
+
+def test_explicit_dense_quant_refuses_under_offload(fake_runtime, monkeypatch):
+    # Strict default (no escape hatch): an explicit int8 the offload plan cannot honor stops the
+    # load, rather than denoising at bf16 while the Precision dropdown still reads INT8.
+    import dataclasses
+
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod,
+        "quantize_transformer",
+        lambda view, target, *, mode, family, logger = None: pytest.fail("must not quantise"),
+    )
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), offload_policy = "model"),
+    )
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+        )
+    assert "transformer_quant='int8' could not be used" in str(excinfo.value)
+    assert "resident memory mode" in str(excinfo.value)
+    assert backend.status()["loaded"] is False
+
+
+def test_the_video_refusal_also_names_a_broken_torchao_rather_than_the_gpu(
+    fake_runtime, monkeypatch
+):
+    # The image twin's finding, shared through explain_unusable_scheme: a torchao that cannot
+    # import looks exactly like a GPU without the kernels to the selector, and a refusal that
+    # blames the GPU sends the user after hardware for what a reinstall fixes.
+    import core.inference.diffusion_transformer_quant as tq
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "select_transformer_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", ("ImportError: no torchao kernels",))
+    with pytest.raises(RuntimeError) as excinfo:
+        video_mod.assert_video_precision_available(
+            types.SimpleNamespace(name = "ltx-2"),
+            model_kind = "pipeline",
+            transformer_quant = "nvfp4",
+        )
+    message = str(excinfo.value)
+    assert "transformer_quant='nvfp4' could not be used" in message
+    assert "no torchao kernels" in message and "not a limit of the GPU" in message
+
+
+def test_begin_load_refuses_dense_quant_on_a_non_pipeline_video_kind(fake_runtime, monkeypatch):
+    # The DiT quant only exists on the full-pipeline path, so an explicit scheme on a GGUF pick was
+    # accepted and then ignored outright. Refused before the load starts (the route's 409).
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.begin_load(
+            "unsloth/LTX-2.3-GGUF",
+            gguf_filename = "ltx-2.3-Q4_K_M.gguf",
+            model_kind = "gguf",
+            transformer_quant = "fp8",
+        )
+    assert "full-pipeline loads only" in str(excinfo.value)
 
 
 def test_wan_a14b_partial_quant_fails_the_load(fake_runtime, monkeypatch):
@@ -2319,3 +2442,523 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+# ── a failed video must say what it was rendering (#8225) ────────────────────────
+
+
+def _failing_pipe_call(exc):
+    # The explicit signature matters: generate() inspects it, and a bare **kwargs would advertise
+    # no callback_on_step_end and route the call down the scheduler-wrapping path instead.
+    def _boom(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        frame_rate = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        raise exc
+
+    return _boom
+
+
+def _capture_generate_failures(monkeypatch):
+    """Collect the ``video.generate_failed_request`` lines.
+
+    The module logger is structlog, which caplog does not see, so wrap it and pass everything
+    else straight through to the real one."""
+    import core.inference.video as video_mod
+
+    lines: list = []
+    real = video_mod.logger
+
+    class _Recorder:
+        def error(self, fmt, *a, **k):
+            message = fmt % a if a else fmt
+            if "generate_failed_request" in message:
+                lines.append(message)
+            return real.error(fmt, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    return lines
+
+
+def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, monkeypatch):
+    # The reported bug: the entire server-side record of the OOM in #8225 was the exception string,
+    # so the resolution and frame count behind a 66.54 GiB allocation had to be recovered by
+    # dividing it by the head count. Log the request that produced it.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert len(records) == 1
+    line = records[0]
+    # The SNAPPED shape, which is what actually ran, not the caller's raw request.
+    assert "width=992" in line and "height=672" in line and "frames=113" in line
+    assert "steps=" in line and "seed=" in line and "family=ltx-2" in line
+    assert "device=" in line and "offload=" in line
+
+
+def test_a_rejected_request_is_not_recorded_as_a_server_failure(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # _run_generate maps every ValueError from the pipeline to client input feedback and gives it
+    # no video.generate_failed record, so the request-shape log must not turn the same rejection
+    # into an ERROR entry: a user asking for a shape the pipeline refuses is not a server failure.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(ValueError("`height` and `width` have to be divisible by 32")),
+    )
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(ValueError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert records == []
+
+
+def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypatch):
+    # A length distinguishes an empty prompt from a long one, which is all a bug report needs; the
+    # server log is not the place for user content.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a secret about oranges", negative_prompt = "blurry")
+
+    line = records[0]
+    assert "oranges" not in line and "blurry" not in line
+    assert "prompt_chars=22" in line and "negative_prompt_chars=6" in line
+
+
+def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp_path, monkeypatch):
+    # The whole point of #8225: the model was not too big, the score matrix was. When the device
+    # has no fused kernel, an OOM should arrive with that diagnosis attached.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 2
+    assert "score matrix" in records[1] and "SQUARE" in records[1]
+
+
+def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monkeypatch):
+    # Math-only is a real condition, but it did not cause a scheduler bug. Only allocator failures
+    # get the diagnosis, or it becomes noise on every unrelated crash.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 1
+    assert "score matrix" not in records[0]
+
+
+def test_a_cancel_is_not_logged_as_a_failure(fake_runtime, tmp_path, monkeypatch):
+    # Cancels unwind through the same handler. A user pressing stop is an outcome, not a bug
+    # report, and logging it would bury the real ones.
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a clip", cancel_event = cancel)
+
+    assert records == []
+
+
+def test_a_failure_before_the_request_resolves_logs_nothing(fake_runtime, tmp_path, monkeypatch):
+    # There is nothing truthful to report until the shape is snapped, and a half-bound record
+    # would be worse than none.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+
+    def _broken(fam, w, h):
+        raise RuntimeError("resolution table is broken")
+
+    monkeypatch.setattr(video_mod, "snap_video_size", _broken)
+
+    with pytest.raises(RuntimeError, match = "resolution table"):
+        backend.generate(prompt = "a clip")
+
+    assert records == []
+
+
+def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_path, monkeypatch):
+    # If the probe or the formatting raises, the caller must still see the original exception.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+
+    def _boom(target):
+        raise RuntimeError("the probe itself is broken")
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _boom)
+
+    with pytest.raises(RuntimeError, match = "66.54 GiB"):
+        backend.generate(prompt = "a clip")
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        (RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB."), True),
+        (RuntimeError("HIP out of memory"), True),
+        (RuntimeError("Tried to allocate 2.00 GiB"), True),
+        (RuntimeError("scheduler produced NaN sigmas"), False),
+        (ValueError("bad prompt"), False),
+    ],
+)
+def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
+    # torch raises torch.OutOfMemoryError on CUDA but a plain RuntimeError on some backends, so
+    # an isinstance check alone would miss exactly the reports this is for.
+    import core.inference.video as video_mod
+    assert video_mod._is_out_of_memory(exc) is expected
+
+
+def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """AITER / xFormers replace torch's own dispatch, so probing native SDPA answers about code the
+    generation never executed. On a ROCm card with AITER engaged that turned every OOM into a
+    confident false statement that attention ran on the quadratic math backend."""
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, attention_backend = "aiter")
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("HIP out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    probed: list = []
+
+    def _never(target):
+        probed.append(target)
+        return True
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _never)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert probed == [], "an engaged external backend must not be diagnosed as native SDPA"
+    assert not any(video_mod.SDPA_MATH_ONLY_MESSAGE in line for line in records)
+    # The request record itself is still logged; only the diagnosis is withheld.
+    assert any("family=ltx-2" in line for line in records)
+
+
+def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_path, monkeypatch):
+    """Video families promote a resolved fp16 to fp32, and the fused SDPA kernels are
+    half-precision only. A dtypeless probe target defaults to fp16, so it would answer for a
+    precision the run never used."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    seen: list = []
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    # The run's dtype reaches the record, which is what the probe target is built from.
+    assert any("dtype=float32" in line for line in records)
+    assert len(seen) == 1
+
+
+def test_the_probe_target_resolves_the_recorded_dtype():
+    """The other half: that recorded string becomes the real torch dtype the probe asks about."""
+    import torch
+
+    import core.inference.video as video_mod
+
+    assert video_mod._probe_target({"device": "cuda", "dtype": "float32"}).dtype is torch.float32
+    assert video_mod._probe_target({"device": "cuda", "dtype": "bfloat16"}).dtype is torch.bfloat16
+    # No recorded dtype keeps the probe's own half-precision default.
+    assert video_mod._probe_target({"device": "cuda"}).dtype is None
+    # A junk value, or a torch attribute that is not a dtype, can never become a bogus dtype.
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nonsense"}).dtype is None
+    assert video_mod._probe_target({"device": "cuda", "dtype": "nn"}).dtype is None
+
+
+# ── text-encoder budgeting ───────────────────────────────────────────────────
+# The plan sizes companions from the family's bf16 (transformer, text_encoder, vae) table. A pick
+# that takes its encoder PRE-CAST from a hosted fp8 checkpoint loads roughly half that encoder, and
+# for ltx-2 the encoder is Gemma3-12B at 24.4 GB, so budgeting it at bf16 over-states the resident
+# requirement by ~11 GB. PR #8213 gates a hard unified-memory refusal on model_dense_mib, which
+# turns that over-estimate from a conservative offload choice into a refused load that would fit.
+_MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)
+
+
+def _capture_plan(monkeypatch):
+    """Record every plan_diffusion_memory call's kwargs, keeping the real planner."""
+    import core.inference.video as video_mod
+
+    calls = []
+    real = video_mod.plan_diffusion_memory
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
+    return calls
+
+
+def _allow_te_prequant(monkeypatch, *, injects = True):
+    """Make the pre-cast encoder resolvable (device-gated on CUDA in real life) without any IO.
+
+    Injection itself needs the Hub and a real transformers class, so it is stubbed either way;
+    ``injects=False`` models the fallback (unreachable / corrupt / base-mismatched checkpoint),
+    where the load ends up with the dense encoder and the budget must return to bf16."""
+    import core.inference.diffusion_precision as precision
+    import core.inference.diffusion_te_prequant as tpq
+
+    # These tests are about the BUDGET the plan is built from, not about the cast. The CPU stub
+    # pipeline carries no encoder the quantiser can cast, and the strict default refuses an
+    # explicit precision it cannot honour, so keep the legacy silent fallback here.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    injected = {"text_encoder": object()} if injects else {}
+    monkeypatch.setattr(tpq, "te_prequant_pipe_kwargs", lambda *a, **k: dict(injected))
+    return tpq.TE_PREQUANT_BUDGET_SCALE
+
+
+def test_gguf_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
+        "Lightricks/LTX-2"
+    ).bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    backend = VideoBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+    quant_companion = calls[0]["companion_dense_mib"]
+    quant_dense = calls[0]["model_dense_mib"]
+
+    calls.clear()
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    bf16_companion = calls[0]["companion_dense_mib"]
+    bf16_dense = calls[0]["model_dense_mib"]
+
+    # The encoder is scaled...
+    assert quant_companion == int((text_encoder_gb * scale + vae_gb) * _MIB_PER_GB)
+    # ...the VAE is NOT: nothing on this path quantises it, and the Wan families widen it to fp32.
+    assert quant_companion - int(text_encoder_gb * scale * _MIB_PER_GB) == int(vae_gb * _MIB_PER_GB)
+    assert bf16_companion == int((text_encoder_gb + vae_gb) * _MIB_PER_GB)
+    # The saving reaches model_dense_mib, which is the number PR #8213 refuses on.
+    assert bf16_dense - quant_dense == bf16_companion - quant_companion
+    # ~11 GB for Gemma3-12B, so this is worth a whole offload tier rather than rounding noise.
+    assert (bf16_dense - quant_dense) / _MIB_PER_GB > 8.0
+    # The transformer term is untouched by a TEXT-ENCODER quant.
+    assert bf16_dense - bf16_companion == quant_dense - quant_companion
+
+
+def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_runtime, monkeypatch):
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
+        "Lightricks/LTX-2"
+    ).bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] == int(
+        (transformer_gb + text_encoder_gb * scale + vae_gb) * _MIB_PER_GB
+    )
+    # The pipeline kind budgets one total, so companion_dense_mib stays None as before.
+    assert calls[0]["companion_dense_mib"] is None
+
+
+def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_runtime, monkeypatch):
+    # The source resolves (so the budget shrinks) but the checkpoint cannot be loaded -- an
+    # unreachable Hub, a corrupt artifact, a base-model mismatch. Assembly falls back to the dense
+    # encoder, so the plan must be rebuilt at bf16 before placement is applied; leaving the fp8
+    # budget in place under-states ltx-2's resident requirement by ~8.5 GB and can pick resident.
+    from core.inference.video_families import detect_video_family
+
+    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+    _allow_te_prequant(monkeypatch, injects = False)
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] < int(sum(components) * _MIB_PER_GB)
+    assert calls[-1]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+
+
+def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runtime, monkeypatch):
+    # Wan requests fp8 the same way, but hosts no pre-cast checkpoint: the encoder is downloaded
+    # dense and cast in place AFTER assembly, so its PEAK is bf16 and the budget must not shrink.
+    from core.inference.video_families import detect_video_family
+
+    _allow_te_prequant(monkeypatch)
+    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
+    )
+    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
+
+
+def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
+    # The whole change is inert on a default load: every family keeps its bf16-table budget, so no
+    # existing decision on any device moves.
+    from core.inference.video_families import _FAMILIES
+
+    _allow_te_prequant(monkeypatch)
+    calls = _capture_plan(monkeypatch)
+    for fam in _FAMILIES:
+        if fam.bf16_components_gb is None or fam.name == "wan2.2-t2v-a14b":
+            continue
+        calls.clear()
+        VideoBackend().load_pipeline(fam.base_repo, model_kind = "pipeline")
+        assert calls[0]["model_dense_mib"] == int(
+            sum(fam.bf16_components_gb) * _MIB_PER_GB
+        ), fam.name
+
+
+def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypatch):
+    # The transformer-quant re-plan rebuilds the total from the table; it must carry the same
+    # scaled encoder, or it re-introduces the over-estimate the first plan just dropped.
+    import core.inference.video as video_mod
+    from core.inference.diffusion_auto_policy import _QUANT_STEADY_FACTOR
+    from core.inference.video_families import detect_video_family
+
+    scale = _allow_te_prequant(monkeypatch)
+    transformer_gb, text_encoder_gb, vae_gb = detect_video_family(
+        "Lightricks/LTX-2"
+    ).bf16_components_gb
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
+    # Force the first plan to offload so the re-plan branch runs.
+    import dataclasses
+
+    real = video_mod.plan_diffusion_memory
+    calls = []
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return dataclasses.replace(real(**kwargs), offload_policy = "model")
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _spy)
+    monkeypatch.setattr(
+        video_mod, "apply_memory_plan", lambda pipe, plan, device = None, logger = None: ("model", True)
+    )
+
+    VideoBackend().load_pipeline(
+        "Lightricks/LTX-2",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        text_encoder_quant = "fp8",
+    )
+    assert len(calls) == 2, "the dense-quant re-plan did not run"
+    assert calls[1]["model_dense_mib"] == int(
+        (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
+        * _MIB_PER_GB
+    )

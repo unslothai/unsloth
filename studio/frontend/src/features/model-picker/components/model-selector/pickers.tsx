@@ -22,7 +22,11 @@ import {
   listScanFolders,
   removeScanFolder,
 } from "@/features/chat";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  chatModelLoaded,
+  isExternalModelId,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
@@ -1889,9 +1893,20 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
-  // highlight which can be a staged pick. Disables the update action for it.
-  const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
+  // What the backend actually holds, not the dropdown highlight, which can be a
+  // staged pick. The selection alone was wrong: an image or video load evicts
+  // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
+  // badge with nothing resident. Same predicate as the header tick, so the two
+  // cannot disagree.
+  const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedModelId = chatModelLoaded({
+    checkpoint: selectedCheckpoint,
+    isExternalModel: isExternalModelId(selectedCheckpoint),
+    residentCheckpoint,
+  })
+    ? selectedCheckpoint
+    : undefined;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
