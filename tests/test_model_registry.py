@@ -222,9 +222,7 @@ def _hub_error(cls, message):
 
 def test_missing_repo_is_reported_missing():
     """A repo the Hub says does not exist is a registry error."""
-    api = _FakeApi(
-        _hub_error(RepositoryNotFoundError, "404 Client Error. Repository Not Found")
-    )
+    api = _FakeApi(_hub_error(RepositoryNotFoundError, "404 Client Error. Repository Not Found"))
     assert _model_is_missing(api, "unsloth/does-not-exist")
 
 
