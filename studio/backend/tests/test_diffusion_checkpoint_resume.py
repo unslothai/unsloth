@@ -2362,7 +2362,9 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
 
 
-def test_mirror_backed_identity_names_the_source_but_reads_the_fetched_revision(monkeypatch, run_dir):
+def test_mirror_backed_identity_names_the_source_but_reads_the_fetched_revision(
+    monkeypatch, run_dir
+):
     """Resume metadata stays canonical while revision checks follow the bytes that loaded."""
     import dataclasses
 

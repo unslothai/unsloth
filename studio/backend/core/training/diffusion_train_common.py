@@ -1033,6 +1033,7 @@ class DiffusionLoraConfig:
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
         from core.inference.diffusion_families import prefer_ungated_mirror
+
         fetch_base_model = (
             prefer_ungated_mirror(self.base_model, token or None)
             if resolved_family != "sdxl"
