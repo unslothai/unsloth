@@ -7140,15 +7140,18 @@ def _session_in_flight(session_id: "str | None"):
     try:
         yield
     finally:
-        last = False
+        pending: "dict[str, bool]" = {}
         with _active_sessions_lock:
             if _active_sessions.get(key, 0) <= 1:
-                last = True
                 _active_sessions.pop(key, None)
-                for pending_id, pending_files in _pending_removals.pop(key, {}).items():
-                    _remove_session_sandbox_locked(pending_id, pending_files)
+                pending = _pending_removals.pop(key, {})
             else:
                 _active_sessions[key] -= 1
+        # Outside the lock: the removal walks the tree to decide whether it
+        # holds files, and on a slow volume that is seconds during which no
+        # tool call in any other chat could start.
+        for pending_id, pending_files in pending.items():
+            _remove_session_sandbox_locked(pending_id, pending_files)
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7337,6 +7340,17 @@ def _ensure_session_dir(root: str, session_id: str) -> str:
         # Before creating anything: _session_dir can hand back the fallback
         # name, which in a root the user pointed us at can be a directory of
         # theirs, and claiming it would run this chat inside their files.
+        if not os.path.exists(workdir):
+            # A tree an interrupted migration left marked but not moved in is
+            # this chat's, at any root: starting fresh beside it would leave
+            # those files unreachable for good.
+            stranded = _marked_sandbox_in(root, session_id)
+            if stranded:
+                try:
+                    os.rename(stranded, workdir)
+                except OSError:
+                    return stranded
+                return workdir
         if not _free_for(workdir, _sandbox_name(session_id)) and not _root_is_ours():
             workdir = _free_fallback_dir(root, session_id)
             if workdir is None or not _contained_in_root(workdir, root):
@@ -7843,6 +7857,11 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
     if not _contained_in_root(workdir, root):
         return _sandbox_fallback(root, "_invalid")
     if not os.path.isdir(workdir):
+        # A migration that moved the tree but could not rename it into place
+        # leaves the only copy under a marked name, at any root.
+        ours = _marked_sandbox_in(root, session_id)
+        if ours:
+            return ours
         # Right after an upgrade the files can still be at the legacy root: the
         # move runs in the background and across filesystems takes minutes, and
         # a pass that fails leaves them there. Read from where they are rather
@@ -7886,6 +7905,41 @@ _DETACHED_SUFFIX = ".deleting-"
 # The exact shape the rename produces. A substring test would also have matched
 # a backup of the user's own named report.deleting-old.
 _DETACHED_RE = re.compile(r"\A.+\.deleting-[0-9a-f]{8}\Z")
+
+
+# One worker for every detached tree, rather than a thread per chat: clearing a
+# thousand chats would otherwise start a thousand recursive deletes at once.
+_delete_queue: "queue.Queue[str]" = queue.Queue()
+_delete_worker: "threading.Thread | None" = None
+_delete_worker_lock = threading.Lock()
+
+
+def _drain_detached_deletes() -> None:
+    while True:
+        target = _delete_queue.get()
+        try:
+            shutil.rmtree(target, ignore_errors = True)
+        finally:
+            _delete_queue.task_done()
+
+
+def _queue_detached_delete(target: str) -> None:
+    """Hand a renamed tree to the sweeper, or delete it here if none can run."""
+    global _delete_worker
+    with _delete_worker_lock:
+        if _delete_worker is None or not _delete_worker.is_alive():
+            try:
+                _delete_worker = threading.Thread(
+                    target = _drain_detached_deletes, name = "sandbox-delete", daemon = True,
+                )
+                _delete_worker.start()
+            except RuntimeError:
+                # No thread to be had: better a slow call than a tree under a
+                # name nothing resolves to and nothing deletes.
+                _delete_worker = None
+                shutil.rmtree(target, ignore_errors = True)
+                return
+    _delete_queue.put(target)
 
 
 def sweep_detached_sandboxes(root: "str | None" = None) -> None:
@@ -7944,9 +7998,15 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # from _get_workdir, and would otherwise never be cleaned up.
     if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
         return False
-    # The folder may still be at the legacy root right after an upgrade.
-    # Outside the lock below: it moves a tree and takes a lock of its own.
-    _migrate_legacy_sandbox(sandbox_root())
+    # The folder may still be at the legacy root right after an upgrade. This
+    # session only: the whole-tree pass is a cross-filesystem copy of every
+    # chat, and a delete would sit behind it for minutes. Outside the lock
+    # below, since it moves a tree and takes a lock of its own.
+    root_now = sandbox_root()
+    _migrate_one_legacy_session(root_now, _sandbox_name(session_id))
+    if _usable_session_id(session_id) and _sandbox_name(session_id) != session_id:
+        _migrate_one_legacy_session(root_now, session_id)
+    _start_legacy_migration()
     # Held across the decision AND the unlink: otherwise a tool can start in
     # between and run in a directory this call then removes.
     key = _session_key(session_id)
@@ -8060,13 +8120,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
             except OSError:
                 shutil.rmtree(target, ignore_errors = True)
                 return not os.path.isdir(target)
-            threading.Thread(
-                target = shutil.rmtree,
-                args = (detached,),
-                kwargs = {"ignore_errors": True},
-                name = "sandbox-delete",
-                daemon = True,
-            ).start()
+            _queue_detached_delete(detached)
             return True
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
@@ -11417,56 +11471,51 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
 _active_scratch: "set[str]" = set()
 _scratch_lock = threading.Lock()
 
-# Per workdir: how many tool calls are running in it, and the periods when more
-# than one was. A file written while two calls shared the directory belongs to
-# neither of them for certain, and a card naming another chat's file (or
-# downloading its contents) is worse than a card that is missing one.
-_workdir_calls: "dict[str, dict]" = {}
+# Tool calls running in each workdir. Chats in one project share a workdir and
+# each call diffs the whole tree, so a file the other call wrote would be named
+# on this card and downloaded from it. A call that was ever alongside another
+# claims nothing: no timestamp is involved, since a coarse or remote clock is
+# exactly what this cannot depend on.
+_workdir_calls: "dict[str, list]" = {}
 _calls_lock = threading.Lock()
 
 
-def _call_started(workdir: "str | None") -> None:
-    """Register a tool call running in *workdir*."""
+def _call_started(workdir: "str | None") -> dict:
+    """Register a call in *workdir* and hand back its token."""
+    token = {"workdir": workdir, "shared": False}
     if not workdir:
-        return
+        return token
     with _calls_lock:
-        state = _workdir_calls.setdefault(workdir, {"count": 0, "shared": []})
-        state["count"] += 1
-        if state["count"] == 2:
-            state["shared"].append([time.time_ns(), None])
-            del state["shared"][:-64]
+        running = _workdir_calls.setdefault(workdir, [])
+        if running:
+            token["shared"] = True
+            for other in running:
+                other["shared"] = True
+        running.append(token)
+    return token
 
 
-def _call_finished(workdir: "str | None") -> None:
-    """Close the shared period this call was part of, if it was the second."""
-    if not workdir:
+def _call_finished(token: "dict | None") -> None:
+    """Drop a call's registration. Its token keeps whatever it learned."""
+    if not token or not token.get("workdir"):
         return
     with _calls_lock:
-        state = _workdir_calls.get(workdir)
-        if state is None:
+        running = _workdir_calls.get(token["workdir"])
+        if running is None:
             return
-        state["count"] -= 1
-        if state["count"] < 2 and state["shared"] and state["shared"][-1][1] is None:
-            state["shared"][-1][1] = time.time_ns()
-        if state["count"] <= 0:
-            _workdir_calls.pop(workdir, None)
-
-
-def _written_while_shared(workdir: "str | None", mtime_ns: int) -> bool:
-    """Whether this file was last written while another call was also running."""
-    if not workdir:
-        return False
-    with _calls_lock:
-        state = _workdir_calls.get(workdir)
-        shared = list(state["shared"]) if state else []
-    now = time.time_ns()
-    return any(start <= mtime_ns <= (end if end is not None else now) for start, end in shared)
+        try:
+            running.remove(token)
+        except ValueError:
+            pass
+        if not running:
+            _workdir_calls.pop(token["workdir"], None)
 
 
 def _created_file_sentinels(
     workdir: str | None,
     before: "dict[str, tuple]",
     exclude: "str | None" = None,
+    token: "dict | None" = None,
 ) -> str:
     """Sentinels naming the files this call created or overwrote.
 
@@ -11474,6 +11523,11 @@ def _created_file_sentinels(
     with its size so the UI can offer a download. Both are stripped before the
     model sees the result.
     """
+    if token is not None and token.get("shared"):
+        # Another call ran in this directory while this one did, so nothing here
+        # can be said to be ours. A missing card beats one that names, and
+        # downloads, another chat's file.
+        return ""
     after = _snapshot_workdir_files(workdir)
     # ``exclude`` is this call's own scratch script by exact name, not a pattern
     # reserved over names a tool might pick.
@@ -11486,7 +11540,6 @@ def _created_file_sentinels(
         if name != exclude
         and name not in scratch
         and (name not in before or before[name] != key)
-        and not _written_while_shared(workdir, key[0])
     )
     if not changed:
         return ""
@@ -11552,7 +11605,7 @@ def _python_exec(
     tmp_path = None
     _scratch_name = None
     workdir = _get_workdir(session_id)
-    _call_started(workdir)
+    call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
     try:
@@ -11619,12 +11672,12 @@ def _python_exec(
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
             return ended + (
-                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token) if session_id else ""
             )
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before, _scratch_name) if session_id else ""
+                _created_file_sentinels(workdir, _before, _scratch_name, call_token) if session_id else ""
             )
 
         result = output or ""
@@ -11645,14 +11698,14 @@ def _python_exec(
         # the _default workdir, so a card pinned to it would later download
         # whatever the next new chat wrote there.
         if session_id:
-            result += _created_file_sentinels(workdir, _before, _scratch_name)
+            result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
         return result
 
     except Exception as e:
         return f"Execution error: {e}"
     finally:
-        _call_finished(workdir)
+        _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
@@ -11701,9 +11754,10 @@ def _bash_exec(
         )
 
     workdir = None
+    call_token = None
     try:
         workdir = _get_workdir(session_id)
-        _call_started(workdir)
+        call_token = _call_started(workdir)
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
@@ -11750,11 +11804,11 @@ def _bash_exec(
         # report it: `printf data > report.csv; sleep 999` is downloadable.
         if timed_out:
             ended = _truncate(f"Execution timed out after {timeout} seconds.")
-            return ended + (_created_file_sentinels(workdir, _before) if session_id else "")
+            return ended + (_created_file_sentinels(workdir, _before, None, call_token) if session_id else "")
 
         if cancel_event is not None and cancel_event.is_set():
             return "Execution cancelled." + (
-                _created_file_sentinels(workdir, _before) if session_id else ""
+                _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
         result = output or ""
@@ -11767,11 +11821,11 @@ def _bash_exec(
         result = _defuse_sentinels(result)  # see _python_exec
         # Only for a chat that has an id (see _python_exec).
         if session_id:
-            result += _created_file_sentinels(workdir, _before)
+            result += _created_file_sentinels(workdir, _before, None, call_token)
         return result
 
     except Exception as e:
         return f"Execution error: {e}"
     finally:
-        _call_finished(workdir)
+        _call_finished(call_token)
         _forget_tool_pid(locals().get("proc"))

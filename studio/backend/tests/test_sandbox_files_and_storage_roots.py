@@ -3300,37 +3300,40 @@ def test_a_snapshot_stops_hashing_once_it_has_read_enough(tmp_path, monkeypatch)
     assert any(key[2] is None for key in snapshot.values()), "nothing fell back"
 
 
-def test_a_file_written_while_two_calls_shared_a_workdir_is_not_claimed(tmp_path):
+def test_a_call_that_shared_its_workdir_claims_nothing(tmp_path):
     """Chats in one project share a workdir. Each call diffs the whole tree, so
     the other call's output was advertised on this card and its download served
-    that content."""
+    that content. No timestamps: a coarse or remote clock is exactly what this
+    cannot depend on."""
     from core.inference import tools
 
     workdir = tmp_path / "project-workspace"
     workdir.mkdir()
 
-    tools._call_started(str(workdir))  # the other chat's call, still running
+    theirs = tools._call_started(str(workdir))  # the other chat's call
     try:
         before = tools._snapshot_workdir_files(str(workdir))
-        tools._call_started(str(workdir))  # ours starts while theirs runs
+        ours = tools._call_started(str(workdir))  # ours starts while theirs runs
         try:
             (workdir / "theirs.csv").write_text("a,b\n", encoding = "utf-8")
-            sentinels = tools._created_file_sentinels(str(workdir), before)
+            sentinels = tools._created_file_sentinels(str(workdir), before, None, ours)
         finally:
-            tools._call_finished(str(workdir))
+            tools._call_finished(ours)
+        assert ours["shared"] is True
+        assert theirs["shared"] is True, "the call already running was not told"
     finally:
-        tools._call_finished(str(workdir))
+        tools._call_finished(theirs)
 
-    assert "theirs.csv" not in sentinels, sentinels
+    assert sentinels == "", sentinels
 
     # Alone in the workdir, the same write is reported as before.
-    tools._call_started(str(workdir))
+    alone = tools._call_started(str(workdir))
     try:
         before = tools._snapshot_workdir_files(str(workdir))
         (workdir / "ours.csv").write_text("a,b\n", encoding = "utf-8")
-        sentinels = tools._created_file_sentinels(str(workdir), before)
+        sentinels = tools._created_file_sentinels(str(workdir), before, None, alone)
     finally:
-        tools._call_finished(str(workdir))
+        tools._call_finished(alone)
     assert "ours.csv" in sentinels, sentinels
 
 
@@ -3388,6 +3391,140 @@ def test_a_case_variant_id_cannot_delete_a_markerless_sandbox(tmp_path, monkeypa
     assert (workdir / "notes.txt").is_file(), "deleted another chat's files"
     # Its own id still reaches it.
     assert tools.remove_session_sandbox("Foo_chat1", delete_files = True) is True
+
+
+def test_a_delete_moves_only_its_own_session_up(tmp_path, monkeypatch):
+    """The whole-tree pass is a cross-filesystem copy of every chat, and the
+    delete used to sit behind it before its response could go out."""
+    fake_home = tmp_path / "userprofile"
+    legacy_root = fake_home / "studio_sandbox"
+    session = "__LOCALID_quick11"
+    (legacy_root / session).mkdir(parents = True)
+    (legacy_root / session / "mine.txt").write_text("x", encoding = "utf-8")
+    for other in range(3):
+        (legacy_root / f"__LOCALID_other{other}").mkdir()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+    monkeypatch.setattr(tools, "_start_legacy_migration", lambda: None)
+    whole_tree = []
+    monkeypatch.setattr(
+        tools, "_migrate_legacy_sandbox", lambda root: whole_tree.append(root)
+    )
+
+    tools.remove_session_sandbox(session, delete_files = True)
+
+    assert whole_tree == [], "the delete waited for every other chat to move"
+    assert not (legacy_root / session).exists(), "its own files were left behind"
+    for other in range(3):
+        assert (legacy_root / f"__LOCALID_other{other}").is_dir()
+
+
+def test_a_deferred_removal_runs_outside_the_global_lock(tmp_path, monkeypatch):
+    """It walks the tree to decide whether to keep the files, and every tool
+    call in every other chat waits on that lock to start."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_defer11"
+    tools.get_sandbox_workdir(session)
+
+    held = []
+
+    def slow_remove(session_id, delete_files):
+        held.append(tools._active_sessions_lock.acquire(blocking = False))
+        if held[-1]:
+            tools._active_sessions_lock.release()
+        return True
+
+    monkeypatch.setattr(tools, "_remove_session_sandbox_locked", slow_remove)
+    with tools._session_in_flight(session):
+        tools.remove_session_sandbox(session, delete_files = True)
+
+    assert held == [True], "the removal ran while holding the global lock"
+
+
+def test_only_the_sandbox_tools_have_their_file_line_read(tmp_path):
+    """An MCP tool or a fetched page can legitimately end in a well-formed
+    __FILES__ line, and stripping it takes that content from the model."""
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    printed = 'here is the manifest\n__FILES__:[{"name": "report.csv", "size": 1}]'
+
+    assert "__FILES__" not in strip_result_for_model(printed, "python")
+    assert "__FILES__" not in strip_result_for_model(printed, "terminal")
+    assert strip_result_for_model(printed, "mcp__files__list") == printed
+    assert strip_result_for_model(printed, "web_search") == printed
+
+
+def test_a_migration_that_could_not_move_in_is_adopted(tmp_path, monkeypatch):
+    """The rename failed after the tree had already moved, so the marked
+    staging directory is the only copy of the user's files there is."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_stage11"
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    stranded = root / f"{session}{tools._STAGING_SUFFIX}0123abcd"
+    stranded.mkdir()
+    (stranded / "thesis.txt").write_text("years of work", encoding = "utf-8")
+    tools._mark_sandbox(str(stranded), session)
+
+    served = Path(tools.resolve_sandbox_workdir(session))
+    assert (served / "thesis.txt").is_file(), f"the only copy was unreachable: {served}"
+
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert (workdir / "thesis.txt").is_file(), "the next tool call started in an empty folder"
+
+
+def test_bulk_deletes_share_one_sweeper(tmp_path, monkeypatch):
+    """A clear-all can hand over every chat at once, and a thread with a
+    recursive walk per chat is what exhausts the process."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    started = []
+    real_thread = threading.Thread
+
+    class CountingThread(real_thread):
+        def start(self):
+            started.append(self.name)
+            super().start()
+
+    monkeypatch.setattr(threading, "Thread", CountingThread)
+    monkeypatch.setattr(tools.threading, "Thread", CountingThread)
+    tools._delete_worker = None
+
+    for i in range(12):
+        session = f"__LOCALID_bulk{i:03d}"
+        workdir = Path(tools.get_sandbox_workdir(session))
+        (workdir / "out.csv").write_text("a,b\n", encoding = "utf-8")
+        assert tools.remove_session_sandbox(session, delete_files = True) is True
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not any(
+            name.startswith(f"__LOCALID_bulk") for name in os.listdir(tools.sandbox_root())
+        ):
+            break
+        time.sleep(0.05)
+
+    assert started.count("sandbox-delete") == 1, started
+    for i in range(12):
+        assert not (Path(tools.sandbox_root()) / f"__LOCALID_bulk{i:03d}").exists()
 
 
 if __name__ == "__main__":
