@@ -2092,10 +2092,12 @@ def test_a_failed_installer_takes_its_announced_children_with_it(monkeypatch):
 
     class FakeProc:
         pid = 4321
-        stdout = iter([
-            "UNSLOTH_INSTALLER_CHILD started 9941\n",
-            "boom\n",
-        ])
+        stdout = iter(
+            [
+                "UNSLOTH_INSTALLER_CHILD started 9941\n",
+                "boom\n",
+            ]
+        )
 
         def wait(self):
             return 3
@@ -2109,7 +2111,11 @@ def test_a_failed_installer_takes_its_announced_children_with_it(monkeypatch):
     monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
     with pytest.raises(update_flow.InstallerExit):
         update_flow.stream_installer(
-            ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+            ["x"],
+            {},
+            timeout_seconds = 30,
+            job = {},
+            job_lock = threading.Lock(),
         )
 
     assert terminated == [9941], terminated
@@ -2127,10 +2133,12 @@ def test_a_server_the_installer_reported_stopped_is_not_killed_twice(monkeypatch
 
     class FakeProc:
         pid = 4321
-        stdout = iter([
-            "UNSLOTH_INSTALLER_CHILD started 9942\n",
-            "UNSLOTH_INSTALLER_CHILD stopped 9942\n",
-        ])
+        stdout = iter(
+            [
+                "UNSLOTH_INSTALLER_CHILD started 9942\n",
+                "UNSLOTH_INSTALLER_CHILD stopped 9942\n",
+            ]
+        )
 
         def wait(self):
             return 0
@@ -2143,7 +2151,11 @@ def test_a_server_the_installer_reported_stopped_is_not_killed_twice(monkeypatch
 
     monkeypatch.setattr(update_flow.subprocess, "Popen", lambda *a, **k: FakeProc())
     update_flow.stream_installer(
-        ["x"], {}, timeout_seconds = 30, job = {}, job_lock = threading.Lock(),
+        ["x"],
+        {},
+        timeout_seconds = 30,
+        job = {},
+        job_lock = threading.Lock(),
     )
     assert terminated == []
 
