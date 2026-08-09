@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import errno
+import time
 import json
 import os
 import sys
@@ -2703,7 +2705,7 @@ def test_purge_repo_cache_dirs_skips_top_level_symlink(monkeypatch, tmp_path):
     target.mkdir()
     link = root / "models--Org--Repo"
     link.symlink_to(target, target_is_directory = True)
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [root])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
 
     removed = hf_cache_state.purge_repo_cache_dirs("model", "Org/Repo")
 
@@ -2754,14 +2756,20 @@ def test_gguf_download_progress_fallback_logs_warning(monkeypatch):
         )
     )
 
+    # cache_path is ABSENT, not null. Null means "no cache dir for this repo exists", which
+    # hydration acts on by retiring the persisted job; a scan that threw is not evidence of
+    # that, and dropping a job whose partial cache is still on disk costs the user the resume.
+    # cache_measured carries the same distinction through DownloadProgressResponse, which
+    # defaults cache_path to None and would otherwise turn the omission back into an "absent".
     assert result == {
         "downloaded_bytes": 0,
         "completed_bytes": 0,
         "complete_on_disk": False,
         "expected_bytes": 0,
         "progress": 0,
-        "cache_path": None,
+        "cache_measured": False,
     }
+    assert "cache_path" not in result
     assert logger.warnings
     args, kwargs = logger.warnings[0]
     assert args[:4] == (
@@ -3351,6 +3359,564 @@ def test_gguf_progress_unknown_hashes_no_backward_dip_when_variant_finalizes(mon
 
     assert result["downloaded_bytes"] == 0  # sibling .incomplete did not leak
     assert result["progress"] == 0  # no ~0.78 backward dip
+
+
+def _unresolvable_variant_metadata(
+    monkeypatch,
+    entry,
+    *,
+    state = "running",
+):
+    """A repo whose model_info is failing: no requirement, no blob hashes.
+
+    Reproduces the negatively-cached lookup -- a 401 on a gated repo whose token
+    was removed, or an offline poll -- that leaves the expected file set empty
+    for the whole TTL after a single failure.
+    """
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_args, **_kwargs: frozenset(),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = state)),
+    )
+
+
+def test_gguf_progress_unknown_hashes_reports_the_variant_files_on_disk(monkeypatch, tmp_path):
+    """A finished variant must not read as "0 B of 33 GB" when metadata flakes.
+
+    model_info failing is negatively cached, so a 401 that lands after the last
+    byte keeps the expected hash set empty for the whole TTL. Every blob was
+    then filtered out of the count and the reading collapsed to zero against the
+    caller's catalog hint, which is the stale "downloaded 0 B" card. The
+    variant's own snapshot files are still attributable by name, so they are
+    what the reading falls back to -- the sibling quant beside them is not.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # sibling quant
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    (blobs / "siblinghash").write_bytes(b"z" * 900)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["completed_bytes"] == 130  # main quant + shared companion
+    assert result["downloaded_bytes"] == 130
+    assert result["progress"] > 0  # not the "0 B of 130" card
+
+
+def test_gguf_progress_unknown_hashes_keeps_a_total_under_a_full_baseline(monkeypatch, tmp_path):
+    """A variant already on disk at claim time must not net out to "0 B of 0 B".
+
+    Its completed_baseline_bytes covers the whole variant, and the subtraction
+    was previously held off by complete_on_disk -- which is exactly what an
+    unresolvable file set takes away. Without the guard the fallback reading
+    cancels against the baseline and the response carries no total at all, so
+    the bar has nothing to draw and the frontend reads the job as evictable.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 130)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(
+            get_job = lambda _key: SimpleNamespace(state = "running"),
+            get_job_metadata = lambda _key: SimpleNamespace(completed_baseline_bytes = 130),
+        ),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["expected_bytes"] == 130
+    assert result["downloaded_bytes"] == 130
+
+
+def test_gguf_progress_unknown_hashes_prefers_the_manifest_file_set(monkeypatch, tmp_path):
+    """With a manifest but no hashes in it, its declared paths scope the reading.
+
+    The metadata-fallback manifest the worker writes from the finished snapshot
+    carries paths and sizes but no sha256, so the hash filter still resolves to
+    nothing. Its file list is exact, so it is used ahead of matching by name.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, entry)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 0,
+        )
+    )
+
+    assert result["completed_bytes"] == 100
+    assert result["complete_on_disk"] is True  # manifest verifies against disk
+    assert result["progress"] == 1.0
+
+
+def test_gguf_progress_unknown_hashes_stays_zero_without_variant_files(monkeypatch, tmp_path):
+    """The fallback reads the variant's files, not the shared blobs/ dir.
+
+    Guards the "instant ~900 MB" regression from the other direction: a cached
+    sibling quant with no snapshot file of this variant's own still reads zero.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    (blobs / "siblinghash").write_bytes(b"z" * 900)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 900,
+        )
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["downloaded_bytes"] == 0
+
+
+def test_gguf_progress_settles_complete_from_disk_without_a_manifest(monkeypatch, tmp_path):
+    """A materialized snapshot whose manifest is gone must not stay partial forever.
+
+    Metadata named every blob the revision expects and all of them are on disk
+    finalized at their declared sizes, which is the evidence a manifest verify
+    collects. Refusing it because no manifest file happens to exist -- it was
+    never written, was deleted, or was filed under a cache scope this reader can
+    no longer name -- left the job in an active state with Retry/Resume showing
+    on a download that had finished.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert (
+        download_manifest.read_manifest("model", "Org/Model-GGUF", "Q4_K_M", hub_cache = entry.parent)
+        is None
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            download_size_bytes = 100,
+            required_hashes = frozenset({"mainhash"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M.gguf",
+                    size = 100,
+                    sha256 = "mainhash",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is True
+    assert result["progress"] == 1.0
+
+
+def test_a_refused_manifest_is_not_reread_through_the_blob_hash_fallback(monkeypatch, tmp_path):
+    """Refusing a manifest has to stick.
+
+    Two caches disagreeing about the variant means no manifest may be applied across the
+    scan. The generic blob-hash helper reads the DEFAULT cache's manifest with none of that
+    scoping, so falling through to it reinstated the rejected hashes -- and they then filter
+    out every blob of the cache that actually holds the finished variant.
+    """
+    active = tmp_path / "active" / "models--Org--Model-GGUF"
+    remembered = tmp_path / "remembered" / "models--Org--Model-GGUF"
+    active.mkdir(parents = True)
+    remembered.mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        download_manifest, "_canonical_hub_cache", lambda root = None: str(root or "")
+    )
+    for root, digest in ((active.parent, "new"), (remembered.parent, "old")):
+        assert download_manifest.write_manifest(
+            "model",
+            "Org/Model-GGUF",
+            "Q4_K_M",
+            [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = digest)],
+            "http",
+            hub_cache = root,
+        )
+    monkeypatch.setattr(
+        downloads,
+        "preferred_repo_cache_dirs",
+        lambda *_a, **_kw: [active, remembered],
+    )
+
+    called: list[str] = []
+
+    def _blob_hashes(*_args, **_kwargs):
+        called.append("fallback")
+        return frozenset({"new"})
+
+    monkeypatch.setattr(downloads.gguf_variants, "gguf_variant_blob_hashes", _blob_hashes)
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+    captured: dict = {}
+
+    async def _progress(*_args, **kwargs):
+        captured["resolver"] = kwargs.get("metadata_resolver")
+        return {
+            "downloaded_bytes": 0,
+            "completed_bytes": 0,
+            "complete_on_disk": False,
+            "expected_bytes": 0,
+            "progress": 0,
+            "cache_path": None,
+        }
+
+    monkeypatch.setattr(downloads.snapshot_progress, "snapshot_progress_response", _progress)
+
+    asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+    resolver = captured["resolver"]
+    assert resolver is not None
+    assert resolver("Org/Model-GGUF", None) == (100, frozenset())
+    assert called == []
+
+
+def test_gguf_progress_without_a_manifest_needs_every_expected_blob(monkeypatch, tmp_path):
+    """The no-manifest completion is evidence-gated, not size-gated.
+
+    One expected blob missing while an oversized sibling makes the byte total
+    look satisfied must stay partial: the caller's expected_bytes is a catalog
+    hint and can never be what completion is judged against.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (snap / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 400)
+    (blobs / "shard1").write_bytes(b"x" * 400)  # shard2 never arrived
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            download_size_bytes = 300,
+            required_hashes = frozenset({"shard1", "shard2"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M-00001-of-00002.gguf",
+                    size = 150,
+                    sha256 = "shard1",
+                ),
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M-00002-of-00002.gguf",
+                    size = 150,
+                    sha256 = "shard2",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 300,
+        )
+    )
+
+    assert result["complete_on_disk"] is False
+    assert result["progress"] == 0.99  # capped, not settled
+
+
+def test_gguf_progress_recovers_the_windows_shaped_stale_download_card(monkeypatch, tmp_path):
+    """The reported symptom end to end: finished download, "0 B of 33 GB", Retry showing.
+
+    Every Windows-shaped condition at once, none of which reproduce on Linux on
+    their own. The cache is reached through a redirect so its resolved and
+    unresolved spellings differ; the snapshot holds copies rather than symlinks,
+    as HF falls back to when the filesystem refuses them; the manifest sits
+    under the pre-resolve scope digest an earlier build wrote it to; and
+    model_info is failing, so the expected blob hashes come back empty and stay
+    that way for the negative-cache TTL. Each one alone was enough to zero the
+    reading and keep the job out of a terminal state.
+    """
+    resolved_root = tmp_path / "resolved"
+    resolved_root.mkdir()
+    link = tmp_path / "redirected"
+    try:
+        link.symlink_to(resolved_root, target_is_directory = True)
+    except (NotImplementedError, OSError):  # pragma: no cover - unprivileged Windows
+        pytest.skip("symlinks unavailable on this host")
+    hub_cache = link / "hub"
+    entry = hub_cache / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # Copy layout: the snapshot holds real files, and blobs/ was never populated
+    # with anything this reading could have matched by hash.
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 33_000)
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = str(hub_cache)),
+    )
+    # A manifest as an older build filed it: hashed from the unresolved spelling,
+    # and with no sha256 because HF metadata was already unreachable when the
+    # worker recorded it from the finished snapshot.
+    legacy = state_dir.manifest_path(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        hub_cache = hub_cache,
+        cache_scope = state_dir.legacy_cache_scope_name(hub_cache),
+    )
+    assert legacy.parent.name != state_dir.cache_scope_name(hub_cache)
+    legacy.parent.mkdir(parents = True, exist_ok = True)
+    legacy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repo_type": "model",
+                "repo_id": "Org/Model-GGUF",
+                "variant": "Q4_K_M",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "expected_files": [{"path": "model-Q4_K_M.gguf", "size": 33_000}],
+                "transport": "http",
+                "hub_cache": str(hub_cache),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 33_000,
+        )
+    )
+
+    assert result["downloaded_bytes"] == 33_000  # not "0 B"
+    assert result["completed_bytes"] == 33_000  # what settles the job terminal
+    assert result["expected_bytes"] == 33_000
+    assert result["complete_on_disk"] is True  # so Retry/Resume goes away
+    assert result["progress"] == 1.0
+
+
+def test_gguf_progress_without_a_manifest_needs_the_snapshot_materialized(monkeypatch, tmp_path):
+    """A finalized blob no one linked to is not a finished download.
+
+    HF writes the blob and then links it into the snapshot dir, so a run killed
+    between the two leaves bytes that nothing points at. With a manifest,
+    verify_against_disk catches it; without one, blob-level evidence alone would
+    have called an unloadable snapshot complete.
+
+    The stray companion is the reason completion is judged against the metadata
+    file list rather than a byte total taken over the snapshot dir. Every mmproj
+    and drafter in a repo looks like it belongs to whichever variant is being
+    polled -- a plan fetches one of each -- so a leftover one, or an opt-in
+    ``dspark/`` drafter, would cover for the shard that never landed.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (blobs / "mainhash").write_bytes(b"x" * 100)  # never linked into rev0
+    (snap / "mmproj-F32.gguf").write_bytes(b"y" * 5_000)  # not in this plan
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_requirements",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            download_size_bytes = 100,
+            required_hashes = frozenset({"mainhash"}),
+            expected_files = (
+                download_manifest.ExpectedFile(
+                    path = "model-Q4_K_M.gguf",
+                    size = 100,
+                    sha256 = "mainhash",
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is False
+
+
+def test_running_job_never_reads_progress_from_a_remembered_cache(monkeypatch, tmp_path):
+    """force_active means the active root and nothing else, even before it exists.
+
+    The first download into a freshly configured cache creates the root, so
+    hf_cache_root declines it and the lookup used to fall through to every
+    remembered cache. A previous cache's completed copy then read as this run's
+    progress, finalizing a job that had not written a byte.
+    """
+    previous = tmp_path / "previous"
+    complete = previous / "models--Org--Model" / "blobs"
+    complete.mkdir(parents = True)
+    (complete / "mainhash").write_bytes(b"x" * 100)
+    active = tmp_path / "active"  # not created yet
+    monkeypatch.setattr(
+        hf_cache_state,
+        "hf_cache_roots",
+        lambda scan_errors = None: [previous],
+    )
+
+    dirs = hf_cache_state.preferred_repo_cache_dirs(
+        "model",
+        "Org/Model",
+        force_active = True,
+        active_root = active,
+    )
+
+    assert dirs == [active / "models--Org--Model"]
+    assert not dirs[0].exists()
+    # Without force_active the remembered copy is still the best reading there is.
+    assert hf_cache_state.preferred_repo_cache_dirs("model", "Org/Model") == [
+        previous / "models--Org--Model"
+    ]
 
 
 def test_hf_cache_model_file_probe_is_bounded(monkeypatch, tmp_path):
@@ -3982,6 +4548,32 @@ def test_partial_gguf_reconstruction_dedupes_variant_casing(monkeypatch):
     assert [variant.quant for variant in variants] == ["Q4_K_M"]
 
 
+def test_partial_gguf_reconstruction_drops_a_variant_read_off_the_filename(monkeypatch):
+    # An unreadable payload leaves the reader the filename, whose digest fragment
+    # names nothing and would re-key to a further hash on resume. A variant genuinely
+    # called sha256-<32 hex> reads the same but is stored under the hash of itself, so
+    # the file it came from tells them apart where the spelling cannot.
+    digest = "sha256-" + "0" * 32
+    entries = [
+        # variant, the file it was recovered from
+        (f"@{digest}", Path(f"repo--variant--@{digest}.json")),  # scope, payload lost
+        (digest, Path(f"repo--variant--{digest}.json")),  # ditto, older tag
+        (digest, Path("repo--variant--@sha256-" + "c" * 32 + ".json")),  # real, payload intact
+        ("Q4_K_M", Path("repo--variant--q4_k_m.json")),
+    ]
+    monkeypatch.setattr(
+        download_manifest, "iter_variant_manifests", lambda *_a, **_k: iter(entries)
+    )
+    monkeypatch.setattr(download_manifest, "iter_variant_markers", lambda *_a, **_k: iter(()))
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *_a, **_k: None)
+
+    result = gguf.list_partial_gguf_variants_from_state("Org/Repo")
+
+    assert result is not None
+    variants, _has_vision = result
+    assert sorted(variant.quant for variant in variants) == ["Q4_K_M", digest]
+
+
 def test_download_registry_serializes_cross_transport_variant_downloads():
     # An HTTP append-resume and an XET rewrite of the same shared blob would
     # corrupt each other, so different-transport variants are serialized.
@@ -4112,7 +4704,7 @@ def test_prepare_cache_for_transport_purges_only_requested_hashes(monkeypatch, t
     blobs.mkdir(parents = True)
     (blobs / "variant-main.incomplete").write_bytes(b"x")
     (blobs / "shared-mmproj.incomplete").write_bytes(b"y")
-    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False: root)
+    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False, **kw: root)
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4159,7 +4751,7 @@ def _vision_cache_root(monkeypatch, tmp_path):
     root = tmp_path / "hub"
     blobs = root / "models--Org--Vision" / "blobs"
     blobs.mkdir(parents = True)
-    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False: root)
+    monkeypatch.setattr(download_registry, "hf_cache_root", lambda create = False, **kw: root)
     return blobs
 
 
@@ -4877,7 +5469,7 @@ def test_snapshot_progress_filters_stale_blobs(monkeypatch, tmp_path):
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
 
     result = snapshot_progress.compute_snapshot_progress(
@@ -4913,7 +5505,7 @@ def test_snapshot_progress_confirms_complete_only_with_verified_snapshot(monkeyp
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
@@ -4988,7 +5580,7 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
-        lambda _repo_type, _repo_id, force_active = False: [entry],
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
     )
     monkeypatch.setattr(
         snapshot_progress.download_manifest,
@@ -5018,6 +5610,132 @@ def test_snapshot_progress_complete_with_manifest_synthesized_from_disk(monkeypa
 
     assert result["complete_on_disk"] is True
     assert result["progress"] == 1.0
+
+
+def test_a_shared_companion_alone_is_not_evidence_the_quant_is_here(tmp_path):
+    """mmproj and the MTP drafter are downloaded with every quant in a repo, so on their own
+    they say nothing about THIS one. Deleting a quant while a sibling kept its companion left
+    a positive byte reading for the deleted variant, and hydration reads any positive reading
+    as active: it re-adopts the stale job and blocks a fresh download of the same quant."""
+    snap = tmp_path / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (snap / "mmproj-F16.gguf").write_bytes(b"m" * 64)
+
+    def matcher(path, *, companions = True):
+        if path.endswith("Q4_K_M.gguf"):
+            return True
+        return companions and path.startswith("mmproj")
+
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 0
+
+    # With the quant's own shard present, the companion counts again.
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"q" * 32)
+    assert snapshot_progress._materialized_bytes(snap, matcher) == 96
+
+    # A matcher that does not take the keyword keeps the old behaviour.
+    assert snapshot_progress._materialized_bytes(snap, lambda path: path.startswith("mmproj")) == 64
+
+
+def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
+    """A root that stats but will not resolve -- an intermittent network mount, a Windows
+    reparse point -- was dropped silently, so the scan answered "measured, no cache" and
+    hydration retired a download whose files may be entirely intact."""
+    from hub.utils import hf_cache_state as state
+
+    root = tmp_path / "hub"
+    root.mkdir()
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [root], raising = False
+    )
+    monkeypatch.setattr(state, "_safe_is_dir", lambda path, scan_errors = None: path == root)
+
+    real_resolve = Path.resolve
+
+    def _boom(self, *args, **kwargs):
+        if self == root:
+            raise OSError("network mount unavailable")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+    errors: list = []
+    assert state.hf_cache_roots(errors) == []
+    assert any(
+        "network mount unavailable" in str(e) for e in errors
+    ), "the unreadable root has to be reported, not silently dropped"
+
+
+def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):
+    """One unreadable root plus one readable one is a LOWER bound, not an absence.
+
+    The active root raising EACCES while a remembered cache still holds the repo dir (with a
+    sibling quant in it and nothing of ours) produced a non-null reading carrying
+    target_present False -- and hydration retires the job on that, though every byte of the
+    variant may sit in the root that could not be listed.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+
+    def _one_root_failed(
+        _repo_type,
+        _repo_id,
+        force_active = False,
+        scan_errors = None,
+        **kw,
+    ):
+        if scan_errors is not None:
+            scan_errors.append(PermissionError("denied"))
+        return [entry]
+
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", _one_root_failed)
+    monkeypatch.setattr(snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None)
+
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        job_key = "org/model-gguf::Q4_K_M",
+        expected_bytes = 100,
+        hf_token = None,
+        variant = "Q4_K_M",
+        variant_file_matcher = lambda name: name.endswith("Q4_K_M.gguf"),
+        registry = SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+        metadata_resolver = lambda _repo_id, _hf_token: (100, frozenset({"blob-a"})),
+        expected_files_resolver = lambda _repo_id, _hf_token: (),
+    )
+
+    assert result["target_present"] is None, "absence needs a complete scan behind it"
+    assert result["cache_measured"] is False
+
+
+def test_a_complete_scan_still_reports_the_target_as_gone(monkeypatch, tmp_path):
+    # The same reading with no scan error keeps the positive-evidence verdict, or the fix
+    # above would simply disable the phantom-adoption guard it is protecting.
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda _repo_type, _repo_id, force_active = False, **kw: [entry],
+    )
+    monkeypatch.setattr(snapshot_progress.download_manifest, "read_manifest", lambda *a, **k: None)
+
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        job_key = "org/model-gguf::Q4_K_M",
+        expected_bytes = 100,
+        hf_token = None,
+        variant = "Q4_K_M",
+        variant_file_matcher = lambda name: name.endswith("Q4_K_M.gguf"),
+        registry = SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+        metadata_resolver = lambda _repo_id, _hf_token: (100, frozenset({"blob-a"})),
+        expected_files_resolver = lambda _repo_id, _hf_token: (),
+    )
+
+    assert result["target_present"] is False
+    assert result["cache_measured"] is True
 
 
 def test_delete_variant_keeps_blob_shared_with_other_snapshot(monkeypatch, tmp_path):
@@ -5594,3 +6312,599 @@ def test_custom_promotion_keeps_the_classifier_verdict(tmp_path, config, expecte
         promoted = local_inventory._promote_to_custom_source(row)
         assert promoted.source == "custom"
         assert promoted.capabilities.can_chat is expected
+
+
+def test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent(monkeypatch, tmp_path):
+    """A repo dir kept alive by a sibling quant is not evidence that THIS one is here.
+
+    With the hash set unresolvable, target_present used to stay null, and the frontend's idle
+    probe reads zero bytes with a non-null cache_path as an active job unless presence is
+    explicitly false -- so the deleted quant's stale card was re-adopted and blocked a fresh
+    download until the idle grace ran out. The snapshot dir is named per file, so absence is
+    answerable here even when the hashes are not.
+    """
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # the sibling that keeps the dir alive
+    (snap / "mmproj-F16.gguf").write_bytes(b"y" * 30)  # shared by every quant in the repo
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["target_present"] is False, result
+
+
+def test_gguf_progress_target_presence_is_aggregated_across_caches(monkeypatch, tmp_path):
+    """Presence is a property of the set of caches, not of the one with the most bytes.
+
+    A sibling-only repo dir and a remembered cache that still holds this variant both read as
+    zero bytes, so the byte ordering alone could select the sibling-only reading and report the
+    target gone -- retiring a job whose files another scanned cache proves are there.
+    """
+    sibling = tmp_path / "a" / "models--Org--Model-GGUF"
+    (sibling / "snapshots" / "rev0").mkdir(parents = True)
+    (sibling / "blobs").mkdir(parents = True)
+    (sibling / "snapshots" / "rev0" / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    holder = tmp_path / "b" / "models--Org--Model-GGUF"
+    (holder / "snapshots" / "rev0").mkdir(parents = True)
+    (holder / "blobs").mkdir(parents = True)
+    # The variant's own file, named but empty: zero bytes keeps the tie with the sibling-only
+    # reading, and the name is what proves the target is in this cache.
+    (holder / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"")
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = holder.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, sibling, state = "idle")
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [sibling, holder],
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is True, result
+
+
+def test_a_running_job_does_not_borrow_another_caches_manifest(monkeypatch, tmp_path):
+    """A live download is read from the active root only, so its hashes must come from there.
+
+    An older cache holding a DIFFERENT revision's manifest for the same variant made the two
+    disagree, and a disagreement is refused -- so a live download whose own manifest is right
+    there lost its hash set and every blob it had written was filtered out by the name-based
+    fallback's clamp. Scoped to the roots the scan will actually read, the active manifest
+    stands on its own.
+    """
+    active = tmp_path / "active" / "models--Org--Model-GGUF"
+    (active / "blobs").mkdir(parents = True)
+    remembered = tmp_path / "old" / "models--Org--Model-GGUF"
+    (remembered / "blobs").mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = "old")],
+        "http",
+        hub_cache = remembered.parent,
+    )
+    monkeypatch.setattr(
+        downloads,
+        "preferred_repo_cache_dirs",
+        lambda *_a, force_active = False, active_root = None, **_kw: (
+            [active] if force_active else [active, remembered]
+        ),
+    )
+
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = "new")],
+        "http",
+        hub_cache = active.parent,
+    )
+    monkeypatch.setattr(
+        download_manifest, "_canonical_hub_cache", lambda root = None: str(root or "")
+    )
+
+    scoped = downloads._variant_manifest_in_any_cache(
+        "Org/Model-GGUF", "Q4_K_M", force_active = True, active_root = active.parent
+    )
+    assert scoped is not None and scoped.expected_files[0].sha256 == "new"
+    # Unscoped, the superseded cache is consulted too and the disagreement refuses both.
+    assert (
+        downloads._variant_manifest_in_any_cache(
+            "Org/Model-GGUF", "Q4_K_M", active_root = active.parent
+        )
+        is None
+    )
+
+
+def test_an_unreadable_blobs_dir_is_not_evidence_of_absence(monkeypatch, tmp_path):
+    """EACCES on blobs/ is not an empty blobs/. Swallowing it produced a MEASURED zero -- bytes
+    0, target_present false, cache_measured true -- and idle hydration retires a persisted job
+    on exactly that shape, though the cache was never actually read."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    real_iterdir = Path.iterdir
+
+    def _deny(self):
+        if self.name == "blobs":
+            raise PermissionError("denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 130,
+        )
+    )
+
+    assert result["target_present"] is None, result
+    assert result.get("cache_measured") is not True, result
+
+
+def test_a_manifest_alone_is_not_evidence_the_variant_is_on_disk(monkeypatch, tmp_path):
+    """The state-dir manifest says what the target SHOULD contain. It survives a deletion made
+    outside the app, so with a sibling quant keeping the repo dir alive it made a variant with
+    nothing left on disk read as present -- the phantom job this field exists to retire."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "snapshots" / "rev0" / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100, sha256 = "aa")],
+        "http",
+        hub_cache = entry.parent,
+    )
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_blob_hashes", lambda *_a, **_kw: frozenset({"aa"})
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["target_present"] is False, result
+
+
+def test_one_unknown_cache_keeps_absence_unknown(monkeypatch, tmp_path):
+    """Absence needs EVERY scanned cache to say so. A sibling-only dir reporting false could win
+    the zero-byte tie over a cache with no readable snapshot to identify the variant from --
+    whose shared blobs dir may still hold an unattributable partial -- and the job was retired
+    on the strength of the one reading that could not see it."""
+    sibling = tmp_path / "a" / "models--Org--Model-GGUF"
+    (sibling / "snapshots" / "rev0").mkdir(parents = True)
+    (sibling / "blobs").mkdir(parents = True)
+    (sibling / "snapshots" / "rev0" / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    unknown = tmp_path / "b" / "models--Org--Model-GGUF"
+    (unknown / "blobs").mkdir(parents = True)  # no snapshot dir at all: nothing to identify
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, sibling, state = "idle")
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [sibling, unknown],
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_an_unattributable_partial_keeps_presence_unknown(monkeypatch, tmp_path):
+    """A restarted download whose hashes could not be resolved has its bytes in an .incomplete
+    blob that is not linked into any snapshot yet, so the by-name scan -- which is what answers
+    presence on that path -- reports a confident absence. Idle hydration retires a persisted job
+    on that verdict, throwing away a partial the user can still resume."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # A sibling quant keeps the repo dir alive; the requested variant has nothing materialized.
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    (blobs / "somehash.incomplete").write_bytes(b"x" * 40)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown(monkeypatch, tmp_path):
+    """Enumeration succeeding does not mean it was complete. Path.rglob suppresses every OSError
+    raised while scanning -- documented behaviour since 3.13 -- so a Windows ACL denial or a
+    network-filesystem hiccup on one subdirectory came back as a short list that reads exactly
+    like an empty one, and the scan then reported the variant absent though the unreadable
+    subtree may hold its main shard. Idle hydration retires a persisted download on that
+    verdict."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # a sibling keeps the dir alive
+    denied = snap / "split"
+    denied.mkdir()
+    (denied / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry)
+    real_scandir = os.scandir
+
+    def _deny(path, *args, **kwargs):
+        if str(path) == str(denied):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_a_blob_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_path):
+    """The hashes resolved, so the blob loop is what measures the variant -- and a blob it could
+    not inspect is not a blob that is not there. Swallowing the error produced a MEASURED
+    absence, which hydration reads as gone and retires a persisted download."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"mainhash"}),
+    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+    real_stat = Path.stat
+
+    def _deny(self, *a, **kw):
+        if self.name == "mainhash":
+            raise PermissionError("denied")
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "stat", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_an_older_snapshot_still_proves_the_variant_is_here(monkeypatch, tmp_path):
+    """A cache can retain several revisions. The requested quant living in an older snapshot
+    while the newest holds only a sibling read as absent, and hydration retired a job whose
+    target is still perfectly usable."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    old_snap = entry / "snapshots" / "rev0"
+    new_snap = entry / "snapshots" / "rev1"
+    old_snap.mkdir(parents = True)
+    new_snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (old_snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (new_snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    import os
+    import time
+
+    # Make rev1 unambiguously the newest, which is the one latest_snapshot_dir picks.
+    os.utime(old_snap, (time.time() - 600, time.time() - 600))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is True, result
+
+
+def test_a_verified_completion_wins_a_byte_tie_between_caches(monkeypatch, tmp_path):
+    """Two remembered caches can clamp to the same byte total while only one has a manifest that
+    verifies against disk. The byte-ordered pick then carried whichever came first by root
+    order, so the response stayed capped below 100% and kept offering Retry for a variant that
+    is demonstrably complete in the other cache."""
+    unverified = tmp_path / "a" / "models--Org--Model-GGUF"
+    (unverified / "snapshots" / "rev0").mkdir(parents = True)
+    (unverified / "blobs").mkdir(parents = True)
+    (unverified / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    verified = tmp_path / "b" / "models--Org--Model-GGUF"
+    (verified / "snapshots" / "rev0").mkdir(parents = True)
+    (verified / "blobs").mkdir(parents = True)
+    (verified / "snapshots" / "rev0" / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = verified.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, unverified, state = "idle")
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        # The unverified cache first, so root order alone would carry it.
+        lambda *_a, **_kw: [unverified, verified],
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is True, result
+
+
+def test_an_unstatable_blobs_dir_is_not_an_absent_one(monkeypatch, tmp_path):
+    """Path.is_dir() swallows a whole class of OSError and answers False, so a failure on the
+    blobs directory ITSELF read as "no blobs here" -- a measured absence, which idle hydration
+    retires a persisted download on. ELOOP is the case it hides (a symlink cycle, or a
+    network-filesystem path that stops resolving); EACCES it re-raises, which the same try
+    now contains rather than letting it escape the whole reading."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    (entry / "snapshots" / "rev0").mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+    real_stat = os.stat
+
+    denied = {"hit": False}
+
+    def _deny(path, *a, **kw):
+        if str(path).endswith("blobs"):
+            denied["hit"] = True
+            raise OSError(errno.ELOOP, "too many levels of symbolic links")
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(snapshot_progress.os, "stat", _deny)
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+    assert result.get("cache_measured") is not True, result
+    assert denied["hit"], "the test must actually exercise the directory stat"
+
+
+def test_a_variant_complete_in_an_older_snapshot_settles(monkeypatch, tmp_path):
+    """The presence check already looks at every retained snapshot, but the byte reading and the
+    manifest verification did not: a quant complete in an older revision, with the newest
+    holding only a sibling, reported 0 bytes and never settled -- 99% and adoptable forever."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    old_snap = entry / "snapshots" / "rev0"
+    new_snap = entry / "snapshots" / "rev1"
+    old_snap.mkdir(parents = True)
+    new_snap.mkdir(parents = True)
+    (entry / "blobs").mkdir(parents = True)
+    (old_snap / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (new_snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    os.utime(old_snap, (time.time() - 600, time.time() - 600))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 100, result
+    assert result["complete_on_disk"] is True, result
+
+
+def test_a_deleted_snapshot_link_is_absent_even_with_its_blob_left_behind(monkeypatch, tmp_path):
+    """Deleting a GGUF's snapshot entry normally leaves its finalized blob in the shared blobs/
+    dir, and a companion blob shared with a sibling keeps the tally positive on its own. Reading
+    presence off those counters called a quant that is gone present, and idle hydration
+    re-adopted the phantom and blocked a fresh download of it."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # The finalized blob survives; the snapshot entry that named it does not.
+    (blobs / "mainhash").write_bytes(b"x" * 100)
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # a sibling keeps the repo dir alive
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"mainhash"}),
+    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["completed_bytes"] == 100, "the orphaned blob is still counted"
+    assert result["target_present"] is False, result
+
+
+def test_a_stale_revisions_filenames_do_not_settle_the_resolved_one(monkeypatch, tmp_path):
+    """verify_against_disk compares names and sizes, not sha256. An older retained revision can
+    carry the same filenames at the same sizes, so a blob finalized but never linked (a crash
+    between the two) let the stale snapshot satisfy the check -- the job settled on files the
+    app would not load."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    stale = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    stale.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    (blobs / "oldhash").write_bytes(b"y" * 100)
+    (blobs / "newhash").write_bytes(b"x" * 100)  # finalized, never linked
+    os.symlink(blobs / "oldhash", stale / "model-Q4_K_M.gguf")
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model-GGUF",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = 100)],
+        "http",
+        hub_cache = entry.parent,
+    )
+
+    async def _run_inline(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(downloads.asyncio, "to_thread", _run_inline)
+    monkeypatch.setattr(
+        downloads.gguf_variants, "gguf_variant_requirements", lambda *_a, **_kw: None
+    )
+    monkeypatch.setattr(
+        downloads.gguf_variants,
+        "gguf_variant_blob_hashes",
+        lambda *_a, **_kw: frozenset({"newhash"}),
+    )
+    monkeypatch.setattr(snapshot_progress, "preferred_repo_cache_dirs", lambda *_a, **_kw: [entry])
+    monkeypatch.setattr(
+        downloads,
+        "_registry",
+        SimpleNamespace(get_job = lambda _key: SimpleNamespace(state = "idle")),
+    )
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["complete_on_disk"] is False, result

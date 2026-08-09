@@ -2839,13 +2839,26 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # No catch: the helper handles detection failures and double misses, so an exception here
         # is a real masking failure that must fail the run, not silently train full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
-        trainer, _masking_applied = apply_completion_masking(
+
+        trainer, masking_applied = apply_completion_masking(
             trainer,
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
             dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
+        if not masking_applied:
+            # A miss changes the training objective for the whole run, so it belongs in the
+            # sticky warning list the eval-split fallback already uses, not a status line
+            # that scrolls past. Recovered detection failures stay status: masking applied.
+            _send(
+                "warning",
+                message = (
+                    f"'Train on completions' could not be applied for {model_name}: no "
+                    f"instruction/response markers were found. Training will run on full "
+                    f"sequences (prompts included)."
+                ),
+            )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None

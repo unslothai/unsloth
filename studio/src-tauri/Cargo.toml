@@ -57,9 +57,12 @@ elevated-command = "1.1.2"
 webkit2gtk-sys = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
+# Keep these versions aligned with Tauri's WebView2 controller bindings.
+webview2-com = "0.38"
 winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-core = "0.61.2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

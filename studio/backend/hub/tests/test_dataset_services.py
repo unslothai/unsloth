@@ -280,7 +280,7 @@ def _app_cache_entry(monkeypatch, hub_cache: Path, repo_id: str, commit_hash: st
     roots = getattr(monkeypatch, "_dataset_hub_roots", [])
     roots.append(hub_cache)
     monkeypatch._dataset_hub_roots = roots
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: roots)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: roots)
     entry = dataset_processed_cache.prepare_app_processed_dataset_cache(
         repo_id,
         snapshot,

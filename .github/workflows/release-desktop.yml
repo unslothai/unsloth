@@ -216,6 +216,44 @@ jobs:
               print(f'pypi_version={pypi_version}', file=output)
           PY
 
+      # Fail before building and notarizing a version publish-release will reject.
+      - name: Guard against republishing an existing version
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
+        run: |
+          set -euo pipefail
+          print_retry_hint() {
+            echo "To retry a failed publish of this version:" >&2
+            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "  If release creation failed after reserving only the tag, delete the orphan tag: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
+          }
+          resource_exists() {
+            local response
+            if response="$(gh api --include "$1" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              return 1
+            fi
+            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          }
+          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}"; then
+            echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
+            print_retry_hint
+            exit 1
+          fi
+          # A read token cannot see drafts, so publish-release repeats this check.
+          if resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
+            echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
+            print_retry_hint
+            exit 1
+          fi
+
       - name: Verify PyPI package and Unsloth stamp
         shell: bash
         env:
@@ -380,7 +418,8 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
       matrix:
         include:
           - platform: macos-latest
@@ -911,9 +950,8 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. Without a step-level backstop a stuck Notary service would hold
-        # `max-parallel: 1` for the whole job budget and discard the Linux and
-        # Windows builds with it, so cap it tighter than the job here.
+        # it. Without a step-level backstop a stuck Notary service would burn
+        # the whole job budget, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -1420,12 +1458,18 @@ jobs:
   # Draft runs do not advance the public desktop-latest channel.
   publish-release:
     name: Publish desktop release
-    needs: [prepare-version, build]
+    # Only prepare-version, so this starts alongside the build matrix and
+    # queues for its runner during the build instead of after it. "Wait for the
+    # build matrix" below restores the gate `needs: build` gave away. The cost
+    # is one runner slot held for the length of the run.
+    needs: [prepare-version]
     runs-on: ubuntu-latest
-    # Artifact download plus release upload; observed 17-40s.
-    timeout-minutes: 20
+    # Waits out the build (legs cap at 60) then downloads and uploads; the
+    # publish steps themselves are 17-40s.
+    timeout-minutes: 90
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
+      actions: read    # the waiter reads this run's job list
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
@@ -1441,17 +1485,83 @@ jobs:
         with:
           egress-policy: audit
 
-      # This job publishes artifacts built elsewhere, so it historically needed no
-      # source tree. The VirusTotal step runs a repo script, so it does now. Sparse:
-      # a full checkout of this repo to fetch one file would be wasteful, and a
-      # missing script would be swallowed by that step's continue-on-error and
-      # publish the release with no scan at all.
-      - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: scripts/virustotal_scan.py
-          sparse-checkout-cone-mode: false
+      # Replaces the `needs: build` gate dropped above, and must be at least as
+      # strict: publishing a partial release is far worse than publishing late.
+      - name: Wait for the build matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # The three matrix legs, by their `name:` (Build <matrix.label>).
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          POLL=30
+          DEADLINE=$(( $(date +%s) + 75 * 60 ))
+          # Matrix job records appear with the run, so a leg still missing well
+          # after the start is a real problem, not a slow API.
+          STARTUP_DEADLINE=$(( $(date +%s) + 15 * 60 ))
+          API_FAILS=0
+
+          while :; do
+            if ! JOBS="$(gh api --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                  --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' 2>/dev/null)"; then
+              # A blip in the jobs API must not throw away a finished build.
+              API_FAILS=$(( API_FAILS + 1 ))
+              if [ "$API_FAILS" -ge 10 ]; then
+                echo "ERROR: jobs API failed 10 times running; cannot confirm the build matrix finished" >&2
+                exit 1
+              fi
+              echo "jobs API call failed (${API_FAILS}/10); retrying in ${POLL}s"
+              sleep "$POLL"
+              continue
+            fi
+            API_FAILS=0
+
+            MISSING=""
+            PENDING=0
+            BAD=""
+            for leg in "${LEGS[@]}"; do
+              ROW="$(printf '%s\n' "$JOBS" | awk -F'\t' -v n="$leg" '$1 == n {print; exit}')"
+              if [ -z "$ROW" ]; then
+                MISSING="${MISSING} '${leg}'"
+                continue
+              fi
+              STATUS="$(printf '%s' "$ROW" | cut -f2)"
+              CONCL="$(printf '%s' "$ROW" | cut -f3)"
+              if [ "$STATUS" != "completed" ]; then
+                PENDING=$(( PENDING + 1 ))
+              elif [ "$CONCL" != "success" ]; then
+                BAD="${BAD}${leg} (${CONCL}); "
+              fi
+            done
+
+            # Fail on the first finished leg that did not succeed rather than
+            # holding a runner to reach the same answer later.
+            if [ -n "$BAD" ]; then
+              echo "ERROR: refusing to publish, these build jobs did not succeed: ${BAD}" >&2
+              exit 1
+            fi
+            if [ -n "$MISSING" ]; then
+              if [ "$(date +%s)" -gt "$STARTUP_DEADLINE" ]; then
+                echo "ERROR: no job record for:${MISSING}; refusing to publish without confirming they ran" >&2
+                exit 1
+              fi
+              echo "waiting for job records to appear for:${MISSING}"
+              sleep "$POLL"
+              continue
+            fi
+            if [ "$PENDING" -eq 0 ]; then
+              echo "all ${#LEGS[@]} build legs finished and succeeded"
+              break
+            fi
+            if [ "$(date +%s)" -gt "$DEADLINE" ]; then
+              echo "ERROR: timed out waiting for the build matrix; ${PENDING} leg(s) still running" >&2
+              exit 1
+            fi
+            echo "${PENDING} of ${#LEGS[@]} build legs still running; polling again in ${POLL}s"
+            sleep "$POLL"
+          done
 
       - name: Download signed release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -1493,152 +1603,73 @@ jobs:
           print('\n'.join(sorted(actual_names)))
           PY
 
-      # Validation runs before the scan so a run with a mismatched release state is
-      # rejected before any bundle is disclosed to VirusTotal. Creating a release
-      # that does not exist yet is deferred to after the scan: `gh release create`
-      # without `--draft` publishes immediately, and doing that here would leave a
-      # public, assetless release for the duration of the scan (and indefinitely if
-      # the run is cancelled part way through).
+      # Validation runs before the scan so an already-used version is rejected
+      # before any bundle is disclosed to VirusTotal. Creation remains deferred
+      # until after the scan so a non-draft release is never left public and empty.
       - name: Validate versioned release state
         id: versioned_release_state
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          # Written here rather than in the conditional create step below, because
-          # `Generate and publish versioned updater metadata` reads this file on
-          # every run, including reruns against an already existing release.
+          resource_exists() {
+            local response
+            if response="$(gh api --include "$1" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              return 1
+            fi
+            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          }
+          print_retry_hint() {
+            echo "Release a new studio_version, or recover the failed publish before retrying:" >&2
+            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "  If only a tag exists, delete it: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
+          }
+
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
           printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
-          release_json="$RUNNER_TEMP/versioned-release.json"
-          view_error="$RUNNER_TEMP/versioned-release-view.err"
-          # REST tag lookup omits drafts; `gh release view` also checks pending tags.
-          if gh release view "$DESKTOP_RELEASE_TAG" \
-            --json tagName,isDraft,isPrerelease > "$release_json" 2>"$view_error"; then
-            python3 <<'PY'
+          releases_file="$RUNNER_TEMP/desktop-releases.json"
+          # Both release REST endpoints omit drafts. `gh release list` uses the
+          # draft-aware GraphQL path and fails nonzero on API/auth errors.
+          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
+            echo "Could not list releases, including drafts; refusing to publish." >&2
+            exit 1
+          fi
+          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
           import json
-          import os
           import pathlib
           import sys
 
-          release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'versioned-release.json').read_text())
-          expected_draft = os.environ['RELEASE_DRAFT'].lower() == 'true'
-          expected_prerelease = os.environ['DESKTOP_PRERELEASE'].lower() == 'true'
-          if release.get('tagName') != os.environ['DESKTOP_RELEASE_TAG']:
-              sys.exit('Existing desktop release tag does not match the requested tag')
-          if bool(release.get('isDraft')) != expected_draft:
-              sys.exit('Existing desktop release draft state does not match the workflow input')
-          if bool(release.get('isPrerelease')) != expected_prerelease:
-              sys.exit('Existing desktop release prerelease state does not match the requested version')
+          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if not isinstance(releases, list):
+              sys.exit('Unexpected response while listing desktop releases')
+          matches = [
+              release
+              for release in releases
+              if isinstance(release, dict) and release.get('tagName') == sys.argv[2]
+          ]
+          if len(matches) > 1:
+              sys.exit(f'Found duplicate releases for {sys.argv[2]}')
+          print('exists' if matches else 'absent')
           PY
-            echo "create=false" >> "$GITHUB_OUTPUT"
-          elif grep -qi 'release not found' "$view_error"; then
-            echo "create=true" >> "$GITHUB_OUTPUT"
-          else
-            # `gh` exits non-zero for any failure, so a transient API, auth or rate
-            # limit error looks identical to a missing release. Treating those as
-            # "not found" would disclose the bundles to VirusTotal for a run that
-            # cannot publish, so fail here instead.
-            echo "::error::Could not determine whether $DESKTOP_RELEASE_TAG exists; refusing to treat this as a missing release"
-            cat "$view_error" >&2
-            exit 1
-          fi
-
-      # ── Advisory multi-engine scan of the bundles we are about to publish ──
-      # Defender (build job) is one vendor and gates only Windows. VirusTotal
-      # aggregates ~70 engines across all four bundles, which is how a false
-      # positive from some other vendor gets noticed here rather than in a user
-      # bug report. Advisory on purpose: installers routinely trip one or two
-      # obscure heuristics, so a hard gate here would block releases on noise.
-      # Defender stays the authoritative fail-closed check.
-      #
-      # The step never fails the job: a missing secret, a VirusTotal outage or a
-      # quota exhaustion must not be able to block a release.
-      - name: VirusTotal pre-flight scan
-        continue-on-error: true
-        # Free-tier keys allow 4 requests/minute, and the script paces itself to
-        # match, so four bundles of lookup + upload + polling can take a while.
-        timeout-minutes: 30
-        env:
-          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # continue-on-error means a silent failure here would publish an unscanned
-          # release with only a terse "no summary" note, so name the cause loudly.
-          if [ ! -f scripts/virustotal_scan.py ]; then
-            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
-            exit 1
-          fi
-          python3 scripts/virustotal_scan.py \
-            "$RUNNER_TEMP/desktop-release-assets" \
-            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
-
-      - name: Publish VirusTotal summary
-        if: always()
-        run: |
-          set -euo pipefail
-          summary="$RUNNER_TEMP/virustotal-summary.md"
-          if [ -f "$summary" ]; then
-            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '### VirusTotal pre-flight scan' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      # Deferred from the validation step above so the release is created directly
-      # ahead of its assets, rather than sitting empty for the length of the scan.
-      - name: Create versioned release
-        if: steps.versioned_release_state.outputs.create == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_DRAFT: ${{ inputs.draft }}
-        run: |
-          set -euo pipefail
-          # Written by the validation step above, which always runs.
-          notes_file="$RUNNER_TEMP/desktop-release-notes.md"
-
-          release_flags=(
-            --title "Unsloth ${STUDIO_VERSION}"
-            --notes-file "$notes_file"
-            --target "$GITHUB_SHA"
-          )
-          if [ "$RELEASE_DRAFT" = "true" ]; then
-            release_flags+=(--draft)
-          fi
-          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
-
-      - name: Publish versioned release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          signature_assets="$(
-            gh release view "$DESKTOP_RELEASE_TAG" --json assets \
-              --jq '.assets[].name | select(endswith(".sig"))'
           )"
-          while IFS= read -r asset_name; do
-            [[ -z "$asset_name" ]] || gh release delete-asset "$DESKTOP_RELEASE_TAG" "$asset_name" --yes
-          done <<< "$signature_assets"
 
-          release_assets=()
-          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
-            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
-          done
-          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}" --clobber
+          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
+            || [ "$release_state" = "exists" ]; then
+            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
+            print_retry_hint
+            exit 1
+          fi
+          echo "create=true" >> "$GITHUB_OUTPUT"
 
-      - name: Generate and publish versioned updater metadata
+      - name: Generate versioned updater metadata and provenance
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 <<'PY'
@@ -1696,7 +1727,115 @@ jobs:
           output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
+
+          # Keep provenance out of the notes displayed in the updater popup.
+          body_file="$RUNNER_TEMP/desktop-release-body.md"
+          {
+            cat "$RUNNER_TEMP/desktop-release-notes.md"
+            printf '\n### Build provenance\n\n'
+            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
+            printf 'Asset SHA-256:\n\n```\n'
+            (
+              cd "$RUNNER_TEMP/desktop-release-assets"
+              for asset in *; do
+                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
+              done
+            )
+            (
+              cd "$RUNNER_TEMP"
+              sha256sum -- latest.json
+            )
+            printf '```\n'
+          } > "$body_file"
+          cat "$body_file"
+
+      # Kept immediately before upload so the release is never left empty for
+      # long, and the absence checks are repeated here to reserve the tag
+      # atomically.
+      - name: Create versioned release
+        if: steps.versioned_release_state.outputs.create == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_DRAFT: ${{ inputs.draft }}
+        run: |
+          set -euo pipefail
+          resource_exists() {
+            local response
+            if response="$(gh api --include "$1" 2>&1)"; then
+              return 0
+            fi
+            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
+              return 1
+            fi
+            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            printf '%s\n' "$response" >&2
+            exit 1
+          }
+
+          releases_file="$RUNNER_TEMP/desktop-releases-before-create.json"
+          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
+            echo "Could not list releases, including drafts; refusing to publish." >&2
+            exit 1
+          fi
+          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if not isinstance(releases, list):
+              sys.exit('Unexpected response while listing desktop releases')
+          print('exists' if any(
+              isinstance(release, dict) and release.get('tagName') == sys.argv[2]
+              for release in releases
+          ) else 'absent')
+          PY
+          )"
+          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
+            || [ "$release_state" = "exists" ]; then
+            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag appeared during the pre-flight scan." >&2
+            exit 1
+          fi
+
+          # Reserve the tag at this source commit before creating the release.
+          gh api --method POST "repos/${GH_REPO}/git/refs" \
+            -f "ref=refs/tags/${DESKTOP_RELEASE_TAG}" \
+            -f "sha=${GITHUB_SHA}"
+
+          release_flags=(
+            --title "Unsloth ${STUDIO_VERSION}"
+            --notes-file "$RUNNER_TEMP/desktop-release-body.md"
+            --verify-tag
+          )
+          if [ "$RELEASE_DRAFT" = "true" ]; then
+            release_flags+=(--draft)
+          fi
+          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+
+      - name: Publish versioned release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_assets=()
+          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
+            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
+          done
+          # Preserve the published digests by refusing existing asset names.
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
+
+      - name: Publish versioned updater metadata
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -1914,6 +2053,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The channel pointer is intentionally mutable.
           gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/desktop-latest-release.json"
           python3 <<'PY'
@@ -1931,3 +2071,73 @@ jobs:
           if actual_url != expected_url:
               sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
           PY
+
+  # ── Advisory multi-engine scan of the bundles just published ──
+  # Defender (build job) is one vendor and gates only Windows. VirusTotal
+  # aggregates ~70 engines across all four bundles, which is how a false
+  # positive from some other vendor gets noticed here rather than in a user bug
+  # report. Advisory on purpose: installers routinely trip one or two obscure
+  # heuristics, so a hard gate would block releases on noise. Defender stays the
+  # authoritative fail-closed check.
+  #
+  # Its own job, after publish-release, because the scan is rate-limit bound and
+  # not parallelisable: the free tier allows 4 requests/minute per key, so the
+  # four bundles share one budget however they are scheduled. Inside the publish
+  # job it was ~9 minutes of the ~9.5 the job took, delaying every release by its
+  # full length while being unable to block one.
+  virustotal-scan:
+    name: VirusTotal post-publish scan
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    # A missing secret, a VirusTotal outage or quota exhaustion must not fail
+    # the release that already published.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      # Sparse: a full checkout to fetch one file would be wasteful.
+      - name: Check out the scan script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/virustotal_scan.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download published assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: VirusTotal scan
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Name the cause loudly: a silent failure here leaves the release
+          # scanned by nothing but a terse "no summary" note.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
+          python3 scripts/virustotal_scan.py \
+            "$RUNNER_TEMP/desktop-release-assets" \
+            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
+
+      - name: Publish VirusTotal summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/virustotal-summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '### VirusTotal post-publish scan' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
+          fi

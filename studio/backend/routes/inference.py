@@ -22,6 +22,7 @@ import json
 import httpx
 from loggers import get_logger
 import asyncio
+import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -3191,6 +3192,16 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
+# A wrapper route (Responses) suppresses the inner chat handler's monitor row, dropping the
+# engine timings computed inside it: ChatCompletion has no timings field, so they cannot be read
+# back off the serialized body. The wrapper leaves a dict here for the inner call to fill. A dict
+# because a context is copied into tasks and threads: writes do not flow back up, mutations do.
+_monitor_perf_sink: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "unsloth_monitor_perf_sink",
+    default = None,
+)
+
+
 def _monitor_usage(
     monitor_id: Optional[str],
     usage: Optional[dict],
@@ -3199,6 +3210,11 @@ def _monitor_usage(
     timings: Optional[dict] = None,
     stop_reason: Optional[str] = None,
 ):
+    # Only a suppressed row relays: a call with its own row must not clobber the wrapper's.
+    if not monitor_id and isinstance(timings, dict) and timings:
+        sink = _monitor_perf_sink.get()
+        if sink is not None:
+            sink["timings"] = timings
     # isinstance, not truthiness: a non-dict usage would raise on .get() into the
     # streaming generator and abort the user's response.
     if isinstance(usage, dict) and usage:
@@ -3209,15 +3225,23 @@ def _monitor_usage(
             total_tokens = usage.get("total_tokens"),
             context_length = context_length,
         )
-    tok_per_sec = prompt_ms = None
+    tok_per_sec = prompt_ms = decode_ms = None
     if isinstance(timings, dict):
         tok_per_sec = timings.get("predicted_per_second")
         prompt_ms = timings.get("prompt_ms")
-    if tok_per_sec is not None or prompt_ms is not None or stop_reason is not None:
+        # The span the tile rates on: total tokens over total time, not a mean of per-request rates.
+        decode_ms = timings.get("predicted_ms")
+    if (
+        tok_per_sec is not None
+        or prompt_ms is not None
+        or decode_ms is not None
+        or stop_reason is not None
+    ):
         api_monitor.set_perf(
             monitor_id,
             tok_per_sec = tok_per_sec,
             prompt_ms = prompt_ms,
+            decode_ms = decode_ms,
             stop_reason = stop_reason,
         )
 
@@ -3582,6 +3606,18 @@ def _monitor_anthropic_response(
 
     response.body_iterator = _monitored_body()
     return response
+
+
+def _standard_models_still_held() -> list[str]:
+    """Unsloth models the registry still holds, whoever is active.
+
+    A GGUF load unloads only the ACTIVE Unsloth model, so a Transformers model
+    cached behind it keeps its weights while llama.cpp answers. Reported so the
+    memory is visible, and releasable, rather than stranded.
+    """
+    backend = _peek_inference_backend()
+    models = getattr(backend, "models", None) if backend is not None else None
+    return [name for name in models if isinstance(name, str)] if isinstance(models, dict) else []
 
 
 def _peek_inference_backend() -> Any:
@@ -6165,25 +6201,16 @@ def _guard_chat_load_against_training(
         requested_gpu_ids, vulkan_gpu_memory, tensor_parallel = guard_tensor_parallel
     )
 
-    # Size with the count that will actually launch, or a load that fits gets a
-    # 409: diffusion never receives --parallel, load_model clamps to 1 on an
-    # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
-    # unclassified GGUF keeps the ask.
+    # Size with the count that will actually launch, or a load that fits gets a 409.
+    # An unclassified GGUF keeps the ask.
     if is_gguf and n_parallel > 1:
         if diffusion_kind is True:
-            n_parallel = 1
-        # MTP is deliberately NOT clamped here even though the launch clamps it to one
-        # slot. _estimate_gguf_required_gb counts the drafter file and the main KV, but
-        # not the draft KV, the duplicated target context MLA keeps, or the draft compute
-        # reserve, all of which load_model does budget. Sizing for one slot would drop
-        # the slot KV without replacing it with those, and a guard that under-sizes
-        # evicts the training run it exists to protect: the spare slots stand in for
-        # what is not modelled.
+            n_parallel = 1  # allow-slot-clamp: diffusion never receives --parallel
         else:
             try:
                 caps = LlamaCppBackend.probe_server_capabilities()
                 if caps.get("found") and not caps.get("supports_kv_unified"):
-                    n_parallel = 1
+                    n_parallel = 1  # allow-slot-clamp: mirrors the load_model clamp
             except Exception as e:
                 logger.warning("Could not probe llama-server slots for chat-load guard: %s", e)
 
@@ -8659,7 +8686,11 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 ),
                 gguf_variant = llama_backend.hf_variant,
                 loading = [],
-                loaded = [_display_model_id] if _display_model_id else [],
+                # Plus anything the Unsloth registry still holds: the GGUF load
+                # only unloaded the ACTIVE one, so a model cached behind it is
+                # still in VRAM and was invisible to every client reading this.
+                loaded = ([_display_model_id] if _display_model_id else [])
+                + [name for name in _standard_models_still_held() if name != _display_model_id],
                 inference = _inference_cfg,
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
@@ -14904,8 +14935,15 @@ async def _responses_non_streaming(
     if request_state is not None:
         request_state.skip_api_monitor = True
 
+    # Catches the engine timings the suppressed inner monitor would otherwise drop.
+    inner_perf: dict = {}
+
     try:
-        result = await openai_chat_completions(chat_req, request)
+        _sink_token = _monitor_perf_sink.set(inner_perf)
+        try:
+            result = await openai_chat_completions(chat_req, request)
+        finally:
+            _monitor_perf_sink.reset(_sink_token)
 
         # openai_chat_completions returns a JSONResponse for non-streaming.
         if isinstance(result, Response):
@@ -14975,8 +15013,12 @@ async def _responses_non_streaming(
             monitor_id,
             usage_data,
             _monitor_context_length(),
-            # Inner chat monitor is suppressed here, so perf stats must come off the body.
-            timings = body.get("timings") if isinstance(body, dict) else None,
+            # Inner monitor suppressed: only the llama-server pass-through carries timings on
+            # the body; in-process paths return a ChatCompletion with no field for them.
+            timings = (
+                (body.get("timings") if isinstance(body, dict) else None)
+                or inner_perf.get("timings")
+            ),
             stop_reason = (choices[0].get("finish_reason") if choices else None),
         )
         api_monitor.finish(monitor_id)
@@ -15244,13 +15286,13 @@ async def _responses_stream(
             next_output_index += 1
             return output_index
 
-        def _apply_usage(u) -> None:
+        def _apply_usage(u, timings = None) -> None:
             nonlocal input_tokens, output_tokens
-            if not u:
-                return
-            input_tokens = u.get("prompt_tokens", input_tokens)
-            output_tokens = u.get("completion_tokens", output_tokens)
-            _monitor_usage(monitor_id, u, llama_backend.context_length)
+            # No early return on a falsy usage: the final chunk can carry timings alone.
+            if isinstance(u, dict):
+                input_tokens = u.get("prompt_tokens", input_tokens)
+                output_tokens = u.get("completion_tokens", output_tokens)
+            _monitor_usage(monitor_id, u, llama_backend.context_length, timings = timings)
 
         def _ensure_reasoning_open() -> list[str]:
             if reasoning_state["opened"]:
@@ -15613,7 +15655,7 @@ async def _responses_stream(
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
-                    _apply_usage(chunk_data.get("usage"))
+                    _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
                     continue
                 if choices[0].get("finish_reason"):
                     stream_finish_reason = choices[0]["finish_reason"]
@@ -15698,7 +15740,7 @@ async def _responses_stream(
                     for event in _tool_call_delta_events(tc):
                         yield event
 
-                _apply_usage(chunk_data.get("usage"))
+                _apply_usage(chunk_data.get("usage"), chunk_data.get("timings"))
         except asyncio.CancelledError:
             disconnect_event.set()
             api_monitor.finish(monitor_id, "cancelled")
