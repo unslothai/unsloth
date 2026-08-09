@@ -65,7 +65,7 @@ def test_sft_loss_type_default_is_nll_after_unsloth_patch():
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
 
-    cfg = trl.SFTConfig(output_dir="unused")
+    cfg = trl.SFTConfig(output_dir = "unused")
     assert cfg.loss_type == "nll", (
         f"SFTConfig.loss_type resolved to {cfg.loss_type!r}, expected 'nll'. "
         "If TRL changed its default again, update the sft_trainer replacement in "
@@ -84,7 +84,7 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
         cfg_cls = getattr(trl, name, None)
         if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):
             continue
-        got = cfg_cls(output_dir="unused").loss_type
+        got = cfg_cls(output_dir = "unused").loss_type
         assert got == want, (
             f"{name}.loss_type is {got!r}, expected {want!r}. A loss_type "
             "replacement leaked out of the sft_trainer branch in rl.py."
@@ -98,7 +98,7 @@ def test_explicit_loss_type_still_wins():
 
     if not hasattr(trl.SFTConfig, "loss_type"):
         pytest.skip("this TRL has no SFTConfig.loss_type")
-    cfg = trl.SFTConfig(output_dir="unused", loss_type="chunked_nll")
+    cfg = trl.SFTConfig(output_dir = "unused", loss_type = "chunked_nll")
     assert cfg.loss_type == "chunked_nll", "explicit loss_type was clobbered"
 
 
@@ -139,9 +139,9 @@ def test_transformers_training_step_still_keys_off_model_accepts_loss_kwargs():
         "The grad-accum normalisation contract changed upstream; re-check "
         "unsloth_zoo's _unsloth_get_batch_samples against the new predicate."
     )
-    assert "num_items_in_batch" in source, (
-        "transformers' training_step no longer references num_items_in_batch."
-    )
+    assert (
+        "num_items_in_batch" in source
+    ), "transformers' training_step no longer references num_items_in_batch."
 
 
 def test_trl_chunked_ce_divides_by_num_items_without_consulting_the_flag():
@@ -215,9 +215,7 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
-        if not any(
-            isinstance(t, ast.Name) and t.id == "replacements" for t in node.targets
-        ):
+        if not any(isinstance(t, ast.Name) and t.id == "replacements" for t in node.targets):
             continue
         if not isinstance(node.value, ast.Dict):
             continue
@@ -230,7 +228,11 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
         for parent in ast.walk(tree):
             if not isinstance(parent, ast.If):
                 continue
-            if node not in [n for b in (parent.body, parent.orelse) for n in ast.walk(ast.Module(body=b, type_ignores=[]))]:
+            if node not in [
+                n
+                for b in (parent.body, parent.orelse)
+                for n in ast.walk(ast.Module(body = b, type_ignores = []))
+            ]:
                 continue
             if "trainer_file" in ast.dump(parent.test):
                 guarded = True
@@ -240,7 +242,7 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
 
     assert not offenders, (
         f"found an unguarded `loss_type` replacement: {offenders}. It must live "
-        "inside an `if trainer_file == \"...\":` branch -- the global replacements "
+        'inside an `if trainer_file == "...":` branch -- the global replacements '
         "dict is applied by regex to every generated config, and loss_type is a "
         "real field in DPOConfig, KTOConfig and GRPOConfig."
     )
