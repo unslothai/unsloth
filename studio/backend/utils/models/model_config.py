@@ -2366,7 +2366,8 @@ def _qualified_variant_name(filename: str, label: str) -> str:
     these listers -- the /v1 local index, the remote VRAM preflight -- would never see the row
     they are asked for.
 
-    The label everywhere else, INCLUDING a file with no recognised quant token at all. This
+    The label everywhere else, including a bare quant at the repo root and a file with no
+    recognised quant token at all. This
     module's label for those is the last hyphenated segment while the variant key is the whole
     stem, and that difference is old, deliberate elsewhere, and nothing to do with several
     checkpoints sharing a quant. Changing it here would rename every such row and break the pins
@@ -2374,7 +2375,12 @@ def _qualified_variant_name(filename: str, label: str) -> str:
     """
     if _gguf_variant_token(filename) is None:
         return label
-    return _gguf_variant_key(filename)
+    key = _gguf_variant_key(filename)
+    # Only a PATH-qualified key. Without the slash the key is the bare quant token, and this
+    # module's label is the richer of the two: it carries the bpw modifier that keeps
+    # ``model-IQ4_XS-3.53bpw.gguf`` and ``model-IQ4_XS-3.97bpw.gguf`` separately selectable, which
+    # the token extractor drops. Swapping in the token would merge them.
+    return key if "/" in key else label
 
 
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:

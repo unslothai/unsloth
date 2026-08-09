@@ -596,3 +596,40 @@ def test_a_bare_local_id_keeps_the_checkpoint_a_plain_load_takes():
     )
     unqualified = tuple(q for q in quants if "/" not in q)
     assert preferred_quant(unqualified) == "Q6_K"
+
+
+def test_bpw_precisions_stay_separately_selectable(tmp_path):
+    """_extract_quant_label deliberately keeps the bpw modifier so byteshape's IQ4_XS at 3.53,
+    3.97 and 4.19 stay three rows. The token extractor drops it, so routing these listers through
+    the key merged all three under IQ4_XS and an explicit request for the formerly advertised
+    spelling missed."""
+    from utils.models.model_config import list_local_gguf_variants
+
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    for bpw in ("3.53", "3.97", "4.19"):
+        (snapshot / f"Qwen3.6-IQ4_XS-{bpw}bpw.gguf").write_bytes(b"x" * 64)
+    (snapshot / "config.json").write_text("{}")
+    variants, _ = list_local_gguf_variants(str(snapshot))
+    assert sorted(v.quant for v in variants) == [
+        "IQ4_XS-3.53bpw",
+        "IQ4_XS-3.97bpw",
+        "IQ4_XS-4.19bpw",
+    ]
+
+
+def test_a_parent_only_quant_survives_the_endian_filter():
+    """_is_big_endian_gguf_path reads a quant TOKEN so it can tell a parent-only quant from a
+    big-endian build. Handing it the qualified key made it misread the path and drop the file
+    from every plan, so the advertised row could never be downloaded."""
+    from types import SimpleNamespace
+
+    from hub.utils.gguf_plan import build_gguf_variant_plans
+
+    siblings = [
+        SimpleNamespace(rfilename = "distilled/Q4_K_M/foo.gguf", size = 10, lfs = None),
+    ]
+    plans = build_gguf_variant_plans(siblings)
+    assert plans, "the only file in the repo was filtered out of every plan"
+    key = next(iter(plans))
+    assert plans[key].main_filenames == {"distilled/Q4_K_M/foo.gguf"}

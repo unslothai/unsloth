@@ -154,7 +154,10 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         if is_mmproj_filename(name) or is_mtp_drafter_path(name):
             continue
         quant = gguf_variant_key(name).lower()
-        if is_big_endian_gguf_path(name, quant):
+        # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
+        # parent directory only -- so a qualified key would make it misread the path and drop the
+        # file from every plan.
+        if is_big_endian_gguf_path(name, extract_quant_label(name)):
             continue
         main.setdefault(quant, []).append(sibling)
 
