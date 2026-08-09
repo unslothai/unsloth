@@ -5733,9 +5733,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
         transformer_quant = "int8",
     )
     explicit_base = next(e for e in explicit["entries"] if e["repo_id"] == base_repo)
-    explicit_transformer = [
-        f for f in explicit_base["files"] if f.startswith("transformer/")
-    ]
+    explicit_transformer = [f for f in explicit_base["files"] if f.startswith("transformer/")]
     assert len(explicit_transformer) == 5
     assert 55_000_000_000 < explicit_base["bytes"] < 60_000_000_000
 
