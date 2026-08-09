@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -847,16 +848,26 @@ def test_a_root_that_cannot_even_be_stat_ed_is_unknown(monkeypatch, tmp_path):
     ``hf_cache_root`` calls ``_safe_is_dir``, which swallows the OSError from probing a
     restricted configured cache and answers None -- so an inaccessible active root produced a
     measured "no cache dir" answer with an empty scan_errors, and hydration retired the job as
-    deleted. Statting is part of the scan."""
+    deleted. Statting is part of the scan.
+
+    Driven through os.stat rather than Path.is_dir, because is_dir() suppresses the failure
+    itself: it swallows several errnos on 3.13 and, as of 3.14, every OSError there is. A
+    handler wrapped around it can never run."""
+    import os as _os
+
     from hub.utils import hf_cache_state
 
     root = tmp_path / "hub"
     root.mkdir()
+    real_stat = _os.stat
 
-    def _explode(self):
-        raise PermissionError(13, "Permission denied")
+    def _explode(path, *args, **kwargs):
+        # ELOOP, which is one of the errnos Path.is_dir() answers False for rather than raising.
+        if str(path) == str(root):
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links")
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(type(root), "is_dir", _explode)
+    monkeypatch.setattr(_os, "stat", _explode)
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [])
 
     errors: list = []

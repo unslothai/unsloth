@@ -6554,28 +6554,58 @@ def test_one_unknown_cache_keeps_absence_unknown(monkeypatch, tmp_path):
     assert result["target_present"] is None, result
 
 
-def test_a_file_that_cannot_be_stated_keeps_presence_unknown(monkeypatch, tmp_path):
-    """rglob succeeding does not mean every entry can be read. A transient network-filesystem
-    error or a Windows ACL denial on ONE file was silently skipped, and the scan then reported
-    the variant absent -- though the skipped entry may have been its main shard, and idle
-    hydration retires a persisted download on exactly that verdict."""
+def test_an_unattributable_partial_keeps_presence_unknown(monkeypatch, tmp_path):
+    """A restarted download whose hashes could not be resolved has its bytes in an .incomplete
+    blob that is not linked into any snapshot yet, so the by-name scan -- which is what answers
+    presence on that path -- reports a confident absence. Idle hydration retires a persisted job
+    on that verdict, throwing away a partial the user can still resume."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    snap = entry / "snapshots" / "rev0"
+    blobs = entry / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    # A sibling quant keeps the repo dir alive; the requested variant has nothing materialized.
+    (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)
+    (blobs / "somehash.incomplete").write_bytes(b"x" * 40)
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    _unresolvable_variant_metadata(monkeypatch, entry, state = "idle")
+
+    result = asyncio.run(
+        downloads.get_gguf_download_progress_response(
+            "Org/Model-GGUF",
+            variant = "Q4_K_M",
+            expected_bytes = 100,
+        )
+    )
+
+    assert result["target_present"] is None, result
+
+
+def test_a_subtree_that_cannot_be_scanned_keeps_presence_unknown(monkeypatch, tmp_path):
+    """Enumeration succeeding does not mean it was complete. Path.rglob suppresses every OSError
+    raised while scanning -- documented behaviour since 3.13 -- so a Windows ACL denial or a
+    network-filesystem hiccup on one subdirectory came back as a short list that reads exactly
+    like an empty one, and the scan then reported the variant absent though the unreadable
+    subtree may hold its main shard. Idle hydration retires a persisted download on that
+    verdict."""
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     snap.mkdir(parents = True)
     (entry / "blobs").mkdir(parents = True)
     (snap / "model-Q2_K.gguf").write_bytes(b"z" * 900)  # a sibling keeps the dir alive
-    denied = snap / "model-Q4_K_M.gguf"
-    denied.write_bytes(b"x" * 100)
+    denied = snap / "split"
+    denied.mkdir()
+    (denied / "model-Q4_K_M.gguf").write_bytes(b"x" * 100)
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
     _unresolvable_variant_metadata(monkeypatch, entry)
-    real_is_file = Path.is_file
+    real_scandir = os.scandir
 
-    def _deny(self):
-        if self.name == "model-Q4_K_M.gguf":
-            raise PermissionError("denied")
-        return real_is_file(self)
+    def _deny(path, *args, **kwargs):
+        if str(path) == str(denied):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "is_file", _deny)
+    monkeypatch.setattr(os, "scandir", _deny)
 
     result = asyncio.run(
         downloads.get_gguf_download_progress_response(

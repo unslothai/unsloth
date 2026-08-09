@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import errno
+import os
 import shutil
+import stat as stat_module
 import sys
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
@@ -32,10 +34,17 @@ def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     ``scan_errors`` collects the swallowed error. A caller that only wants the dirs does not
     care, but "we could not even stat the root" and "the root is not there" are different
     answers to a hydrating job -- the first is not evidence the cache was deleted.
+
+    os.stat, not Path.is_dir(): as of 3.14 is_dir() answers False for EVERY OSError instead of
+    raising some and suppressing others, so the handler below could never see a permission or
+    network-mount failure and the root was recorded as a measured absence. Stat says which it
+    was.
     """
     try:
-        return path.is_dir()
-    except OSError as exc:
+        return stat_module.S_ISDIR(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False  # genuinely not a directory here; that IS the answer
+    except (OSError, ValueError) as exc:
         if scan_errors is not None:
             scan_errors.append(exc)
         return False

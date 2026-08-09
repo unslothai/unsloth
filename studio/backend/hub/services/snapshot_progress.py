@@ -152,6 +152,40 @@ def _variant_bytes_on_disk(
     return _materialized_bytes(snapshot_dir, variant_file_matcher)
 
 
+def _walk_files(root: Path) -> "tuple[list[Path], bool]":
+    """Every file under ``root``, and whether the traversal saw all of it.
+
+    Not ``rglob``: it suppresses every OSError raised while scanning (documented behaviour
+    since 3.13), so an unreadable subtree comes back as a SHORT list that is indistinguishable
+    from an empty one -- and a caller asking "is the variant here?" then answers a confident
+    no about a directory it could not read. ``os.scandir`` reports the failure, and a subtree
+    that is genuinely missing is not one.
+    """
+    files: list[Path] = []
+    complete = True
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as scan:
+                entries = list(scan)
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # nothing there IS the answer, not a gap in the reading
+        except OSError:
+            complete = False
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks = False):
+                    stack.append(Path(entry.path))
+                elif entry.is_file():
+                    files.append(Path(entry.path))
+            except OSError:
+                # DirEntry.is_dir/is_file raise rather than suppress, so this one is visible.
+                complete = False
+    return files, complete
+
+
 def _variant_main_shard_present(
     snapshot_dir: Optional[Path], variant_file_matcher: Optional["VariantFileMatcher"]
 ) -> Optional[bool]:
@@ -164,25 +198,15 @@ def _variant_main_shard_present(
     """
     if snapshot_dir is None or variant_file_matcher is None:
         return None
-    try:
-        entries = list(snapshot_dir.rglob("*"))
-    except OSError:
-        return None
-    # An entry we could not stat may BE the main shard -- a transient network-filesystem hiccup
-    # or a Windows ACL denial on one file is not evidence the variant is gone. A positive match
-    # elsewhere still settles it; otherwise the reading stays unknown.
-    unreadable = False
+    # An entry we could not read may BE the main shard -- a transient network-filesystem hiccup
+    # or a Windows ACL denial on one directory is not evidence the variant is gone. A positive
+    # match elsewhere still settles it; otherwise the reading stays unknown.
+    entries, complete = _walk_files(snapshot_dir)
     for path in entries:
-        try:
-            if not path.is_file():
-                continue
-        except OSError:
-            unreadable = True
-            continue
         relative = path.relative_to(snapshot_dir).as_posix()
         if variant_file_matcher(relative, companions = False):
             return True
-    return None if unreadable else False
+    return None if not complete else False
 
 
 def _retained_snapshot_dirs(entry: Path) -> list[Path]:
@@ -453,6 +477,11 @@ def compute_snapshot_progress(
     for entry in cache_dirs:
         completed_bytes = 0
         in_progress_bytes = 0
+        # A partial this reading could not attribute to any target. It is not evidence FOR this
+        # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
+        # evidence against it either, and the by-name scan cannot see it because a partial is
+        # not linked into a snapshot yet.
+        unattributable_partial = False
         cache_path = hf_cache_scan.resolve_hf_cache_realpath(entry)
         blobs_dir = entry / "blobs"
         try:
@@ -485,6 +514,7 @@ def compute_snapshot_progress(
                             if blob_hash not in expected_hashes:
                                 continue
                         elif not count_unscoped:
+                            unattributable_partial = True
                             continue
                         in_progress_bytes += blob_bytes_present(f)
                     else:
@@ -564,7 +594,11 @@ def compute_snapshot_progress(
             # target is still usable.
             scanned = _variant_present_in_any_snapshot(entry, variant_file_matcher)
             if scanned is not None:
-                target_present = scanned
+                # ...unless the shared blobs/ dir holds a partial nothing here can attribute.
+                # An idle or restarted download whose hashes were refused has its bytes in an
+                # .incomplete blob that is not linked into any snapshot yet, so the by-name scan
+                # answers a confident "absent" -- and hydration retires a job that is resumable.
+                target_present = None if (not scanned and unattributable_partial) else scanned
         readings.append(
             (
                 completed_bytes,
