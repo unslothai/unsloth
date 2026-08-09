@@ -24,6 +24,7 @@ does not drag the heavy GPU stack into the process.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -85,6 +86,53 @@ _STEP_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 
 # Serialises the one-time binary install so concurrent first-loads don't race.
 _install_lock = threading.Lock()
+
+# Admission control over the managed tree, because "is anything running in there?" and "start
+# replacing it" have to be ONE decision. _managed_tree_in_use() alone is a point-in-time sample,
+# and an install spends seconds to minutes downloading before it extracts: a one-shot generation
+# admitted inside that window launches the very sd-cli the extraction then overwrites. Installs are
+# the writers, one-shot sd-cli runs are the readers. Held only across the state change, never
+# across a download or a generation, and the readers never take _install_lock, so there is no cycle.
+_tree_state = threading.Condition()
+_tree_readers = 0
+_tree_installing = False
+# A download can legitimately take minutes; wait rather than run a binary that is being replaced.
+_TREE_WAIT_TIMEOUT_S = 900.0
+
+
+@contextlib.contextmanager
+def _tree_claimed_for_install():
+    """Claim the managed tree for an install. Yields False when something is running in it, in
+    which case the caller keeps what is on disk and retries on a later load."""
+    global _tree_installing
+    with _tree_state:
+        if _tree_readers or _tree_installing or _managed_tree_in_use():
+            yield False
+            return
+        _tree_installing = True
+    try:
+        yield True
+    finally:
+        with _tree_state:
+            _tree_installing = False
+            _tree_state.notify_all()
+
+
+@contextlib.contextmanager
+def _tree_reader():
+    """Run a binary out of the managed tree, holding off any install for the duration."""
+    global _tree_readers
+    with _tree_state:
+        if _tree_installing:
+            logger.info("waiting for the sd.cpp install to finish before starting a generation")
+            _tree_state.wait_for(lambda: not _tree_installing, timeout = _TREE_WAIT_TIMEOUT_S)
+        _tree_readers += 1
+    try:
+        yield
+    finally:
+        with _tree_state:
+            _tree_readers -= 1
+            _tree_state.notify_all()
 
 # Max images per img_gen job; larger Studio batches (up to 32) are split into these chunks.
 _MAX_SERVER_BATCH = 8
@@ -396,27 +444,25 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
         # A usable binary of the wrong accelerator is still better than none, so an install that
         # cannot deliver the right one (no such asset for this host, no network) keeps it.
         fallback = found if usable else None
-        # An install REPLACES the binaries in the managed tree, so refuse it while a native
-        # process is still executing out of that tree. _accelerator_changed answers this for a
-        # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
-        # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
-        # anything is installed, so a first install is unaffected. The load retries after teardown.
-        if _managed_tree_in_use():
-            return fallback
         try:
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-cli installer import failed: %s", exc)
             return fallback
-        try:
-            path = _install(accelerator = accelerator)
-            logger.info("sd-cli installed at %s", path)
-            return str(path)
-        except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
-            logger.warning("sd-cli auto-install failed: %s", exc)
-            if fallback is not None:
-                _note_failed_upgrade(accelerator)
-            return fallback
+        # Claim the tree for the whole install, download included: a point-in-time check would
+        # let a generation start during the download and be overwritten by the extraction.
+        with _tree_claimed_for_install() as claimed:
+            if not claimed:
+                return fallback  # something is running in there; retry on a later load
+            try:
+                path = _install(accelerator = accelerator)
+                logger.info("sd-cli installed at %s", path)
+                return str(path)
+            except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
+                logger.warning("sd-cli auto-install failed: %s", exc)
+                if fallback is not None:
+                    _note_failed_upgrade(accelerator)
+                return fallback
 
 
 def ensure_sd_server_binary(
@@ -443,28 +489,24 @@ def ensure_sd_server_binary(
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
         fallback = found if usable else None
-        # An install REPLACES the binaries in the managed tree, so refuse it while a native
-        # process is still executing out of that tree. _accelerator_changed answers this for a
-        # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
-        # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
-        # anything is installed, so a first install is unaffected. The load retries after teardown.
-        if _managed_tree_in_use():
-            return fallback
         try:
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-server installer import failed: %s", exc)
             return fallback
-        try:
-            _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
-        except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
-            logger.warning("sd-server auto-install failed: %s", exc)
-            # Also when only the CLI survives (a legacy server-less tree): the router probes
-            # ensure_sd_cpp_binary immediately after this, and without the record that probe
-            # resolves and downloads the same bundle a second time inside one selection.
-            if fallback is not None or find_sd_cpp_binary() is not None:
-                _note_failed_upgrade(accelerator)
-            return fallback
+        with _tree_claimed_for_install() as claimed:
+            if not claimed:
+                return fallback  # something is running in there; retry on a later load
+            try:
+                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+            except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
+                logger.warning("sd-server auto-install failed: %s", exc)
+                # Also when only the CLI survives (a legacy server-less tree): the router probes
+                # ensure_sd_cpp_binary immediately after this, and without the record that probe
+                # resolves and downloads the same bundle a second time inside one selection.
+                if fallback is not None or find_sd_cpp_binary() is not None:
+                    _note_failed_upgrade(accelerator)
+                return fallback
         return find_sd_server_binary() or fallback
 
 
@@ -1771,17 +1813,20 @@ class SdCppDiffusionBackend:
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
                 )
-                engine.generate(
-                    state.files,
-                    params,
-                    output_path = out_path,
-                    offload = list(state.offload_flags) or None,
-                    native_speed = state.native_speed,
-                    threads = state.threads,
-                    extra_args = extra_args or None,
-                    on_log = self._on_log,
-                    cancel_event = cancel,
-                )
+                # Each sd-cli run executes out of the managed tree, so hold installs off for its
+                # duration (and wait here if one is already extracting).
+                with _tree_reader():
+                    engine.generate(
+                        state.files,
+                        params,
+                        output_path = out_path,
+                        offload = list(state.offload_flags) or None,
+                        native_speed = state.native_speed,
+                        threads = state.threads,
+                        extra_args = extra_args or None,
+                        on_log = self._on_log,
+                        cancel_event = cancel,
+                    )
                 with Image.open(out_path) as im:
                     images.append(im.copy())
                 seeds.append(seed_i)
