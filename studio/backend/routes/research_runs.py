@@ -427,7 +427,8 @@ async def retry_research_run(
     return run
 
 
-@router.get("/{run_id}/events")
+# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+@router.api_route("/{run_id}/events", methods = ["GET", "POST"])
 async def research_events(
     run_id: str,
     request: Request,

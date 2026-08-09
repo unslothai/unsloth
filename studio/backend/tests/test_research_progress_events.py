@@ -272,3 +272,12 @@ def test_decision_phase_bracket_carries_its_step_position(research_home, monkeyp
     started = next(e for e in _events("run-1") if e["type"] == "phase.started")
     assert started["data"]["stepPosition"] == 3
     assert started["data"]["phase"] == "decision"
+
+
+def test_event_stream_is_reachable_over_post_as_well_as_get():
+    # Proxies that stream POST /v1/chat/completions still hold a streamed GET until it closes.
+    from routes.research_runs import router
+
+    events = [route for route in router.routes if route.path == "/{run_id}/events"]
+    assert len(events) == 1
+    assert {"GET", "POST"} <= events[0].methods
