@@ -2500,6 +2500,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
+      // Hold the page until any load start still in flight has run to its END, compensating
+      // unload and all. The selector's eject routes straight here, so without the fence an eject
+      // landing before the start registered returned success and cleared busy: the user picks
+      // another model, the backend refuses it ("a load is already in progress") because the older
+      // start won the race, and that older handler -- seeing the newer loadSeq -- skips its
+      // compensating unload and returns without restarting its poll, leaving a multi-gigabyte
+      // load running with no toast and no cancel control. Same fence handleCancelLoad and the
+      // external-eject listener take.
+      const pending = pendingStart.current;
+      if (pending) {
+        try {
+          await pending;
+        } catch {
+          // Its own handler reports the failure; this only waits for the window to close.
+        }
+      }
       return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
@@ -2517,21 +2533,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const handleCancelLoad = useCallback(async () => {
     const wasLoading = busy === "loading";
     if (await handleUnload()) {
-      // Hold the page busy until the load in flight has run to the END, compensating unload and
-      // all. The backend refuses a second load while one is registered, so a model picked in this
-      // window would be rejected while the load just cancelled -- which may not have been
-      // registered yet when the unload arrived -- carried on; and that compensating unload names
-      // no load, so one still in flight would tear down whatever was picked instead.
-      const pending = pendingStart.current;
-      if (pending) {
-        setBusy("unloading");
-        try {
-          await pending;
-        } catch {
-          // Its own handler reports the failure; this only waits for the window to close.
-        }
-        setBusy((prev) => (prev === "unloading" ? null : prev));
-      }
+      // handleUnload holds the page for the whole pending-start path before it returns, so by
+      // here the window the backend's "a load is already in progress" refusal lives in is shut.
       toast.info("Stopped loading the model", {
         description: "Anything already downloaded stays cached, so loading it again resumes.",
       });

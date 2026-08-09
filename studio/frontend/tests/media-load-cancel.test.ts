@@ -103,11 +103,29 @@ for (const [page, path] of PAGES) {
   test(`the ${page} unload reports whether it succeeded`, () => {
     const unload = SOURCE.slice(
       SOURCE.indexOf("const handleUnload = useCallback("),
-      SOURCE.indexOf("const handleUnload = useCallback(") + 700,
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
     );
     assert.match(unload, /Promise<boolean>/);
     assert.match(unload, /return true;/);
     assert.match(unload, /return false;/);
+  });
+
+  test(`the ${page} selector eject is fenced on the pending start too`, () => {
+    // onEject routes STRAIGHT to handleUnload, and it is offered throughout a replacement load
+    // (the outgoing model is still resident). Fencing only handleCancelLoad left that path
+    // clearing busy before the start had registered: the user picks another model, the backend
+    // refuses it because the older start won the race, and the older handler skips its
+    // compensating unload on the newer loadSeq and returns without restarting its poll --
+    // a multi-gigabyte load running with no toast and no cancel control. The fence lives in
+    // handleUnload so every caller of it, the selector included, gets it.
+    const unload = SOURCE.slice(
+      SOURCE.indexOf("const handleUnload = useCallback("),
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+    );
+    assert.match(unload, /const pending = pendingStart[.]current;/);
+    // Still busy while it waits: the finally is what clears it, after the await.
+    assert.match(unload, /setBusy[(]"unloading"[)];[\s\S]*await pending;/);
+    assert.match(unload, /await pending;[\s\S]*setBusy[(]null[)];/);
   });
 
   test(`the ${page} eject is still offered only for a resident model`, () => {
@@ -223,13 +241,16 @@ for (const [page, path] of PAGES) {
     // begin_load refuses a second load while one is registered, so a model picked between the
     // cancel returning and the start request settling is rejected while the cancelled load keeps
     // running. Staying busy for that window is what makes the compensating unload reachable.
+    // The fence itself lives in handleUnload (see above), which handleCancelLoad awaits before
+    // it reports the cancel, so the window is shut for the selector's eject as well.
     const handler = SOURCE.slice(
-      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+      SOURCE.indexOf("const handleUnload = useCallback("),
       SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
     );
     assert.match(handler, /const pending = pendingStart\.current;/);
     assert.match(handler, /setBusy\("unloading"\);/);
     assert.match(handler, /await pending;/);
+    assert.match(handler, /if \(await handleUnload\(\)\) \{/);
     // And it must cover the WHOLE load path, not just the start POST: the compensating unload
     // runs after that POST resolves and names no load, so a model picked while it is in flight
     // would be torn down by it. handleLoad publishes one promise up front and settles it at
