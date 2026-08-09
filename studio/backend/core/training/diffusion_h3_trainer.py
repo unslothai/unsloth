@@ -392,7 +392,11 @@ def _row_timesteps(layout, num_text_tokens: int, t_video: float, t_audio: float,
     return timestep.to(device), timestep_indices.to(device)
 
 
-def _save_lora(out_dir: str, layers: dict, adapter_config: Optional[dict] = None) -> None:
+def _save_lora(
+    out_dir: str,
+    layers: dict,
+    adapter_config: Optional[dict] = None,
+) -> None:
     """Write the adapter as ``pytorch_lora_weights.safetensors``.
 
     Diffusers ships no ``MiniMaxH3LoraLoaderMixin``, so there is no

@@ -891,8 +891,8 @@ def test_int8_training_applies_h3s_small_m_guards():
     assert "_int8_quantize_base(transformer, cfg.resolved_family)" in src
     dit_src = Path(dit.__file__).read_text()
     body = dit_src.split("def _int8_quantize_base", 1)[1].split("\ndef ", 1)[0]
-    assert "exclude_tokens_for_scheme(\"int8\", family)" in body
-    assert "apply_small_m_padding(transformer, \"int8\", family)" in body
+    assert 'exclude_tokens_for_scheme("int8", family)' in body
+    assert 'apply_small_m_padding(transformer, "int8", family)' in body
 
 
 def test_int8_quantize_base_pads_the_families_small_m_linears(monkeypatch):
@@ -981,9 +981,7 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
 
         def decode(self, audio = 0):
             block = types.SimpleNamespace(
-                to_ndarray = lambda: np.zeros(
-                    (self._n * clips.H3_AUDIO_CHANNELS,), dtype = "float32"
-                )
+                to_ndarray = lambda: np.zeros((self._n * clips.H3_AUDIO_CHANNELS,), dtype = "float32")
             )
             return [block]
 
