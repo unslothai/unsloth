@@ -1333,7 +1333,7 @@ def test_a_script_block_proxy_default_is_evaluated_not_dropped():
 
     assert "[scriptblock]" in _PS_PROXY_PROBE
     assert "& $v" in _PS_PROXY_PROBE, "the block has to be invoked, not serialized"
-    assert '$out[$k] = $r.AbsoluteUri' in _PS_PROXY_PROBE
+    assert "$out[$k] = $r.AbsoluteUri" in _PS_PROXY_PROBE
 
     installer = INSTALL_PS1.read_text(encoding = "utf-8")
     assert "$_UnslothDefaultValue -is [scriptblock]" in installer
