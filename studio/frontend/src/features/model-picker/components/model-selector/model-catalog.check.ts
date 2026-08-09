@@ -448,8 +448,17 @@ assert.equal(
     .format,
   "gguf",
 );
+// 96 GB of host RAM is under the 150 GB the backend's own estimator asks for below 132 GB of
+// VRAM, and nothing checks host RAM at load time, so routing this host to bf16 meant a 145 GB
+// download, a successful load, and a hard failure on the first generation.
 assert.equal(
   pickDefaultArtifact(h3, { gpuGb: 123, systemRamGb: 96, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+// At 132 GB of VRAM the estimator drops its host-RAM floor to 85 GB, so this host does fit.
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
     .format,
   "bf16",
 );

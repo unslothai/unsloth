@@ -346,12 +346,17 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
-        // Cluster measurements at the default 1344x768, 124-frame preset. The
-        // lower-GPU tier holds one 66 GB component at a time and keeps the full
-        // model in RAM; the higher tier retains more weights on-device.
+        // Derived from the two backend estimators at the default 1344x768, 124-frame preset, so
+        // the picker cannot route a host to a 145 GB download the backend then refuses:
+        // estimate_h3_diffusers_vram_gb is 68.5 + 0.08 * 127.98 = 78.74 GB, and
+        // estimate_h3_diffusers_host_ram_gb is 150 GB below 132 GB of VRAM and 85 GB at or above
+        // it. The lower-GPU tier holds one 66 GB component at a time and keeps the full model in
+        // RAM; the higher tier retains more weights on-device. There is no load-time host-RAM
+        // guard, so numbers under these let the download and the load both succeed and the first
+        // generation fail.
         offloadFitTiers: [
-          { gpuGb: 74, systemRamGb: 140 },
-          { gpuGb: 123, systemRamGb: 80 },
+          { gpuGb: 79, systemRamGb: 150 },
+          { gpuGb: 132, systemRamGb: 85 },
         ],
       }),
       // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
