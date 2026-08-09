@@ -106,6 +106,11 @@ class DenseQuantEstimate:
     companions_mib: int
     prequant: bool
     download_transformer_mib: int = 0
+    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the
+    # group tier that streams the encoders instead of keeping them resident, and this table is
+    # the only place the split exists on the dense-candidate path. Defaulted so any construction
+    # that predates it still works (the planner reads a 0 split as "no split", i.e. no new tier).
+    text_encoders_mib: int = 0
 
     @property
     def transient_total_mib(self) -> int:
@@ -141,6 +146,9 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
+        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's
+        # `companions - text_encoders` is the VAE and nothing else.
+        text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
 
