@@ -105,6 +105,7 @@ studio = [
     "pyjwt",
     "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
     "huggingface-hub==0.36.2 ; python_version < '3.10'",
+    "urllib3>=2.3.0",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",

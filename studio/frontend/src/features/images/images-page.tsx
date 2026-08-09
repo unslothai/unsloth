@@ -39,6 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -73,6 +74,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
@@ -1097,6 +1099,7 @@ type LoadAdvanced = Pick<
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
+  const { isMobile, pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -2017,6 +2020,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
+      // Read inside the try, acted on outside it: refusing from in there would fall through to the
+      // load on any throw from the refusal itself, which is the one outcome that must not happen.
+      let incompatible: string | null = null;
       try {
         const plan = await getDiffusionDownloadPlan({
           model_path: repoId,
@@ -2037,7 +2043,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (!owns()) return false;
-        if (plan.entries.length > 0) {
+        // Refuse an incompatible pairing HERE, at selection time. The backend also raises it from
+        // the load, but only after staging the base repo: the whole point of checking it in the
+        // plan is that no byte has moved yet. Returning false reverts the picker's optimistic
+        // quant selection, exactly as a load that fails to start does.
+        incompatible = plan.incompatible_reason ?? null;
+        if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, advanced, token: token ?? pickGuard.claim() };
           stage(
             plan.entries.map((e) => ({
@@ -2053,6 +2064,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       if (!owns()) return false;
+      if (incompatible) {
+        toast.error(incompatible);
+        return false;
+      }
       return handleLoadRef.current(repoId, opts);
     },
     [stage, currentLoadAdvanced, pickGuard],
@@ -2713,44 +2728,59 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="pointer-events-auto flex items-center gap-2">
-          {pageMode === "train" ? (
-            <TrainBaseSelector
-              families={trainFamilies}
-              familyName={trainFamilyName}
-              base={trainBaseChoice}
-              onSelect={(family, repo) => {
-                // Set both together: the panel reseed effect keeps a base valid for the new family.
-                setTrainFamilyName(family);
-                setTrainBaseChoice(repo);
-              }}
-            />
-          ) : (
-            <ModelSelector
-              models={MODELS}
-              value={status?.loaded ? status.repo_id ?? undefined : undefined}
-              activeGgufVariant={quant}
-              onValueChange={handleModelSelect}
-              onEject={status?.loaded ? handleUnload : undefined}
-              variant="ghost"
-              className="!h-[34px]"
-              task={IMAGE_GEN_TASKS}
-              catalog={IMAGE_CATALOG}
-              placeholder="Select image model"
-              open={active && selectorOpen}
-              onOpenChange={(o) => setSelectorOpen(active && o)}
-            />
+      <div
+        className={cn(
+          "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)] md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
+          isMobile && "pl-12",
+        )}
+      >
+        <div
+          className={cn(
+            "pointer-events-none flex min-w-0 items-center",
+            !isMobile &&
+              (!pinned && isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]"),
           )}
+        >
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
+            {pageMode === "train" ? (
+              <TrainBaseSelector
+                families={trainFamilies}
+                familyName={trainFamilyName}
+                base={trainBaseChoice}
+                onSelect={(family, repo) => {
+                  // Set both together: the panel reseed effect keeps a base valid for the new family.
+                  setTrainFamilyName(family);
+                  setTrainBaseChoice(repo);
+                }}
+              />
+            ) : (
+              <ModelSelector
+                models={MODELS}
+                value={status?.loaded ? status.repo_id ?? undefined : undefined}
+                activeGgufVariant={quant}
+                onValueChange={handleModelSelect}
+                onEject={status?.loaded ? handleUnload : undefined}
+                variant="ghost"
+                className="!h-[34px] max-w-full overflow-hidden"
+                task={IMAGE_GEN_TASKS}
+                catalog={IMAGE_CATALOG}
+                placeholder="Select image model"
+                open={active && selectorOpen}
+                onOpenChange={(o) => setSelectorOpen(active && o)}
+              />
+            )}
+          </div>
         </div>
-        {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
+        {/* Create | Train page-mode switch: desktop grid keeps this centered while the side controls shrink in their columns. */}
+        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center md:static">
           <PillTabs
             ariaLabel="Page mode"
             value={pageMode}
             onValueChange={(v) => setPageMode(v as "create" | "train")}
             fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11 md:[&>button]:px-3 xl:[&>button]:px-11"
             tabs={[
               {
                 value: "create",
@@ -2772,7 +2802,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             ]}
           />
         </div>
-        <div className="pointer-events-auto flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2 md:justify-self-end">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>
