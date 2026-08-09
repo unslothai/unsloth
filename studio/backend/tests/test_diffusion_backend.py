@@ -4374,7 +4374,8 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
     missing_shard = cached_root / "transformer" / shard_names[1]
     missing_shard.unlink()
     assert DiffusionBackend._complete_dense_transformer_root(cached_repo) is None
-    missing_shard.write_bytes(b"x")
+    for name in shard_names:
+        _safetensors_with_params(cached_root / "transformer" / name, 1_000_000)
     assert DiffusionBackend._complete_dense_transformer_root(cached_repo) == str(cached_root)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
@@ -4389,7 +4390,9 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     fam = detect_family("x", override = "qwen-image-edit-2511")
-    assert backend._dense_quant_prefetch_needed(fam, {"base_repo": base_repo}) is True
+    # Already-cached dense weights are consumed from their existing tree; widening the companion
+    # prefetch could choose the other repo key and download the same denoiser again.
+    assert backend._dense_quant_prefetch_needed(fam, {"base_repo": base_repo}) is False
     calls = _spy_dense_quant(monkeypatch)
     pick = tmp_path / "pick"
     pick.mkdir()
@@ -4400,6 +4403,8 @@ def test_auto_quant_uses_a_complete_cached_dense_transformer_when_no_prequant_ex
         gguf_filename = "m.gguf",
         base_repo = base_repo,
         family_override = "qwen-image-edit-2511",
+        _fetch_base = "unsloth/Qwen-Image-Edit-2511",
+        _transformer_prefetched = False,
     )
 
     assert len(_dense_calls(calls, backend)) == 1
@@ -6011,6 +6016,88 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
         f"explicit_base_bytes={explicit_base['bytes']} "
         f"explicit_transformer_shards={len(explicit_transformer)}"
     )
+
+
+def test_qwen_auto_does_not_restage_cached_upstream_dense_weights_under_the_mirror(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import json
+
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory as dmem
+
+    checkpoint_repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+    base_repo = "Qwen/Qwen-Image-Edit-2511"
+    mirror_repo = "unsloth/Qwen-Image-Edit-2511"
+    _fake_hf_api(
+        monkeypatch,
+        {
+            checkpoint_repo: [_FakeSibling(_QWEN_EDIT_Q6, 16_900_000_000)],
+            base_repo: _QWEN_EDIT_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: base_repo)
+    live, _other = _split_cache_roots(tmp_path, monkeypatch)
+    revision = "upstream-dense-only"
+    shard_paths = [
+        s.rfilename
+        for s in _QWEN_EDIT_BASE_SIBLINGS
+        if s.rfilename.startswith("transformer/") and s.rfilename.endswith(".safetensors")
+    ]
+    cache_files = [
+        "transformer/config.json",
+        "transformer/diffusion_pytorch_model.safetensors.index.json",
+        *shard_paths,
+    ]
+    _fake_hub_cache(
+        monkeypatch, live, base_repo, cache_files, revision = revision, ref = revision
+    )
+    index = (
+        live
+        / "models--Qwen--Qwen-Image-Edit-2511"
+        / "snapshots"
+        / revision
+        / "transformer"
+        / "diffusion_pytorch_model.safetensors.index.json"
+    )
+    index.write_text(
+        json.dumps(
+            {
+                "weight_map": {
+                    f"tensor_{i}": path.removeprefix("transformer/")
+                    for i, path in enumerate(shard_paths)
+                }
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert DiffusionBackend._complete_dense_transformer_root(base_repo) is not None
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(prequant = False, steady_total_mib = 39_900),
+    )
+    monkeypatch.setattr(
+        dmem,
+        "snapshot_device_memory",
+        lambda target: types.SimpleNamespace(
+            total_mib = 81_920, free_mib = 80_000, memory_kind = "discrete_vram"
+        ),
+    )
+
+    plan = backend.download_plan(checkpoint_repo, gguf_filename = _QWEN_EDIT_Q6)
+    base_entry = next(e for e in plan["entries"] if e["gguf_filename"] is None)
+
+    # Missing companions make the final fetch repo the mirror, but its prefetch must not receive
+    # transformer shards already complete under the upstream key.
+    assert base_entry["repo_id"] == mirror_repo
+    assert not any(path.startswith("transformer/") for path in base_entry["files"])
 
 
 def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):

@@ -1127,22 +1127,30 @@ class DiffusionBackend:
             if mm is None and kwargs.get("cpu_offload"):
                 return False
             target = self._resolve_device_target(fam)
-            # Same decline as load_pipeline: an uncached hosted pre-quant keeps the GGUF, so the
-            # plan must not stage the base transformer/ shards either.
-            if (
-                auto
-                # Active weights only: disagreeing with the load stages shards it never reads.
-                and not _has_active_lora(kwargs.get("loras"))
-                and _auto_gguf_dense_download_reason(
+            # Auto may use a complete dense transformer already held under either repo key, but it
+            # must not add those files to the companion prefetch: the eventual mirror decision can
+            # choose the other key and re-download the whole denoiser. The loader resolves the
+            # cached tree directly. An uncached replacement likewise keeps the GGUF and stages no
+            # transformer shards.
+            if auto and not _has_active_lora(kwargs.get("loras")):
+                base_repo = kwargs.get("base_repo")
+                fetch_repo = kwargs.get("fetch_repo")
+                if fetch_repo is None and base_repo:
+                    fetch_repo = prefer_ungated_mirror(base_repo)
+                if any(
+                    DiffusionBackend._complete_dense_transformer_root(repo)
+                    for repo in dict.fromkeys(repo for repo in (fetch_repo, base_repo) if repo)
+                ):
+                    return False
+                if _auto_gguf_dense_download_reason(
                     fam,
                     target,
                     mode,
-                    base_repo = kwargs.get("base_repo"),
+                    base_repo = base_repo,
                     prequant_path = kwargs.get("transformer_prequant_path"),
-                )
-                is not None
-            ):
-                return False
+                    fetch_repo = fetch_repo,
+                ) is not None:
+                    return False
             # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
             candidate = resolve_dense_quant_candidate(
                 fam = fam,
@@ -2704,12 +2712,24 @@ class DiffusionBackend:
                             if scheme is not None
                             else None
                         )
-                        # Reads the cache, so it looks where the prefetch WROTE (the mirror when one
-                        # was swapped in) and carries the staged snapshot: a base served wholly from
-                        # the import-time root sizes as 0 on the hub id alone, and a 0 skips this
-                        # fit check, landing the dense build under a GGUF-sized plan.
+                        # Size the same complete tree the dense loader will choose: normally the
+                        # fetch repo, but the upstream key may already hold the transformer while
+                        # missing companions send the prefetch to its mirror. Falling back to the
+                        # fetch repo preserves the ordinary freshly-staged path.
+                        dense_repo = fetch_base
+                        dense_root = DiffusionBackend._complete_dense_transformer_root(
+                            fetch_base, _base_local_dir
+                        )
+                        if dense_root is None and fetch_base != base:
+                            dense_root = DiffusionBackend._complete_dense_transformer_root(
+                                base, _base_local_dir
+                            )
+                            if dense_root is not None:
+                                dense_repo = base
                         dense_mib = int(
-                            self._dense_transformer_resident_bytes(fetch_base, _base_local_dir)
+                            self._dense_transformer_resident_bytes(
+                                dense_repo, dense_root or _base_local_dir
+                            )
                             // (1024 * 1024)
                         )
                         dense_possible = True
