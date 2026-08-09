@@ -2767,6 +2767,16 @@ async def start_diffusion_training(
             ),
         )
 
+    # Same rule for the MiniMax-H3 trainer's own restrictions, which are config-only and so
+    # answerable here: a batch > 1, a non-bf16 precision, a weighting scheme, a compile
+    # request or a conditioning-cache directory used to reach the worker and 400 there, with
+    # the user's resident models already evicted for a run that never started.
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    _h3_reason = h3_train_unsupported_reason(normalized_cfg)
+    if _h3_reason:
+        raise HTTPException(status_code = 400, detail = _h3_reason)
+
     # Preflight the requested DiT precision BEFORE freeing GPU residents: the trainer's own
     # checks fire only in the child, AFTER eviction. Fail fast (400).
     from core.training.diffusion_train_common import training_precision_preflight_error

@@ -1345,6 +1345,76 @@ def discover_image_caption_pairs(
 # neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
+# MiniMax-H3 canvas multiple: a 16x VAE compression and a 2x patch.
+_H3_CANVAS_MULTIPLE = 32
+
+
+def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
+    """Reason this config cannot run the MiniMax-H3 trainer, else None. Never raises.
+
+    Called by the START ROUTE before it frees the resident GPU models, and again by the trainer
+    itself so a direct call is refused the same way. Config-only by construction: every check
+    here reads the request, never the host, so the route can answer without importing torch or
+    touching the GPU. Host capability stays in the precision preflight next to it.
+    """
+    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
+        return None
+    if cfg.mixed_precision != "bf16":
+        return (
+            "MiniMax-H3 LoRA training requires bf16: its checkpoint keeps the patch "
+            "projections, the timestep MLP and the output heads in fp32 and fp16 overflows "
+            "them. The loop hard-codes the bf16 weight dtype and autocast either way, so any "
+            "other setting would be recorded and then not run. Set mixed precision to bf16."
+        )
+    if cfg.resolution % _H3_CANVAS_MULTIPLE:
+        return (
+            f"MiniMax-H3 trains on a canvas whose edges are multiples of {_H3_CANVAS_MULTIPLE} "
+            f"(a 16x VAE compression and a 2x patch); got resolution {cfg.resolution}."
+        )
+    if float(getattr(cfg, "cfg_dropout", 0.0) or 0.0) > 0:
+        return (
+            "MiniMax-H3 is guidance-distilled: it has no unconditional branch and no negative "
+            "prompt, so a classifier-free-guidance dropout trains a path the sampler never "
+            "takes. Set cfg_dropout to 0."
+        )
+    if str(getattr(cfg, "weighting_scheme", "none") or "none") != "none":
+        return (
+            "MiniMax-H3 has no timestep-weighted loss yet: its two schedules put video and "
+            "audio at different sigmas in the same step, so a single weight over 'the' "
+            "timestep is ambiguous. Use weighting_scheme='none'."
+        )
+    # The batch axis of an H3 forward is a pure replication axis: the layout, the rotary grid
+    # and the row timesteps describe ONE packed sequence that every batch item shares. Two
+    # clips with different captions have different text lengths and therefore different
+    # layouts, so a batch > 1 cannot be formed without padding the model has no mask for.
+    if cfg.train_batch_size != 1:
+        return (
+            "MiniMax-H3 trains at batch size 1: one forward covers one packed sequence, whose "
+            "row layout is set by the clip's own geometry and its caption's length. Use "
+            "gradient_accumulation_steps to raise the effective batch."
+        )
+    # torch.compile is never invoked here (the packed layout changes shape with every clip's
+    # caption length, so each step would recompile), and the run already reports compiled=False.
+    # "auto" means "the trainer decides", which it does; an explicit "on" is a policy that would
+    # be accepted and then ignored.
+    if str(getattr(cfg, "compile_transformer", "auto") or "auto").strip().lower() == "on":
+        return (
+            "MiniMax-H3 does not compile: its packed sequence changes length with every clip's "
+            "caption, so torch.compile would re-trace each step. Use compile_transformer "
+            "'off' or 'auto'."
+        )
+    # No conditioning cache exists on this path: the conditioner is loaded and every caption and
+    # latent recomputed each run. Accepting the directory would promise a saving that never
+    # happens, so an explicit one is refused rather than silently unused.
+    if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
+        return (
+            "MiniMax-H3 has no persistent conditioning cache yet: each run loads the "
+            "conditioner and recomputes its captions and latents, so cond_cache_dir would be "
+            "recorded and never read. Leave it unset."
+        )
+    return None
+
+
 # Families whose dataset is captioned video CLIPS rather than stills. LTX-2 is deliberately not
 # here: it trains a style LoRA FROM still images, so it keeps the image discovery.
 CLIP_TRAINED_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})

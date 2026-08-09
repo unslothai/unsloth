@@ -1002,22 +1002,58 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
 
 
 def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
-    """Same rule as the other pins this trainer already applies (cfg_dropout,
-    weighting_scheme, batch size): a setting the loop does not implement must not be accepted
-    and then silently dropped. Refused where the value is an explicit non-default, normalised
-    where the SCHEMA DEFAULT is the one the loop disagrees with -- refusing there would 422
-    every untouched request."""
-    from core.training import diffusion_h3_trainer as h3
+    """Same rule as the other pins this trainer applies: a setting the loop does not implement
+    must not be accepted and then silently dropped. Refused where the value can only be an
+    explicit non-default, normalised where the SCHEMA DEFAULT is the one the loop disagrees with
+    -- refusing there would 422 every untouched request.
 
-    src = Path(h3.__file__).read_text()
-    # bf16 is the hard requirement, so "no" and "fp16" both go. The loop hard-codes the bf16
-    # weight dtype and autocast, so anything else was recorded and then not run.
-    assert 'if cfg.mixed_precision != "bf16":' in src
-    # Explicit non-defaults, refused.
-    assert 'compile_transformer", "auto") or "auto").strip().lower() == "on"' in src
-    assert 'cond_cache_dir", "") or "").strip():' in src
-    # Wrong defaults, normalised.
-    assert "cfg = replace(cfg, center_crop = True, random_flip = False, snr_gamma = None)" in src
+    Read off the shared preflight, which is also what the START ROUTE calls before it evicts the
+    user's resident models."""
+    from dataclasses import replace as _replace
+
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    base = _h3_cfg().normalized()
+    assert h3_train_unsupported_reason(base) is None, "a default H3 request must start"
+
+    refused = {
+        "mixed_precision": ("no", "requires bf16"),
+        "train_batch_size": (2, "batch size 1"),
+        "compile_transformer": ("on", "does not compile"),
+        "cond_cache_dir": ("/tmp/cond", "conditioning cache"),
+        "cfg_dropout": (0.1, "guidance-distilled"),
+        "weighting_scheme": ("bell", "timestep-weighted"),
+        "resolution": (700, "multiples of"),
+    }
+    for field, (value, fragment) in refused.items():
+        reason = h3_train_unsupported_reason(_replace(base, **{field: value}))
+        assert reason and fragment in reason, f"{field} was accepted: {reason!r}"
+
+    # Config-only, so it never answers for another family and never touches the host.
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    other = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+        mixed_precision = "no",
+    )
+    assert h3_train_unsupported_reason(other.normalized()) is None
+
+
+def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
+    # The whole point of the shared helper: these used to reach the worker and 400 there, with
+    # the resident models already freed for a run that never began.
+    import inspect
+
+    import routes.training as tr
+
+    src = inspect.getsource(tr.start_diffusion_training)
+    # The CALL, not the docstring's mention of it.
+    assert src.index("h3_train_unsupported_reason") < src.index(
+        "asyncio.to_thread(_free_gpu_for_diffusion_training)"
+    )
 
 
 def test_the_augmentation_knobs_record_what_h3_actually_does():

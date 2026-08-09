@@ -963,9 +963,17 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     lookup imports that pipeline module and can raise something other than AttributeError."""
     if fam is None:
         return False
+    # ``ModularPipeline`` is the generic entry point, not a family: it has existed for several
+    # releases, so a diffusers that predates MiniMax-H3's own blocks still answers hasattr for
+    # it and the family would be advertised and started, only to fail resolving its workflow
+    # after the start route had already evicted the resident models. Probe the family's own
+    # transformer class there instead, which is the thing the load actually needs.
+    name = fam.pipeline_class
+    if name == "ModularPipeline":
+        name = getattr(fam, "transformer_class", None) or name
     try:
         import diffusers
-        return hasattr(diffusers, fam.pipeline_class)
+        return hasattr(diffusers, name)
     except Exception:  # noqa: BLE001 -- no diffusers here: the load path reports it properly
         return True
 
