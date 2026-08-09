@@ -18,7 +18,6 @@ from hub.schemas.inventory import (
     ModelRuntime,
 )
 from hub.utils.gguf import (
-    extract_quant_label,
     gguf_variant_key,
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,

@@ -29,7 +29,6 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 from hub.utils.gguf import (
-    extract_quant_label,
     gguf_variant_key,
     is_big_endian_gguf_path,
     is_gguf_filename,
