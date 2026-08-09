@@ -77,6 +77,24 @@ class LoRAEMA:
             shadow.requires_grad = False
             self._shadow[name] = shadow
 
+    def reseed_from(self, model: Any) -> None:
+        """Re-point every shadow at the model's CURRENT trainable weights.
+
+        For a resume that turns EMA on for the first time. The trainer builds the EMA before it
+        restores the adapter, so the shadow holds freshly initialised LoRA weights, and a
+        checkpoint written with EMA off carries no shadow to replace them with -- leaving the
+        exported EMA adapter blending the restored weights with initialisation noise. Starting
+        from the restored weights is what enabling EMA at step N means."""
+        import torch
+
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                shadow = self._shadow.get(name)
+                if shadow is None or tuple(shadow.shape) != tuple(p.shape):
+                    continue
+                shadow.copy_(p.detach().to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = 0
+
     def effective_decay(self) -> float:
         """The decay used for the NEXT update (after ``updates`` prior ones)."""
         if not self.warmup:
@@ -99,6 +117,43 @@ class LoRAEMA:
 
     def state_dict(self) -> dict[str, Any]:
         return {name: t.detach().clone() for name, t in self._shadow.items()}
+
+    def missing_from(self, state: dict[str, Any]) -> tuple[str, ...]:
+        """Live shadow names a saved EMA state does not cover, by name or by shape.
+
+        ``load_state_dict`` skips those entries by design (a differently-wrapped model should
+        degrade rather than raise), which is exactly why a caller restoring a run has to ask:
+        a partial EMA silently blends restored shadows for some parameters with freshly
+        initialised ones for the rest, and every later update and the exported EMA adapter
+        carry that mixture while the run reports a clean resume."""
+        saved = state or {}
+        missing = []
+        for name, shadow in self._shadow.items():
+            entry = saved.get(name)
+            if entry is None or tuple(entry.shape) != tuple(shadow.shape):
+                missing.append(name)
+        return tuple(missing)
+
+    def load_state_dict(
+        self,
+        state: dict[str, Any],
+        updates: int = 0,
+    ) -> None:
+        """Restore shadows saved by ``state_dict`` (a resume checkpoint), in place.
+
+        ``updates`` restores the warmup ramp position: without it a resumed run would
+        restart the ramp and pull the shadow hard towards the current weights. Entries the
+        live model does not have are ignored, so a checkpoint from a differently-wrapped
+        model degrades to "keep the freshly initialised shadow" instead of raising."""
+        import torch
+
+        with torch.no_grad():
+            for name, shadow in self._shadow.items():
+                saved = (state or {}).get(name)
+                if saved is None or tuple(saved.shape) != tuple(shadow.shape):
+                    continue
+                shadow.copy_(saved.to(device = shadow.device, dtype = shadow.dtype))
+        self.updates = max(0, int(updates or 0))
 
     def copy_to(self, model: Any) -> dict[str, Any]:
         """Write the shadow values into ``model``'s params, returning the
