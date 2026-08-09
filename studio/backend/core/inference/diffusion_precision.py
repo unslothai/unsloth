@@ -73,6 +73,21 @@ def normalize_te_quant(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def effective_te_quant(mode: Optional[str], family: Optional[str]) -> Optional[str]:
+    """The text-encoder mode ``quantize_text_encoders`` will ACTUALLY attempt for ``family``.
+
+    An explicit int8 on a family with no keep-bf16 schedule is rewritten to layerwise fp8
+    before support is ever consulted -- a documented downgrade that reports ``fell_back`` and
+    needs no torchao. A caller that asks ``te_quant_supported`` about the raw request therefore
+    refuses loads the runtime would run: on Windows ROCm the torchao stub makes int8
+    unsupported while fp8 still works.
+    """
+    normalized = normalize_te_quant(mode)
+    if normalized == TE_QUANT_INT8 and _TE_INT8_SKIP.get((family or "").lower()) is None:
+        return TE_QUANT_FP8
+    return normalized
+
+
 def te_quant_supported(target: Any, mode: str) -> bool:
     """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus the tensor-core class
     each backend needs -- fp8 dtype (fp8), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+ (int8),

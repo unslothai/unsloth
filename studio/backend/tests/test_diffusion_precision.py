@@ -23,6 +23,7 @@ from core.inference.diffusion_precision import (
     _cast_int8_selective,
     _cast_nvfp4,
     _keep_bf16_block_fqns,
+    effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
     te_quant_supported,
@@ -503,3 +504,18 @@ def test_quantize_full_cast_is_not_partial(monkeypatch):
     pipe = types.SimpleNamespace(text_encoder = object(), text_encoder_2 = object())
     outcome = quantize_text_encoders(pipe, _target(), mode = "fp8")
     assert outcome.partial is False and outcome.status == "applied"
+
+
+def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
+    # quantize_text_encoders rewrites an int8 request to layerwise fp8 on any family with no
+    # keep-bf16 schedule, and that path never touches torchao. A gate that asks about the raw
+    # int8 therefore refuses loads the runtime would happily run and report as fell_back: on a
+    # host whose torchao cannot do int8 while fp8 still works, every unscheduled family died.
+    assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
+    assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
+    # A family WITH a schedule really does run int8, so the gate must keep asking about int8.
+    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_INT8
+    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_INT8
+    # Every other mode is its own effective mode, and absent stays absent.
+    assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
+    assert effective_te_quant(None, "qwen-image") is None

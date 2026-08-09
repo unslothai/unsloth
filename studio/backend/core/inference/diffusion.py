@@ -112,7 +112,12 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders, te_quant_supported
+from .diffusion_precision import (
+    effective_te_quant,
+    normalize_te_quant,
+    quantize_text_encoders,
+    te_quant_supported,
+)
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -953,7 +958,13 @@ class DiffusionBackend:
                         off_label = "Off to run the checkpoint as-is",
                     )
                 )
-        if te_mode is not None and not te_quant_supported(target, te_mode):
+        # The mode the loader will ACTUALLY attempt, not the raw request: an explicit int8
+        # on a family with no keep-bf16 schedule is rewritten to layerwise fp8 before
+        # support is consulted, and that path needs no torchao. Refusing on the raw int8
+        # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
+        # where the torchao stub kills int8 while fp8 still works.
+        te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+        if te_effective is not None and not te_quant_supported(target, te_effective):
             raise RuntimeError(
                 precision_refusal_message(
                     "text_encoder_quant",

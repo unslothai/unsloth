@@ -83,6 +83,7 @@ import {
   isNativeEngineStatus,
   formatResolvedValue,
   isPrecisionRefusal,
+  memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
   resolvedSelectValue,
@@ -1045,16 +1046,13 @@ function RecipePopover({
           {/* Either field is placement information. The native engine reports no memory_mode at
               all (it has no torchao path to choose one for) while still recording an active
               offload, so gating on memory_mode hid the offload on exactly the configuration
-              this row was extended for. */}
+              this row was extended for. Absent memory_mode stays absent: substituting "auto"
+              there would claim the memory planner picked a mode on a path that never ran it. */}
           {image.memory_mode ||
           (image.offload_policy && image.offload_policy !== "none") ? (
             <RecipeRow
               label="Memory"
-              value={
-                image.offload_policy && image.offload_policy !== "none"
-                  ? `${image.memory_mode ?? "auto"} (${image.offload_policy} offload)`
-                  : (image.memory_mode ?? "")
-              }
+              value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
             />
           ) : null}
           {image.baked_loras?.length ? (

@@ -1354,6 +1354,46 @@ def test_the_native_engine_refuses_an_explicit_precision_it_cannot_honour(client
     assert "native engine" in resp.json()["detail"]
 
 
+def test_a_failed_engine_prediction_still_gates_the_precision_after_selection(
+    client, monkeypatch
+):
+    """predict_engine is a probe, and a probe can raise -- an sd-cli query against a broken
+    install, a filesystem error reading the cache. That left pending_name None, so BOTH gate arms
+    above were skipped, and selection then landed on sd.cpp anyway: the explicit fp8 was accepted,
+    nothing was quantised and the status reported null. The gate is re-asked of the engine that
+    was actually activated, so an inconclusive prediction cannot buy a silent mismatch."""
+    import core.inference.diffusion_engine_router as engine_router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _boom(fam, **kw):
+        raise RuntimeError("sd-cli probe failed")
+
+    monkeypatch.setattr(engine_router, "predict_engine", _boom)
+    monkeypatch.setattr(engine_router, "active_engine_name", lambda: ENGINE_SD_CPP)
+    monkeypatch.setattr(
+        engine_router,
+        "select_and_activate_engine",
+        lambda fam, **kw: backend,
+    )
+    monkeypatch.setattr(
+        backend,
+        "begin_load",
+        lambda *a, **k: pytest.fail("begin_load ran after an unhonourable precision"),
+    )
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {
+            "model_path": "unsloth/Z-Image-Turbo-GGUF",
+            "gguf_filename": "z-image-turbo-Q4_K_M.gguf",
+            "transformer_quant": "fp8",
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert "native engine" in resp.json()["detail"]
+
+
 @pytest.mark.parametrize("quant", [None, "auto", "none"])
 def test_the_native_engine_still_loads_when_nothing_was_promised(client, monkeypatch, quant):
     """The refusal is about an explicit request only. Omitted, auto and none all delegate the

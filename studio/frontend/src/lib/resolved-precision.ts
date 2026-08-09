@@ -252,3 +252,22 @@ function denseDtypeLabel(dtype: string | null | undefined): string {
 export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): string {
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
+
+/**
+ * The Recipe popover's Memory row: the placement that actually ran.
+ *
+ * The two fields answer different questions and either can be absent. `memory_mode` is the
+ * torchao-side memory planner's pick, and the native sd.cpp engine never runs it, so its records
+ * carry `memory_mode: null` alongside a real `offload_policy`. Substituting "auto" there claimed
+ * the planner had chosen a mode on a path that has no planner -- so an absent mode reports the
+ * offload alone, which is all that engine knows.
+ */
+export function memoryRecipeValue(
+  memoryMode: string | null | undefined,
+  offloadPolicy: string | null | undefined,
+): string {
+  const offloading = offloadPolicy != null && offloadPolicy !== "" && offloadPolicy !== "none";
+  if (!offloading) return memoryMode ?? "";
+  if (!memoryMode) return `${offloadPolicy} offload`;
+  return `${memoryMode} (${offloadPolicy} offload)`;
+}

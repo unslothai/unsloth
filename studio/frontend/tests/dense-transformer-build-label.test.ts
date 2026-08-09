@@ -9,6 +9,7 @@ import {
   denseTransformerBuildLabel,
   isNativeEngineStatus,
   isPrecisionRefusal,
+  memoryRecipeValue,
 } from "../src/lib/resolved-precision.ts";
 
 test("a native sd.cpp load is not labelled BF16", () => {
@@ -89,4 +90,15 @@ test("the native precision refusal is classified like the diffusers one", () => 
     true,
   );
   assert.equal(isPrecisionRefusal("Failed to load model: out of memory"), false);
+});
+
+test("an absent memory mode does not become Auto", () => {
+  // The native engine records memory_mode null with a real offload_policy. The old nullish
+  // fallback rendered that as "auto (model offload)", claiming the memory planner had picked a
+  // mode on the one path that never runs the planner.
+  assert.equal(memoryRecipeValue(null, "model"), "model offload");
+  assert.equal(memoryRecipeValue(undefined, "sequential"), "sequential offload");
+  assert.equal(memoryRecipeValue("balanced", "model"), "balanced (model offload)");
+  assert.equal(memoryRecipeValue("balanced", "none"), "balanced");
+  assert.equal(memoryRecipeValue(null, "none"), "");
 });

@@ -20335,6 +20335,26 @@ async def load_diffusion_model(
         # on the CPU path too when a preflight was owed there, since the switch is what is at stake.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
             await asyncio.to_thread(_preflight, engine)
+        # And the precision gate, against the engine that was actually activated. When
+        # predict_engine RAISED, pending_name stayed None and both arms above were skipped, so
+        # a selection that then landed on sd.cpp accepted an explicit FP8, quantised nothing
+        # and reported null -- the exact silent mismatch this change exists to remove. Re-run
+        # only when the prediction was inconclusive or wrong; a correct one already paid it.
+        activated = active_engine_name()
+        if fam is not None and activated != pending_name:
+            if activated == ENGINE_SD_CPP:
+                _assert_native_precision_unset(
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
+            elif activated == ENGINE_DIFFUSERS:
+                await asyncio.to_thread(
+                    backend.assert_precision_available,
+                    fam,
+                    model_kind = kind,
+                    transformer_quant = request.transformer_quant,
+                    text_encoder_quant = request.text_encoder_quant,
+                )
 
         def _start_engine_load():
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).

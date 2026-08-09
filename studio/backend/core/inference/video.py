@@ -92,7 +92,12 @@ from .diffusion_transformer_quant import (
     quantize_transformer,
     select_transformer_quant_scheme,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders, te_quant_supported
+from .diffusion_precision import (
+    effective_te_quant,
+    normalize_te_quant,
+    quantize_text_encoders,
+    te_quant_supported,
+)
 from .video_families import (
     VIDEO_CANCELLED_MSG,
     VIDEO_GENERATION_BUSY_MSG,
@@ -200,7 +205,13 @@ def assert_video_precision_available(
                     "transformer_quant", pinned, reason, off_label = "Off to run the DiT at bf16"
                 )
             )
-    if te_mode is not None and not te_quant_supported(target, te_mode):
+    # The mode the loader will ACTUALLY attempt, not the raw request: an explicit int8
+    # on a family with no keep-bf16 schedule is rewritten to layerwise fp8 before
+    # support is consulted, and that path needs no torchao. Refusing on the raw int8
+    # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
+    # where the torchao stub kills int8 while fp8 still works.
+    te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+    if te_effective is not None and not te_quant_supported(target, te_effective):
         raise RuntimeError(
             precision_refusal_message(
                 "text_encoder_quant",
