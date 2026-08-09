@@ -1397,6 +1397,19 @@ class SdCppDiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
+    def cancel_generate(self) -> bool:
+        """Signal the in-flight generation to stop, matching DiffusionBackend.cancel_generate.
+
+        The native engine is stricter than best-effort: the runner polls this event and kills
+        the sd-cli process tree, so the stop lands within the poll interval rather than at the
+        next step boundary. Returns False when nothing is running."""
+        with self._lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
+
     # ── Unload / status ──────────────────────────────────────────────────────
 
     def unload(self) -> dict[str, Any]:

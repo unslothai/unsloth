@@ -20572,6 +20572,22 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+@studio_router.post("/images/generate/cancel")
+async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+    """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
+
+    Resolved through the engine router, so it stops a diffusers denoise (at its next step
+    boundary) and a native sd.cpp run (which kills the sd-cli process tree) alike. The
+    generation's OWN request is what reports the outcome: it unwinds with the cancelled
+    sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
+    running, so the page can settle its button back to Generate rather than wait for a
+    generation that already finished."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    cancelled = await asyncio.to_thread(get_active_diffusion_engine().cancel_generate)
+    return {"cancelled": cancelled}
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Studio Image tab uses the richer /images/generate above; this is the spec shape.

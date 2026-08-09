@@ -26,6 +26,8 @@ class _FakeBackend:
         self.loaded = False
         # Repo ids of in-flight (uncommitted) loads. The unload route reads this to keep DIFFUSION ownership during a concurrent load.
         self.loading: tuple = ()
+        # Stands in for the real engines' _active_generate_cancel: None while idle.
+        self.active_generate_cancel = None
 
     @property
     def is_loaded(self) -> bool:
@@ -133,6 +135,14 @@ class _FakeBackend:
     def generate_progress(self):
         # Idle by default; the persist-window override lives in the route, not here.
         return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+
+    def cancel_generate(self):
+        # Both real engines return False when nothing is in flight; the fake tracks the same event.
+        cancel = self.active_generate_cancel
+        if cancel is None:
+            return False
+        cancel.set()
+        return True
 
     def unload(self):
         self.loaded = False
@@ -1522,3 +1532,58 @@ def test_gallery_image_accepts_a_record_written_before_the_build_fields():
     assert record.gguf_filename is None
     assert record.transformer_quant is None
     assert record.baked_loras == []
+
+
+def test_cancel_generation_route_reports_false_when_idle(client):
+    # Nothing in flight: the route answers 200/False so the page settles its button back to Generate
+    # instead of waiting on a generation that already finished.
+    resp = client.post("/api/inference/images/generate/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_cancel_generation_route_stops_an_in_flight_generation(client):
+    # The route must reach the SAME event the denoise loop watches, and the cancelled generation
+    # must unwind as a 409 with nothing persisted.
+    import threading
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    started = threading.Event()
+
+    def _wait_for_cancel(**kwargs):
+        cancel = threading.Event()
+        backend.active_generate_cancel = cancel
+        started.set()
+        try:
+            assert cancel.wait(5), "cancel event was never set"
+            raise RuntimeError("Diffusion generation was cancelled.")
+        finally:
+            backend.active_generate_cancel = None
+
+    backend.generate = _wait_for_cancel
+    result: dict = {}
+
+    def _run():
+        result["resp"] = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert started.wait(5)
+
+    cancelled = client.post("/api/inference/images/generate/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["cancelled"] is True
+
+    worker.join(10)
+    assert result["resp"].status_code == 409
+    assert result["resp"].json()["detail"] == "Diffusion generation was cancelled."
+    # A cancelled run leaves no gallery entry.
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_cancel_generation_route_requires_auth():
+    # The cancel route stops a multi-GB job, so it must sit behind the same auth as every other route.
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    unauth = TestClient(app)
+    assert unauth.post("/api/inference/images/generate/cancel").status_code in (401, 403)

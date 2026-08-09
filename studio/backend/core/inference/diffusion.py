@@ -3994,6 +3994,24 @@ class DiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
+    def cancel_generate(self) -> bool:
+        """Signal the in-flight generation to stop at its next step boundary.
+
+        The denoise loop already watches this event (``_on_step`` sets diffusers'
+        ``_interrupt``, and the per-chunk check discards a partial batch), but until now only
+        unload() and a superseding load could set it. Returns False when nothing is running,
+        which the route reports so the UI can settle its button back to Generate.
+
+        Best effort by construction: the sampler stops at the NEXT step callback, so a cancel
+        during the VAE decode or the encode that precedes step 0 lands when that finishes.
+        Same contract as the video backend."""
+        with self._lock:
+            cancel = self._active_generate_cancel
+            if cancel is None:
+                return False
+            cancel.set()
+            return True
+
     def unload(self) -> dict[str, Any]:
         with self._lock:
             # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py: begin_load
