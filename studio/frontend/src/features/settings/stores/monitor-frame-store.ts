@@ -81,9 +81,55 @@ const MIN_STACK_ROOM = 120;
 /** Whether the monitor overlaps the column the stack's overlays occupy. */
 function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
   const columnLeft = viewportWidth - STACK_INSET - STACK_WIDTH;
-  return (
-    frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET
+  return frame.right > columnLeft && frame.left < viewportWidth - STACK_INSET;
+}
+
+/**
+ * Whether the box leaves the stack too little room to sit under it, in which
+ * case the stack has to go over it instead. Anything higher leaves the corner
+ * usable, however far down the screen it starts.
+ *
+ * This is the whole difference between the two composer layouts. Docked under a
+ * thread it crowds the corner and has to be dodged, or the card covers Send. On
+ * an empty chat the welcome layout pads it well clear of the bottom, and
+ * lifting over it there is what put the banners in the middle of the page with
+ * the corner underneath them empty.
+ *
+ * Derived from the cap rather than guessed, so the two cannot disagree: the
+ * space below the box is what stackMaxHeight allows. Read as a bare "is it near
+ * the bottom" instead, boxes ending just above the cutoff were left in the
+ * capped branch with a cap that did not fit under them.
+ *
+ * Asked against the inset in force, never a fixed one: lifting over one box
+ * moves the stack up into the next, and a box that had room at the corner may
+ * have none there.
+ */
+function reachesStack(
+  frame: MonitorFrame,
+  viewportHeight: number,
+  bottomInset: number,
+): boolean {
+  return roomBelow(frame, viewportHeight, bottomInset) < MIN_STACK_ROOM;
+}
+
+/** The inset that clears this box entirely, bounded so the stack stays on screen. */
+function liftOver(frame: MonitorFrame, viewportHeight: number): number {
+  return Math.max(
+    STACK_INSET,
+    Math.min(
+      viewportHeight - frame.top + STACK_GAP,
+      viewportHeight - MIN_STACK_ROOM,
+    ),
   );
+}
+
+/** Height available between the box and the stack sitting on `bottomInset`. */
+function roomBelow(
+  frame: MonitorFrame,
+  viewportHeight: number,
+  bottomInset: number,
+): number {
+  return viewportHeight - bottomInset - frame.bottom - STACK_GAP;
 }
 
 export function stackBottomInset(
@@ -92,15 +138,12 @@ export function stackBottomInset(
   viewportHeight: number,
 ): number {
   if (!frame) return STACK_INSET;
-  // Only dodge a monitor that is actually in the stack's column and low
-  // enough to be in its way; one dragged elsewhere leaves the corner free.
-  const lowEnough = frame.bottom > viewportHeight / 2;
-  if (!(inStackColumn(frame, viewportWidth) && lowEnough)) return STACK_INSET;
-  const lifted = viewportHeight - frame.top + STACK_GAP;
-  return Math.max(
-    STACK_INSET,
-    Math.min(lifted, viewportHeight - MIN_STACK_ROOM),
-  );
+  // Only dodge a box that is in the stack's column and crowds its corner; one
+  // parked anywhere else leaves that corner free.
+  const inTheWay =
+    inStackColumn(frame, viewportWidth) &&
+    reachesStack(frame, viewportHeight, STACK_INSET);
+  return inTheWay ? liftOver(frame, viewportHeight) : STACK_INSET;
 }
 
 /**
@@ -121,9 +164,10 @@ export function stackMaxHeight(
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (frame.bottom > viewportHeight / 2) return ownMargin;
-  const belowMonitor = viewportHeight - bottomInset - frame.bottom - STACK_GAP;
-  return Math.max(MIN_STACK_ROOM, Math.min(ownMargin, belowMonitor));
+  // Lifted over: bottomInset already cleared it.
+  if (reachesStack(frame, viewportHeight, bottomInset)) return ownMargin;
+  // At least MIN_STACK_ROOM, since anything tighter reaches at this inset.
+  return Math.min(ownMargin, roomBelow(frame, viewportHeight, bottomInset));
 }
 
 export type StackGeometry = { bottom: number; maxHeight: number };
@@ -151,9 +195,21 @@ export function stackGeometry(
       maxHeight: stackMaxHeight(null, viewportWidth, viewportHeight, bottom),
     };
   }
-  const bottom = Math.max(
-    ...list.map((f) => stackBottomInset(f, viewportWidth, viewportHeight)),
-  );
+  // Settled, not summed. Lifting over one box moves the stack up into the next,
+  // which may then need a lift of its own, so keep going until nothing more
+  // asks. Each pass can only promote a box once, so this bounds at their count.
+  const column = list.filter((f) => inStackColumn(f, viewportWidth));
+  let bottom = STACK_INSET;
+  for (let pass = 0; pass <= column.length; pass += 1) {
+    let next = bottom;
+    for (const frame of column) {
+      if (reachesStack(frame, viewportHeight, bottom)) {
+        next = Math.max(next, liftOver(frame, viewportHeight));
+      }
+    }
+    if (next === bottom) break;
+    bottom = next;
+  }
   return {
     bottom,
     maxHeight: Math.min(
