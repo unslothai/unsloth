@@ -1205,6 +1205,37 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
+def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
+    # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was
+    # swallowed by **load_kwargs, so a ref2va plan staged the fl2va partition and the one the load
+    # actually opens came down inline, outside the download panel's preflight.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen["model_path"] = model_path
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/MiniMax-H3",
+            "model_kind": "pipeline",
+            "family_override": "minimax-h3",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 200, resp.json()
+    assert seen["h3_task"] == "ref2va"
+
+
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
     # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
     # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
