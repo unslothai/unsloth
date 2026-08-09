@@ -492,7 +492,6 @@ class SdCppDiffusionBackend:
         """The installer accelerator this host's device target resolves to (cpu / cuda / rocm /
         vulkan). Lazy import avoids an import cycle with the engine router."""
         from core.inference.diffusion_engine_router import _install_accelerator_for
-
         return _install_accelerator_for(
             getattr(resolve_diffusion_device_target(), "backend", "cpu")
         )
@@ -569,9 +568,7 @@ class SdCppDiffusionBackend:
             probe = server_binary or find_sd_cpp_binary()
             if probe is None or not _accelerator_changed(probe, accelerator):
                 return server_binary
-            logger.info(
-                "installing the %s sd.cpp build now the managed tree is free", accelerator
-            )
+            logger.info("installing the %s sd.cpp build now the managed tree is free", accelerator)
             return (
                 ensure_sd_server_binary(allow_install = True, accelerator = accelerator)
                 or server_binary
