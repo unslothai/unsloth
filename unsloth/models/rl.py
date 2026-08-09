@@ -1022,6 +1022,57 @@ def _trl_prepares_late_evals(trainer_cls):
     return False
 
 
+def _pin_pristine_sft_loss_type(config_cls):
+    """Pin `loss_type` to `nll` on TRL's own `SFTConfig`, not just on ours.
+
+    Patching rebinds `trl.SFTConfig` to the generated subclass, so a caller who
+    ran `from trl import SFTConfig` before importing Unsloth keeps the pristine
+    class and would still get TRL >= 1.7.0's `chunked_nll` (that ordering is
+    supported and covered by the padding-free tests). TRL declares the field as
+    `None` and resolves it in `__post_init__`, so seeding `nll` there is enough;
+    an explicit `loss_type = ` still wins, and `use_liger_kernel = True` already
+    resolved to `nll`. Only the unresolved `None` default is touched, which also
+    makes this a no-op on TRL < 1.7.0 and on a second call.
+    """
+    field = getattr(config_cls, "__dataclass_fields__", {}).get("loss_type")
+    if field is None or field.default is not None:
+        return False
+    init = config_cls.__dict__.get("__init__")
+    if init is None:
+        return False
+    try:
+        parameters = inspect.signature(init).parameters
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is not inspect.Parameter.empty
+    ]
+    defaults = init.__defaults__ or ()
+    keyword_defaults = init.__kwdefaults__ or {}
+    if "loss_type" in positional and len(defaults) == len(positional):
+        index = positional.index("loss_type")
+        if defaults[index] is not None:
+            return False
+        new_defaults = list(defaults)
+        new_defaults[index] = "nll"
+        init.__defaults__ = tuple(new_defaults)
+    elif "loss_type" in keyword_defaults:
+        if keyword_defaults["loss_type"] is not None:
+            return False
+        keyword_defaults["loss_type"] = "nll"
+    else:
+        return False
+    field.default = "nll"
+    # The class attribute is the other copy of the default: dataclasses seeds it
+    # at class creation and a later subclass reads the field, so leave the two
+    # agreeing rather than half-patched.
+    setattr(config_cls, "loss_type", "nll")
+    return True
+
+
 def _wrap_sft_evaluate_cap(trainer_cls):
     """Cap a pre-tokenized split handed to `evaluate()`/`predict()` later on.
 
@@ -1978,8 +2029,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
             # full finetuning can still use bf16 autocast (master weights stay float32), which is
             # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
-            "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
-            "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1' and not (full_finetuning and _bf16_supported()):\n"
+            # Stamped by from_pretrained: the env is process wide, so a LoRA model
+            # loaded after this one would cost this trainer its bfloat16.
+            "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
+            "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
+            # Stamped by from_pretrained: the env is process wide, so a forced family
+            # loaded earlier would answer here for a model that is not forced at all.
+            "model_forced_float32 = getattr(model, '_unsloth_forced_float32', None)\n"
+            "if model_forced_float32 is None: model_forced_float32 = os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'\n"
+            "if model_forced_float32 and not (full_finetuning and _bf16_supported()):\n"
             "    print('Unsloth: Switching to float32 training since model cannot work with float16')\n"
             "    force_float32 = True\n"
             "mixed_precision_dtype = os.environ.get('UNSLOTH_MIXED_PRECISION', 'float32')\n"
@@ -1989,6 +2047,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "dtype = _get_dtype(dtype)\n"
             "float16 = dtype == torch.float16\n"
             "bfloat16 = dtype == torch.bfloat16\n"
+            "float32 = dtype == torch.float32\n"
+            # Set only when the caller passed dtype = torch.float32 themselves: a
+            # request, not a side effect of upcasting, and immune to a second load.
+            "user_float32 = bool(getattr(model, '_unsloth_user_float32', False))\n"
             "if full_finetuning:\n"
             "    if bfloat16 and use_fp16: use_fp16 = False\n"
             "    if float16 and use_bf16: use_bf16 = False\n"
@@ -2001,6 +2063,16 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
             "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "    # args.mixed_precision is a new argument which needs to be set now\n"
+            "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32' and float32 and user_float32 and not _bf16_supported():\n"
+            # Without bf16 the only autocast is float16, whose narrower exponent range
+            # overflows float32 values to inf then NaN. Gated on the explicit request:
+            # full finetuning upcasts to float32 itself, and float16 autocast over
+            # float32 master weights is the normal V100/T4 recipe (see #4082).
+            "    print('Unsloth: Model is in float32 and this GPU has no bfloat16 support, so training stays in float32. Pass fp16 = True to force float16 mixed precision instead.')\n"
+            "    args.fp16 = False\n"
+            "    args.bf16 = False\n"
+            "    os.environ['ACCELERATE_MIXED_PRECISION'] = 'no'\n"
+            "    if hasattr(args, 'mixed_precision'): args.mixed_precision = 'no'\n"
             "elif (not use_bf16 and not use_fp16) and mixed_precision_dtype == 'float32':\n"
             "    # Mixed precision training. bf16 only if the GPU supports it; V100/T4 use fp16.\n"
             "    use_bf16_amp = (not float16) and _bf16_supported()\n"
@@ -2894,6 +2966,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             y = f"{k} = {y},\n"
             arguments = re.sub(x, y, arguments)
 
+    # TRL >= 1.7.0 defaults SFT to loss_type="chunked_nll" (trl#5846), which patches
+    # the lm_head and calls the backbone directly. Two problems:
+    #   1. It bypasses the model forward, so unsloth_fused_ce_loss never runs. Ours
+    #      chunks too and peaks 1.7-3.7GB lower on gemma-3-4b at 141-8192 tokens.
+    #   2. It divides by num_items_in_batch ignoring model_accepts_loss_kwargs, so
+    #      on models setting that flag False (gemma3, qwen-vl, paligemma, glm4v)
+    #      training_step divides by grad-accum again: loss and grads scaled 1/GA.
+    # Explicit loss_type= still wins. Keep scoped to sft_trainer: loss_type is an
+    # unrelated field in DPO/KTO/GRPO and the global dict above is applied to all.
+    if trainer_file == "sft_trainer":
+        replacements = {"loss_type": "nll"}
+        for k, v in replacements.items():
+            x = f"{k}( = [^,\n]{{1,}})?,\n"
+            y = f"'{v}'" if type(v) is str else f"{v}"
+            y = f"{k} = {y},\n"
+            arguments = re.sub(x, y, arguments)
+
     # Warn on too large or too small learning rate
     if "learning_rate" in call_args:
         learning_rate_check = (
@@ -3397,6 +3486,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     if trainer_file == "sft_trainer":
+        try:
+            for _config_base in getattr(created_module, f"Unsloth{RLConfig_name}").__mro__[1:]:
+                if not _config_base.__name__.startswith("Unsloth"):
+                    _pin_pristine_sft_loss_type(_config_base)
+                    break
+        except Exception as e:
+            logger.info(f"Unsloth: Could not pin the {RLConfig_name} loss_type: {e}")
         try:
             _wrap_sft_evaluate_cap(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:

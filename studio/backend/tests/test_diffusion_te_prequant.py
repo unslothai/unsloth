@@ -602,3 +602,88 @@ def test_builder_metadata_survives_weights_only_load(tmp_path):
     if not isinstance(torch.__version__, str):
         with pytest.raises(Exception):
             torch.load(bad_path, weights_only = True, map_location = "cpu")
+
+
+# ── memory budgeting ─────────────────────────────────────────────────────────
+# Hosted checkpoint bytes over bf16-equivalent dense bytes, read from Hub file metadata on
+# 2026-08-07. The budget constant is a CEILING over these, so it can never under-state a
+# pre-cast encoder; PR #8213 gates a hard load refusal on the number this feeds.
+_MEASURED_FP8_RATIOS = {
+    "flux.2-dev/text_encoder": (24_683_130_873, 48_022_800_560),
+    "hidream-i1-full/text_encoder_4": (8_555_963_320, 16_060_556_376),
+    "qwen-image/text_encoder": (8_839_210_073, 16_584_414_544),
+    "ltx-2/text_encoder": (13_205_302_695, 24_374_720_836),
+    "krea-2-turbo/text_encoder": (4_831_262_424, 8_875_715_136),
+    "z-image-turbo/text_encoder": (4_411_751_967, 8_044_982_000),
+    "lumina-image-2.0/text_encoder": (3_204_501_909, 5_228_699_608),
+    "flux.1-schnell/text_encoder_2": (5_900_818_800, 9_524_648_584),
+}
+
+
+def test_budget_scale_over_states_every_measured_artifact():
+    worst = max(fp8 / dense for fp8, dense in _MEASURED_FP8_RATIOS.values())
+    # Conservative by construction: budget at or above the largest realized artifact...
+    assert tpq.TE_PREQUANT_BUDGET_SCALE >= worst
+    # ...and still below bf16, or the fix does nothing.
+    assert tpq.TE_PREQUANT_BUDGET_SCALE < 1.0
+    # fp8 storage is one byte per parameter against bf16's two, so nothing can come in under 0.5.
+    assert min(fp8 / dense for fp8, dense in _MEASURED_FP8_RATIOS.values()) > 0.5
+
+
+def test_budget_scale_applies_only_when_a_pre_cast_checkpoint_resolves(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    assert (
+        tpq.te_prequant_budget_scale(hosted, te_quant_mode = "fp8", target = _target())
+        == tpq.TE_PREQUANT_BUDGET_SCALE
+    )
+    # No hosted checkpoint: the encoder is downloaded dense and cast in place AFTER assembly, so
+    # its peak is bf16 and the budget must stay bf16.
+    assert tpq.te_prequant_budget_scale(_fam(), te_quant_mode = "fp8", target = _target()) == 1.0
+    # Not requested, or a scheme with no hosted artifact.
+    for mode in (None, "", "off", "int8", "fp8_dynamic", "nvfp4"):
+        assert tpq.te_prequant_budget_scale(hosted, te_quant_mode = mode, target = _target()) == 1.0
+
+
+def test_budget_scale_is_bf16_when_the_device_cannot_quantise(monkeypatch):
+    import core.inference.diffusion_precision as precision
+
+    hosted = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: False)
+    assert tpq.te_prequant_budget_scale(hosted, te_quant_mode = "fp8", target = _target()) == 1.0
+
+
+def test_budget_scale_fails_open_to_bf16(monkeypatch):
+    # An unresolvable pick keeps today's (larger) budget rather than guessing small.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("hub down")
+
+    monkeypatch.setattr(tpq, "te_prequant_sources", _boom)
+    assert tpq.te_prequant_budget_scale(_fam(), te_quant_mode = "fp8", target = _target()) == 1.0
+
+
+def test_shipped_video_and_image_families_resolve_the_scale(monkeypatch):
+    import core.inference.diffusion_precision as precision
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    scale = tpq.TE_PREQUANT_BUDGET_SCALE
+    # ltx-2 hosts its Gemma3-12B encoder pre-cast; the Wan families do not.
+    for repo, expected in (
+        ("Lightricks/LTX-2", scale),
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", 1.0),
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 1.0),
+    ):
+        fam = detect_video_family(repo)
+        assert tpq.te_prequant_budget_scale(fam, te_quant_mode = "fp8", target = _target()) == (
+            expected
+        ), repo
+    assert (
+        tpq.te_prequant_budget_scale(
+            detect_family("Qwen/Qwen-Image"), te_quant_mode = "fp8", target = _target()
+        )
+        == scale
+    )
