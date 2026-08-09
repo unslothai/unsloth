@@ -54,6 +54,10 @@ export interface VideoStatus {
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
   supports_cfg: boolean;
+  // Whether the loaded family accepts a first and/or last reference frame on generate. The
+  // reference-frame controls are shown only when this is true, so a text-only family (Wan, LTX,
+  // HunyuanVideo) does not grow a control that does nothing.
+  supports_keyframes?: boolean;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
   // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by
@@ -125,6 +129,11 @@ export interface VideoGenerateRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  // Reference frames as data URLs, the same payload shape the Images page sends as init_image.
+  // The first frame's aspect ratio resolves the generated size, so width/height are ignored when
+  // one is attached. Only families whose status reports supports_keyframes accept these.
+  image?: string;
+  last_image?: string;
 }
 
 // A persisted clip's full generation recipe (the JSON sidecar of the MP4).
@@ -143,6 +152,9 @@ export interface GalleryVideo {
   guidance: number;
   seed: number;
   has_audio: boolean;
+  // Which ends were pinned to a reference frame ("first" / "last"); absent on text-only clips
+  // and on records written before keyframes existed.
+  keyframe_anchors?: string[] | null;
   model?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
