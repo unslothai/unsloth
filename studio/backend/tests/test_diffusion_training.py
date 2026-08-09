@@ -68,27 +68,8 @@ class _FakeCtx:
 
 
 @pytest.fixture(autouse = True)
-def _healthy_diffusers(monkeypatch):
-    """Give every test in this module a diffusers that carries the pipeline classes.
-
-    The training preflight now asserts the family's pipeline class strictly, so a runner whose
-    diffusers cannot import (a transformers/huggingface-hub pin skew is the common one: the lazy
-    top level then raises RuntimeError instead of answering hasattr) would turn every routing and
-    config test in this file into a 400 about diffusers. Those tests are about the route, not about
-    the runner's install, so they get a stub that answers any pipeline name. The gate's own tests
-    monkeypatch ``sys.modules["diffusers"]`` themselves, which runs after this and wins."""
-    import sys
-    import types
-
-    class _AnyPipeline(types.ModuleType):
-        __version__ = "0.39.0"
-
-        def __getattr__(self, name):
-            if name.endswith("Pipeline"):
-                return object
-            raise AttributeError(name)
-
-    monkeypatch.setitem(sys.modules, "diffusers", _AnyPipeline("diffusers"))
+def _healthy_diffusers(healthy_diffusers):
+    """Every test here is about the route or the config, not about the runner's diffusers."""
 
 
 @pytest.fixture(autouse = True)
