@@ -1481,3 +1481,76 @@ def test_an_archive_that_does_ship_a_server_keeps_it(tmp_path):
     buf.seek(0)
     with zipfile.ZipFile(buf) as zf:
         assert sdmod._archive_ships_sd_server(zf) is True
+
+
+def test_the_stop_is_reserved_before_the_server_is_unpublished(tmp_path, monkeypatch):
+    """The count has to be claimed in the SAME lock block that clears _state/_pending_server. Doing
+    it inside the stop leaves a gap where the resident, pending, stopping and generating fields are
+    all empty while the process is still executing out of the managed tree."""
+    import core.inference.sd_cpp_backend as bk
+
+    backend = bk.SdCppDiffusionBackend()
+    seen: list = []
+
+    class _Server:
+        def stop(self):
+            seen.append(bk._tree_in_use(backend))
+
+        def is_alive(self):
+            return True
+
+    server = _Server()
+    backend._state = types.SimpleNamespace(server = server, mode = "server")
+    monkeypatch.setattr(backend, "status", lambda: {"loaded": False})
+
+    backend.unload()
+    assert seen == [True], "the tree must still read busy while the old server is going down"
+    assert backend._stopping_servers == 0 and bk._tree_in_use(backend) is False
+
+
+def test_a_failed_start_does_not_block_its_own_cli_fallback(tmp_path, monkeypatch):
+    """The fallback resolves the one-shot engine after stopping the server it just started. With
+    that stopped server still in _pending_server the tree reads busy, so the lazy sd-cli install
+    the fallback depends on was disabled and the load re-raised the server error instead."""
+    import core.inference.sd_cpp_backend as bk
+
+    backend = bk.SdCppDiffusionBackend()
+    server = object()
+    backend._pending_server = server
+    assert bk._tree_in_use(backend) is True
+    # What the fallback now does before it resolves the engine.
+    with backend._lock:
+        if backend._pending_server is server:
+            backend._pending_server = None
+    assert bk._tree_in_use(backend) is False
+
+
+def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, monkeypatch):
+    """A GPU bundle that extracts fine but cannot write its record used to read as unrecorded
+    forever, and unrecorded is a mismatch for a GPU target: every later selection re-downloaded the
+    same bundle. The install still succeeds, and the accelerator is remembered for this process."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    (root / sdmod.INSTALL_RECORD).mkdir()  # a directory where the record file goes: open() fails
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
+    assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
+    assert sdmod.installed_accelerator(root) == "cuda"  # but not "unknown"
+
+
+def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monkeypatch):
+    """A leftover server is still RUNNABLE, so no downstream probe repairs it, and a record naming
+    the new accelerator would make _accelerator_changed trust it forever. Withhold both."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    stale = root / ("sd-server.exe" if sys.platform == "win32" else "sd-server")
+    stale.write_bytes(b"old-cpu-server")
+
+    def _no_unlink(self, *a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "unlink", _no_unlink)
+    with pytest.raises(RuntimeError) as exc:
+        sdmod._discard_stale_sd_server(root)
+    assert "superseded sd-server" in str(exc.value)

@@ -517,11 +517,15 @@ class SdCppDiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
-    def _stop_server(self, server: Any) -> None:
-        """Stop a server that is no longer published, keeping the tree marked in use until its
-        process is actually gone. Never raises: a teardown may not fail a load or an unload."""
-        with self._lock:
-            self._stopping_servers += 1
+    def _reserve_stop(self, count: int = 1) -> None:
+        """Claim ``count`` pending stops. MUST be called under ``_lock`` in the same block that
+        unpublishes the servers: incrementing afterwards leaves a gap in which _state,
+        _pending_server and the count are all empty while the process is still running."""
+        self._stopping_servers += count
+
+    def _stop_reserved(self, server: Any) -> None:
+        """Stop a server whose pending stop was already reserved by ``_reserve_stop``. Never
+        raises: a teardown may not fail a load or an unload."""
         try:
             server.stop()
         except Exception as exc:  # noqa: BLE001 -- a stop that fails must not fail the caller
@@ -529,6 +533,12 @@ class SdCppDiffusionBackend:
         finally:
             with self._lock:
                 self._stopping_servers -= 1
+
+    def _stop_server(self, server: Any) -> None:
+        """Reserve and stop in one go, for a caller that is not already holding ``_lock``."""
+        with self._lock:
+            self._reserve_stop()
+        self._stop_reserved(server)
 
     @staticmethod
     def _resolved_accelerator() -> str:
@@ -809,8 +819,11 @@ class SdCppDiffusionBackend:
                         return  # superseded / cancelled while waiting
                     old_state = self._state
                     self._state = None  # the old model is being torn down
+                    # Same lock block as the clear, so the tree is never briefly readable as idle.
+                    if old_state is not None and old_state.server is not None:
+                        self._reserve_stop()
                 if old_state is not None and old_state.server is not None:
-                    self._stop_server(old_state.server)
+                    self._stop_reserved(old_state.server)
                 # The tree is free now, so an install deferred in _resolve_backend can land: this
                 # runs under both locks, the old server is stopped, the previous generation has
                 # finished and no new one can start. Not gated on the resolved mode: a serverless
@@ -856,6 +869,12 @@ class SdCppDiffusionBackend:
                             start_exc,
                         )
                         server.stop()
+                        # Unpublish BEFORE resolving the one-shot engine: _pending_server means "a
+                        # process is running out of the tree", and leaving this stopped one there
+                        # would block the very sd-cli install this fallback needs.
+                        with self._lock:
+                            if self._pending_server is server:
+                                self._pending_server = None
                         server = None
                         try:
                             usable = self._resolve_engine().version() is not None
@@ -1688,11 +1707,20 @@ class SdCppDiffusionBackend:
             # Grab a mid-start() uncommitted server too so we can stop it (startup is abortable).
             pending = self._pending_server
             self._pending_server = None
+            # Reserved HERE, not at the stop below: the fields are already empty by then, and a
+            # router probe landing in that gap would read an idle tree and reinstall over a
+            # process that is still running.
+            to_stop = [
+                srv
+                for srv in (state.server if state is not None else None, pending)
+                if srv is not None
+            ]
+            if pending is not None and state is not None and pending is state.server:
+                to_stop = to_stop[:1]
+            self._reserve_stop(len(to_stop))
         # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation unwinds as the process goes away.
-        if state is not None and state.server is not None:
-            self._stop_server(state.server)
-        if pending is not None and pending is not (state.server if state else None):
-            self._stop_server(pending)
+        for srv in to_stop:
+            self._stop_reserved(srv)
         # Barrier: wait for a signalled one-shot generation to exit before reporting unloaded, since callers treat this return as "device is free".
         with self._generate_lock:
             pass

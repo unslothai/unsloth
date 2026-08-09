@@ -73,21 +73,38 @@ def read_install_record(root: Path) -> dict:
 
 
 def installed_accelerator(root: Path) -> Optional[str]:
-    """The accelerator class the install in ``root`` was built for, or None when unrecorded."""
-    val = read_install_record(root).get("accelerator")
+    """The accelerator class the install in ``root`` was built for, or None when unrecorded.
+
+    Falls back to what this process installed when the on-disk record could not be written."""
+    val = read_install_record(root).get("accelerator") or _INSTALLED_ACCELERATOR_MEMO.get(str(root))
     return val if isinstance(val, str) and val else None
+
+
+# What THIS process installed, per install root. The on-disk record is the durable answer, but an
+# unwritable one (read-only file, a directory in its place) used to mean the accelerator was
+# unknown forever, and unknown reads as a mismatch for a GPU target: every later engine selection
+# would re-resolve and re-download the same multi-GB bundle. Remembering it in-process keeps a
+# successful install from being repeated, without failing an install whose binaries are fine.
+_INSTALLED_ACCELERATOR_MEMO: dict[str, str] = {}
 
 
 def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
 
-    Best-effort: a failure here only costs the next run the ability to detect an accelerator
-    change, which is exactly the pre-record behaviour, so it must never fail the install."""
+    The write itself stays best-effort -- a metadata failure must not throw away binaries that
+    extracted correctly -- but the answer is memoised either way, so this process never re-installs
+    what it just installed."""
+    klass = accelerator_class(accelerator)
+    _INSTALLED_ACCELERATOR_MEMO[str(root)] = klass
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
-            json.dump({"accelerator": accelerator_class(accelerator), "repo": repo, "tag": tag}, f)
-    except OSError:
-        pass
+            json.dump({"accelerator": klass, "repo": repo, "tag": tag}, f)
+    except OSError as exc:
+        print(
+            f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
+            f"remembering {klass} for this process only",
+            flush = True,
+        )
 
 
 def _repo() -> str:
@@ -292,17 +309,23 @@ def _archive_ships_sd_server(zf: zipfile.ZipFile) -> bool:
 
 
 def _discard_stale_sd_server(root: Path) -> None:
-    """Remove an sd-server left behind by a previous, different bundle. Best effort: failing to
-    remove it is not worth failing the install, and the accelerator record is what the backend
-    reads for the reinstall decision anyway."""
+    """Remove an sd-server left behind by a previous, different bundle.
+
+    Raises when it cannot go. A leftover server is still RUNNABLE, so nothing downstream repairs
+    it: _usable_or_discard_managed only removes binaries that fail to run, and once the record
+    below names the new accelerator, _accelerator_changed trusts it and keeps handing back that
+    stale server. Failing here withholds the record, which is what makes the next load retry."""
     stale = _locate_sd_server(root)
     if stale is None:
         return
     try:
         stale.unlink()
-        print(f"removed the previous sd-server -> {stale}", flush = True)
     except OSError as exc:
-        print(f"could not remove the previous sd-server {stale}: {exc}", flush = True)
+        raise RuntimeError(
+            f"could not remove the superseded sd-server {stale}: {exc}. It was built for a "
+            f"different accelerator than this bundle, and leaving it would keep serving it."
+        ) from exc
+    print(f"removed the previous sd-server -> {stale}", flush = True)
 
 
 def _locate_sd_server(root: Path) -> Optional[Path]:
