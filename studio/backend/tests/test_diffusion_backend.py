@@ -4631,6 +4631,56 @@ def test_an_uncached_prequant_still_declines_before_the_candidate_is_asked(
     assert status["transformer_quant"] is None
 
 
+def test_a_resolver_with_no_answer_reads_as_the_dense_base(fake_runtime, tmp_path, monkeypatch):
+    # None is "no basis at all" (no size entry, or the model cache is too full for the artifact),
+    # not "a prequant". The plan declines to stage transformer/ in exactly that case too, so
+    # reading None as dense is what keeps the two in step; reading it as a prequant would send the
+    # load down a path whose shards nobody staged.
+    from core.inference import diffusion as dmod
+
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", lambda **kw: None)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert _dense_calls(calls, backend) == []
+
+
+def test_a_raising_resolver_reads_as_the_dense_base(fake_runtime, tmp_path, monkeypatch):
+    # A probe that cannot answer must not become a licence to load shards nobody staged, and must
+    # not take the load down with it either.
+    from core.inference import diffusion as dmod
+
+    def _boom(**kw):
+        raise RuntimeError("resolver is on fire")
+
+    _stub_hosted_prequant(monkeypatch, cached = True)
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _boom)
+    calls = _spy_dense_quant(monkeypatch)
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        _transformer_prefetched = False,
+    )
+
+    assert _dense_calls(calls, backend) == []
+    assert status["loaded"] is True
+
+
 def test_the_plan_and_the_load_agree_on_a_cached_prequant(fake_runtime, tmp_path, monkeypatch):
     # The pairing, in one place: the plan declines to stage transformer/ (a prequant needs none)
     # and the load still takes the fast path. The plan saying "no shards" and the load saying "so
