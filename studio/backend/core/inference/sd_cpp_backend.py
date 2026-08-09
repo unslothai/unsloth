@@ -1480,7 +1480,9 @@ class SdCppDiffusionBackend:
             "base_repo": state.base_repo,
             "device": state.device,
             "dtype": "gguf",
-            "gguf_variant": extract_quant_token(state.gguf_filename) if state.gguf_filename else None,
+            "gguf_variant": extract_quant_token(state.gguf_filename)
+            if state.gguf_filename
+            else None,
             # Reflect the offload flags actually passed to sd-cli (empty on CPU -> "none").
             "cpu_offload": bool(state.offload_flags),
             "offload_policy": "active" if state.offload_flags else "none",
