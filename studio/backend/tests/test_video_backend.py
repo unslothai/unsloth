@@ -3117,17 +3117,19 @@ def test_the_fp32_promotion_still_doubles_a_bf16_vae(fake_runtime, monkeypatch):
     assert calls[0]["model_dense_mib"] == int(sum(components) * 2.0 * _MIB_PER_GB)
 
 
-def test_unified_memory_weighs_the_quantised_dit_before_refusing(fake_runtime, monkeypatch):
-    """An integrated CUDA device reports unified memory, and the planner returns 'none' there for
-    ANY size, so the quant re-plan's `offload_policy != none` trigger can never fire. The refusal
-    then judged LTX-2's 37.8 GB bf16 DiT on a device where the fp8 build fits, and rejected a load
-    that would have run."""
+def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested(
+    fake_runtime, monkeypatch
+):
+    """The quant re-plan prices the DiT's STEADY size, but the video path has no pre-quantised
+    artifact: the transformer is always built dense and quantize_transformer rewrites it in place,
+    so the build PEAK is the bf16 figure. On unified memory the peak is what the OS kills for, so
+    the refusal must keep reading the dense plan -- accepting the steady size here would wave
+    through exactly the load this guard exists to stop."""
+    import torch
+
     import core.inference.video as video_mod
     from core.inference.diffusion_device import DiffusionDeviceTarget
     from core.inference.diffusion_memory import DeviceMemory
-    from core.inference.video_families import detect_video_family
-
-    import torch
 
     target = DiffusionDeviceTarget(
         device = "cuda",
@@ -3143,22 +3145,17 @@ def test_unified_memory_weighs_the_quantised_dit_before_refusing(fake_runtime, m
     monkeypatch.setattr(
         video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
     )
-    total = 96 * 1024
+    # An integrated CUDA device: 48 GiB shared, so LTX-2's ~65 GB of dense weights cannot fit even
+    # though the fp8 steady size would.
+    total = 48 * 1024
     monkeypatch.setattr(
         video_mod,
         "settled_snapshot_device_memory",
         lambda t: DeviceMemory("cuda", "cuda", "unified_memory", int(total * 0.80), total),
     )
-    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
 
-    calls = _capture_plan(monkeypatch)
-    # "auto", not a pinned scheme: the fake pipeline has no real DiT for the quantiser to touch,
-    # and what is under test is the plan the refusal reads, not whether the build engages.
-    status = VideoBackend().load_pipeline(
-        "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "auto"
-    )
-    assert status["loaded"] is True
-    # The bf16 plan was tried first and the quant plan followed it, so the refusal saw the
-    # smaller of the two rather than a size the fp8 build never reaches.
-    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
-    assert calls[-1]["model_dense_mib"] < calls[0]["model_dense_mib"]
+    with pytest.raises(RuntimeError) as excinfo:
+        VideoBackend().load_pipeline(
+            "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "auto"
+        )
+    assert "unified memory" in str(excinfo.value)

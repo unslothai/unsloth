@@ -7603,3 +7603,48 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
         model_kind = "gguf",
     )
     assert calls == ["built"], "a prequant that fits must still reach the dense fast path"
+
+
+def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
+    fake_runtime, monkeypatch
+):
+    """The table's encoder term is the dense one, and a pick that takes its encoder PRE-CAST from a
+    hosted fp8 checkpoint loads roughly 0.65x of it. Budgeting the dense figure against a hard
+    refusal turns tens of GB the pipeline never materialises into a rejected load."""
+    import torch
+
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    backend = DiffusionBackend()
+    plan = _plan_with_weights(200_000)  # so the table always wins
+
+    dense = backend._resident_sized_plan(plan, fam, base, target, "pipeline")
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", dmod.family_bf16_components_gb)
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda fam, te_quant_mode = None, target = None: {"text_encoder": object()},
+    )
+    precast = backend._resident_sized_plan(
+        plan, fam, base, target, "pipeline", text_encoder_quant = "fp8"
+    )
+    dense_mib = dense.estimates["model_dense_mib"]
+    precast_mib = precast.estimates["model_dense_mib"]
+    assert precast_mib < dense_mib, "a pre-cast encoder must lower the refusal's weight term"
+    # Only the ENCODER term moves: transformer and VAE are untouched by a text-encoder quant.
+    transformer_gb, encoders_gb, _vae = dmod.family_bf16_components_gb(fam, base)
+    saved_gb = (dense_mib - precast_mib) * (1024.0 * 1024.0) / (1000.0**3)
+    assert saved_gb == pytest.approx(encoders_gb * (1.0 - TE_PREQUANT_BUDGET_SCALE), rel = 0.02)

@@ -69,7 +69,6 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     raise_on_unified_memory_shortfall,
     settled_snapshot_device_memory,
-    unified_memory_shortfall_message,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -1453,15 +1452,17 @@ class VideoBackend:
             # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
             dense_plan = planned
             replanned_for_quant = False
-            # Unified memory never reports an offload policy -- shuffling bytes inside one shared
-            # pool frees nothing, so the planner returns 'none' for ANY size -- and the refusal
-            # below reads this plan. Without this second trigger the bf16 table alone decides,
-            # and a quantised DiT that fits the pool (LTX-2's 37.8 GB at fp8 on a 96 GB shared
-            # device) is refused on a size it never occupies.
-            planned_shortfall = unified_memory_shortfall_message(planned) is not None
+            # NOT re-triggered by a unified-memory shortfall, deliberately. This re-plan prices the
+            # quantised DiT's STEADY size, but the video path has no pre-quantised artifact: the DiT
+            # is always materialised dense (from_pretrained / from_single_file) and
+            # quantize_transformer rewrites it in place afterwards, so the build PEAK is the bf16
+            # figure whatever scheme is picked. On discrete VRAM the steady state is the right thing
+            # to plan placement against -- an oversized peak raises a catchable torch OOM and offload
+            # is still there -- but on unified memory the peak is what the OS kills for, with no
+            # exception to catch, so the refusal below has to keep reading the dense plan.
             if (
                 kind == "pipeline"
-                and (planned.offload_policy != "none" or planned_shortfall)
+                and planned.offload_policy != "none"
                 and normalize_transformer_quant(transformer_quant) is not None
                 and dense_transformer_supported(target)
                 and components is not None
@@ -1480,11 +1481,7 @@ class VideoBackend:
                         companion_dense_mib = None,
                         requested_mode = normalize_memory_mode(memory_mode),
                     )
-                    # On unified memory 'none' says nothing, so the quant plan has to clear the
-                    # shortfall itself before it can replace one that did not.
-                    if replanned.offload_policy == "none" and (
-                        not planned_shortfall or unified_memory_shortfall_message(replanned) is None
-                    ):
+                    if replanned.offload_policy == "none":
                         if log:
                             logger.info(
                                 "video.transformer_quant: %s fits resident (%d MiB steady); "
@@ -1501,8 +1498,8 @@ class VideoBackend:
 
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
         # offload tier left to fall back to, so an oversized load is killed by the OS with no
-        # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
-        # that the shortfall itself can now trigger, before any weight is materialised.
+        # torch OOM to catch. Refuse now, after the eviction above and before any weight is
+        # materialised -- on the dense plan, which is what the DiT build peaks at (see above).
         raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.

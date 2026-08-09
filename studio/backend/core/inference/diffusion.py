@@ -2453,7 +2453,9 @@ class DiffusionBackend:
                 # on the download figure would turn away a load that fits, so judge the refusal
                 # against the table's resident total whenever it knows this base.
                 raise_on_unified_memory_shortfall(
-                    self._resident_sized_plan(plan, fam, base, target, kind),
+                    self._resident_sized_plan(
+                        plan, fam, base, target, kind, text_encoder_quant = text_encoder_quant
+                    ),
                     family = getattr(fam, "name", None),
                     logger = logger,
                 )
@@ -3730,7 +3732,13 @@ class DiffusionBackend:
         return pipe
 
     def _resident_sized_plan(
-        self, plan: Any, fam: DiffusionFamily, base: str, target: DiffusionDeviceTarget, kind: str
+        self,
+        plan: Any,
+        fam: DiffusionFamily,
+        base: str,
+        target: DiffusionDeviceTarget,
+        kind: str,
+        text_encoder_quant: Optional[str] = None,
     ) -> Any:
         """``plan`` with its weight term replaced by the family table's bf16-RESIDENT total, for
         the unified-memory refusal only.
@@ -3757,8 +3765,21 @@ class DiffusionBackend:
             table = family_bf16_components_gb(fam, base)
             if table is None:
                 return plan
+            # The table's encoder term is the DENSE one. When this pick takes its encoder pre-cast
+            # from a hosted fp8 checkpoint the resident encoder is about 0.65x that, and for a
+            # heavyweight one (FLUX.2-dev's Mistral-24B, 48 GB) budgeting the dense figure is tens
+            # of GB of weights the pipeline never materialises -- enough to refuse a load that fits.
+            # Keyed on te_prequant_sources through the shared helper, the same resolver assembly
+            # uses, so the budget cannot claim a saving the load does not take.
+            from .diffusion_te_prequant import te_prequant_budget_scale
+
+            te_scale = te_prequant_budget_scale(
+                fam, te_quant_mode = text_encoder_quant, target = target
+            )
+            transformer_gb, text_encoders_gb, vae_gb = table
+            resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
             current = plan.estimates.get("model_dense_mib")
-            table_mib = int(sum(table) * (1000.0**3) / (1024.0 * 1024.0))
+            table_mib = int(resident_gb * (1000.0**3) / (1024.0 * 1024.0))
             if current is None or table_mib >= int(current):
                 return plan
             return replace(
