@@ -23,17 +23,17 @@ Downstream that is the lm_head matmul in
     [((s47*s87 + 255)//256), s33] X [1536, 151936]
 """
 
+import contextlib
+import os
+from types import MethodType
+
 import pytest
 
 torch = pytest.importorskip("torch")
-if not torch.cuda.is_available():  # unsloth needs an accelerator to import
-    pytest.skip("needs an accelerator to import unsloth", allow_module_level = True)
 
-import os
-
-import unsloth  # noqa: F401  (must be imported before transformers)
-from transformers import AutoConfig
-from unsloth.models.rl import (
+import unsloth  # noqa: F401,E402  (must be imported before transformers)
+from transformers import Qwen2Config  # noqa: E402
+from unsloth.models.rl import (  # noqa: E402
     _grpo_hidden_states_wrap_target,
     _install_grpo_hidden_states_forward_wrapper,
     _module_returns_logits,
@@ -44,17 +44,34 @@ def _tiny_causal_lm():
     """A real transformers `*ForCausalLM`, shaped like TRL's `ref_model`."""
     from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
-    config = AutoConfig.from_pretrained("unsloth/Qwen2.5-0.5B-Instruct")
-    config.num_hidden_layers = 2
-    config.hidden_size = 64
-    config.intermediate_size = 128
-    config.num_attention_heads = 4
-    config.num_key_value_heads = 2
-    config.vocab_size = 128
-    config.pad_token_id = None
-    config.tie_word_embeddings = False
+    config = Qwen2Config(
+        num_hidden_layers = 2,
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        vocab_size = 128,
+        max_position_embeddings = 64,
+        pad_token_id = None,
+        tie_word_embeddings = False,
+    )
     torch.manual_seed(0)
     return Qwen2ForCausalLM(config).eval(), config
+
+
+@contextlib.contextmanager
+def _return_hidden_states(value):
+    """Pin the switch for the block, then restore the caller's environment
+    exactly -- including having had it unset."""
+    previous = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = value
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("UNSLOTH_RETURN_HIDDEN_STATES", None)
+        else:
+            os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = previous
 
 
 class _Wrapper(torch.nn.Module):
@@ -89,14 +106,8 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
     assert _install_grpo_hidden_states_forward_wrapper(model) is True
 
     input_ids = torch.randint(0, config.vocab_size, (2, 6))
-
-    previous = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0")
-    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-    try:
-        with torch.no_grad():
-            wrapped = model(input_ids = input_ids).logits
-    finally:
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = previous
+    with _return_hidden_states("1"), torch.no_grad():
+        wrapped = model(input_ids = input_ids).logits
 
     assert wrapped.shape == (
         2,
@@ -106,7 +117,7 @@ def test_plain_causal_lm_returns_hidden_states_after_the_wrapper():
 
     # The hidden states must be the ones the head consumes, or every logprob
     # computed from them is wrong rather than merely differently shaped.
-    with torch.no_grad():
+    with _return_hidden_states("0"), torch.no_grad():
         reference = model(input_ids = input_ids).logits
     lm_head = model.get_output_embeddings().weight
     assert reference.shape == (2, 6, config.vocab_size)
@@ -119,11 +130,26 @@ def test_the_switch_is_still_honoured():
     _install_grpo_hidden_states_forward_wrapper(model)
 
     input_ids = torch.randint(0, config.vocab_size, (1, 4))
-    previous = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0")
-    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
-    try:
-        with torch.no_grad():
-            out = model(input_ids = input_ids).logits
-    finally:
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = previous
+    with _return_hidden_states("0"), torch.no_grad():
+        out = model(input_ids = input_ids).logits
     assert out.shape == (1, 4, config.vocab_size)
+
+
+def test_survives_the_accelerate_forward_rebind():
+    """accelerate's `extract_model_from_parallel(keep_fp32_wrapper = False)`
+    rebinds an instance-level forward as `MethodType(forward, model)`, and the
+    GRPO loop unwraps that way on every step. The wrapper then arrives with the
+    module as its leading positional argument, which the head owner forwards on
+    as `input_ids`."""
+    model, config = _tiny_causal_lm()
+    assert _install_grpo_hidden_states_forward_wrapper(model) is True
+    model.forward = MethodType(model.forward, model)
+
+    input_ids = torch.randint(0, config.vocab_size, (2, 6))
+    with _return_hidden_states("1"), torch.no_grad():
+        wrapped = model(input_ids = input_ids).logits
+    assert wrapped.shape == (2, 6, config.hidden_size)
+
+    with _return_hidden_states("0"), torch.no_grad():
+        reference = model(input_ids = input_ids).logits
+    assert reference.shape == (2, 6, config.vocab_size)

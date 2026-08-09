@@ -1612,6 +1612,12 @@ def _install_grpo_hidden_states_forward_wrapper(model):
     model_name = type(target_model).__name__
 
     def wrapped_forward(*args, **kwargs):
+        # accelerate's extract_model_from_parallel(keep_fp32_wrapper = False) rebinds an
+        # instance-level forward as MethodType(forward, model), so this plain function is
+        # re-entered with the module as its leading positional argument. TRL's GRPO loop
+        # unwraps exactly that way on every step, and `original_forward` is already bound.
+        while len(args) != 0 and args[0] is target_model:
+            args = args[1:]
         if os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1":
             return original_forward(*args, **kwargs)
 
