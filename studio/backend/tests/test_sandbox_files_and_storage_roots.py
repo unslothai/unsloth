@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 import platform
 from pathlib import Path
@@ -78,6 +79,11 @@ def test_legacy_sandbox_is_migrated(tmp_path, monkeypatch):
     tools._workdirs.clear()
     tools._legacy_sandbox_migrated = False
     wd = Path(tools.get_sandbox_workdir("__LOCALID_new5678"))
+    # Another chat's folder rides the background pass, so a first call never
+    # waits on the whole tree.
+    for thread in threading.enumerate():
+        if thread.name == "sandbox-migrate":
+            thread.join(30)
     moved = wd.parent / "__LOCALID_old1234" / "results.csv"
     print(f"\nmigrated to {moved}")
     assert moved.is_file()
@@ -405,7 +411,7 @@ def test_clearing_all_chats_cleans_up_their_sandboxes(tmp_path, monkeypatch):
     import routes.chat_history as chat_history
 
     monkeypatch.setattr(chat_history, "list_chat_threads", lambda: [{"id": "__LOCALID_bulk111"}])
-    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: None)
+    monkeypatch.setattr(chat_history, "clear_chat_history", lambda: [])
     monkeypatch.setattr(chat_history, "_cancel_active_research", lambda request, ids: None)
 
     import asyncio
@@ -1003,7 +1009,7 @@ def test_clear_all_chats_can_take_the_files_too(tmp_path, monkeypatch):
     assert signature.parameters["delete_files"].default is False
 
     source = inspect.getsource(chat_history.clear_history)
-    assert "_remove_sandboxes(thread_ids, delete_files)" in source
+    assert "delete_files)" in source and "_remove_sandboxes(" in source
 
 
 def test_a_failed_legacy_move_is_retried(tmp_path, monkeypatch):
@@ -3025,12 +3031,301 @@ def test_a_move_staged_but_never_renamed_is_finished_later(tmp_path, monkeypatch
     root.mkdir(parents = True, exist_ok = True)
     staged = root / f"__LOCALID_crash11{tools._STAGING_SUFFIX}0a1b2c3d"
     staged.mkdir()
+    # What the interrupted move had already written down before it copied.
+    tools._record_workdir(
+        "__LOCALID_crash11", str(root / "__LOCALID_crash11"), tools._MIGRATING,
+    )
     (staged / "sales.csv").write_text("a,b\n", encoding = "utf-8")
 
     tools._migrate_legacy_sandbox(str(root))
     assert not staged.exists(), "the staged copy was left hidden"
     assert (root / "__LOCALID_crash11" / "sales.csv").is_file()
     assert Path(tools.get_sandbox_workdir("__LOCALID_crash11")) == root / "__LOCALID_crash11"
+
+
+def test_a_lease_is_renewed_while_a_call_is_still_running(tmp_path, monkeypatch):
+    """A tool call can be given no timeout at all, and a lease that lapsed under
+    one would let another Studio delete the folder it is writing in."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_slow111"
+    tools.get_sandbox_workdir(session)
+
+    with tools._session_in_flight(session):
+        first = tools._busy_owners(session)
+        assert str(os.getpid()) in first
+        # As if the call had run past the lease: the heartbeat has to put it
+        # back, not leave a stale entry for the sweeper to step over.
+        stale = time.time() - tools._BUSY_TTL_SECONDS * 2
+        tools._record_workdir(
+            tools._session_key(session), f"{os.getpid()}:{stale:.0f}", tools._BUSY,
+        )
+        assert not tools._busy_owners(session), "expired for the test to be real"
+        tools._mark_busy(session, True)
+        assert str(os.getpid()) in tools._busy_owners(session)
+        renewing = [t for t in threading.enumerate() if t.name == "sandbox-busy-heartbeat"]
+        assert renewing and renewing[0].is_alive(), "nothing was renewing the lease"
+
+    assert not tools._busy_owners(session)
+
+
+def test_two_processes_marking_busy_do_not_lose_each_other(tmp_path, monkeypatch):
+    """The read and the write are one operation, or the second writer saves a
+    ledger it snapshotted before the first one's entry existed."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_race111"
+    tools.get_sandbox_workdir(session)
+    # Somebody else already in there, written straight into the ledger.
+    tools._record_workdir(tools._session_key(session), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY)
+
+    inside = []
+    real = tools._busy_owners
+
+    def watching(sid):
+        # The other process's entry has to be visible from in here: if the read
+        # were outside the lock it could have happened before that write.
+        inside.append(sorted(real(sid)))
+        return real(sid)
+
+    monkeypatch.setattr(tools, "_busy_owners", watching)
+    try:
+        tools._mark_busy(session, True)
+    finally:
+        monkeypatch.setattr(tools, "_busy_owners", real)
+
+    assert inside and str(os.getpid() + 1) in inside[0]
+    owners = tools._busy_owners(session)
+    assert str(os.getpid()) in owners and str(os.getpid() + 1) in owners, owners
+
+
+def test_a_recovered_staging_directory_is_claimed_and_recorded(tmp_path, monkeypatch):
+    """Renaming it into place is not enough: unclaimed, the next call reads the
+    recovered folder as somebody else's and serves nothing."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_recov11"
+    staged = root / f"{session}{tools._STAGING_SUFFIX}0a1b2c3d"
+    staged.mkdir()
+    (staged / "sales.csv").write_text("a,b\n", encoding = "utf-8")
+    tools._record_workdir(session, str(root / session), tools._MIGRATING)
+
+    tools._promote_staged_moves(str(root))
+
+    landed = root / session
+    assert (landed / "sales.csv").is_file()
+    assert tools._marker_owner(str(landed)) == session, "not claimed"
+    assert tools._recorded_workdir(session) == str(landed)
+    assert tools._recorded_workdir(session, tools._MIGRATING) is None
+    assert Path(tools.get_sandbox_workdir(session)) == landed
+
+
+def test_a_users_own_arriving_folder_is_left_alone(tmp_path, monkeypatch):
+    """In a root the user pointed us at, report.arriving-backup is theirs, and
+    a substring test would have renamed it over their report."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    theirs = root / "report.arriving-backup"
+    theirs.mkdir()
+    (theirs / "draft.txt").write_text("mine", encoding = "utf-8")
+    # Right shape, but no move of ours was ever in flight for it.
+    unrecorded = root / f"__LOCALID_never11{tools._STAGING_SUFFIX}0a1b2c3d"
+    unrecorded.mkdir()
+
+    tools._promote_staged_moves(str(root))
+
+    assert (theirs / "draft.txt").is_file(), "renamed the user's own folder"
+    assert not (root / "report").exists()
+    assert unrecorded.is_dir(), "promoted something we never staged"
+    assert not (root / "__LOCALID_never11").exists()
+
+
+def test_a_recorded_fallback_survives_losing_its_marker(tmp_path, monkeypatch):
+    """The fallback directory is the only place that chat's files are; a marker
+    a tool deleted must not send the next call somewhere new."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_fall111"
+    name = tools._sandbox_name(session)
+    (root / name).mkdir()  # the user's own, so we take a fallback name
+
+    first = Path(tools.get_sandbox_workdir(session))
+    assert first != root / name
+    (first / "results.csv").write_text("a,b\n", encoding = "utf-8")
+
+    marker = first / tools._SANDBOX_MARKER
+    if marker.exists():
+        marker.unlink()
+    tools._workdirs.clear()
+
+    again = Path(tools.get_sandbox_workdir(session))
+    assert again == first, f"{again} is not {first}"
+    assert (again / "results.csv").is_file()
+
+
+def test_a_similarly_named_chat_still_cannot_claim_the_fallback(tmp_path, monkeypatch):
+    """Allowing name- prefixes is only safe because of the separator: ids a and
+    ab are different chats."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    root = tmp_path / "shared"
+    root.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    victim = Path(tools.get_sandbox_workdir("__LOCALID_ab12345"))
+    (victim / "private.csv").write_text("theirs", encoding = "utf-8")
+
+    attacker = "__LOCALID_a"
+    tools._record_workdir(attacker, str(victim))
+    tools._workdirs.clear()
+    landed = Path(tools.get_sandbox_workdir(attacker))
+    assert landed != victim, "reached a longer id's directory"
+    assert not (landed / "private.csv").exists()
+
+
+def test_two_queued_deletes_are_both_carried_out(tmp_path, monkeypatch):
+    """One slot per key would have the second request cancel the first, and the
+    two case variants of an id are two directories."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    lower = "__localid_dup1111"
+    upper = "__LOCALID_dup1111"
+    first = Path(tools.get_sandbox_workdir(lower))
+    second = Path(tools.get_sandbox_workdir(upper))
+    assert first != second
+    (first / "a.csv").write_text("1", encoding = "utf-8")
+    # Empty, so the plain delete is enough to take it: only the files one needs
+    # to be asked for.
+
+    # As if another Studio were mid-call in there.
+    elsewhere = tools._busy_elsewhere
+    monkeypatch.setattr(tools, "_busy_elsewhere", lambda sid: True)
+    try:
+        assert tools.remove_session_sandbox(lower, delete_files = True) is False
+        assert tools.remove_session_sandbox(upper, delete_files = False) is False
+    finally:
+        monkeypatch.setattr(tools, "_busy_elsewhere", elsewhere)
+
+    queued = tools._parse_pending(
+        tools._recorded_workdir(tools._session_key(lower), tools._PENDING_DELETE)
+    )
+    assert queued == {lower: True, upper: False}, queued
+
+    tools.sweep_pending_deletes()
+    assert not first.exists(), "the first request was dropped"
+    assert not second.exists()
+
+
+def test_a_queued_delete_keeps_the_stronger_request(tmp_path, monkeypatch):
+    """A plain delete arriving after one that asked for the files must not
+    quietly downgrade it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_keep111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "results.csv").write_text("a,b\n", encoding = "utf-8")
+
+    elsewhere = tools._busy_elsewhere
+    monkeypatch.setattr(tools, "_busy_elsewhere", lambda sid: True)
+    try:
+        tools.remove_session_sandbox(session, delete_files = True)
+        tools.remove_session_sandbox(session, delete_files = False)
+    finally:
+        monkeypatch.setattr(tools, "_busy_elsewhere", elsewhere)
+
+    tools.sweep_pending_deletes()
+    assert not workdir.exists(), "downgraded to a delete that keeps files"
+
+
+def test_clearing_every_chat_reports_what_it_deleted(tmp_path, monkeypatch):
+    """A thread added between the listing and the delete is gone too, and its
+    sandbox has to be cleaned up with the rest."""
+    import inspect
+
+    from routes import chat_history
+    from storage import studio_db
+
+    source = inspect.getsource(studio_db.clear_chat_history)
+    assert "SELECT id FROM chat_threads" in source
+    assert source.index("SELECT id FROM chat_threads") < source.index("DELETE FROM chat_threads")
+    assert "return removed" in source
+
+    route = inspect.getsource(chat_history.clear_history)
+    assert "cleared = clear_chat_history()" in route
+    assert "cleared" in route.split("_remove_sandboxes(", 1)[1].split(")", 1)[0]
+
+
+def test_a_first_tool_call_does_not_wait_for_the_whole_legacy_tree(tmp_path, monkeypatch):
+    """Across filesystems the migration copies every session, which is minutes;
+    a call that only needs its own folder must not queue behind it."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox"
+    (legacy / "__LOCALID_mine111").mkdir(parents = True)
+    (legacy / "__LOCALID_mine111" / "results.csv").write_text("a,b\n", encoding = "utf-8")
+    (legacy / "__LOCALID_huge111").mkdir()
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    # The whole-tree pass, held open as a slow cross-filesystem copy would be.
+    held = threading.Event()
+    monkeypatch.setattr(tools, "migrate_legacy_sandbox_in_background", lambda: threading.Thread(target = held.wait))
+
+    class _Blocked:
+        def __enter__(self):
+            assert held.wait(0), "the request path took the whole-tree lock"
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(tools, "_legacy_sandbox_lock", _Blocked())
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_mine111"))
+    held.set()
+
+    assert (workdir / "results.csv").is_file(), "this chat's own files were left behind"
+    assert tools._marker_owner(str(workdir)) == "__LOCALID_mine111"
 
 
 if __name__ == "__main__":

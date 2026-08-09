@@ -752,12 +752,15 @@ async def clear_history(
 ):
     thread_ids = [thread["id"] for thread in list_chat_threads()]
     _cancel_active_research(request, thread_ids)
-    clear_chat_history()
+    # The clear reports what it deleted, which is what gets cleaned up: a thread
+    # added between the listing above and the delete is gone too, and its
+    # sandbox would otherwise be stranded.
+    cleared = clear_chat_history()
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are
     # the user's, but a caller clearing everything can ask for them too.
-    removed = await _remove_sandboxes(thread_ids, delete_files)
+    removed = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
     return {"status": "deleted", "sandboxes_removed": removed}
 
 
