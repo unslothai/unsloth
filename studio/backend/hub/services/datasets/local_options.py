@@ -98,6 +98,8 @@ _PARAMETERLESS_FEATURES = frozenset("translationvariablelanguages audio image vi
 # the rest take all of theirs.
 _REQUIRED_FEATURE_ARGS = {
     "value": ("dtype",),
+    "list": ("feature",),
+    "largelist": ("feature",),
     "translation": ("languages",),
     "array2d": ("shape", "dtype"),
     "array3d": ("shape", "dtype"),
@@ -206,8 +208,13 @@ _MODULE_EXTENSIONS = {
 # builder config, so one of the wrong type raises while the split generates. Types as pinned
 # at datasets 4.3.0; None means the loader refuses the parameter whatever its value.
 _TEXT_PARAMETERS = {"encoding": str, "encoding_errors": str, "chunksize": int}
+# Parameters whose builder uses the value directly, so a null one fails where the same
+# null is the harmless default elsewhere. Verified against datasets 4.3.0 per builder.
+_NON_NULLABLE = {"json": frozenset({"encoding", "chunksize"}), "csv": frozenset({"sep"})}
 # Parameters the builder also needs within a range, as their smallest allowed value.
-_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "skipfooter": 0, "nrows": 1}
+_PARAMETER_MINIMUMS = {"chunksize": 1, "block_size": 1, "nrows": 1, "batch_size": 0}
+# skipfooter is unsupported outright: the builder always reads with iterator=True.
+_PARAMETER_EXACT = {"skipfooter": 0}
 _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
     "json": {
         **_TEXT_PARAMETERS,
@@ -224,11 +231,13 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         # Validated further by _valid_header, which the list rule cannot express.
         "names": list,
         "column_names": list,
-        "index_col": (int, str, list, bool),
+        # pandas takes False as "no index column" and refuses True.
+        "index_col": (int, str, list, frozenset({False})),
         "usecols": list,
         "prefix": str,
         "mangle_dupe_cols": bool,
-        "engine": frozenset({"c", "python", "pyarrow"}),
+        # pyarrow is a pandas engine, but the builder always reads with iterator=True.
+        "engine": frozenset({"c", "python"}),
         "converters": dict,
         "true_values": list,
         "false_values": list,
@@ -244,7 +253,7 @@ _BUILDER_PARAMETERS: dict[str, dict[str, Any]] = {
         "decimal": str,
         "lineterminator": str,
         "quotechar": str,
-        "quoting": int,
+        "quoting": frozenset({0, 1, 2, 3}),
         "escapechar": str,
         "comment": str,
         "dialect": str,
@@ -486,6 +495,9 @@ def _valid_feature_node(node: Any, depth: int = 0) -> bool:
         return _valid_feature_node(node[role], depth + 1)
     # A feature class, with the mapping under it being its keyword arguments. datasets
     # expands that value with **, so anything but a mapping raises there.
+    if not isinstance(role, str):
+        # safe_load keeps a numeric key as an int, and the card is not one datasets reads.
+        return False
     name = role.replace("_", "").lower()
     return (
         name in _FEATURE_TYPE_NAMES
@@ -574,7 +586,8 @@ def _collapsed_configs(payload: Any) -> Any:
             # so nothing in the snapshot is loadable and inference must not step in.
             return _UNPARSABLE_METADATA
         features = item.get("features")
-        if features is not None and not _valid_features(features):
+        # An empty list is kept as an explicit zero-column schema, which no row matches.
+        if features is not None and (not features or not _valid_features(features)):
             # datasets parses these into Features while it builds the configs, and anything
             # it cannot read raises there rather than when the config is chosen.
             return _UNPARSABLE_METADATA
@@ -725,7 +738,7 @@ def _valid_json_feature(node: Any, depth: int = 0) -> bool:
     return all(
         _valid_json_feature(child, depth + 1)
         for key, child in node.items()
-        if key in {"feature", "features"} or (kind is None and isinstance(child, dict))
+        if key in {"feature", "features"} or kind is None
     )
 
 
@@ -1081,6 +1094,7 @@ def _snapshot_all_files(
     directories: set[str] = set()
     # Files the loader would read and we will not: a pattern reaching one condemns its config.
     unsafe: list[PurePosixPath] = []
+    unsafe_dirs: list[str] = []
     try:
         root = snapshot.resolve(strict = True)
         # <cache>/datasets--org--name/snapshots/<sha>
@@ -1117,9 +1131,15 @@ def _snapshot_all_files(
             # still a directory a declaration may step through.
             dirnames[:] = []
             continue
-        dirnames[:] = [
-            name for name in dirnames if not (base / name).is_symlink() or inside(base / name)
-        ]
+        kept = []
+        for name in dirnames:
+            if not (base / name).is_symlink() or inside(base / name):
+                kept.append(name)
+            else:
+                # Pruned, but the loader globs through it, so a pattern that can reach in
+                # condemns its config the way an unsafe file does.
+                unsafe_dirs.append((relative / name).as_posix())
+        dirnames[:] = kept
         for filename in filenames:
             if (base / filename).is_symlink() and not inside(base / filename):
                 # Dangling, or pointing out of the cache. Either way it is not a file we
@@ -1133,6 +1153,13 @@ def _snapshot_all_files(
             found.append(PurePosixPath((relative / filename).as_posix()))
     # fsspec returns each glob's matches sorted, and only the first files decide the module.
     found.sort(key = lambda path: path.as_posix())
+    # A directory we refused stands for every file it might hold.
+    unsafe += [
+        PurePosixPath(f"{directory}{'/*' * depth}/probe{extension}")
+        for directory in unsafe_dirs
+        for depth in range(3)
+        for extension in sorted(TRAINING_DATA_EXTS)
+    ]
     return found, directories, unsafe
 
 
@@ -1500,6 +1527,9 @@ class _DeclaredFiles:
             index = {path.as_posix(): path for path in paths} if unsafe else self.index
             found = index.get(pattern)
             return [found] if found is not None and keep(found) else []
+        if unsafe and "**" in pattern:
+            # ** crosses into any directory, refused ones included.
+            return paths[:1]
         matcher = _glob_matcher(pattern)
         if matcher is None:
             return []
@@ -1530,10 +1560,10 @@ def _unverifiable_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
 
 
 def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Path) -> set[str]:
-    """Configs naming a literal file the cache does not hold, checked without a walk.
+    """Configs naming a literal file the cache cannot serve, checked without a walk.
 
-    Used when the snapshot is too large to index: a literal needs one lookup, not a scan,
-    so a declaration can still be judged when inference has been given up.
+    Used when the snapshot is too large to index: a literal is one lookup rather than a
+    scan, so its presence and its payload can both still be judged.
     """
     dead = set()
     for name, item in collapsed.items():
@@ -1545,7 +1575,10 @@ def _missing_literal_configs(collapsed: dict[str, dict[str, Any]], snapshot: Pat
             if any(character in pattern for character in "*?["):
                 continue
             joined = f"{root}/{pattern}" if root else pattern
-            if resolved_dataset_snapshot_file(snapshot, joined.strip("/")) is None:
+            resolved = resolved_dataset_snapshot_file(snapshot, joined.strip("/"))
+            if resolved is None or _empty_file(resolved, PurePosixPath(pattern).name):
+                # Without the index the module is unknown, so an empty file anywhere in the
+                # declaration is taken as fatal rather than only for the builders it is.
                 dead.add(name)
     return dead
 
@@ -1558,7 +1591,7 @@ def _valid_parameter(rule: Any, value: Any) -> bool:
     rules = rule if isinstance(rule, tuple) else (rule,)
     literals = frozenset().union(*[item for item in rules if isinstance(item, frozenset)])
     types = tuple(item for item in rules if not isinstance(item, frozenset))
-    if isinstance(value, str) and value in literals:
+    if isinstance(value, (str, int, float)) and value in literals:
         return True
     if bool not in types and isinstance(value, bool):
         return False
@@ -1585,28 +1618,46 @@ def _known_codec(value: Any) -> bool:
 
 
 def _in_parameter_range(key: str, value: Any) -> bool:
+    if key in _PARAMETER_EXACT and value != _PARAMETER_EXACT[key]:
+        return False
     minimum = _PARAMETER_MINIMUMS.get(key)
     return minimum is None or not isinstance(value, int) or value >= minimum
+
+
+def _mismatched_columns(item: dict[str, Any]) -> bool:
+    """The parquet builder refuses a columns list that does not name the declared features."""
+    columns, features = item.get("columns"), item.get("features")
+    if not isinstance(columns, list) or not isinstance(features, list):
+        return False
+    named = {field.get("name") for field in features if isinstance(field, dict)}
+    return set(columns) != named
 
 
 def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
     """Configs handing the chosen builder a parameter it cannot use. It takes them without
     complaint and then raises while the split generates, so the option is dead."""
-    rules = _BUILDER_PARAMETERS.get(_base_module(module))
+    module = _base_module(module)
+    rules = _BUILDER_PARAMETERS.get(module)
     if rules is None:
         return set()
+    required = _NON_NULLABLE.get(module, frozenset())
     return {
         name
         for name, item in collapsed.items()
-        if any(
+        if (module == "parquet" and _mismatched_columns(item))
+        or any(
             key in rules
             and not (
-                _valid_parameter(rules[key], value)
+                (value is not None or key not in required)
+                and _valid_parameter(rules[key], value)
                 and _in_parameter_range(key, value)
                 and (key != "encoding" or _known_codec(value))
                 and (key != "header" or _valid_header(value))
+                # pandas takes a single character as the decimal marker and nothing else.
+                and (key != "decimal" or not isinstance(value, str) or len(value) == 1)
                 # converters wants callables, which yaml.safe_load can never produce.
                 and (key != "converters" or not value)
+                and (key != "filters" or not isinstance(value, list) or bool(value))
             )
             for key, value in item.items()
         )
@@ -1890,7 +1941,10 @@ def _info_split_sets(
         if config is None:
             continue
         splits = entry["splits"]
+        # from_split_dict drops the mapping key and keeps the name recorded in the child.
         sized = list(splits.values()) if isinstance(splits, dict) else splits
+        if isinstance(splits, dict):
+            splits = [child for child in sized if isinstance(child, dict)]
         counted = all(_counted_split(item) for item in sized) if isinstance(sized, list) else False
         declared[config] = set(_split_names(splits)) if counted else None
 
@@ -2023,7 +2077,7 @@ def _snapshot_card_options(
             return {
                 entry
                 for entry in options
-                if entry[0] not in deterministic
+                if entry[0] not in deterministic | unresolvable
                 and entry
                 not in _empty_declared_options(collapsed, required, declared_files, snapshot)
             }
