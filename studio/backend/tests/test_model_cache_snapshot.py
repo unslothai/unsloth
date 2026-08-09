@@ -14,7 +14,7 @@ latest_snapshot_from_cache_path = hf_cache_state.latest_snapshot_from_cache_path
 
 @pytest.fixture(autouse = True)
 def _known_cache_root(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
 
 
 def _model_repo(root: Path, repo_id: str) -> Path:
@@ -138,7 +138,7 @@ def test_rejects_lookalike_repo_outside_known_cache(monkeypatch, tmp_path):
     allowed.mkdir()
     repo_root = _model_repo(tmp_path / "outside", "Org/Model")
     _snapshot(repo_root, "rev", ("config.json",))
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [allowed])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [allowed])
 
     assert (
         latest_snapshot_from_cache_path(str(repo_root), "model", "Org/Model", ("config.json",))
