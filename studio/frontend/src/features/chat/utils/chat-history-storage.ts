@@ -666,8 +666,8 @@ export async function updateStoredChatProject(
 export async function deleteStoredChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
-  await deleteChatProject(projectId, args);
+): Promise<string[]> {
+  return deleteChatProject(projectId, args);
 }
 
 export async function moveStoredChatItemToProject(
@@ -736,12 +736,14 @@ export async function deleteStoredChatThreads(
   idsToDelete: string[],
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
-  // Incognito threads were never stored, so there's nothing to delete --
-  // drop them to skip the no-op backend DELETE (and the history-refresh
-  // event it would fire) when the active temporary chat is closed.
+  // An incognito chat stores no history row, but a tool call it made sent
+  // this id as the sandbox session, so closing it is the last thing that can
+  // name that folder. The backend delete runs for those ids too; only the
+  // Dexie work below is skipped, since there is nothing of theirs in it.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
-  if (ids.length === 0) return [];
-  const kept = await deleteChatThreads(ids, args);
+  if (idsToDelete.length === 0) return [];
+  const kept = await deleteChatThreads(idsToDelete, args);
+  if (ids.length === 0) return kept;
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();

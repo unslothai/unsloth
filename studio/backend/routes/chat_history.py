@@ -108,6 +108,12 @@ class ChatProject(BaseModel):
     updatedAt: int
 
 
+class ChatProjectDeleted(ChatProject):
+    """The deleted project, plus the member sandboxes that still hold files."""
+
+    sandboxes_kept: list[str] = []
+
+
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
@@ -405,13 +411,20 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
     from starlette.concurrency import run_in_threadpool
 
     def _remove() -> "tuple[int, list[str]]":
-        from core.inference.tools import remove_session_sandbox, session_sandbox_has_files
+        from core.inference.tools import (
+            remove_session_sandbox,
+            sandbox_removal_deferred,
+            session_sandbox_has_files,
+        )
 
         removed, kept = 0, []
         for thread_id in thread_ids:
             if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
-            elif session_sandbox_has_files(thread_id):
+            # A removal that had to wait for a running tool call is reported as
+            # kept: that call can still write a file, and this is the only
+            # answer the caller gets.
+            elif sandbox_removal_deferred(thread_id) or session_sandbox_has_files(thread_id):
                 kept.append(thread_id)
         return removed, kept
 
@@ -606,7 +619,7 @@ async def patch_project(
     return ChatProject(**project)
 
 
-@router.delete("/projects/{project_id}", response_model = ChatProject)
+@router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
 async def delete_project(
     project_id: str,
     request: Request,
@@ -622,9 +635,17 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # The transaction is what decides the membership: a chat moved into the
+    # project after the listing above is deleted by it, and its generation would
+    # otherwise keep running and rebuild a sandbox nothing can reach.
+    late = [i for i in (project.get("memberIds") or []) if i not in set(member_ids)]
+    if late:
+        _cancel_active_research(request, late)
+        _cancel_active_generations(late)
+        member_ids += late
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
-    await _remove_sandboxes(member_ids, delete_files)
+    _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
         import os
@@ -654,7 +675,9 @@ async def delete_project(
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    return ChatProject(**project)
+    # Those folders are reachable from nothing now, so the caller is told which
+    # ones survived and can offer the delete once.
+    return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)

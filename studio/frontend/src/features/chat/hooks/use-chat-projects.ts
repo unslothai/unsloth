@@ -12,6 +12,7 @@ import {
   moveStoredChatItemToProject,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
+import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import type { SidebarItem } from "./use-chat-sidebar-items";
 
 let cachedProjects: ProjectRecord[] = [];
@@ -142,7 +143,10 @@ export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
-  await deleteStoredChatProject(projectId, args);
+  const kept = await deleteStoredChatProject(projectId, args);
+  // The member chats went with the project, so their own sandboxes are
+  // reachable from nothing: the same offer an ordinary chat delete makes.
+  if (!args.deleteFiles) offerToDeleteKeptSandboxes(kept);
 }
 
 export async function moveChatItemToProject(

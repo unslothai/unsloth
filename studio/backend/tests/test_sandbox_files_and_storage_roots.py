@@ -3157,5 +3157,122 @@ def test_a_program_cannot_print_its_own_file_envelope(tmp_path, monkeypatch):
     )
 
 
+def test_a_delete_that_waited_for_a_tool_call_says_it_kept_the_files(tmp_path, monkeypatch):
+    """The sandbox can be empty at the moment of the check and hold a file a
+    second later, and the deferred removal keeps it with nobody left to ask."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_busy111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert workdir.is_dir()
+
+    with tools._session_in_flight(session):  # a tool call running in this chat
+        removed, kept = asyncio.new_event_loop().run_until_complete(
+            chat_history._remove_sandboxes([session], False)
+        )
+        assert tools.sandbox_removal_deferred(session) is True
+        assert removed == 0, removed
+        assert kept == [session], "an unreachable folder with no offer to delete it"
+
+
+def test_a_completed_move_is_never_the_thing_that_gets_deleted(tmp_path, monkeypatch):
+    """shutil.move already took the legacy copy, so the staging tree is the only
+    one there is and deleting it loses the user's files for good."""
+    fake_home = tmp_path / "userprofile"
+    session = "__LOCALID_lost111"
+    legacy = fake_home / "studio_sandbox" / session
+    legacy.mkdir(parents = True)
+    (legacy / "thesis.txt").write_text("years of work", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    root = tmp_path / "home" / "studio_sandbox"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    root.mkdir(parents = True)
+
+    real_rename = os.rename
+
+    def failing_rename(src, dst):
+        if str(src).find(tools._STAGING_SUFFIX) != -1:
+            raise OSError("rename refused")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", failing_rename)
+    with pytest.raises(OSError):
+        tools._staged_move(str(legacy), str(root / session), session)
+    monkeypatch.setattr(os, "rename", real_rename)
+
+    survivors = [p for p in [legacy, *root.iterdir()] if (p / "thesis.txt").is_file()]
+    assert survivors, "the only copy of the user's files was deleted"
+
+
+def test_a_symlinked_directory_counts_as_a_file_of_the_users(tmp_path, monkeypatch):
+    """os.walk lists it in dirs, and a check that reads only files called the
+    sandbox empty and removed the link the tool made."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "__LOCALID_link111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    elsewhere = tmp_path / "data"
+    elsewhere.mkdir()
+    (workdir / "dataset").symlink_to(elsewhere, target_is_directory = True)
+
+    assert tools._holds_no_user_files(str(workdir)) is False
+    assert tools.remove_session_sandbox(session, delete_files = False) is False
+    assert (workdir / "dataset").is_symlink(), "removed something the tool made"
+    assert tools.session_sandbox_has_files(session) is True
+
+
+def test_a_project_delete_uses_the_membership_it_really_deleted():
+    """A chat moved in after the listing is deleted by the transaction, and its
+    generation would keep running and rebuild a sandbox nothing can reach."""
+    import inspect
+
+    from routes import chat_history
+    from storage import studio_db
+
+    storage = inspect.getsource(studio_db.delete_chat_project)
+    assert 'project["memberIds"] = sorted(thread_ids)' in storage
+
+    route = inspect.getsource(chat_history.delete_project)
+    assert 'project.get("memberIds")' in route
+    assert route.index("_cancel_active_generations(late)") < route.index("_remove_sandboxes(")
+    # And what survived is reported, or the folders are reachable from nothing.
+    assert "sandboxes_kept = await _remove_sandboxes(member_ids" in route
+    assert "ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)" in route
+
+
+def test_closing_an_incognito_chat_cleans_up_its_sandbox():
+    """Its id is what the tool call sent as the sandbox session, so a folder
+    exists on disk even though no history row does."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+
+    storage = (src / "features/chat/utils/chat-history-storage.ts").read_text(
+        encoding = "utf-8",
+    )
+    body = storage[storage.index("export async function deleteStoredChatThreads"):]
+    body = body[:body.index("\nexport ")]
+    assert "deleteChatThreads(idsToDelete" in body, "incognito ids never reach the backend"
+    assert "isThreadIncognito" in body  # the Dexie work still skips them
+
+    projects = (src / "features/chat/hooks/use-chat-projects.ts").read_text(
+        encoding = "utf-8",
+    )
+    assert "offerToDeleteKeptSandboxes(kept)" in projects
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

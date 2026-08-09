@@ -1915,6 +1915,10 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         conn.commit()
         if delete_files:
             _delete_project_workspace(project)
+        # The membership this transaction actually deleted, which is not the
+        # caller's earlier listing when a chat was moved in between the two.
+        project = dict(project)
+        project["memberIds"] = sorted(thread_ids)
         return project
     except Exception:
         conn.rollback()

@@ -7493,10 +7493,22 @@ def _staged_move(source: str, target: str, name: str) -> None:
     staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
     try:
         shutil.move(source, staging)
+    except OSError:
+        # Half filled and ours, and the source is still where it was.
+        shutil.rmtree(staging, ignore_errors = True)
+        raise
+    try:
         os.rename(staging, target)
     except OSError:
-        # Ours and half filled, so nothing else will ever look at it.
-        shutil.rmtree(staging, ignore_errors = True)
+        # The move already took the legacy copy, so this tree is the only one
+        # there is and deleting it would lose the user's files. Marked and left
+        # where _marked_sandbox_in finds it, and put back at the legacy root
+        # when that is possible so the next pass simply retries.
+        _mark_sandbox(staging, name)
+        try:
+            os.rename(staging, source)
+        except OSError:
+            logger.warning("Sandbox %s left at %s: could not be moved in", name, staging)
         raise
     _mark_sandbox(target, name)
 
@@ -7917,7 +7929,7 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
             # so no later delete or clear would ever name this session again.
             queued = _pending_removals.setdefault(key, {})
             queued[session_id] = delete_files or queued.get(session_id, False)
-            return False
+            return False  # see sandbox_removal_deferred
         return _remove_session_sandbox_locked(session_id, delete_files)
 
 
@@ -7946,7 +7958,11 @@ def _holds_no_user_files(target: str) -> bool:
     tree too big to check is not one to remove without being asked.
     """
     budget = _MAX_SNAPSHOT_DIRS
-    for parent, _dirs, files in os.walk(target):
+    for parent, dirs, files in os.walk(target):
+        # A link to a directory is listed here, not in files, and a tool made
+        # it: a sandbox holding one is not empty.
+        if any(os.path.islink(os.path.join(parent, name)) for name in dirs):
+            return False
         for name in files:
             if parent == target and name in _INTERNAL_SANDBOX_FILES:
                 continue
@@ -7955,6 +7971,19 @@ def _holds_no_user_files(target: str) -> bool:
         if budget <= 0:
             return False
     return True
+
+
+def sandbox_removal_deferred(session_id: str) -> bool:
+    """Whether this session's removal is queued behind a running tool call.
+
+    The caller reports what it kept, and the answer is not known yet: the call
+    still in flight can write a file after the sandbox looked empty, and the
+    deferred removal would then keep it with nobody left to say so.
+    """
+    if not session_id:
+        return False
+    with _active_sessions_lock:
+        return session_id in _pending_removals.get(_session_key(session_id), {})
 
 
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:

@@ -873,10 +873,11 @@ export async function updateChatProject(
   return project;
 }
 
+/** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
@@ -884,8 +885,11 @@ export async function deleteChatProject(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<ProjectRecord>(response);
+  const data = await parseJsonOrThrow<
+    ProjectRecord & { sandboxes_kept?: string[] }
+  >(response);
   notifyChatProjectsUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatMessages(
