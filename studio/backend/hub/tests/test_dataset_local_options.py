@@ -3361,8 +3361,11 @@ def test_snapshot_options_reject_a_link_into_a_sibling_snapshot(tmp_path):
 
 def test_snapshot_options_reject_a_feature_role_that_is_not_a_name(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
-                    "    dtype:\n      7: {}\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  features:\n  - name: x\n"
+        "    dtype:\n      7: {}\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.jsonl").write_text('{"x":1}\n', encoding = "utf-8")
 
@@ -3398,8 +3401,14 @@ def test_snapshot_options_reject_a_json_list_without_its_child(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "train.jsonl").write_text('{"x":[1]}\n', encoding = "utf-8")
     (snapshot / "dataset_infos.json").write_text(
-        json.dumps({"default": {"features": {"x": {"_type": "List"}},
-                                "splits": {"train": {"name": "train", "num_examples": 1}}}}),
+        json.dumps(
+            {
+                "default": {
+                    "features": {"x": {"_type": "List"}},
+                    "splits": {"train": {"name": "train", "num_examples": 1}},
+                }
+            }
+        ),
         encoding = "utf-8",
     )
 
@@ -3411,8 +3420,14 @@ def test_snapshot_options_reject_a_scalar_inside_a_json_struct(tmp_path):
     snapshot.mkdir(parents = True)
     (snapshot / "train.jsonl").write_text('{"x":{"foo":"a"}}\n', encoding = "utf-8")
     (snapshot / "dataset_infos.json").write_text(
-        json.dumps({"default": {"features": {"x": {"foo": "string"}},
-                                "splits": {"train": {"name": "train", "num_examples": 1}}}}),
+        json.dumps(
+            {
+                "default": {
+                    "features": {"x": {"foo": "string"}},
+                    "splits": {"train": {"name": "train", "num_examples": 1}},
+                }
+            }
+        ),
         encoding = "utf-8",
     )
 
@@ -3432,17 +3447,20 @@ def test_snapshot_options_take_the_recorded_name_over_the_split_key(tmp_path):
     assert local_options._snapshot_options(snapshot) == set()
 
 
-@pytest.mark.parametrize("parameter,extension,content", [
-    ("skipfooter: 1", "csv", "text\nrow\n"),
-    ("index_col: true", "csv", "text\nrow\n"),
-    ("decimal: ''", "csv", "text\nrow\n"),
-    ("decimal: xx", "csv", "text\nrow\n"),
-    ("engine: pyarrow", "csv", "text\nrow\n"),
-    ("quoting: 4", "csv", "text\nrow\n"),
-    ("sep: null", "csv", "text\nrow\n"),
-    ("chunksize: null", "jsonl", '{"text":"row"}\n'),
-    ("encoding: null", "jsonl", '{"text":"row"}\n'),
-])
+@pytest.mark.parametrize(
+    "parameter,extension,content",
+    [
+        ("skipfooter: 1", "csv", "text\nrow\n"),
+        ("index_col: true", "csv", "text\nrow\n"),
+        ("decimal: ''", "csv", "text\nrow\n"),
+        ("decimal: xx", "csv", "text\nrow\n"),
+        ("engine: pyarrow", "csv", "text\nrow\n"),
+        ("quoting: 4", "csv", "text\nrow\n"),
+        ("sep: null", "csv", "text\nrow\n"),
+        ("chunksize: null", "jsonl", '{"text":"row"}\n'),
+        ("encoding: null", "jsonl", '{"text":"row"}\n'),
+    ],
+)
 def test_snapshot_options_reject_a_builder_parameter_the_loader_refuses(
     tmp_path, parameter, extension, content
 ):
@@ -3454,14 +3472,17 @@ def test_snapshot_options_reject_a_builder_parameter_the_loader_refuses(
     assert local_options._snapshot_options(snapshot) == set()
 
 
-@pytest.mark.parametrize("parameter,extension,content", [
-    ("engine: python", "csv", "text\nrow\n"),
-    ("quoting: 3", "csv", "text\nrow\n"),
-    ("index_col: false", "csv", "text\nrow\n"),
-    ("chunksize: null", "csv", "text\nrow\n"),
-    ("encoding: null", "csv", "text\nrow\n"),
-    ("field: null", "jsonl", '{"text":"row"}\n'),
-])
+@pytest.mark.parametrize(
+    "parameter,extension,content",
+    [
+        ("engine: python", "csv", "text\nrow\n"),
+        ("quoting: 3", "csv", "text\nrow\n"),
+        ("index_col: false", "csv", "text\nrow\n"),
+        ("chunksize: null", "csv", "text\nrow\n"),
+        ("encoding: null", "csv", "text\nrow\n"),
+        ("field: null", "jsonl", '{"text":"row"}\n'),
+    ],
+)
 def test_snapshot_options_keep_a_builder_parameter_the_loader_takes(
     tmp_path, parameter, extension, content
 ):
@@ -3484,8 +3505,11 @@ def test_snapshot_options_reject_an_explicitly_empty_feature_schema(tmp_path):
 
 def test_snapshot_options_reject_parquet_columns_the_features_do_not_name(tmp_path):
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  columns:\n  - b\n"
-                    "  features:\n  - name: a\n    dtype: int64\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: cfg\n  data_dir: d\n  columns:\n  - b\n"
+        "  features:\n  - name: a\n    dtype: int64\n",
+    )
     (snapshot / "d").mkdir()
     (snapshot / "d" / "train.parquet").write_bytes(b"PAR1payload")
 
@@ -3515,8 +3539,11 @@ def test_snapshot_options_keep_a_parquet_batch_size_of_zero(tmp_path):
 def test_snapshot_options_drop_an_unresolved_config_after_the_glob_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(local_options, "_MAX_RESOLUTION_WORK", 1)
     snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
-    _card(snapshot, "configs:\n- config_name: wide\n  data_files: '*.jsonl'\n"
-                    "- config_name: late\n  data_files: 'missing-*.jsonl'\n")
+    _card(
+        snapshot,
+        "configs:\n- config_name: wide\n  data_files: '*.jsonl'\n"
+        "- config_name: late\n  data_files: 'missing-*.jsonl'\n",
+    )
     (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
 
     assert ("late", "train") not in local_options._snapshot_options(snapshot)
