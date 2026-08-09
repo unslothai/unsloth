@@ -23,6 +23,7 @@ probe is best-effort: an unsupported scheme yields None and the caller loads GGU
 
 from __future__ import annotations
 
+import re as _re
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
@@ -127,16 +128,123 @@ _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
 )
 
 # Families whose activation ranges break specific schemes at the MODEL level (the smoke probe only proves the GEMM runs). Measured with the
-# 28-pair prequant accuracy gate on B200: qwen-image + fp8 renders every frame black, + mxfp8 does semantic damage at 1024px, + nvfp4 is
-# unusable (LPIPS 0.51). int8 dynamic is excellent on Qwen, so auto falls through to it. The deny also applies to an EXPLICIT request.
+# 28-pair prequant accuracy gate on B200: qwen-image + mxfp8 does semantic damage at 1024px, + nvfp4 is unusable (LPIPS 0.51). Neither has a
+# known fix, so both stay denied and auto falls through to int8 (excellent on Qwen). The deny also applies to an EXPLICIT request.
+#
+# fp8 was denied here too, for black frames. That cause is gone: it was torchao's fp8 scale chooser having no eps clamp, so qwen's all-zero
+# text rows gave scale 0 and NaN, and ``_make_quant_config`` now floors it with ``activation_value_lb``. Re-measured on B200 with the floor,
+# and BOTH paths the deny governs clear the 0.10 LPIPS bar, which is why it is safe to drop rather than just the checkpoint half:
+#   prequant checkpoint, full 28-pair gate  -> 28/28 PASS (SSIM 0.87-0.99, LPIPS 0.027-0.228, CLIP delta <= 0.019)
+#   on-the-fly quantize_, gate's simple_object prompt at its own seeds -> LPIPS 0.048 / 0.033 / 0.027 / 0.063
+# against pre-floor plain fp8 at LPIPS 0.712 with SSIM 0.016 and mean luma 0. Keeping the deny cost real speed: it pinned qwen to int8 at
+# 1.10x bf16 when compiled fp8 measures 1.21x.
 _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
-    "qwen-image": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),
-    "qwen-image-edit": frozenset({TQ_FP8, TQ_MXFP8, TQ_NVFP4}),  # same DiT
+    "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
+    "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
+}
+
+
+# Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because
+# the evidence above is rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image,
+# not that a LoRA converges when its frozen linears are fp8. Nobody has run that, so qwen fp8 stays
+# out of the Train UI until someone does. Delete the entry once a training run is measured.
+_FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
+    "qwen-image": frozenset({TQ_FP8}),
+    "qwen-image-edit": frozenset({TQ_FP8}),
 }
 
 
 def _family_denied(family, scheme: str) -> bool:
     return scheme in _FAMILY_SCHEME_DENY.get(str(family or "").strip().lower(), ())
+
+
+def _family_train_denied(family, scheme: str) -> bool:
+    """``_family_denied`` plus the training-only additions. Every inference deny also applies to
+    training (a scheme that cannot render cannot train), so this is a superset, never a bypass."""
+    key = str(family or "").strip().lower()
+    return _family_denied(family, scheme) or scheme in _FAMILY_TRAIN_SCHEME_DENY.get(key, ())
+
+
+def family_denies_scheme(family: Optional[str], scheme: str) -> bool:
+    """Whether the measured deny list rules ``scheme`` out for ``family``, regardless of hardware.
+
+    Public so the refusal message can tell the two "no" answers apart. ``select_transformer_quant_scheme``
+    folds a family deny and a missing kernel into the same ``None``, and an EXPLICIT scheme now fails
+    closed, so that single answer is the whole explanation the user gets."""
+    return _family_denied(family, scheme)
+
+
+def explain_unusable_scheme(family: Optional[str], scheme: str) -> str:
+    """Why ``select_transformer_quant_scheme`` answered None for an EXPLICIT ``scheme``.
+
+    One ``None`` covers three different faults, and the caller turns it into a 409, so the message
+    has to separate them: a family the scheme is measured to break, a torchao that cannot run at
+    all in this install, and a GPU without the kernels. Only the last is a hardware limit, and only
+    the last is what the message used to say."""
+    if family_denies_scheme(family, scheme):
+        return (
+            f"'{scheme}' is ruled out for family '{family}' by the measured accuracy gate (it "
+            "renders black frames or fails the quality bar on this DiT), whatever the GPU"
+        )
+    unavailable = torchao_unavailable_reason()
+    if unavailable is not None:
+        return (
+            f"the torchao in this install cannot run any dense quant scheme ({unavailable}); this "
+            "is a package/version problem, not a limit of the GPU"
+        )
+    return f"'{scheme}' is not usable for family '{family}' on this GPU"
+
+
+# The reason torchao cannot be used AT ALL, resolved once. None means it imports.
+_TORCHAO_UNAVAILABLE: Optional[tuple[Optional[str]]] = None
+
+
+def torchao_unavailable_reason() -> Optional[str]:
+    """Why no dense quant scheme can run in this install, or ``None`` when torchao is usable.
+
+    ``_smoke_probe`` swallows every failure, so a torchao that does not IMPORT is indistinguishable
+    from a GPU that lacks the kernels. That did not matter while a declined explicit scheme fell
+    back silently; now it is refused, and the message is all the user has. A torch/torchao version
+    skew is the common cause and it is not a hardware fault: telling a Blackwell owner "'fp8' is not
+    usable on this GPU" when the real error is ``cannot import name 'ScalingType' from
+    torch.nn.functional`` points them at the wrong fix entirely."""
+    global _TORCHAO_UNAVAILABLE
+    if _TORCHAO_UNAVAILABLE is not None:
+        return _TORCHAO_UNAVAILABLE[0]
+    reason: Optional[str] = None
+    if is_stubbed("torchao"):
+        # The Windows-ROCm stub imports fine and quantises nothing, so the import test below passes.
+        reason = "this platform ships a torchao stub whose quantize_ is a no-op"
+    else:
+        try:
+            from torchao.quantization import quantize_  # noqa: F401
+        except Exception as exc:  # noqa: BLE001 — any import failure means the same thing here
+            import logging
+
+            # The full text, paths included, goes to the server log; the client gets it stripped.
+            # This string is interpolated into the precision-refusal RuntimeError, which both load
+            # routes return verbatim as the 409 detail, and an ImportError routinely names the
+            # absolute file of the module that raised it.
+            logging.getLogger(__name__).warning(
+                "torchao is unusable: %s: %s", type(exc).__name__, exc
+            )
+            reason = _strip_paths(f"{type(exc).__name__}: {exc}")
+    _TORCHAO_UNAVAILABLE = (reason,)
+    return reason
+
+
+# An absolute POSIX or Windows path, up to the first whitespace / quote / bracket. Deliberately
+# requires a directory separator so dotted module names ("torch.nn.functional") survive intact:
+# those are the actionable half of the message.
+_ABS_PATH_RE = _re.compile(r"(?:[A-Za-z]:)?[\\/](?:[^\s'\"()<>|]*[\\/])+[^\s'\"()<>|]*")
+
+
+def _strip_paths(text: str) -> str:
+    """``text`` with server filesystem paths replaced by ``<path>``.
+
+    Refusal reasons reach an authenticated caller as a 409 body. The reason a load was refused is
+    the caller's business; where this machine keeps its site-packages is not."""
+    return _ABS_PATH_RE.sub("<path>", text)
 
 
 # Cache of (scheme, device) -> bool so the quantise+matmul smoke test runs once.
@@ -238,6 +346,8 @@ def select_transformer_quant_scheme(
     target: Any,
     requested: Optional[str],
     family: Optional[str] = None,
+    *,
+    unproven_ok: bool = False,
 ) -> Optional[str]:
     """The concrete scheme to apply, or None to fall back to GGUF.
 
@@ -245,7 +355,13 @@ def select_transformer_quant_scheme(
     quantise+matmul smoke test, so an unavailable Blackwell fp4/mx kernel lands on fp8/int8
     with no error. An explicit scheme is honored only if supported (else None), never swapped.
     ``family`` applies the measured deny list (``_FAMILY_SCHEME_DENY``): schemes that produce
-    black frames / out-of-bar drift are skipped by ``auto`` and refused when explicit."""
+    black frames / out-of-bar drift are skipped by ``auto`` and refused when explicit.
+
+    ``unproven_ok`` is for the PRE-EVICTION route gate. The smoke test allocates, so a resident
+    chat/image/video model can make it fail for want of VRAM rather than for want of a kernel; the
+    gate runs before the arbiter has evicted that model, so treating "could not tell" as "not
+    supported" refuses a load the very next moment would have run. It answers "is this scheme
+    provably unusable here", and the real selection still happens after the handoff."""
     requested = normalize_transformer_quant(requested)
     if requested is None or not dense_transformer_supported(target):
         return None
@@ -253,7 +369,7 @@ def select_transformer_quant_scheme(
     if requested != TQ_AUTO:
         if _family_denied(family, requested):
             return None
-        return requested if _scheme_supported(requested, device) else None
+        return requested if _scheme_supported(requested, device, unproven_ok = unproven_ok) else None
     cap = _capability()
     if cap is None:
         return None
@@ -266,6 +382,30 @@ def select_transformer_quant_scheme(
                     return scheme
             return None
     return None
+
+
+def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+    """Every scheme ``auto`` would accept on this device, best first.
+
+    ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
+    until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
+    needs to know what auto would have picked NEXT, so it can reach a scheme that does have a
+    checkpoint instead of dropping to GGUF. Same ladder, same deny list, same smoke probe as the
+    auto branch of the selector, so the two can never disagree about what is allowed."""
+    if not dense_transformer_supported(target):
+        return ()
+    device = str(getattr(target, "device", "cuda"))
+    cap = _capability()
+    if cap is None:
+        return ()
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return tuple(
+                scheme
+                for scheme in _prefer_consumer_scheme(schemes, device)
+                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+            )
+    return ()
 
 
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
@@ -286,7 +426,12 @@ def _capability() -> Optional[tuple[int, int]]:
         return None
 
 
-def _scheme_supported(scheme: str, device: str) -> bool:
+def _scheme_supported(
+    scheme: str,
+    device: str,
+    *,
+    unproven_ok: bool = False,
+) -> bool:
     """CUDA + (for fp8) the fp8 dtype + a cached quantise+matmul smoke test for ``scheme``."""
     try:
         import torch
@@ -296,10 +441,15 @@ def _scheme_supported(scheme: str, device: str) -> bool:
             return False
     except Exception:
         return False
-    return _smoke_probe(scheme, device)
+    return _smoke_probe(scheme, device, unproven_ok = unproven_ok)
 
 
-def _smoke_probe(scheme: str, device: str) -> bool:
+def _smoke_probe(
+    scheme: str,
+    device: str,
+    *,
+    unproven_ok: bool = False,
+) -> bool:
     """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
     finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
     prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
@@ -333,10 +483,42 @@ def _smoke_probe(scheme: str, device: str) -> bool:
             out = lin(x)
         torch.cuda.synchronize()
         ok = bool(torch.isfinite(out).all().item())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        if _is_out_of_memory(exc):
+            # NOT cached, and NOT a verdict. An out-of-memory says nothing about the scheme, and
+            # the probe now runs on the ROUTE thread -- BEFORE the arbiter evicts the resident chat
+            # model, which is the whole point of raising the refusal early -- so it meets a full
+            # GPU by design. Caching it would refuse every later EXPLICIT request for this scheme
+            # for the life of the process, on a host that runs it fine once the eviction has
+            # happened; and answering "unsupported" to the pre-eviction gate (``unproven_ok``)
+            # refuses THIS load for the same reason the eviction was about to remove.
+            return unproven_ok
         ok = False
     _SMOKE_CACHE[key] = ok
     return ok
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Whether ``exc`` is an allocator failure rather than a verdict on the scheme.
+
+    ``torch.OutOfMemoryError`` subclasses ``RuntimeError``, not ``MemoryError``, and moved between
+    ``torch.cuda`` and ``torch`` across releases, so both names are tried and the message is the
+    backstop (a CUDA OOM surfaced through another wrapper still says "out of memory")."""
+    try:
+        import torch
+        named = tuple(
+            t
+            for t in (
+                getattr(torch, "OutOfMemoryError", None),
+                getattr(torch.cuda, "OutOfMemoryError", None),
+            )
+            if isinstance(t, type)
+        )
+        if named and isinstance(exc, named):
+            return True
+    except Exception:  # noqa: BLE001 — no torch: the message test below still applies
+        pass
+    return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
 
 
 def _resolve_fast_accum(fast_accum: Optional[bool]) -> bool:
