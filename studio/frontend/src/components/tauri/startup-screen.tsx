@@ -2,18 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  INITIAL_STARTUP_MESSAGE,
   installProgressMessage,
-  SERVER_STARTUP_MESSAGE,
-  SERVER_START_FALLBACK_MS,
+  startupWaitingMessage,
+  STATUS_MESSAGE_ROTATION_MS,
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
-import { ShimmerButton } from "@/components/ui/shimmer-button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
@@ -169,17 +167,26 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <ShimmerButton
-          onClick={onInstall}
-          shimmerColor="#a7f3d0"
-          background="oklch(0.696 0.17 162.48)"
-          className="text-sm font-medium"
-        >
+        <ActionButton onClick={onInstall}>
           Get Started
-        </ShimmerButton>
+        </ActionButton>
       </div>
     </div>
   );
+}
+
+function useRotatingMessageIndex(): number {
+  const [messageIndex, setMessageIndex] = useState(0);
+
+  useEffect(() => {
+    const interval = window.setInterval(
+      () => setMessageIndex((current) => current + 1),
+      STATUS_MESSAGE_ROTATION_MS,
+    );
+    return () => window.clearInterval(interval);
+  }, []);
+
+  return messageIndex;
 }
 
 function InstallingContent({
@@ -191,7 +198,8 @@ function InstallingContent({
   currentStepIndex: number;
   progressDetail: string | null;
 }) {
-  const message = installProgressMessage(currentStepIndex);
+  const messageIndex = useRotatingMessageIndex();
+  const message = installProgressMessage(currentStepIndex, messageIndex);
   const detailLines = progressDetail
     ? [...logs, progressDetail]
     : logs;
@@ -254,6 +262,23 @@ function RepairingContent({
             </pre>
           </details>
         )}
+      </div>
+    </div>
+  );
+}
+
+function ClosingContent() {
+  return (
+    <div className="flex h-full w-full flex-col items-center">
+      <div className="flex flex-1 items-center">
+        <Logo />
+      </div>
+      <div className="mb-10 flex w-full flex-col items-center gap-2">
+        <Spinner className="size-6 text-primary" />
+        <p className="text-sm font-bold text-foreground" aria-live="polite">
+          Closing Unsloth Desktop...
+        </p>
+        <p className="text-sm text-muted-foreground">Shutting down the backend.</p>
       </div>
     </div>
   );
@@ -341,21 +366,8 @@ function NeedsElevationContent({
 }
 
 function StartingContent({ message }: { message: StartupMessage }) {
-  const [showFallback, setShowFallback] = useState(false);
-
-  useEffect(() => {
-    if (message !== SERVER_STARTUP_MESSAGE) {
-      return;
-    }
-
-    const fallback = window.setTimeout(
-      () => setShowFallback(true),
-      SERVER_START_FALLBACK_MS,
-    );
-    return () => window.clearTimeout(fallback);
-  }, [message]);
-
-  const displayMessage = showFallback ? INITIAL_STARTUP_MESSAGE : message;
+  const messageIndex = useRotatingMessageIndex();
+  const displayMessage = startupWaitingMessage(message, messageIndex);
 
   return (
     <div className="flex h-full flex-col items-center">
@@ -486,21 +498,56 @@ export function StartupScreen({
   }
 
   return (
+    <StartupSurface>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={status}
+          className="flex h-full w-full flex-col items-center justify-center text-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
+        >
+          {renderContent()}
+        </motion.div>
+      </AnimatePresence>
+    </StartupSurface>
+  );
+}
+
+/** The chrome both full-window screens sit in, so they agree on insets and scrolling. */
+function StartupSurface({ children }: { children: ReactNode }) {
+  return (
     <div className="box-border flex h-full w-full flex-col items-center overflow-y-auto bg-background pb-6 pt-[var(--studio-startup-top-inset,0px)]">
       <div className="flex min-h-0 flex-1 w-full max-w-md items-center justify-center px-6">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={status}
-            className="flex h-full w-full flex-col items-center justify-center text-center"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: EASE_OUT_QUART }}
-          >
-            {renderContent()}
-          </motion.div>
-        </AnimatePresence>
+        {children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Shown from the moment a quit is requested until the process is gone. Separate from
+ * StartupScreen because a quit can come from the running app, where no backend status
+ * applies, and unanimated because it has to be on screen for the very next paint.
+ *
+ * A layer over the app rather than a replacement for it: a declined quit has to hand the
+ * user back the tree they had, in-flight generations and unsaved drafts included. The
+ * z-index clears the titlebar and the download stack, the last of which is 9998.
+ */
+export function ClosingScreen() {
+  return (
+    // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
+    // <body> while any modal layer is open, and a quit raised from the window controls,
+    // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
+    // click-through onto the dialog it is hiding, so clicks meant for a screen that says
+    // the app is closing would land on buttons the user can no longer see.
+    <div className="pointer-events-auto fixed inset-0 z-[9999]">
+      <StartupSurface>
+        <div className="flex h-full w-full flex-col items-center justify-center text-center">
+          <ClosingContent />
+        </div>
+      </StartupSurface>
     </div>
   );
 }

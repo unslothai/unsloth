@@ -16,6 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import {
+  LOADED_MODELS_PREFERENCE_KEYS,
+  setShowLoadedModels,
+  useShowLoadedModels,
+} from "@/features/loaded-models";
+import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
@@ -56,6 +61,7 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import {
   DesktopUpdateControl,
@@ -124,6 +130,10 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  LOADED_MODELS_PREFERENCE_KEYS.show,
+  LOADED_MODELS_PREFERENCE_KEYS.collapsed,
+  LOADED_MODELS_PREFERENCE_KEYS.position,
+  LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
 ];
@@ -162,6 +172,7 @@ export function GeneralTab() {
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showLoadedModels = useShowLoadedModels();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -189,6 +200,11 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState<boolean | null>(null);
+  const [launchAtLoginError, setLaunchAtLoginError] = useState<string | null>(
+    null,
+  );
+  const [isSavingLaunchAtLogin, setIsSavingLaunchAtLogin] = useState(false);
   const [embeddingModel, setEmbeddingModel] =
     useState<EmbeddingModelSettings | null>(null);
   const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
@@ -319,6 +335,44 @@ export function GeneralTab() {
       cancelled = true;
     };
   }, [t]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    void loadLaunchAtLogin()
+      .then((enabled) => {
+        if (cancelled) return;
+        setLaunchAtLogin(enabled);
+        setLaunchAtLoginError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setLaunchAtLoginError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.startup.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveLaunchAtLogin = async (enabled: boolean) => {
+    setIsSavingLaunchAtLogin(true);
+    setLaunchAtLoginError(null);
+    try {
+      setLaunchAtLogin(await updateLaunchAtLogin(enabled));
+    } catch (error) {
+      setLaunchAtLoginError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.startup.saveError"),
+      );
+    } finally {
+      setIsSavingLaunchAtLogin(false);
+    }
+  };
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -580,7 +634,40 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {isTauri ? (
+        <SettingsSection title={t("settings.general.startup.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.startup.launchAtLogin")}
+            description={t("settings.general.startup.launchAtLoginDescription")}
+          >
+            <div className="flex flex-col items-end gap-1">
+              <Switch
+                checked={launchAtLogin ?? false}
+                disabled={launchAtLogin === null || isSavingLaunchAtLogin}
+                onCheckedChange={(enabled) => void saveLaunchAtLogin(enabled)}
+              />
+              {launchAtLoginError ? (
+                <span className="max-w-[260px] text-right text-xs text-destructive">
+                  {launchAtLoginError}
+                </span>
+              ) : null}
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(

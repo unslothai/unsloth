@@ -16,9 +16,13 @@ export interface PerModelConfig {
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
+  /** MLX KV cache quantization width. Optional so older blobs still parse. */
+  mlxKvBits?: number | null;
   speculativeType: string | null;
   specDraftNMax: number | null;
   nParallel: number | null;
+  nBatch: number | null;
+  nUbatch: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
@@ -34,9 +38,12 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
+  mlxKvBits: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  nBatch: null,
+  nUbatch: null,
   tensorParallel: false,
   chatTemplateOverride: null,
 };
@@ -45,6 +52,13 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
 
+// mirrors llama_server_args.py BATCH_MIN/MAX; null = follow the llama.cpp defaults (2048 / 512)
+export const N_BATCH_MIN = 1;
+export const N_BATCH_MAX = 65536;
+// llama.cpp's own --batch-size default (_DEFAULT_LLAMA_N_BATCH), which a blank control
+// runs at: it still caps the micro-batch, so advisories have to reckon with it.
+export const N_BATCH_LLAMA_DEFAULT = 2048;
+
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
@@ -52,6 +66,43 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 // here rather than an active model's runtime value, so an unconfigured pane never OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
+
+// Reasons a Mac still cannot serve with MLX.
+const NO_MLX_REASONS = new Set([
+  "mlx_unavailable",
+  "intel_mac",
+  "detection_failed",
+]);
+
+/** Whether MLX will serve this model, and so whether MLX-only settings apply.
+ *
+ *  Every non-GGUF model loads through MLX on a working Mac stack, including plain
+ *  safetensors repos, so `!isGguf` alone would show these controls to CUDA users.
+ */
+export function isServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): boolean {
+  return (
+    !isGguf &&
+    deviceType === "mac" &&
+    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
+  );
+}
+
+export function presetLoadSettingNames(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): string {
+  if (isGguf) {
+    return "context length, KV cache dtype, speculative decoding, GPU layers";
+  }
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason)
+    ? "max seq length, KV cache dtype"
+    : "max seq length";
+}
 
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
@@ -64,6 +115,10 @@ export const KV_CACHE_DTYPES = [
   "iq4_nl",
   "f32",
 ] as const;
+
+// Every width mx.quantize supports. By bit width, not a dtype name, hence separate
+// from KV_CACHE_DTYPES.
+export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 export {
@@ -74,13 +129,15 @@ export {
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+// v2 added nBatch / nUbatch; a v1 client's normalizer would rewrite them away
+const STORAGE_SCHEMA_VERSION = 2;
+const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
 
 type StoredPerModelConfig = PerModelConfig & {
-  version: typeof STORAGE_SCHEMA_VERSION;
+  version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
 type RawConfig = Partial<PerModelConfig> & { version?: unknown };
@@ -90,9 +147,12 @@ const STORED_CONFIG_FIELDS = new Set([
   "customContextLength",
   "maxSeqLength",
   "kvCacheDtype",
+  "mlxKvBits",
   "speculativeType",
   "specDraftNMax",
   "nParallel",
+  "nBatch",
+  "nUbatch",
   "tensorParallel",
   "chatTemplateOverride",
   "gpuMemoryMode",
@@ -558,6 +618,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? Math.max(CONTEXT_LENGTH_MIN, Math.floor(partial.customContextLength))
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
+    mlxKvBits:
+      typeof partial.mlxKvBits === "number" &&
+      MLX_KV_BITS.includes(partial.mlxKvBits)
+        ? partial.mlxKvBits
+        : null,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -572,6 +637,14 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
             N_PARALLEL_MIN,
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
+        : null,
+    nBatch:
+      typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
+        : null,
+    nUbatch:
+      typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
         : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
@@ -607,9 +680,15 @@ function normalize(raw: unknown): PerModelConfig {
 }
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
+  // records without the v2-only batch fields keep v1 so older clients can still rewrite them
+  const version =
+    normalized.nBatch != null || normalized.nUbatch != null
+      ? STORAGE_SCHEMA_VERSION
+      : PRE_BATCH_SCHEMA_VERSION;
   return {
-    version: STORAGE_SCHEMA_VERSION,
-    ...normalize(config),
+    version,
+    ...normalized,
   };
 }
 
@@ -716,9 +795,12 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
+    (config.mlxKvBits ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvBits &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
+    config.nBatch == null &&
+    config.nUbatch == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
     (config.chatTemplateOverride ?? null) === null &&

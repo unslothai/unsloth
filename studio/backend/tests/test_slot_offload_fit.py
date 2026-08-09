@@ -157,3 +157,93 @@ class TestSlotsThatFitOnGpu:
         )
         assert calls
         assert all(call["swa_full"] is True for call in calls)
+
+    def test_micro_batch_is_re_derived_per_candidate(self):
+        """llama-server raises --batch-size to max(slots, 2) and llama.cpp caps the
+        micro-batch against it, so a batch below the requested slot count shrinks as the
+        candidates do: n_batch=1 launches the 3-slot candidate at -b 3, not the 64 the
+        4-slot request resolved to. At these dims that is 6.8 MiB of compute buffer
+        against 145.2, so pricing every candidate at the requested count's micro-batch
+        rejects a 3-slot fit that launches comfortably and cuts serving capacity for it."""
+        from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+
+        def ubatch_for_slots(slots: int):
+            return _extra_args_n_ubatch(
+                None, env = {}, n_ctx = CTX, n_batch = _emitted_n_batch(1, slots), n_ubatch = 64
+            )
+
+        def _fit(**kwargs):
+            calls = []
+            got = _backend(kv_calls = calls)._slots_that_fit_on_gpu(
+                4,
+                CTX,
+                [(0, 24576)],
+                {0: 24576},
+                23750 * MIB,
+                "q8_0",
+                FRAC,
+                0,
+                1,
+                n_ubatch = 64,
+                **kwargs,
+            )
+            return got, [call["n_ubatch"] for call in calls]
+
+        # priced at the batch each candidate LAUNCHES with: the first one fits, so the
+        # search stops there
+        assert _fit(ubatch_for_slots = ubatch_for_slots) == (([0], False, 3), [3])
+        # held at the requested count's micro-batch, the same card loses a slot
+        assert _fit() == (([0], False, 2), [64, 64])
+
+
+class TestMtpReserveIsRepricedPerCandidate:
+    """The MTP reserve is not slot-independent: compact SWA scales its window allowance by
+    the slot count under kv_unified, and an MLA target with recurrent (KDA) layers charges
+    per slot. Holding it at the requested count over-charged every candidate, so a smaller
+    one that fits was rejected and the load kept --fit and offloaded to host (PR #8172)."""
+
+    def _fit(
+        self,
+        mtp_for_slots,
+        base_mib = 22000,
+    ):
+        return _backend()._slots_that_fit_on_gpu(
+            4,
+            CTX,
+            [(0, 24576)],
+            {0: 24576},
+            int(base_mib * MIB),
+            "q8_0",
+            FRAC,
+            0,
+            1,
+            n_ubatch = 512,
+            mtp_bytes_for_slots = mtp_for_slots,
+        )
+
+    def test_a_slot_scaled_reserve_shrinks_with_the_candidate(self):
+        # 500 MiB per slot: par3 (22000+1162+1500) over 23839, par2 (22000+604+1000) fits.
+        gi, use_fit, slots = self._fit(lambda s, _ub: int(500 * s * MIB))
+        assert use_fit is False and gi == [0] and slots == 2
+
+    def test_holding_the_reserve_at_the_requested_count_would_reject_them_all(self):
+        # The old behaviour: every candidate charged the 4-slot reserve, so even one slot
+        # (22000+46+2000) looked too big and the load stayed on --fit.
+        gi, use_fit, slots = self._fit(lambda _s, _ub: int(500 * 4 * MIB))
+        assert use_fit is True and gi is None and slots == 4
+
+    def test_no_reserve_callable_matches_a_zero_reserve(self):
+        assert self._fit(None) == self._fit(lambda _s, _ub: 0)
+
+    def test_the_candidate_micro_batch_reaches_the_reserve(self):
+        """Compact SWA adds one micro-batch to its window allowance, and a reduced
+        candidate lowers the batch floor, so the reserve has to see the candidate ubatch
+        and not the one the original request was sized at (PR #8172)."""
+        seen = []
+        # base 24000: no candidate fits, so every one is priced and observed.
+        self._fit(lambda s, ub: seen.append((s, ub)) or 0, base_mib = 24000)
+        assert seen, "the reserve callback was never consulted"
+        # ubatch_for_slots is None here, so n_ubatch passes through; what matters is that
+        # it travels with the slot count instead of being dropped.
+        assert all(ub == 512 for _s, ub in seen), seen
+        assert [s for s, _ub in seen] == [3, 2, 1]

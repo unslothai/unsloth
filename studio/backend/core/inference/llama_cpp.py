@@ -23,6 +23,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -38,6 +39,7 @@ from typing import (
     Mapping,
     MutableMapping,
     NamedTuple,
+    NoReturn,
     Optional,
     Union,
 )
@@ -45,11 +47,19 @@ from typing import (
 import httpx
 
 from core.inference.llama_server_args import (
+    _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
+    _MOE_OFFLOAD_FLAGS,
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    apply_model_memory_policy,
     extra_args_disable_mmproj,
+    fit_is_enabled_in,
+    memory_state_satisfies_settings,
+    fit_is_effectively_on,
+    resolve_effective_memory_state,
+    scrub_memory_env,
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
@@ -158,6 +168,9 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # none follows the llama.cpp defaults (2048 / 512)
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -165,6 +178,7 @@ class GgufLoadIntent:
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
+    cpu_fallback: bool = False
 
     def __post_init__(self):
         for key in ("tensor_split", "gpu_ids", "extra_args"):
@@ -173,6 +187,15 @@ class GgufLoadIntent:
                 object.__setattr__(self, key, tuple(value))
         if self.gpu_ids == ():
             object.__setattr__(self, "gpu_ids", None)
+
+
+class _CpuFallbackRuntime(NamedTuple):
+    tempdir: tempfile.TemporaryDirectory
+    source_binary: Path
+    staged_binary: Path
+    # An update swaps the install dir in place, so the path alone cannot tell a
+    # refreshed build from the staged copy of the old one.
+    source_stamp: tuple
 
 
 # Shared so the from_identifier preflight and the load-time raise stay in sync.
@@ -1893,7 +1916,34 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 # also strips these (plus the MoE flags) from inherited extras; sharing the layer
 # set keeps detection and stripping from drifting.
 _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
+# Extras that keep weights on the CPU regardless of the layer count, so a
+# full offload cannot be inferred from -ngl alone. -ncmoe carries a COUNT, and
+# zero places nothing, so it is parsed rather than merely spotted; the rest are
+# presence-only (-cmoe takes no value, and an -ot pattern is not worth guessing
+# at, which matches how the env side reads LLAMA_ARG_OVERRIDE_TENSOR).
+_CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
+_CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
+    {"-ot", "--override-tensor"}
+)
+_CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
+    """Drop each ``flag value`` pair naming one of ``flags``."""
+    out: list[str] = []
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if str(arg) in flags:
+            skip = True
+            continue
+        out.append(str(arg))
+    return out
+
+
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
@@ -2027,6 +2077,41 @@ def _is_positive_int(value: Optional[str]) -> bool:
         return False
 
 
+def _args_place_tensors_on_cpu(extra_args: Optional[Iterable[str]] = None) -> bool:
+    """True when extras keep weights on the CPU, whatever the layer count says.
+
+    The arg-side twin of ``_env_places_tensors_on_cpu``, including its rule that
+    a CPU-MoE count only counts when positive: ``--n-cpu-moe 0`` places nothing.
+    """
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        # Any -ot counts even if it matches nothing: the list need only be
+        # non-empty, and guessing at the pattern is not worth it.
+        if flag in _CPU_PLACEMENT_PRESENCE_FLAGS:
+            return True
+        if flag in _CPU_MOE_COUNT_FLAGS:
+            _, eq, inline = raw.partition("=")
+            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
+                return True
+    return False
+
+
+def _env_places_tensors_on_cpu(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when inherited env keeps weights on the CPU, whatever the argv says.
+
+    The child inherits these, so they survive stripping the equivalent flags.
+    Shared with the Model Memory host-residency gate, which must not call a load
+    fully offloaded while one of them is holding tensors in RAM.
+    """
+    source_env = os.environ if env is None else env
+    return bool(
+        source_env.get("LLAMA_ARG_OVERRIDE_TENSOR")
+        or source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        or _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE"))
+    )
+
+
 def _pipeline_parallel_disabled_by_args(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -2046,11 +2131,7 @@ def _pipeline_parallel_disabled_by_args(
     split. ``n_layers`` is the GGUF block count for the ``-ngl`` check below; None/0
     means unknown."""
     source_env = os.environ if env is None else env
-    if source_env.get("LLAMA_ARG_OVERRIDE_TENSOR"):
-        return True
-    if source_env.get("LLAMA_ARG_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
-        return True
-    if _is_positive_int(source_env.get("LLAMA_ARG_N_CPU_MOE")):
+    if _env_places_tensors_on_cpu(source_env):
         return True
     if not _kv_offload_from_args(extra_args, env = env):
         return True
@@ -2063,7 +2144,8 @@ def _pipeline_parallel_disabled_by_args(
     # Pipelining needs n_gpu_layers > n_layer_all, so a user -ngl (appended after
     # Studio's -ngl -1, last-wins) that cannot exceed the count loads a prefix and
     # turns it off. Negative (all layers) or above the count keeps the step, even
-    # in between: n_layers is block_count and can undercount n_layer_all (MTP layers).
+    # in between: n_layers is block_count, which IS n_layer_all (llama-model.cpp
+    # reads the key straight into it); hparams.n_layer() is the smaller MTP-less one.
     if n_layers:
         try:
             gpu_layers = parse_gpu_layers_override(extra_args)
@@ -2071,18 +2153,9 @@ def _pipeline_parallel_disabled_by_args(
             gpu_layers = None  # malformed: unknown, so keep the step
         if gpu_layers is not None and 0 <= gpu_layers <= n_layers:
             return True
-    values = [str(raw) for raw in extra_args or ()]
-    for i, raw in enumerate(values):
-        flag = _flag_name(raw)
-        # Any -ot counts even if it matches nothing: the list need only be non-empty.
-        if flag in {"-ot", "--override-tensor", "-cmoe", "--cpu-moe"}:
-            return True
-        if flag in {"-ncmoe", "--n-cpu-moe"}:
-            # -ncmoe 0 pushes no override, so it leaves pipelining on.
-            _, eq, inline = raw.partition("=")
-            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
-                return True
-    return False
+    # Same predicate the Model Memory host-residency gate uses; -ncmoe 0 pushes
+    # no override, so it leaves pipelining on.
+    return _args_place_tensors_on_cpu(extra_args)
 
 
 def _kv_unified_from_args(
@@ -2637,6 +2710,41 @@ def _extra_args_main_device(extra_args: Optional[Iterable[str]]) -> Optional[str
     return _extra_args_device(extra_args, {"--device", "-dev"})
 
 
+def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
+    """``tokens`` with the first contiguous occurrence of ``run`` removed.
+
+    Only the exact flags Unsloth appended go, so a user's own identical flag
+    elsewhere in the command survives. Unchanged when ``run`` is not present.
+    """
+    if not run:
+        return list(tokens)
+    for i in range(len(tokens) - len(run) + 1):
+        if tokens[i : i + len(run)] == run:
+            return [*tokens[:i], *tokens[i + len(run) :]]
+    return list(tokens)
+
+
+_CPU_DEVICE_VALUES = frozenset({"cpu", "none"})
+
+
+def _device_selection_is_cpu(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the effective ``--device`` selection names no GPU.
+
+    llama.cpp then runs the model on the CPU whatever the layer count says, so
+    the weights are in pageable host RAM. argv wins over the env twin, and an
+    unreadable value answers True like every other unknown in the gate.
+    """
+    value = _extra_args_main_device(extra_args)
+    if value is None and env:
+        value = env.get("LLAMA_ARG_DEVICE")
+    if value is None:
+        return False
+    devices = [d.strip().lower() for d in str(value).split(",") if d.strip()]
+    return not devices or all(d in _CPU_DEVICE_VALUES for d in devices)
+
+
 def _extra_args_draft_device(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Return the last explicit draft-device value, if any."""
     return _extra_args_device(extra_args, {"--spec-draft-device", "-devd", "--device-draft"})
@@ -2653,12 +2761,35 @@ def _extra_args_draft_device_pin(extra_args: Optional[Iterable[str]]) -> Optiona
     return last_dev
 
 
+def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
+    """--batch-size the launch actually emits for a requested ``n_batch``.
+
+    llama-server aborts below 2 and below the slot count, so the loader raises the
+    flag to ``max(slots, 2)``. llama.cpp then derives the micro-batch from the
+    raised value (``cparams.n_ubatch = min(cparams.n_batch, n_ubatch or n_batch)``),
+    so every VRAM budget must be sized from it, not from the requested number, or a
+    small batch with many slots is budgeted at a micro-batch the launch never uses.
+    None (llama.cpp defaults) stays None: nothing is emitted, so nothing is raised.
+    """
+    if n_batch is None:
+        return None
+    return max(int(n_batch), max(2, int(n_parallel or 1)))
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
     n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
 ) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+
+    Precedence mirrors the launched command line: env, then the first-class
+    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
+    extra_args (appended last, so they last-wins-override the emitted flags).
+    """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
@@ -2676,6 +2807,13 @@ def _extra_args_n_ubatch(
                 overridden = True
             except (TypeError, ValueError):
                 pass
+
+    if n_batch is not None:
+        values["batch"] = int(n_batch)
+        overridden = True
+    if n_ubatch is not None:
+        values["ubatch"] = int(n_ubatch)
+        overridden = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -2845,14 +2983,8 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
 
 
-def _llama_lib_dir(binary: str) -> Path:
-    # The installer exposes llama-server as a top-level entrypoint into build/bin/,
-    # where the ggml backend libs live, so callers looking for sibling libs (Vulkan
-    # detection, LD_LIBRARY_PATH, probe bindir) need the real dir. It is normally a
-    # symlink (resolve() reaches build/bin), but create_exec_entrypoint falls back to
-    # a shell wrapper (exec "$(dirname "$0")/build/bin/llama-server" "$@") when it
-    # cannot symlink, and resolve() stops at the wrapper file. Follow the wrapper's
-    # exec target too, so a wrapper-based install still finds build/bin.
+def _resolve_llama_binary(binary: str) -> Path:
+    """Resolve a managed symlink or shell entrypoint to the real server."""
     resolved = Path(binary).resolve()
     try:
         with open(resolved, "rb") as _f:
@@ -2860,10 +2992,61 @@ def _llama_lib_dir(binary: str) -> Path:
         if _head.startswith(b"#!"):
             _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
             if _m:
-                return (resolved.parent / _m.group(1)).resolve().parent
+                return (resolved.parent / _m.group(1)).resolve()
     except OSError:
         pass
-    return resolved.parent
+    return resolved
+
+
+def _llama_lib_dir(binary: str) -> Path:
+    return _resolve_llama_binary(binary).parent
+
+
+_CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
+
+
+def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
+    """Whether a live process still owns this staged CPU-fallback runtime."""
+    try:
+        pid = int((staged_dir / _CPU_RUNTIME_OWNER_FILE).read_text(encoding = "utf-8").strip())
+    except (OSError, ValueError):
+        # No owner stamp: written by an older Studio, so leave it alone.
+        return True
+    if pid == os.getpid():
+        return True
+    # 0 and negatives address process groups, never an owner.
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        ctypes.set_last_error(0)
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER
+        kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _sweep_abandoned_cpu_runtimes(runtime_root: Path) -> None:
+    """Delete staged runtimes whose owning Studio is gone (kill -9, host crash)."""
+    try:
+        candidates = list(runtime_root.glob("llama-cpu-*"))
+    except OSError:
+        return
+    for staged_dir in candidates:
+        if not staged_dir.is_dir() or _cpu_runtime_owner_alive(staged_dir):
+            continue
+        with contextlib.suppress(OSError):
+            shutil.rmtree(staged_dir, ignore_errors = True)
 
 
 def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
@@ -2957,6 +3140,10 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
+        # Set after an auto-Vulkan crash recovers with all devices disabled.
+        self._cpu_fallback_reason: Optional[str] = None
+        self._cpu_fallback_runtime: Optional[_CpuFallbackRuntime] = None
+        self._pending_cpu_fallback_cleanups: list = []
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
@@ -2977,6 +3164,9 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
+        self._requested_n_batch: Optional[int] = None
+        self._requested_n_ubatch: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -3101,6 +3291,19 @@ class LlamaCppBackend:
         self._prompt_cache_disabled: bool = False
         self._swa_full: bool = False
         self._kv_cache_unified: bool = False
+        # (mlock, reserves_ram) the running process was launched with, or None
+        # when this policy does not govern it (the diffusion runner has no
+        # load-mode). _memory_policy_active records that the launch differed
+        # from an unmanaged one, so disabling the toggles can undo it.
+        self._memory_state: Optional[tuple[bool, bool]] = None
+        self._memory_policy_active: bool = False
+        # False when a launch is fully offloaded to a discrete GPU, where
+        # page-locking host RAM is skipped on purpose.
+        self._memory_mlock_applicable: bool = True
+        # True between recording a launch's placement and the child being
+        # spawned, so a save landing in that window still has a launch to
+        # compare against.
+        self._memory_launch_pending: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
@@ -3252,6 +3455,16 @@ class LlamaCppBackend:
         return max(1, slots)
 
     @property
+    def requested_n_batch(self) -> Optional[int]:
+        """--batch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_batch
+
+    @property
+    def requested_n_ubatch(self) -> Optional[int]:
+        """--ubatch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_ubatch
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -3278,6 +3491,8 @@ class LlamaCppBackend:
         self._effective_parallel_slots = 1
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -3632,6 +3847,10 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        if not self._is_diffusion and (
+            self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
+        ):
             return False
 
         def _norm(value):
@@ -4054,6 +4273,7 @@ class LlamaCppBackend:
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
+                "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
             }
         try:
@@ -4078,6 +4298,7 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
+        supports_load_mode = False
         spec_draft_ngl_flag = None
         saw_spec_type = False
         probe_ok = False
@@ -4192,6 +4413,9 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
+            # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
+            # Pre-initialised above: a failed probe must fall back, not raise.
+            supports_load_mode = _is_real("--load-mode")
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -4253,6 +4477,7 @@ class LlamaCppBackend:
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
         cls._capability_cache[cache_key] = info
@@ -4296,6 +4521,23 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
+        """Backend libraries shipped beside llama-server."""
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return frozenset()
+        try:
+            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
+        except OSError:
+            return frozenset()
+        backends = set()
+        for backend in ("base", "cpu", "cuda", "hip", "vulkan"):
+            stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
+            if any(name == stem or name.startswith(stem + ".") for name in files):
+                backends.add(backend)
+        return frozenset(backends)
+
+    @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
         """True if the installed llama.cpp build is Vulkan-only.
 
@@ -4305,16 +4547,8 @@ class LlamaCppBackend:
         multi-backend build with a CUDA or HIP ggml lib alongside Vulkan, defer
         to that backend (torch-usable, better-understood probe/pin).
         """
-        binary = binary or LlamaCppBackend._find_llama_server_binary()
-        if not binary:
-            return False
-        lib_dir = _llama_lib_dir(binary)
-        if not _lib_dir_has_ggml_backend(lib_dir, "vulkan"):
-            return False
-        for _backend in ("cuda", "hip"):
-            if _lib_dir_has_ggml_backend(lib_dir, _backend):
-                return False
-        return True
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        return "vulkan" in backends and not backends.intersection({"cuda", "hip"})
 
     @staticmethod
     def _resolve_visible_physical_ids() -> Optional[list[int]]:
@@ -4330,10 +4564,7 @@ class LlamaCppBackend:
             # must agree, else an inherited ROCR mask reads back as "no mask",
             # ordinal 0 is labelled physical 0, and the child's new ROCR pin
             # re-exposes the GPU the inherited mask was hiding.
-            is_rocm = (
-                getattr(torch.version, "hip", None) is not None
-                or "rocm" in getattr(torch, "__version__", "").lower()
-            )
+            is_rocm = LlamaCppBackend._torch_is_rocm(torch)
         except Exception:
             is_rocm = False
         if is_rocm:
@@ -4458,44 +4689,198 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
-        """True only for AMD unified-memory APUs (gfx1150/gfx1151/gfx1152), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
-        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
-        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
-        None means every visible GPU."""
+    def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
+        """True when any Vulkan device in play is integrated.
+
+        An iGPU's reported "VRAM" is shared system RAM (see
+        ``_apply_igpu_host_reserve_mib``), so a model "fully offloaded" onto one
+        is still backed by pageable host memory and is worth page-locking. Any,
+        not every: a mixed selection splits weights onto the iGPU too, and those
+        pages are as evictable as if it were the only device. An unreadable probe
+        answers False.
+        """
+        try:
+            rows = LlamaCppBackend._run_vulkan_probe(binary)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        wanted = set(gpu_indices) if gpu_indices else None
+        selected = [r for r in rows if wanted is None or r["index"] in wanted]
+        return any(r["is_igpu"] for r in selected)
+
+    def _weights_in_host_memory(
+        self,
+        *,
+        fully_gpu_offloaded: bool,
+        gpu_memory_mode: Optional[str],
+        gpu_layers: Optional[int],
+        extra_args: Optional[Iterable[str]],
+        gpu_indices = None,
+        is_vulkan_backend: bool = False,
+        binary: Optional[str] = None,
+        env: Optional[Mapping[str, str]] = None,
+        probe_vulkan: bool = True,
+        fit_active: bool = False,
+    ) -> bool:
+        """True when the weights will sit in pageable host RAM, so mlock helps.
+
+        Only the Model Memory gate uses this, and only to SKIP page-locking, so
+        it errs towards True: that is the pre-existing behaviour.
+
+        ``probe_vulkan`` False skips the Vulkan probe, the one subprocess in
+        here, for a bookkeeping-only call; that keeps the conservative True.
+        """
+        from utils.hardware import is_apple_silicon
+
+        # A CPU placement extra keeps weights in RAM whatever the layer count,
+        # so it applies to the auto path too and cannot be short-circuited past.
+        # Inherited env does the same and outlives any token stripping.
+        if _args_place_tensors_on_cpu(extra_args):
+            return True
+        if _env_places_tensors_on_cpu(env):
+            return True
+        # A --device that names no GPU beats any layer count: llama.cpp has
+        # nowhere to offload to, so the whole model stays in host RAM.
+        if _device_selection_is_cpu(extra_args, env):
+            return True
+        # fully_gpu_offloaded predicts OUR "-ngl -1 --fit off", but auto keeps the
+        # user's extras and appends them after, and llama.cpp is last-wins, so an
+        # -ngl 0 lands the model in RAM. Only a fit that is switched ON voids the
+        # prediction: "--fit off" is what we already pass, and a disabled fitter
+        # cannot move anything to the CPU.
+        if _extra_args_set_any_flag(extra_args, _GPU_LAYER_FLAGS) or fit_is_enabled_in(extra_args):
+            fully_gpu_offloaded = False
+        all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
+            gpu_memory_mode = gpu_memory_mode,
+            gpu_layers = gpu_layers,
+            extra_args = extra_args,
+            fit_active = fit_active,
+        )
+        if not all_on_gpu:
+            return True
+        # Unified memory: the "VRAM" is host RAM, so the weights stay pageable
+        # however fully they are offloaded.
+        if is_apple_silicon():
+            return True
+        if is_vulkan_backend:
+            # gpu_indices are Vulkan ordinals here, which the ROCm APU helper
+            # would read as physical ids and answer for the wrong device. The
+            # Vulkan probe owns device type; unprobed keeps the True answer.
+            return not probe_vulkan or self._vulkan_targets_are_igpus(binary, gpu_indices)
+        return self._amd_apu_wants_unified_memory(gpu_indices)
+
+    def _offloads_every_layer(
+        self,
+        *,
+        gpu_memory_mode: Optional[str],
+        gpu_layers: Optional[int],
+        extra_args: Optional[Iterable[str]],
+        fit_active: bool = False,
+    ) -> bool:
+        """True when every layer lands on the GPU by a route ``fully_gpu_offloaded``
+        does not cover: manual mode at its full-offload maximum, or a user -ngl.
+
+        Only the Model Memory gate uses this, and only to SKIP page-locking, so
+        every unknown answers False and keeps the pre-existing behaviour: an
+        unreadable block count, CPU-side experts, a tensor override that places
+        weights by name, or an unparseable -ngl.
+        """
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        if self._n_cpu_moe:
+            return False
+        # The parsed predicate, not flag presence: --n-cpu-moe 0 places nothing,
+        # and answering False here would pin host RAM for an all-GPU launch.
+        if _args_place_tensors_on_cpu(extra_args):
+            return False
+        requested: Optional[int] = None
+        if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
+            # Manual owns offload and strips -ngl from the extras, so the field
+            # is what the child gets. The picker's maximum is n_layers + 1.
+            requested = gpu_layers
+        else:
+            try:
+                requested = parse_gpu_layers_override(extra_args)
+            except ValueError:
+                return False
+        if requested is None:
+            return False
+        # -1 is "all layers"; llama.cpp needs a count ABOVE the block count to
+        # cover the output layer too, which is what the picker's maximum sends.
+        # -1 is also llama.cpp's DEFAULT, so an active fitter is free to lower it
+        # (common/fit.cpp aborts only on a count the user really set); a concrete
+        # count stands, which is why only this arm is gated.
+        if requested == -1:
+            return not fit_active
+        return requested > n_layers
+
+    @staticmethod
+    def _torch_is_rocm(torch) -> bool:
+        """Whether this torch is a ROCm build. AMD SDK wheels leave
+        ``version.hip`` unset and only encode "rocm" in ``__version__``."""
+        return (
+            getattr(torch.version, "hip", None) is not None
+            or "rocm" in getattr(torch, "__version__", "").lower()
+        )
+
+    @staticmethod
+    def _rocm_unified_memory_gpu_ids() -> set[int]:
+        """PHYSICAL ids of visible ROCm GPUs whose "VRAM" is shared system RAM.
+
+        Delegates to the training worker's classifier so both paths agree on what
+        an APU is: it reads the driver's own ``is_integrated`` first, then the
+        arch-name spellings, then the Radeon name table, because AMD SDK wheels
+        may populate none of the arch attributes. Empty off ROCm and on error, so
+        every caller keeps its discrete-GPU default.
+        """
         try:
             import torch
 
-            if getattr(torch.version, "hip", None) is None:
-                return False
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return set()
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
-                return False
+                return set()
+            from core.training.worker import _rocm_classify_unified_memory
+
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
-            arch_by_id: dict[int, str] = {}
+            unified: set[int] = set()
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch = (
-                        getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    _arch, is_unified = _rocm_classify_unified_memory(
+                        torch.cuda.get_device_properties(ordinal)
                     )
                 except Exception:
                     continue
-                pid = (
+                if not is_unified:
+                    continue
+                unified.add(
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                arch_by_id[pid] = _arch.split(":")[0].strip().lower()
-            for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
-                # gfx1152 is Krackan Point (Radeon 860M/840M), the third RDNA 3.5
-                # APU: same shared GPU/system-RAM pool as Strix Point/Halo.
-                if arch_by_id.get(_i) in {"gfx1150", "gfx1151", "gfx1152"}:
-                    return True
+            return unified
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
+        """True only for AMD unified-memory APUs, where GGML_CUDA_ENABLE_UNIFIED_MEMORY
+        lets llama.cpp use shared system RAM (it hurts discrete GPUs). gpu_indices
+        (PHYSICAL ids) scopes the check, so a dGPU on a mixed host is not treated as
+        unified-memory; None means every visible GPU."""
+        # Guarded like the rest of this family: a bad gpu_indices (not iterable,
+        # unhashable members) answers False rather than failing the load.
+        try:
+            unified = LlamaCppBackend._rocm_unified_memory_gpu_ids()
+            if gpu_indices is None:
+                return bool(unified)
+            return any(_i in unified for _i in gpu_indices)
         except Exception:
             return False
-        return False
 
     # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
     # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
@@ -4630,12 +5015,10 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return False
-        lib_dir = _llama_lib_dir(binary)
-        if not lib_dir or not lib_dir.is_dir():
-            return False
-        if any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("vulkan", "cuda", "hip")):
-            return False
-        return any(_lib_dir_has_ggml_backend(lib_dir, b) for b in ("cpu", "base"))
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        return bool(backends.intersection({"cpu", "base"})) and not backends.intersection(
+            {"cuda", "hip", "vulkan"}
+        )
 
     def is_vulkan_build(self) -> bool:
         """Whether the resolved llama-server uses Vulkan ordinals."""
@@ -4709,7 +5092,9 @@ class LlamaCppBackend:
         are ggml's compact Vulkan ordinals (the space the pin selects via
         ``--device Vulkan<i>``). It reports ``total`` for discrete cards and 0
         for an iGPU (shared RAM) so the fit falls back to free*frac there.
-        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm.
+        Otherwise nvidia-smi / torch cover NVIDIA + AMD ROCm. The torch branch
+        gives an AMD unified-memory APU the same treatment by arch name, since
+        ROCm reports no iGPU flag of its own.
 
         Returns (gpu_index, free_mib, total_mib) sorted by index; empty if no
         supported GPU is reachable.
@@ -4784,6 +5169,9 @@ class LlamaCppBackend:
             # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
             # with the nvidia-smi path.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            # Shared-pool APU: same as the Vulkan iGPU path. Hold back the host
+            # margin, and report total 0 since that "total" is system RAM.
+            unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -4792,7 +5180,23 @@ class LlamaCppBackend:
                     if physical_ids is not None and ordinal < len(physical_ids)
                     else ordinal
                 )
-                gpus.append((idx, free_bytes // (1024 * 1024), total_bytes // (1024 * 1024)))
+                shared = idx in unified_ids
+                raw_mib = free_bytes // (1024 * 1024)
+                if shared:
+                    # ROCm's free is unreliable on a shared pool (Windows HIP
+                    # reports free==total, #7072), and system RAM is the real
+                    # ceiling there, so cap before taking the reserve.
+                    avail = LlamaCppBackend._available_system_memory_mib()
+                    if avail is not None:
+                        raw_mib = min(raw_mib, avail)
+                free_mib = _apply_igpu_host_reserve_mib(raw_mib, shared)
+                if free_mib < raw_mib:
+                    logger.info(
+                        f"ROCm device {idx} is a unified-memory APU sharing system "
+                        f"RAM; reserving {raw_mib - free_mib}MiB host headroom "
+                        f"({raw_mib}->{free_mib}MiB usable)"
+                    )
+                gpus.append((idx, free_mib, 0 if shared else total_bytes // (1024 * 1024)))
             # Match the nvidia-smi path's docstring guarantee of sorted-by-id.
             return sorted(gpus, key = lambda g: g[0])
         except Exception as e:
@@ -5071,6 +5475,15 @@ class LlamaCppBackend:
         "LLAMA_ARG_FIT_CTX",
     )
 
+    # Eligibility must reject every inherited placement value replay removes.
+    _CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS = (
+        *_MANUAL_PLACEMENT_ENV_VARS,
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+        "LLAMA_ARG_SPLIT_MODE",
+        "LLAMA_ARG_OVERRIDE_TENSOR",
+    )
+
     # (binary, mtime, model) that aborted on --split-mode tensor this process (#6415
     # geometry limit, e.g. MQA n_head_kv=1). Model-keyed so one model's abort doesn't
     # skip tensor for others; tensor is tried by default, recorded only on a real abort.
@@ -5242,6 +5655,12 @@ class LlamaCppBackend:
     def _clear_manual_placement_env(cls, env: dict[str, str]) -> None:
         """Remove inherited main-model placement owned by Manual mode."""
         for name in cls._MANUAL_PLACEMENT_ENV_VARS:
+            env.pop(name, None)
+
+    @classmethod
+    def _clear_device_placement_env(cls, env: dict[str, str]) -> None:
+        """Remove inherited device placement owned by an explicit ``gpu_ids``."""
+        for name in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
             env.pop(name, None)
 
     @staticmethod
@@ -6017,32 +6436,48 @@ class LlamaCppBackend:
         kv_unified: bool = True,
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
+        ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
+        mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
         to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
-        slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
+        slot-independent footprint (weights + soft overhead + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
         (gpu_indices, use_fit=False, slots) for the largest fitting count, else (None, True,
-        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps."""
+        n_parallel). Only ever reduces; unit-testable with synthetic VRAM maps.
+        ``ubatch_for_slots`` re-derives the micro-batch per candidate: the emitted
+        --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
+        against it, so a batch below the requested slot count shrinks as the candidates
+        do. Holding it at the requested count made a fitting candidate look too big and
+        dropped the load to --fit offload.
+        ``mtp_bytes_for_slots(slots, ubatch)`` does the same for the MTP reserve, which is
+        NOT slot-independent: compact SWA scales its window allowance by the slot count
+        under kv_unified and adds one micro-batch, and an MLA target with recurrent (KDA)
+        layers charges per slot. It takes the candidate micro-batch as well as the slot
+        count, since a reduced candidate lowers the batch floor and so the ubatch too;
+        pricing the reserve at the requested pair over-charged every candidate, so one that
+        fits could be rejected and the load kept --fit."""
         for slots in range(n_parallel - 1, 0, -1):
+            _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
-                n_ubatch = n_ubatch, n_parallel = slots, per_device_tensor = False
+                n_ubatch = _ub, n_parallel = slots, per_device_tensor = False
             )
             if cb <= 0:
                 cb = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
             total = (
                 base_footprint_bytes
                 + cb
+                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
                 + self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
                     n_parallel = slots,
                     swa_full = swa_full,
                     kv_unified = kv_unified,
-                    n_ubatch = n_ubatch,
+                    n_ubatch = _ub,
                     flash_attn = flash_attn,
                 )
             )
@@ -6872,7 +7307,13 @@ class LlamaCppBackend:
         self._cache_type_kv = None
         self._swa_full = False
         self._kv_cache_unified = False
+        self._memory_state = None
+        self._memory_policy_active = False
+        self._memory_mlock_applicable = True
+        self._memory_launch_pending = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
@@ -7245,6 +7686,10 @@ class LlamaCppBackend:
             return None
 
         target: Optional[str] = None
+        # Whether the question was actually answered. A listing that never
+        # completed (offline, transient Hub failure) leaves target None for a
+        # reason that says nothing about the repo's contents.
+        listing_answered = False
         from huggingface_hub import list_repo_files
 
         # Retry a transient listing blip; permanent repo/auth errors and offline
@@ -7254,6 +7699,7 @@ class LlamaCppBackend:
                 return None
             try:
                 target = pick(list_repo_files(hf_repo, token = hf_token))
+                listing_answered = True
                 break
             except Exception as e:
                 if type(e).__name__ in (
@@ -7284,9 +7730,15 @@ class LlamaCppBackend:
                 logger.debug(f"Offline cache lookup for {label} failed: {e}")
 
         # "The repo publishes none" and "the fetch failed" both return None, but
-        # only the second is worth retrying on the next Apply. Left unset on the
-        # early returns above, where the answer is genuinely unknown.
-        if outcome is not None and not cancel_event.is_set():
+        # only the second is worth retrying on the next Apply. Left unset unless
+        # the question was really answered -- by a listing that completed, or by
+        # a cache hit that produced a target regardless -- so an unreachable Hub
+        # is not recorded as a permanent absence.
+        if (
+            outcome is not None
+            and not cancel_event.is_set()
+            and (listing_answered or target is not None)
+        ):
             outcome["listed"] = target is not None
         if target is None or cancel_event.is_set():
             return None
@@ -8324,6 +8776,404 @@ class LlamaCppBackend:
         return out
 
     @staticmethod
+    def _vulkan_prebuilt_was_auto_selected(binary: Optional[str]) -> bool:
+        """Whether setup chose this managed Vulkan bundle without an override.
+
+        Explicit selections set an override or marker. The managed marker also
+        excludes custom and PATH binaries.
+        """
+        if not binary:
+            return False
+        if os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return False
+        if (os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND") or "").strip().lower() in {
+            "cpu",
+            "vulkan",
+            "hip",
+            "rocm",
+        }:
+            return False
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            install_root = _llama_install_root(binary)
+            if install_root is None:
+                return False
+            marker = json.loads(
+                (install_root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8")
+            )
+        except (OSError, ValueError, TypeError):
+            return False
+        return (
+            isinstance(marker, dict)
+            and not bool(marker.get("force_cpu"))
+            and marker.get("llama_backend") in (None, "", "auto")
+        )
+
+    @staticmethod
+    def _strip_cpu_fallback_main_placement(args: Iterable[str]) -> list[str]:
+        """Remove every raw main-model placement choice the CPU replay replaces."""
+        stripped = strip_shadowing_flags(
+            args,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = True,
+            strip_offload = True,
+            strip_device = True,
+        )
+        return _paravirtual_strip_gpu_overrides(stripped, log_dropped = False) or []
+
+    @classmethod
+    def _cpu_fallback_request_eligible(
+        cls,
+        intent: GgufLoadIntent,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        allow_manual_cpu: bool = False,
+    ) -> bool:
+        """Whether CPU recovery may replace the requested placement."""
+        args = [str(arg) for arg in (extra_args or ())]
+        companion_placement_flags = {
+            *_OVERRIDE_TENSOR_FLAGS,
+            "--spec-draft-device",
+            "-devd",
+            "--device-draft",
+            "--spec-draft-ngl",
+            "-ngld",
+            "--gpu-layers-draft",
+            "--n-gpu-layers-draft",
+            "--mmproj-offload",
+            "--no-mmproj-offload",
+        }
+        child_env = os.environ if env is None else env
+        placement_eligible = intent.gpu_memory_mode == "auto" or (
+            allow_manual_cpu and intent.gpu_memory_mode == "manual" and intent.gpu_layers == 0
+        )
+        return bool(
+            placement_eligible
+            and not intent.gpu_ids
+            and not intent.tensor_parallel
+            and not intent.tensor_split
+            and intent.n_cpu_moe == 0
+            and cls._strip_cpu_fallback_main_placement(args) == args
+            and not _extra_args_set_any_flag(args, companion_placement_flags)
+            and not any(
+                str(child_env.get(name) or "").strip()
+                for name in (
+                    *cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS,
+                    "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
+                    "LLAMA_ARG_MMPROJ_OFFLOAD",
+                    "GGML_BACKEND_PATH",
+                )
+            )
+        )
+
+    @classmethod
+    def _auto_vulkan_cpu_fallback_eligible(
+        cls,
+        binary: Optional[str],
+        intent: GgufLoadIntent,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        allow_manual_cpu: bool = False,
+    ) -> bool:
+        """Whether a signal may replace automatic Vulkan placement with CPU."""
+        return bool(
+            cls._cpu_fallback_request_eligible(
+                intent, extra_args, env, allow_manual_cpu = allow_manual_cpu
+            )
+            and cls._is_vulkan_backend(binary)
+            and cls._vulkan_prebuilt_was_auto_selected(binary)
+        )
+
+    @staticmethod
+    def _as_cpu_fallback_intent(intent: GgufLoadIntent) -> GgufLoadIntent:
+        return replace(
+            intent,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            n_cpu_moe = 0,
+            tensor_parallel = False,
+            tensor_split = None,
+            gpu_ids = None,
+            cpu_fallback = True,
+        )
+
+    def _preserve_cpu_fallback_intent(
+        self,
+        intent: GgufLoadIntent,
+        *,
+        source_matches: bool = False,
+    ) -> GgufLoadIntent:
+        if not self._cpu_fallback_reason:
+            return intent
+        if not source_matches and not self.matches_load_source(intent):
+            return intent
+        extras = list(intent.extra_args) if intent.extra_args is not None else None
+        # Judge the env the replay runs with, not this process's: _cpu_isolated_replay
+        # pops every main-model placement var first. Using os.environ would drop the
+        # recovery over a value no child saw, re-running the crash on every reload.
+        replay_env = {
+            name: value
+            for name, value in os.environ.items()
+            if name not in self._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS
+            and name != "GGML_BACKEND_PATH"
+        }
+        if not self._cpu_fallback_request_eligible(
+            intent,
+            extras,
+            replay_env,
+            allow_manual_cpu = True,
+        ):
+            return intent
+        return self._as_cpu_fallback_intent(intent)
+
+    def _apply_cpu_fallback_state(
+        self, intent: GgufLoadIntent, *, is_vision: bool, mmproj_has_audio: bool
+    ) -> GgufLoadIntent:
+        intent = self._as_cpu_fallback_intent(intent)
+        self._gpu_memory_mode = intent.gpu_memory_mode
+        self._gpu_layers = intent.gpu_layers
+        self._n_cpu_moe = intent.n_cpu_moe
+        self._tensor_split = intent.tensor_split
+        self._tensor_parallel = intent.tensor_parallel
+        self._gpu_ids = intent.gpu_ids
+        self._requested_gpu_ids = None
+        self._layer_preserves_tensor_intent = False
+        self._is_vision = is_vision
+        self._mmproj_has_audio = mmproj_has_audio
+        self._cpu_fallback_reason = "vulkan_startup_crash"
+        return intent
+
+    @staticmethod
+    def _launch_has_mmproj(cmd: Iterable[str], env: Mapping[str, str]) -> bool:
+        """Whether this launch receives a projector from argv or the environment."""
+        return _extra_args_set_any_flag(cmd, {"--mmproj", "-mm"}) or any(
+            str(env.get(name) or "").strip()
+            for name in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+        )
+
+    @classmethod
+    def _cpu_isolated_replay(
+        cls,
+        cmd: Iterable[str],
+        env: dict[str, str],
+        server_caps: Mapping[str, object],
+        *,
+        drop_full_offload_threads: bool = False,
+    ) -> Optional[list[str]]:
+        """Build a replay that cannot initialize or schedule on a GPU.
+
+        Unlike ``-ngl 0``, ``--device none`` removes GPU devices. Refuse companions
+        that this binary cannot pin to CPU.
+        """
+        original = [str(arg) for arg in cmd]
+        has_mmproj = cls._launch_has_mmproj(original, env)
+        if has_mmproj and not _paravirtual_mmproj_pinnable(server_caps):
+            return None
+        has_draft = _extra_args_mtp_draft_path(original, env = env) is not None
+        draft_ngl_flag = _paravirtual_draft_ngl_flag(server_caps) if has_draft else None
+        if has_draft and draft_ngl_flag is None:
+            return None
+
+        replay = cls._strip_cpu_fallback_main_placement(original)
+        if drop_full_offload_threads:
+            # Windows full-offload tuning pins 2 threads and PASSIVE OpenMP because
+            # the GPU was doing the work, so a CPU replay would decode on 2 cores.
+            # Only Unsloth's own values: a user --threads override is reported by
+            # the caller, and the env vars were setdefault'd.
+            replay = _strip_flag_pairs(replay, _THREAD_OVERRIDE_FLAGS)
+            for name in ("OMP_NUM_THREADS", "OMP_WAIT_POLICY"):
+                env.pop(name, None)
+        replay.extend(["--gpu-layers", "0", "--fit", "off", "--device", "none"])
+        if has_mmproj:
+            replay.append("--no-mmproj-offload")
+        if has_draft:
+            replay.extend([str(draft_ngl_flag), "0", "--device-draft", "none"])
+
+        for name in (*cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS, "GGML_BACKEND_PATH"):
+            env.pop(name, None)
+        return replay
+
+    def _prepare_cpu_fallback_launch(
+        self,
+        binary: Optional[str],
+        cmd: Iterable[str],
+        env: dict[str, str],
+        server_caps: Mapping[str, object],
+        *,
+        drop_full_offload_threads: bool = False,
+    ) -> Optional[tuple[list[str], Optional[str]]]:
+        # Staging only removes GPU backends; a non-Vulkan install would report a
+        # Vulkan crash that never happened.
+        if not self._is_vulkan_backend(binary):
+            return None
+        replay = self._cpu_isolated_replay(
+            cmd, env, server_caps, drop_full_offload_threads = drop_full_offload_threads
+        )
+        if replay is None:
+            return None
+        cpu_binary = self._cpu_isolated_binary(binary)
+        if cpu_binary is None:
+            return None
+        loader_env = self._llama_server_env_for_binary(cpu_binary)
+        loader_path = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
+        env[loader_path] = loader_env[loader_path]
+        replay[0] = cpu_binary
+        # Staging covers only the executable and libraries, so keep Studio's working
+        # directory: relative paths in user extra args resolve against it.
+        return replay, None
+
+    def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
+        """Stage managed llama.cpp without GPU backend libraries.
+
+        Backend loading precedes ``--device none``, so isolation prevents the
+        Vulkan plugin from loading first.
+        """
+        if not binary or not self._is_unsloth_managed_binary(binary):
+            return None
+        source_binary = _resolve_llama_binary(binary)
+        source_stamp = self._binary_stamp(source_binary)
+        runtime = self._cpu_fallback_runtime
+        if (
+            runtime is not None
+            and runtime.source_binary == source_binary
+            and runtime.source_stamp == source_stamp
+        ):
+            if runtime.staged_binary.is_file():
+                return str(runtime.staged_binary)
+        self._cleanup_cpu_fallback_runtime()
+        staged_runtime = None
+        try:
+            runtime_root = _swa_cache_path().parent / "runtime"
+            runtime_root.mkdir(parents = True, exist_ok = True)
+            _sweep_abandoned_cpu_runtimes(runtime_root)
+            staged_runtime = tempfile.TemporaryDirectory(
+                prefix = "llama-cpu-",
+                dir = runtime_root,
+            )
+            staged_dir = Path(staged_runtime.name)
+            # A kill -9 skips TemporaryDirectory's atexit hook, so stamp the owner
+            # and let the next stage collect what no live Studio holds.
+            (staged_dir / _CPU_RUNTIME_OWNER_FILE).write_text(str(os.getpid()), encoding = "utf-8")
+            lib_dir = _llama_lib_dir(str(source_binary))
+            gpu_backend = re.compile(
+                r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+            )
+            cpu_library_present = False
+            for source in lib_dir.iterdir():
+                try:
+                    resolved = source.resolve(strict = True)
+                except OSError:
+                    continue
+                name = source.name
+                is_shared = name.endswith((".dll", ".dylib")) or ".so" in name
+                if resolved != source_binary and not is_shared:
+                    continue
+                if gpu_backend.match(name.lower()):
+                    continue
+                destination = staged_dir / name
+                if destination.exists():
+                    continue
+                try:
+                    os.link(resolved, destination)
+                except OSError:
+                    shutil.copy2(resolved, destination)
+                if name.lower().startswith(("libggml-cpu", "ggml-cpu")):
+                    cpu_library_present = True
+            staged_binary = staged_dir / source_binary.name
+            if not staged_binary.is_file() or not cpu_library_present:
+                staged_runtime.cleanup()
+                return None
+        except (OSError, ValueError):
+            if staged_runtime is not None:
+                with contextlib.suppress(Exception):
+                    staged_runtime.cleanup()
+            return None
+        self._cpu_fallback_runtime = _CpuFallbackRuntime(
+            tempdir = staged_runtime,
+            source_binary = source_binary,
+            staged_binary = staged_binary,
+            source_stamp = source_stamp,
+        )
+        return str(staged_binary)
+
+    @staticmethod
+    def _binary_stamp(path: Path) -> tuple:
+        try:
+            stat = path.stat()
+        except OSError:
+            return ()
+        return (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+
+    def _cleanup_cpu_fallback_runtime(self) -> None:
+        runtime = getattr(self, "_cpu_fallback_runtime", None)
+        self._cpu_fallback_runtime = None
+        # cleanup() detaches its finalizer before removing the tree, so dropping a
+        # failed one (locked DLL on Windows) orphans it. Retry it on the next call.
+        pending = getattr(self, "_pending_cpu_fallback_cleanups", [])
+        if runtime is not None:
+            pending.append(runtime.tempdir)
+        retry = []
+        for tempdir in pending:
+            try:
+                tempdir.cleanup()
+            except Exception:
+                retry.append(tempdir)
+        self._pending_cpu_fallback_cleanups = retry
+
+    def _cleanup_failed_cpu_fallback(self) -> None:
+        """Remove every process and staged artifact from a terminal CPU replay."""
+        self._kill_process()
+        self._cpu_fallback_reason = None
+        self._cleanup_cpu_fallback_runtime()
+
+    @staticmethod
+    def _gpu_init_crash_message(binary: Optional[str] = None) -> str:
+        """Return backend-specific advice for a GPU initialization crash."""
+        base = (
+            "llama-server crashed at startup on both the vision and text-only "
+            "attempts -- a GPU driver/runtime initialization crash, not a model "
+            "or vision-projector problem. "
+        )
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        backend = next((name for name in ("cuda", "hip", "vulkan") if name in backends), None)
+        if backend == "vulkan":
+            return base + (
+                "This build uses Vulkan, which Unsloth selects when it detects an "
+                "Intel or AMD GPU. Older integrated GPUs and their drivers can fault "
+                "inside Vulkan device initialization. Update your Vulkan driver (Mesa "
+                "on Linux), or reinstall llama.cpp on CPU with "
+                "UNSLOTH_LLAMA_CPP_BACKEND=cpu unsloth studio update."
+            )
+        if backend == "hip":
+            return base + (
+                "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
+                "with ROCR_VISIBLE_DEVICES (e.g. ROCR_VISIBLE_DEVICES=0 exposes only "
+                "the first GPU) before launching Unsloth Studio."
+            )
+        if backend == "cuda":
+            return base + (
+                "This often means an unsupported secondary GPU or a driver/CUDA "
+                "runtime mismatch; hide the extra GPU with CUDA_VISIBLE_DEVICES (e.g. "
+                "CUDA_VISIBLE_DEVICES=0 exposes only the first GPU) before launching "
+                "Unsloth Studio, or update the NVIDIA driver."
+            )
+        return base + (
+            "Check the llama-server log and your GPU driver, and make sure the "
+            "installed llama.cpp build matches this machine's GPU."
+        )
+
+    @staticmethod
     def _redacted_cmd_for_log(cmd: "list[str]") -> "list[str]":
         """Copy of cmd with the value after --api-key replaced by <redacted>."""
         out = list(cmd)
@@ -8418,6 +9268,8 @@ class LlamaCppBackend:
         gpu_ids_are_vulkan_ordinals = intent.gpu_ids_are_vulkan_ordinals
         n_threads = intent.n_threads
         n_parallel = intent.n_parallel
+        n_batch = intent.n_batch
+        n_ubatch = intent.n_ubatch
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
@@ -8427,6 +9279,14 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+
+            intent = self._preserve_cpu_fallback_intent(intent)
+            tensor_parallel = intent.tensor_parallel
+            gpu_memory_mode = intent.gpu_memory_mode
+            gpu_layers = intent.gpu_layers
+            n_cpu_moe = intent.n_cpu_moe
+            tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
+            gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
 
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
             # inference to CPU there; physical Apple Silicon is untouched. Settled
@@ -8543,33 +9403,12 @@ class LlamaCppBackend:
                     n_parallel,
                     n_parallel,
                 )
-                n_parallel = 1
+                n_parallel = 1  # allow-slot-clamp: the build cannot serve more
 
-            # MTP is documented as single-slot: the model cards ship "-np 1" and say
-            # "-np > 1 [...] not yet supported with MTP". The MTP state is per sequence,
-            # so what breaks at more slots is the draft: unequal per-slot token counts
-            # make split_equal reorder the ubatch while the nextn hidden states are
-            # still read by raw token index, so slots read each other's rows, acceptance
-            # collapses and MTP ends up slower than no speculation. Clamped beside the
-            # --kv-unified clamp so the KV fit matches.
-            # The env counts: llama.cpp appends spec types rather than replacing them
-            # (--spec-type inserts, --spec-default push_backs, enablement is a find over
-            # the vector), so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really does
-            # launch MTP and no later flag can clear it.
-            _pv_extras_clamped_slots = 0
-            if n_parallel > 1 and _extra_args_requests_mtp(
-                extra_args, env = _child_spec_env(extra_args)
-            ):
-                # Kept so the paravirtual drafter drop can hand the slots back if it
-                # strips the very spec group this clamped for.
-                _pv_extras_clamped_slots = n_parallel
-                logger.warning(
-                    "MTP speculative decoding (--spec-type draft-mtp) does not support "
-                    "%d parallel slots; using 1. Load without MTP to serve chats in "
-                    "parallel.",
-                    n_parallel,
-                )
-                n_parallel = 1
+            # MTP does not clamp the slots. #7717 did, for a draft-acceptance collapse, but on
+            # b10310 four MTP slots hit 1.97x the batch throughput of one, beating four without.
+            # llama.cpp#26031 reports concurrent MTP garbling on hybrid archs; it did not
+            # reproduce here (qwen35 and qwen35moe on CUDA, 24 staggered uneven requests).
 
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
@@ -8651,8 +9490,12 @@ class LlamaCppBackend:
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
+            _replaying_cpu_fallback = intent.cpu_fallback
             with self._lock:
                 self._kill_process()
+                if not _replaying_cpu_fallback:
+                    self._cpu_fallback_reason = None
+                    self._cleanup_cpu_fallback_runtime()
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -8836,10 +9679,21 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 swa_full = _swa_full_from_args_or_env(extra_args)
-                _effective_ubatch = _extra_args_n_ubatch(
-                    extra_args,
-                    n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
-                )
+
+                # The emitted batch, not the requested one: the floor raise below is what
+                # llama.cpp caps the micro-batch against, so the fit, the slot search and
+                # every compute-buffer reserve must be sized from the value that launches.
+                # Slot-dependent, since the floor is max(slots, 2): the slot search below
+                # reduces the count, and each candidate launches at its own batch.
+                def _ubatch_for_slots(slots: int) -> Optional[int]:
+                    return _extra_args_n_ubatch(
+                        extra_args,
+                        n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
+                        n_batch = _emitted_n_batch(n_batch, slots),
+                        n_ubatch = n_ubatch,
+                    )
+
+                _effective_ubatch = _ubatch_for_slots(n_parallel)
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
                     default = n_parallel > 1 and server_caps.get("supports_kv_unified", False),
@@ -9373,8 +10227,21 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
-                    def _mtp_bytes(ctx: int) -> int:
-                        return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
+                    def _mtp_bytes(
+                        ctx: int,
+                        slots: Optional[int] = None,
+                        ubatch: Optional[int] = None,
+                    ) -> int:
+                        # slots/ubatch override the closure's requested pair: the reserve
+                        # scales with both for compact SWA and MLA+recurrent, so the slot
+                        # fit re-prices it per candidate.
+                        if mtp_overhead_fn is None:
+                            return 0
+                        if slots is None:
+                            return mtp_overhead_fn(ctx)
+                        return mtp_overhead_fn(
+                            ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
+                        )
 
                     def _kv_bytes(ctx: int) -> int:
                         return self._estimate_kv_cache_bytes(
@@ -9922,13 +10789,10 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Slot-independent footprint (folded compute buffer swapped out so the
-                        # helper re-adds a slot-sized one per candidate).
+                        # Slot-independent footprint (folded compute buffer and the MTP
+                        # reserve swapped out so the helper re-prices both per candidate).
                         _base_footprint = (
-                            model_size_fit
-                            - _compute_buffer_pipeline
-                            + _mtp_bytes(effective_ctx)
-                            + _cc_bytes(effective_ctx)
+                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(effective_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
@@ -9945,6 +10809,8 @@ class LlamaCppBackend:
                             kv_unified = planned_kv_unified,
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
+                            ubatch_for_slots = _ubatch_for_slots,
+                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
                         )
                         if not _uf_slots:
                             logger.info(
@@ -9955,6 +10821,10 @@ class LlamaCppBackend:
                                 effective_ctx,
                             )
                             gpu_indices, use_fit, n_parallel = _gi_slots, False, _slots
+                            # Fewer slots means a lower batch floor, so the launch runs a
+                            # smaller micro-batch than the one this was sized at. Re-derive
+                            # it, or the recorded _n_ubatch describes a graph never built.
+                            _effective_ubatch = _ubatch_for_slots(n_parallel)
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
@@ -10054,16 +10924,19 @@ class LlamaCppBackend:
                         raise RuntimeError(_ram_msg)
 
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
-                # independent of token names.
+                # independent of token names. A projector passed only via
+                # LLAMA_ARG_MMPROJ misses launch_mmproj_path, so probe that too,
+                # but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
-                if launch_mmproj_path:
+                _audio_probe = launch_mmproj_path or (
+                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                )
+                if launch_mmproj_path or os.path.isfile(_audio_probe):
                     try:
                         from utils.models.gguf_metadata import (
                             read_mmproj_audio_capability,
                         )
-                        self._mmproj_has_audio = bool(
-                            read_mmproj_audio_capability(launch_mmproj_path)
-                        )
+                        self._mmproj_has_audio = bool(read_mmproj_audio_capability(_audio_probe))
                     except Exception as e:
                         logger.debug(f"mmproj audio-capability read failed: {e}")
 
@@ -10091,6 +10964,29 @@ class LlamaCppBackend:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
+
+                # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
+                if n_batch is not None:
+                    # Two separate aborts, both reachable from the picker since the input
+                    # clamps into BATCH_MIN = 1 rather than rejecting:
+                    #   -b < --parallel  -> GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)
+                    #   -b 1 (any slots) -> GGML_ASSERT(n_tokens_all <= cparams.n_batch)
+                    # Measured: b1/p1 and b1/p2 abort, b2/p1 and b2/p2 load, b4/p8 aborts,
+                    # b8/p8 loads. So the floor is max(slots, 2), not slots alone. The
+                    # bounds are per-field and cannot express it, so raise here instead of
+                    # failing the load.
+                    _emit_batch = _emitted_n_batch(n_batch, n_parallel)
+                    if _emit_batch != n_batch:
+                        logger.warning(
+                            "Raising --batch-size from %s to %s: llama-server aborts below "
+                            "2 and below the %s parallel slot(s) it serves.",
+                            n_batch,
+                            _emit_batch,
+                            n_parallel,
+                        )
+                    cmd.extend(["--batch-size", str(_emit_batch)])
+                if n_ubatch is not None:
+                    cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = self.probe_server_capabilities(binary)
 
@@ -10208,6 +11104,13 @@ class LlamaCppBackend:
                 )
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
+                # The CPU replay must undo what this launch pins for an absent GPU;
+                # a user's own --threads still wins.
+                _drop_full_offload_threads = (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                )
 
                 # Thread count: an unset --threads makes llama.cpp pick physical
                 # cores (common_cpu_get_num_math), but an explicit --threads -1
@@ -10366,20 +11269,6 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                        # The slots were clamped for an MTP that just went away, so give
-                        # them back. Restored before the spec flags are rebuilt, so the
-                        # backstop below re-clamps if Unsloth's own resolution is MTP.
-                        if _pv_extras_clamped_slots > 1 and not _extra_args_requests_mtp(
-                            extra_args, env = _child_spec_env(extra_args)
-                        ):
-                            n_parallel = _pv_extras_clamped_slots
-                            if "--parallel" in cmd:
-                                cmd[cmd.index("--parallel") + 1] = str(n_parallel)
-                            logger.info(
-                                "Restoring %d parallel slots: the drafter drop left a "
-                                "non-MTP server.",
-                                n_parallel,
-                            )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -10458,36 +11347,6 @@ class LlamaCppBackend:
                 # Emitted after the pass-through extras too, same last-wins reason.
                 if _paravirtual_cpu_forced:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
-
-                # Backstop for the MTP clamp above, which only sees an explicit
-                # --spec-type in extra_args; speculative_type="auto"/"mtp" is not
-                # resolved until _build_speculative_flags runs, here. The KV fit was
-                # sized for more slots, so this over-reserves, never under-reserves.
-                # Skipped when the user's extras own --spec-type: _build_speculative_flags
-                # emits nothing then, and judging the empty flag list would fall through
-                # to LLAMA_ARG_SPEC_TYPE and clamp a launch that is not MTP at all.
-                _mtp_clamped_slots = 0
-                if (
-                    n_parallel > 1
-                    and not _extra_args_set_spec_type(extra_args)
-                    and _extra_args_requests_mtp(spec_flags, env = _child_spec_env(extra_args))
-                ):
-                    try:
-                        _np_at = cmd.index("--parallel")
-                    except ValueError:
-                        _np_at = -1
-                    if _np_at >= 0:
-                        logger.warning(
-                            "%s resolved to MTP speculative decoding, which does not "
-                            "support %d parallel slots; using 1.",
-                            model_identifier,
-                            n_parallel,
-                        )
-                        cmd[_np_at + 1] = "1"
-                        # _commit_effective_parallel_slots reports what launched, so
-                        # rebind rather than only patching cmd.
-                        _mtp_clamped_slots = n_parallel
-                        n_parallel = 1
 
                 # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
@@ -10577,8 +11436,7 @@ class LlamaCppBackend:
                     if _paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps):
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         logger.warning(
-                            "Disabling mmproj GPU offload: this Mac's Metal device "
-                            "is virtualised."
+                            "Disabling mmproj GPU offload: this Mac's Metal device is virtualised."
                         )
 
                 # Option C: --api-key for direct client access when enabled
@@ -10651,10 +11509,84 @@ class LlamaCppBackend:
                 if is_vulkan_backend and _vulkan_pin_ids is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
 
+                # Model Memory settings. Managed flag lands before the extras, and
+                # vetoed ones are dropped from a launch-only copy: extra_args keeps
+                # None-vs-[] (inherit vs clear) for the commit block below, and the
+                # user's saved flags survive turning the toggle back off.
+                # mlock pins a mapping in HOST RAM, so it only implements
+                # residency where the weights actually live there: unified
+                # memory, or any load that is not fully offloaded. On a discrete
+                # GPU with full offload it would hold a second copy of the model
+                # in system RAM and do nothing for VRAM, so it is not emitted
+                # and the idle-unload veto carries residency by itself.
+                from utils.model_memory_settings import should_mlock
+
+                # fully_gpu_offloaded is only set by the auto branch. Manual mode
+                # and a user -ngl reach the same placement by their own routes,
+                # so derive those too or they would still be pinned. The CPU
+                # placement guard applies to BOTH: an auto fit that offloads
+                # every layer still leaves weights in RAM if an extra pins them
+                # there, so it cannot short-circuit past the check.
+                # Asked on EVERY launch, not just when a lock is on the table:
+                # _memory_mlock_applicable is recorded from it, and a LATER
+                # "keep resident" save is compared against that. Assuming host
+                # residency by default made enabling the toggle demand a reload
+                # and reject the duplicate-load fast path, tearing down a healthy
+                # server to relaunch identical argv. Only the Vulkan probe stays
+                # gated, so the default path still spawns nothing.
+                # The same view of the environment the child will get: manual
+                # mode drops the placement vars below, so reading os.environ
+                # would pin for a CPU-MoE setting the child never sees.
+                _mem_env = dict(os.environ)
+                if gpu_memory_mode == "manual":
+                    self._clear_manual_placement_env(_mem_env)
+                # A gpu_ids pin drops the device flags from argv and env below,
+                # so classifying on them would pin for a --device cpu the child
+                # never sees. Same helpers the launch uses, so they cannot drift.
+                _mem_extra_args = extra_args
+                if gpu_ids is not None:
+                    _mem_extra_args = self._strip_device_extra_args(extra_args)
+                    self._clear_device_placement_env(_mem_env)
+                _mem_host_resident = self._weights_in_host_memory(
+                    fully_gpu_offloaded = fully_gpu_offloaded,
+                    gpu_memory_mode = gpu_memory_mode,
+                    gpu_layers = gpu_layers,
+                    extra_args = _mem_extra_args,
+                    gpu_indices = gpu_indices,
+                    is_vulkan_backend = is_vulkan_backend,
+                    binary = binary,
+                    env = _mem_env,
+                    probe_vulkan = should_mlock(),
+                    # Over the built cmd AND the extras, so Studio's own --fit
+                    # counts and a later user --fit still wins by last-arg.
+                    fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
+                )
+                _mem_managed, _mem_extras = apply_model_memory_policy(
+                    extra_args,
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    weights_in_host_memory = _mem_host_resident,
+                )
+                # Remembered so the reload hint and the duplicate-load
+                # comparator don't demand an mlock this launch deliberately
+                # skipped, which no relaunch could ever satisfy.
+                self._memory_mlock_applicable = _mem_host_resident
+                if should_mlock() and not _mem_host_resident:
+                    logger.info(
+                        "Model Memory: skipping page-lock, the weights are fully "
+                        "offloaded to a discrete GPU; residency is kept by not "
+                        "unloading the model."
+                    )
+                if _mem_managed:
+                    cmd.extend(_mem_managed)
+                    logger.info(
+                        "Model Memory: keeping weights pinned in place (%s)",
+                        " ".join(_mem_managed),
+                    )
+
                 # User pass-through args go last. Placement flags are removed
                 # below when the Studio picker owns the GPU selection.
-                if extra_args:
-                    _emit_extra_args = list(extra_args)
+                if _mem_extras:
+                    _emit_extra_args = list(_mem_extras)
                     if gpu_ids is not None:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
@@ -10691,6 +11623,31 @@ class LlamaCppBackend:
                 env = self._llama_server_env_for_binary(binary)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
+                # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
+                # so stripping the tokens alone would leave an inherited value in
+                # force. Only when a toggle is on, so existing setups are untouched.
+                _mem_scrubbed = scrub_memory_env(env)
+                if _mem_scrubbed:
+                    logger.info(
+                        "Model Memory owns placement; dropped inherited %s",
+                        ", ".join(_mem_scrubbed),
+                    )
+                # Record what the child will ACTUALLY run with (env defaults plus
+                # last-wins argv), not just what Unsloth emitted, so the reload
+                # hint also catches a user-supplied --mlock / --no-mmap.
+                self._memory_state = resolve_effective_memory_state(
+                    list(_mem_managed) + list(_mem_extras), env
+                )
+                # Did the policy change this launch at all: emitted a flag,
+                # suppressed a requested one, or scrubbed an inherited env var.
+                # Turning both toggles off must relaunch to undo any of those,
+                # but must not fight a launch it never touched.
+                # Split out: the fit-off retry can drop _mem_managed, and what is
+                # left decides whether that child still differs from an unmanaged one.
+                _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
+                    extra_args or []
+                )
+                self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -10724,8 +11681,16 @@ class LlamaCppBackend:
 
                 # A gpu_ids pin also owns inherited device placement.
                 if gpu_ids is not None:
-                    env.pop("LLAMA_ARG_DEVICE", None)
-                    env.pop("LLAMA_ARG_MAIN_GPU", None)
+                    self._clear_device_placement_env(env)
+
+                # After the scrubs above, so a placement this launch already dropped
+                # cannot disqualify the replay of a child that never saw it.
+                _cpu_fallback_eligible = self._auto_vulkan_cpu_fallback_eligible(
+                    binary,
+                    intent,
+                    extra_args,
+                    env,
+                )
 
                 # The unpinnable-drafter drop above rewrites argv, which cannot reach the
                 # drafter the child picks up from its own env. The spec type goes too,
@@ -10845,6 +11810,7 @@ class LlamaCppBackend:
                 # passed an explicit fit flag via extra args.
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
+                _spawn_cwd: Optional[str] = None
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
@@ -10853,7 +11819,10 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
-                    nonlocal _last_spawn_cmd
+                    # _mem_host_resident too: the --fit on retry re-arms the
+                    # page-lock and writes it back, which without this makes the
+                    # read below an UnboundLocalError instead.
+                    nonlocal _last_spawn_cmd, _mem_host_resident
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -10897,10 +11866,13 @@ class LlamaCppBackend:
                             encoding = "utf-8",
                             errors = "replace",
                             env = env,
+                            cwd = _spawn_cwd,
                             **_windows_hidden_subprocess_kwargs(),
                             **_child_popen_kwargs(),
                         )
                         self._record_server_pid(self._process.pid)
+                        # is_active covers it from here, so drop the pre-spawn flag.
+                        self._memory_launch_pending = False
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -10944,7 +11916,27 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            # The full-offload prediction that suppressed the
+                            # page-lock was the very thing that just proved
+                            # wrong, so llama.cpp may now leave weights in host
+                            # RAM. Re-arm residency for the retry (last-wins, so
+                            # appending is enough) and re-record the state.
+                            if should_mlock() and not _mem_host_resident:
+                                _run.extend(
+                                    ["--load-mode", "mmap+mlock"]
+                                    if server_caps.get("supports_load_mode")
+                                    else ["--mlock"]
+                                )
+                                _mem_host_resident = True
+                                self._memory_mlock_applicable = True
+                                self._memory_policy_active = True
+                                logger.info(
+                                    "Model Memory: re-applying the page-lock for "
+                                    "the --fit on retry; the full-offload "
+                                    "prediction did not hold."
+                                )
                             run_cmd = _run
+                            self._memory_state = resolve_effective_memory_state(_run, env)
                             continue
                         if (
                             _spawn_attempt == 0
@@ -10961,8 +11953,131 @@ class LlamaCppBackend:
                                 self._llama_log_path,
                             )
                             run_cmd = [*run_cmd, "--fit", "off"]
+                            # The mirror of the --fit on retry above. Turning the
+                            # fitter off leaves -ngl at its default, which llama.cpp
+                            # resolves to every layer, so the fitted attempt's
+                            # host-resident verdict can stop holding. Drop a
+                            # page-lock the retry no longer needs rather than
+                            # reserving a full host copy of a fully offloaded model.
+                            if _mem_managed and _mem_host_resident:
+                                if not self._weights_in_host_memory(
+                                    fully_gpu_offloaded = True,
+                                    gpu_memory_mode = gpu_memory_mode,
+                                    gpu_layers = gpu_layers,
+                                    extra_args = _mem_extra_args,
+                                    gpu_indices = gpu_indices,
+                                    is_vulkan_backend = is_vulkan_backend,
+                                    binary = binary,
+                                    env = _mem_env,
+                                ):
+                                    run_cmd = _without_subsequence(run_cmd, _mem_managed)
+                                    _mem_host_resident = False
+                                    # Recorded so a later "keep resident" save is not
+                                    # compared against a lock this launch dropped,
+                                    # which would demand a pointless reload.
+                                    self._memory_mlock_applicable = False
+                                    # The managed flag was the policy's only mark on
+                                    # this child unless it also scrubbed or stripped,
+                                    # and a child equal to an unmanaged one must not
+                                    # be torn down when the toggles go off.
+                                    self._memory_policy_active = _mem_policy_touched_extras
+                                    logger.info(
+                                        "Model Memory: dropping the page-lock for "
+                                        "the --fit off retry; it offloads every layer."
+                                    )
+                                self._memory_state = resolve_effective_memory_state(run_cmd, env)
                             continue
                         return False
+
+                _launched_mmproj_has_audio = self._mmproj_has_audio
+
+                def _raise_terminal_load_failure(detail: str) -> NoReturn:
+                    if intent.cpu_fallback:
+                        self._cleanup_failed_cpu_fallback()
+                    raise RuntimeError(detail)
+
+                def _try_auto_vulkan_cpu_fallback(
+                    failed_cmd: list[str],
+                    failed_rc: Optional[int],
+                    *,
+                    terminal: bool = True,
+                ) -> bool:
+                    """Replay an eligible signal crash without devices.
+
+                    ``terminal`` off reports a failed CPU spawn as "not recovered"
+                    instead of raising, for a caller that still holds another argv
+                    worth replaying.
+                    """
+                    nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
+                    nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
+                    # GGML_ASSERT is a signal on POSIX and a CRT abort (exit 3) on
+                    # MSVC, so Windows needs both. Cancel-checked like every retry
+                    # here: an /unload racing the crash must not leave a server up.
+                    _crashed = self._is_signal_crash(failed_rc) or (
+                        sys.platform == "win32" and self._is_abort_exit(failed_rc)
+                    )
+                    if not _crashed or not _cpu_fallback_eligible or self._cancel_event.is_set():
+                        return False
+                    fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
+                    prepared = self._prepare_cpu_fallback_launch(
+                        binary,
+                        failed_cmd,
+                        env,
+                        server_caps,
+                        drop_full_offload_threads = _drop_full_offload_threads,
+                    )
+                    if prepared is None:
+                        return False
+                    if self._cancel_event.is_set():
+                        # Staging copies a whole runtime, so an /unload can land after
+                        # the gate above with no runtime yet for unload_model() to
+                        # remove; take it back here.
+                        self._cleanup_cpu_fallback_runtime()
+                        return False
+                    replay, _spawn_cwd = prepared
+
+                    logger.warning(
+                        "The auto-selected Vulkan backend hard-crashed during "
+                        "startup; retrying once with llama.cpp devices disabled."
+                    )
+                    if not _spawn_and_wait(replay, label = "-cpu"):
+                        if not terminal:
+                            # This argv's drafter may be why it cannot start at all,
+                            # which the GPU crash says nothing about. Reap the child
+                            # and keep the staged runtime for the caller's next argv.
+                            self._kill_process()
+                            return False
+                        cpu_rc = self._process.poll() if self._process is not None else None
+                        detail = self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                            cpu_rc,
+                            binary,
+                        )
+                        self._cleanup_failed_cpu_fallback()
+                        raise RuntimeError(detail)
+
+                    intent = self._apply_cpu_fallback_state(
+                        intent,
+                        is_vision = fallback_has_mmproj,
+                        mmproj_has_audio = (
+                            _launched_mmproj_has_audio if fallback_has_mmproj else False
+                        ),
+                    )
+                    gpu_memory_mode = intent.gpu_memory_mode
+                    gpu_layers = intent.gpu_layers
+                    n_cpu_moe = intent.n_cpu_moe
+                    tensor_parallel = intent.tensor_parallel
+                    tensor_split = intent.tensor_split
+                    gpu_indices = None
+                    use_fit = False
+                    logger.warning(
+                        "llama-server loaded successfully on CPU after the "
+                        "auto-selected Vulkan backend crashed. GPU acceleration "
+                        "is disabled for this model session."
+                    )
+                    return True
 
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
@@ -10996,7 +12111,59 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
-                healthy = _spawn_and_wait(cmd)
+                # LoadRequest carries this flag, so a stale rollback, an API caller or
+                # a swapped-out runtime can ask for a replay that never happened. Hold
+                # it to the crash path's bar (managed auto Vulkan, no explicit
+                # placement) and otherwise run the request as sent.
+                if intent.cpu_fallback:
+                    if self._auto_vulkan_cpu_fallback_eligible(
+                        binary, intent, extra_args, env, allow_manual_cpu = True
+                    ):
+                        prepared = self._prepare_cpu_fallback_launch(
+                            binary,
+                            cmd,
+                            env,
+                            server_caps,
+                            drop_full_offload_threads = _drop_full_offload_threads,
+                        )
+                        if prepared is None:
+                            _raise_terminal_load_failure(
+                                "The prior Vulkan CPU fallback could not be reconstructed; run "
+                                "`unsloth studio update` to repair the managed llama.cpp runtime."
+                            )
+                        cmd, _spawn_cwd = prepared
+                        # Same normalization the crash path applies, so a client that
+                        # sent only the flag cannot leave a CPU-only server reporting
+                        # an Auto/GPU placement (which then fails holds_no_vram).
+                        intent = self._apply_cpu_fallback_state(
+                            intent,
+                            is_vision = self._is_vision,
+                            mmproj_has_audio = self._mmproj_has_audio,
+                        )
+                        gpu_memory_mode = intent.gpu_memory_mode
+                        gpu_layers = intent.gpu_layers
+                        n_cpu_moe = intent.n_cpu_moe
+                        tensor_parallel = intent.tensor_parallel
+                        tensor_split = intent.tensor_split
+                        gpu_indices = None
+                        use_fit = False
+                    else:
+                        # Phase 1 kept recovery state for a replay this request does
+                        # not qualify for. Drop it, or this load reports the old crash
+                        # and _preserve_cpu_fallback_intent rewrites later reloads.
+                        intent = replace(intent, cpu_fallback = False)
+                        self._cpu_fallback_reason = None
+                        self._cleanup_cpu_fallback_runtime()
+                # The placement above is now fixed for this child, but _process
+                # is not set until Popen. Without this, a save landing in that
+                # window sees no active backend and reports no reload while the
+                # child is already committed. Popen clears it, and so does every
+                # exit below, so a failed spawn cannot leave it stuck on.
+                self._memory_launch_pending = True
+                try:
+                    healthy = _spawn_and_wait(cmd)
+                finally:
+                    self._memory_launch_pending = False
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -11109,11 +12276,16 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
+                # The retry replaces _last_spawn_cmd with a drafterless argv, but a GPU
+                # init crash is not the drafter's fault: keep the requested launch so
+                # the CPU replay below can still run it.
+                _spec_cpu_replay_cmd: Optional[List[str]] = None
                 if (
                     not healthy
                     and (_spec_requested_mtp or _spec_requested_dspark)
                     and not self._cancel_event.is_set()
                 ):
+                    _spec_cpu_replay_cmd = list(_last_spawn_cmd)
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -11181,25 +12353,7 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                        # The extras owned --spec-type, so the clamp that took the slots
-                        # was the extras one and _mtp_clamped_slots stayed 0. The strip
-                        # above makes this retry genuinely non-MTP, so hand those back
-                        # too, or --parallel 1 sticks and the requested-vs-requested
-                        # dedupe keeps every later load on the same one-slot server.
-                        # Only where no GPU had to admit them: that clamp runs before the
-                        # slot fit, so on a GPU box the count was never budgeted and the
-                        # retry would size buffers nothing approved.
-                        if not _detected_gpus:
-                            _mtp_clamped_slots = max(_mtp_clamped_slots, _pv_extras_clamped_slots)
                     fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
-                    # fallback_cmd inherits the MTP slot clamp, but this retry is not
-                    # MTP: hand back the slots the KV fit was sized for, or --parallel N
-                    # silently serves one chat at a time (and the requested-vs-requested
-                    # dedupe makes that stick). Later retries derive from this argv, so
-                    # rebind n_parallel now.
-                    if _mtp_clamped_slots > 1 and "--parallel" in fallback_cmd:
-                        fallback_cmd[fallback_cmd.index("--parallel") + 1] = str(_mtp_clamped_slots)
-                        n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
@@ -11235,6 +12389,7 @@ class LlamaCppBackend:
                         and not self._cancel_event.is_set()
                         and (_projector_msg or _signal_mmproj_guess)
                     ):
+                        _vision_cpu_replay_cmd = list(_last_spawn_cmd)
                         if _projector_msg:
                             logger.warning(
                                 "llama-server could not load this model's vision "
@@ -11262,51 +12417,80 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
-                            # If the text-only retry ALSO hard-crashed (a signal, not
-                            # OOM/timeout), the vision projector was never the cause:
-                            # llama-server is faulting during GPU/driver init. Say so
-                            # -- with the ROCm fix -- instead of blaming the mmproj.
+                            # A text-only signal crash is independent evidence of a GPU
+                            # startup fault. Keep a confirmed bad projector out of the
+                            # replay; a guessed one still gets a CPU try with vision.
                             if self._is_signal_crash(_retry_rc):
-                                raise RuntimeError(
-                                    "llama-server crashed at startup on both the vision "
-                                    "and text-only attempts -- a GPU driver/runtime "
-                                    "initialization crash, not a model or vision-projector "
-                                    "problem. This often means an unsupported secondary "
-                                    "GPU; on AMD/ROCm, hide it with ROCR_VISIBLE_DEVICES "
-                                    "(e.g. ROCR_VISIBLE_DEVICES=0 exposes only the first "
-                                    "GPU) before launching Unsloth Studio."
+                                _cpu_replay_cmd = (
+                                    _last_spawn_cmd if _projector_msg else _vision_cpu_replay_cmd
                                 )
-                            _retry_detail = self._classify_llama_start_failure(
-                                "\n".join(self._stdout_lines[-50:]),
-                                gguf_path,
-                                self._model_identifier,
-                                _retry_rc,
-                                binary,
-                            )
-                            raise RuntimeError(
-                                self._mmproj_retry_failure_message(
-                                    projector_confirmed = _projector_msg,
-                                    detail = _retry_detail,
+                                if _try_auto_vulkan_cpu_fallback(
+                                    _cpu_replay_cmd,
+                                    _retry_rc,
+                                ):
+                                    healthy = True
+                                else:
+                                    _raise_terminal_load_failure(
+                                        self._gpu_init_crash_message(binary)
+                                    )
+                            if not healthy:
+                                _retry_detail = self._classify_llama_start_failure(
+                                    "\n".join(self._stdout_lines[-50:]),
+                                    gguf_path,
+                                    self._model_identifier,
+                                    _retry_rc,
+                                    binary,
                                 )
-                            )
+                                _raise_terminal_load_failure(
+                                    self._mmproj_retry_failure_message(
+                                        projector_confirmed = _projector_msg,
+                                        detail = _retry_detail,
+                                    )
+                                )
                     else:
-                        raise RuntimeError(
-                            self._classify_llama_start_failure(
-                                out,
-                                gguf_path,
-                                self._model_identifier,
-                                _crash_rc,
-                                binary,
+                        # Try the drafter launch first, non-terminally: a build that
+                        # can neither pin one to CPU nor start with it still recovers
+                        # on the drafterless argv. Snapshot that argv, since a spawned
+                        # replay rebinds _last_spawn_cmd to its own command line.
+                        _drafterless_cpu_replay_cmd = list(_last_spawn_cmd)
+                        _replayed = _spec_cpu_replay_cmd is not None and (
+                            _try_auto_vulkan_cpu_fallback(
+                                _spec_cpu_replay_cmd, _crash_rc, terminal = False
                             )
                         )
+                        if _replayed:
+                            # The drafter came back with the replay, so the
+                            # speculative-disable diagnosis no longer holds.
+                            self._spec_fallback_reason = None
+                        elif _try_auto_vulkan_cpu_fallback(_drafterless_cpu_replay_cmd, _crash_rc):
+                            _replayed = True
+                        if _replayed:
+                            healthy = True
+                        else:
+                            _raise_terminal_load_failure(
+                                self._classify_llama_start_failure(
+                                    out,
+                                    gguf_path,
+                                    self._model_identifier,
+                                    _crash_rc,
+                                    binary,
+                                )
+                            )
 
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
+                # Re-derived from the slot count that LAUNCHED, not the one the sizing
+                # pass saw. The drafter drop and the non-MTP retry both hand slots back
+                # after the batch flag is emitted, and this is recorded next to
+                # _commit_effective_parallel_slots: pairing those slots with a micro-batch
+                # derived at the clamped count under-states the cache the slot save
+                # re-estimates from it.
+                _launched_ubatch = _ubatch_for_slots(n_parallel)
                 self._n_ubatch = max(
                     0,
-                    int(self._DEFAULT_N_UBATCH if _effective_ubatch is None else _effective_ubatch),
+                    int(self._DEFAULT_N_UBATCH if _launched_ubatch is None else _launched_ubatch),
                 )
                 self._flash_attn_enabled = (
                     _flash_attn_enabled_from_args(_last_spawn_cmd, env = env)
@@ -11358,6 +12542,8 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._requested_n_batch = intent.n_batch
+                self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_intent = intent
@@ -11821,6 +13007,7 @@ class LlamaCppBackend:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
+        intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
         # (idempotent, so load_model's own call is a no-op) or a client that keeps
@@ -11857,6 +13044,16 @@ class LlamaCppBackend:
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
         if intent.extra_args is not None and intent.gpu_ids is not None:
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
+        # A Model Memory toggle changes only the launch flags, so the intent is
+        # unchanged and this would otherwise report already-loaded and leave the
+        # running process on the old placement.
+        if not memory_state_satisfies_settings(
+            self._memory_state,
+            self._memory_policy_active,
+            self._memory_mlock_applicable,
+        ):
+            logger.info("Model Memory policy changed since launch; forcing a reload")
+            return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
             return False
         self._record_matching_gpu_request(
@@ -11960,10 +13157,15 @@ class LlamaCppBackend:
         mmproj, and GPU drafters can still make the server hold VRAM. The counted
         offload classifier cannot see those allocations. This uses the same
         predicate as the launch-time zero-VRAM mask; None means no GPU signal."""
+        if LlamaCppBackend._is_vulkan_backend():
+            # Unlike -ngl 0, the recovery's last-wins --device none removes Vulkan.
+            main_device = (_extra_args_main_device(spawn_cmd) or "").strip().lower()
+            if main_device in ("cpu", "none"):
+                return LlamaCppBackend._zero_offload_keeps_gpu_visible(spawn_cmd, env)
+            if detected_gpus:
+                return True
         if not detected_gpus:
             return None
-        if LlamaCppBackend._is_vulkan_backend():
-            return True
         return LlamaCppBackend._zero_offload_keeps_gpu_visible(spawn_cmd, env)
 
     def load_cancelled(self) -> bool:
@@ -11978,6 +13180,7 @@ class LlamaCppBackend:
         with self._lock:
             self._unload_epoch += 1
             self._kill_process()
+            self._cleanup_cpu_fallback_runtime()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
             self._gguf_path = None
@@ -11987,6 +13190,7 @@ class LlamaCppBackend:
             self._spec_fallback_reason = None
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
+            self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
@@ -12008,6 +13212,10 @@ class LlamaCppBackend:
             self._prompt_cache_disabled = False
             self._swa_full = False
             self._kv_cache_unified = False
+            self._memory_state = None
+            self._memory_policy_active = False
+            self._memory_mlock_applicable = True
+            self._memory_launch_pending = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")
@@ -12539,6 +13747,9 @@ class LlamaCppBackend:
         logging.raiseExceptions = False
         try:
             self._kill_process()
+            # TemporaryDirectory's exit hook runs first and cannot delete a staged
+            # runtime whose server is alive (Windows locks the exe). Retry post-kill.
+            self._cleanup_cpu_fallback_runtime()
         except Exception:
             # atexit swallows this anyway, and there is nowhere left to report it.
             pass
@@ -13570,6 +14781,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         _allow_respawn_retry: bool = True,
@@ -13585,9 +14797,15 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
-        from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
+        from core.inference.chat_template_helpers import (
+            neutralize_control_markup_in_messages,
+            trailing_assistant_text,
+        )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
+        continue_final_message = continue_final_message and bool(
+            trailing_assistant_text(openai_messages)
+        )
 
         payload = {
             # llama-server applies the chat template itself (#7066).
@@ -13608,6 +14826,10 @@ class LlamaCppBackend:
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
+        if continue_final_message:
+            # llama-server applies the template; it rejects both flags set true.
+            payload["continue_final_message"] = True
+            payload["add_generation_prompt"] = False
         # Default cap to the model context when known.
         payload["max_tokens"] = (
             max_tokens
@@ -13760,6 +14982,7 @@ class LlamaCppBackend:
                     enable_thinking = enable_thinking,
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
+                    continue_final_message = continue_final_message,
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     _allow_respawn_retry = False,
@@ -13791,6 +15014,7 @@ class LlamaCppBackend:
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
+        continue_final_message: bool = False,
         max_tool_iterations: int = 25,
         auto_heal_tool_calls: bool = True,
         nudge_tool_calls: Optional[bool] = None,
@@ -13851,9 +15075,13 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
+        from core.inference.chat_template_helpers import trailing_assistant_text
+
+        # A resumed turn must keep the partial trailing: autoinject appends a tool call
+        # plus its result, moving the boundary so the model opens a fresh answer.
         _skip_autoinject = (
             confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-        )
+        ) or bool(continue_final_message and trailing_assistant_text(conversation))
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -14076,6 +15304,7 @@ class LlamaCppBackend:
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
             from core.inference.chat_template_helpers import (
+                append_assistant_turn,
                 neutralize_control_markup_in_messages,
             )
 
@@ -14104,6 +15333,11 @@ class LlamaCppBackend:
             )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            # Re-checked per iteration: once a tool result is appended the partial is
+            # no longer trailing, so later turns are normal.
+            if continue_final_message and trailing_assistant_text(conversation):
+                payload["continue_final_message"] = True
+                payload["add_generation_prompt"] = False
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -14752,11 +15986,12 @@ class LlamaCppBackend:
                                 f"model responded without calling tools "
                                 f"({len(_stripped)} chars)"
                             )
-                            conversation.append(
-                                {
-                                    "role": "assistant",
-                                    "content": _stripped,
-                                }
+                            # Merges into a resumed partial: the nudge that follows is a
+                            # user turn, so a second assistant turn breaks alternation.
+                            append_assistant_turn(
+                                conversation,
+                                {"role": "assistant", "content": _stripped},
+                                continue_final_message = continue_final_message,
                             )
                             available_tool_names = [
                                 (tool.get("function") or {}).get("name")
@@ -14974,7 +16209,11 @@ class LlamaCppBackend:
 
                     if not decision.should_execute:
                         if content_text and not assistant_appended:
-                            conversation.append(assistant_msg)
+                            append_assistant_turn(
+                                conversation,
+                                assistant_msg,
+                                continue_final_message = continue_final_message,
+                            )
                             assistant_appended = True
                         if provisional_match:
                             # A provisional tool card is already on screen for this
@@ -15001,7 +16240,13 @@ class LlamaCppBackend:
 
                     if not assistant_appended:
                         assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                        conversation.append(assistant_msg)
+                        # Merges into a resumed partial, so a continued turn that calls
+                        # a tool stays one assistant message.
+                        append_assistant_turn(
+                            conversation,
+                            assistant_msg,
+                            continue_final_message = continue_final_message,
+                        )
                         assistant_appended = True
                     else:
                         assistant_msg.setdefault("tool_calls", []).append(

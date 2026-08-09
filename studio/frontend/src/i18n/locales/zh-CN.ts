@@ -385,6 +385,17 @@ export const zhCN = {
         showLlamaUpdates: "llama.cpp 更新通知",
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
+        showLoadedModels: "已加载模型指示器",
+        showLoadedModelsDescription:
+          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
+      },
+      startup: {
+        sectionTitle: "启动",
+        launchAtLogin: "登录时运行 Unsloth",
+        launchAtLoginDescription:
+          "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+        loadError: "无法加载登录时启动设置。",
+        saveError: "无法更新登录时启动设置。",
       },
       gettingStarted: "入门",
       startOnboarding: "开始引导",
@@ -680,6 +691,23 @@ export const zhCN = {
         free: "{value} 可用",
         total: "共 {value}",
       },
+      modelMemory: {
+        title: "模型内存",
+        keepResident: "将模型保留在显存中",
+        keepResidentDescription: "在两次提问之间保持驻留显存。",
+        keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载；当权重确实位于主机内存中时（统一内存，或部分卸载到 GPU），还会传入 --mlock，使操作系统无法将其换出、并在你下次提问时重新上传。",
+        noRamReserve: "不为模型预留系统内存",
+        noRamReserveDescription: "不在内存中保留完整副本。",
+        noRamReserveHint: "将权重传输到显存，而不在内存中保留完整副本。保持 llama.cpp 的内存映射加载方式，并移除 --no-mmap 和 --mlock。",
+        mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
+        memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
+        reloadRequired: "重新加载模型以应用新的内存选项。",
+        loadError: "加载模型内存设置失败",
+        saveError: "保存模型内存设置失败",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
+      },
       storage: {
         title: "存储",
         systemDisk: "系统磁盘",
@@ -688,8 +716,8 @@ export const zhCN = {
         modelsFolder: "模型文件夹",
         modelsFolderKeywords:
           "模型 文件夹 目录 路径 位置 下载 缓存 存储 磁盘 驱动器 移动 更改 models folder path hugging face",
-        modelsFolderDescription:
-          "已下载模型的存储位置。更改此位置可避免将模型存放在系统磁盘上。",
+        modelsFolderDescription: "下载的模型的存放位置。",
+        modelsFolderHint: "下载的模型的存放位置。可更改以避免占用系统盘。仅对新的下载生效。已有的模型仍保留在原位置。",
         openAction: "打开",
         copyAction: "复制路径",
         copied: "路径已复制",

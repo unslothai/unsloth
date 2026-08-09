@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
   AssistantRuntimeProvider,
   type Attachment,
@@ -101,6 +102,7 @@ import {
   markChatThreadDeleted,
 } from "./utils/chat-thread-tombstones";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
+import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
@@ -172,7 +174,12 @@ class VisionImageAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const externalSelection = parseExternalModelId(checkpoint);
     const isExternalModel = externalSelection !== null;
-    const modelLoaded = !!checkpoint && !state.modelLoading;
+    const modelLoaded = chatModelLoaded({
+      checkpoint,
+      modelLoading: state.modelLoading,
+      isExternalModel,
+      residentCheckpoint: state.residentCheckpoint,
+    });
     let externalSupportsVision: boolean | null = null;
     let externalModelLabel: string | null = null;
     if (externalSelection !== null) {
@@ -579,14 +586,6 @@ async function generateTitleWithModel(payload: {
 }
 
 const inflightTitleByKey = new Set<string>();
-
-function fallbackTitleFromUserText(userText: string): string {
-  const firstLine = (userText || "").split(/\r?\n/, 1)[0] ?? "";
-  const cleaned = firstLine.replace(/\s+/g, " ").trim();
-  const max = 48;
-  if (!cleaned) return "New Chat";
-  return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
-}
 
 function cloneContent(
   content: ThreadMessage["content"],

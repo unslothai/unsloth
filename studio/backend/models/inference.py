@@ -18,7 +18,8 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.llama_server_args import PARALLEL_MAX, PARALLEL_MIN
+from core.inference.llama_server_args import BATCH_MAX, BATCH_MIN, PARALLEL_MAX, PARALLEL_MIN
+from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
@@ -76,6 +77,16 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    mlx_kv_bits: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
+            "width rather than a llama.cpp dtype name, so this is separate from "
+            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
+            "backends; a model whose cache layout cannot be quantized reports "
+            "the reason instead of applying it."
+        ),
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -130,6 +141,28 @@ class LoadRequest(BaseModel):
             "for non-GGUF models."
         ),
     )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Logical prompt batch size for llama-server (--batch-size) for "
+            f"this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (2048). Ignored for non-GGUF models."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Physical prompt micro-batch size for llama-server (--ubatch-size) "
+            f"for this load ({BATCH_MIN}..{BATCH_MAX}). Omit for the llama.cpp "
+            "default (512). llama.cpp caps it at the batch size. Larger values "
+            "speed up prompt processing at the cost of compute-buffer VRAM. "
+            "Ignored for non-GGUF models."
+        ),
+    )
     tensor_parallel: bool = Field(
         False,
         description = (
@@ -162,6 +195,13 @@ class LoadRequest(BaseModel):
             "llama.cpp's --fit. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
+    cpu_fallback: bool = Field(
+        False,
+        description = (
+            "Replay a previously recovered automatic Vulkan load in its managed CPU-only "
+            "runtime. Used when restoring that model after a failed switch."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         ge = 0,
@@ -182,6 +222,18 @@ class LoadRequest(BaseModel):
             "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
         ),
     )
+
+    @field_validator("n_batch", "n_ubatch", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # bool subclasses int and pydantic parses non-strictly, so `true` arrives as 1 and
+        # the load launches --batch-size 1, which llama-server aborts on: a 500 rather than
+        # a 422. Mirrors ModelOverrideRequest._no_booleans so /load and /settings agree.
+        # Kept off the annotation: an Annotated BeforeValidator stops the Field constraints
+        # folding into the int core schema, and they leak into OpenAPI as ge/le.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
     @field_validator("tensor_split")
     @classmethod
@@ -302,6 +354,24 @@ class ValidateModelRequest(BaseModel):
             "server-wide --parallel default."
         ),
     )
+    n_batch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Batch size (--batch-size) intended for the follow-up load, so the "
+            "coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
+    n_ubatch: Optional[int] = Field(
+        None,
+        ge = BATCH_MIN,
+        le = BATCH_MAX,
+        description = (
+            "Micro-batch size (--ubatch-size) intended for the follow-up load, "
+            "so the coexistence estimate sizes the compute buffer like /load."
+        ),
+    )
     speculative_type: Optional[str] = Field(
         None,
         description = (
@@ -328,6 +398,10 @@ class ValidateModelRequest(BaseModel):
         "native (picked / drag-drop) file's default template can be shown before it is loaded. "
         "Opt-in and, like include_context_length, a metadata-only probe that skips the training "
         "guard. Only the leased file's own embedded template is read, never sibling sidecars.",
+    )
+
+    _no_booleans = field_validator("n_batch", "n_ubatch", mode = "before")(
+        LoadRequest._no_booleans.__func__
     )
 
 
@@ -536,6 +610,49 @@ class _InferenceRuntimeFields(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    mlx_kv_bits: Optional[int] = Field(
+        None, description = "MLX KV quantization bit width actually applied, if any"
+    )
+    mlx_kv_bits_requested: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV quantization bit width the load asked for. Differs from "
+            "mlx_kv_bits when the model could not honor it, which is exactly "
+            "when the reason matters."
+        ),
+    )
+    chat_template_override: Optional[str] = Field(
+        None,
+        description = "Chat template override this model was loaded with. llama.cpp reports what it applied; MLX reports what was requested, since a refusal applies nothing and the reason accompanies it",
+    )
+    chat_template_override_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a requested chat template override was not applied: the "
+            "runtime supplies the template as code, the model ships a named "
+            "set rather than one template, it renders without a template, or "
+            "the override could not render a conversation."
+        ),
+    )
+    mlx_kv_quant_eligibility: Optional[str] = Field(
+        None,
+        description = (
+            "Whether this model's KV cache could be quantized: full, partial, "
+            "none or refused. Describes eligibility, not the exact set of "
+            "converted layers, which the runtime decides."
+        ),
+    )
+    mlx_kv_quant_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why KV quantization was not applied in full: the model's cache "
+            "layout, or the layers it could not cover when eligibility is partial"
+        ),
+    )
+    mlx_kv_quant_note: Optional[str] = Field(
+        None, description = "Caveat that applies when KV quantization is active"
+    )
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
@@ -567,6 +684,14 @@ class _InferenceRuntimeFields(BaseModel):
     gpu_layers: int = Field(
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
+    )
+    cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
+        None,
+        description = (
+            "Why an automatic GGUF load was downgraded to CPU. "
+            "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
+            "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
     )
     n_cpu_moe: int = Field(
         0,
@@ -610,6 +735,20 @@ class _InferenceRuntimeFields(BaseModel):
             "Serving slots the active llama-server actually runs (--parallel "
             "after any fit-time slot reduction). None for non-GGUF loads and "
             "for the diffusion runner, which ignores --parallel."
+        ),
+    )
+    requested_n_batch: Optional[int] = Field(
+        None,
+        description = (
+            "Batch size (--batch-size) the load was invoked with, or None when "
+            "the load left it at the llama.cpp default (or to extra args / env)."
+        ),
+    )
+    requested_n_ubatch: Optional[int] = Field(
+        None,
+        description = (
+            "Micro-batch size (--ubatch-size) the load was invoked with, or None "
+            "when the load left it at the llama.cpp default (or to extra args / env)."
         ),
     )
 
@@ -684,10 +823,6 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
-    )
-    chat_template_override: Optional[str] = Field(
-        None,
-        description = "Active chat template override applied at load time, or None if model is using its default",
     )
     requested_context_length: Optional[int] = Field(
         None,
@@ -1059,6 +1194,14 @@ class ChatCompletionRequest(BaseModel):
     enable_thinking: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable/disable thinking/reasoning mode for supported models",
+    )
+    continue_final_message: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Continue the trailing assistant message instead of starting a new "
+            "turn: the prompt ends mid-response so the model resumes token-exactly from "
+            "where it stopped. Requires the last message to have role 'assistant'."
+        ),
     )
     reasoning_effort: Optional[
         Literal["none", "minimal", "low", "medium", "high", "max", "xhigh"]
@@ -3052,18 +3195,28 @@ class VideoGenerateRequest(BaseModel):
     negative_prompt: Optional[str] = Field(
         None, description = "What to avoid (if the model supports it)"
     )
-    # Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional here.
+    # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
+    # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The
+    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + 1 lattice), which the generate
+    # route checks with validate_video_request_shape and rejects with a 422 naming the supported shapes. Nothing tighter
+    # belongs here: with no model loaded there is no family to judge against, and that path must keep snapping as before.
     width: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame width in pixels (family multiple)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame width in pixels (a resolution preset of the loaded family)",
     )
     height: Optional[int] = Field(
-        None, ge = 32, le = 2048, description = "Frame height in pixels (family multiple)"
+        None,
+        ge = 32,
+        le = 2048,
+        description = "Frame height in pixels (a resolution preset of the loaded family)",
     )
     num_frames: Optional[int] = Field(
         None,
         ge = 1,
-        le = 1024,
-        description = "Number of frames; snapped to the family's temporal lattice",
+        le = MAX_VIDEO_NUM_FRAMES,
+        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + 1)",
     )
     fps: Optional[int] = Field(
         None, ge = 1, le = 120, description = "Playback frame rate (default per family)"

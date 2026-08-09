@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { usePlatformStore } from "@/config/env";
 import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
@@ -57,6 +58,10 @@ import {
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
+  MLX_KV_BITS,
+  N_BATCH_LLAMA_DEFAULT,
+  N_BATCH_MAX,
+  N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   type PerModelConfig,
@@ -64,6 +69,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isServedByMlx,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
   readAdvancedSettingsOpen,
@@ -108,6 +114,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.nParallel != null ||
+    config.nBatch != null ||
+    config.nUbatch != null ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
@@ -130,6 +138,8 @@ function withoutUnsupportedDiffusionSettings(
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
     !config.tensorParallel &&
+    config.nBatch == null &&
+    config.nUbatch == null &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -140,6 +150,9 @@ function withoutUnsupportedDiffusionSettings(
     gpuLayers: undefined,
     nCpuMoe: undefined,
     tensorParallel: false,
+    // the diffusion runner ignores the llama-server batch flags
+    nBatch: null,
+    nUbatch: null,
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -191,7 +204,7 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. Custom overrides apply to GGUF models for now."
+            ? "Preview the model's chat template. This model's backend cannot take a custom one."
             : "Override the model's chat template with custom Jinja. Applies when the model loads."}
         </InfoHint>
       </div>
@@ -495,6 +508,111 @@ function GpuMemorySettings({
   );
 }
 
+const MLX_KV_BITS_AUTO = "auto";
+
+function AdvancedSettingsToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+          Advanced settings
+        </span>
+        <InfoHint>
+          Extra options for how the model loads. Most setups don't need these.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label="Show advanced settings"
+      />
+    </div>
+  );
+}
+
+function MlxAdvancedSettings({
+  config,
+  update,
+  outcome,
+  servedByMlx,
+  onEditTemplate,
+  templateOutcome,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  /** What the backend reported for this exact setting on the loaded model. */
+  outcome: string | null;
+  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
+  servedByMlx: boolean;
+  onEditTemplate: () => void;
+  /** Why the loaded model could not take the override it was given. */
+  templateOutcome: string | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      {servedByMlx && (
+        <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>KV Cache Dtype</span>
+          <InfoHint>
+            Lower KV cache precision to save memory at the cost of some
+            quality. Auto keeps full precision; 8-bit is the safest reduction,
+            and lower widths save more memory.
+          </InfoHint>
+        </div>
+        <Select
+          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
+          onValueChange={(v) =>
+            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+          }
+        >
+          <SelectTrigger
+            animateRadius={false}
+            icon={ChevronDownStandardIcon}
+            iconClassName="size-3.5"
+            className={`w-[92px] ${SELECT_TRIGGER_CLASS}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
+            {MLX_KV_BITS.map((bits) => (
+              <SelectItem key={bits} value={String(bits)}>
+                {bits}-bit
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {outcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {outcome}
+        </p>
+      ) : null}
+        </>
+      )}
+      <ChatTemplateSetting
+        config={config}
+        onEditTemplate={onEditTemplate}
+        readOnly={!servedByMlx}
+      />
+      {templateOutcome ? (
+        <p className="text-ui-11 leading-snug text-muted-foreground">
+          {templateOutcome}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -520,6 +638,28 @@ function GgufAdvancedSettings({
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
 }) {
+  const batchAdviceId = useId();
+  const ubatchAdviceId = useId();
+  // llama-server aborts below 2 (GGML_ASSERT(n_tokens_all <= cparams.n_batch)) and below
+  // the slot count (GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max)), so the loader
+  // raises the emitted value to max(slots, 2). Surfaced so the number typed here is not
+  // silently different from the one that runs. With Slots blank the count is the server
+  // default this page cannot see, so only the hard floor of 2 is asserted.
+  const batchFloor = Math.max(2, config.nParallel ?? 2);
+  const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
+  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so
+  // the control would otherwise keep showing a value the server never used (batch 8 /
+  // ubatch 4096 measured 8.8x slower). Against the EMITTED batch, or the two advisories
+  // contradict: batch 4 / slots 8 launches at 8, so saying it runs at 4 is wrong. A blank
+  // batch emits no flag and runs llama.cpp's own 2048, which caps the micro-batch just the
+  // same, so it is the default and not "unbounded". Extras or LLAMA_ARG_BATCH can move
+  // that, but this page cannot see them, the same limit the slot floor above carries.
+  const effectiveBatch =
+    config.nBatch != null
+      ? Math.max(config.nBatch, batchFloor)
+      : N_BATCH_LLAMA_DEFAULT;
+  const ubatchExceedsBatch =
+    config.nUbatch != null && config.nUbatch > effectiveBatch;
   return (
     <>
       <div className={ROW_CLASS}>
@@ -670,6 +810,99 @@ function GgufAdvancedSettings({
         />
       </div>
 
+      {!isDiffusion && (
+        <div className="space-y-1">
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Batch Size</span>
+              <InfoHint>
+                Logical prompt batch size (--batch-size). Leave blank for the
+                llama.cpp default (2048). Rarely needs changing; the micro-batch
+                below is what usually matters.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={N_BATCH_MIN}
+              max={N_BATCH_MAX}
+              step={1}
+              value={config.nBatch ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ nBatch: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                  });
+                }
+              }}
+              aria-label="Prompt batch size"
+              aria-describedby={batchBelowFloor ? batchAdviceId : undefined}
+              className={NUMBER_INPUT_CLASS}
+            />
+          </div>
+          {batchBelowFloor && (
+            <p id={batchAdviceId} className="text-ui-12 text-muted-foreground">
+              Too small for llama-server, so the load will raise it to {batchFloor}.
+              {config.nParallel != null && config.nParallel > 2
+                ? " It needs one output slot per parallel slot."
+                : " It cannot run a batch below 2."}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className="space-y-1">
+          <div className={ROW_CLASS}>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className={LABEL_CLASS}>Micro-batch Size</span>
+              <InfoHint>
+                Physical prompt micro-batch size (--ubatch-size). Leave blank for
+                the llama.cpp default (512). Larger values speed up prompt
+                processing but use more VRAM for the compute buffer; capped at the
+                batch size.
+              </InfoHint>
+            </div>
+            <input
+              type="number"
+              min={N_BATCH_MIN}
+              max={N_BATCH_MAX}
+              step={1}
+              value={config.nUbatch ?? ""}
+              placeholder="auto"
+              onChange={(event) => {
+                const raw = event.target.value;
+                if (raw === "") {
+                  update({ nUbatch: null });
+                  return;
+                }
+                const parsed = Number.parseInt(raw, 10);
+                if (Number.isFinite(parsed)) {
+                  update({
+                    nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+                  });
+                }
+              }}
+              aria-label="Prompt micro-batch size"
+              aria-describedby={ubatchExceedsBatch ? ubatchAdviceId : undefined}
+              className={NUMBER_INPUT_CLASS}
+            />
+          </div>
+          {ubatchExceedsBatch && (
+            <p id={ubatchAdviceId} className="text-ui-12 text-muted-foreground">
+              Micro-batch is larger than the batch size, so llama.cpp will run at{" "}
+              {effectiveBatch}. Raise the batch size to use {config.nUbatch}.
+            </p>
+          )}
+        </div>
+      )}
+
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Tensor Parallelism</span>
@@ -728,6 +961,19 @@ export function ModelConfigPage({
   showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
+  const chatTemplateOverrideReason = useChatRuntimeStore(
+    (s) => s.chatTemplateOverrideReason,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
+  const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
+  const loadedMlxKvBitsRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvBitsRequested,
+  );
   const isActiveModel = loadedConfig != null;
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
@@ -765,6 +1011,26 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
+  // Compare against what the backend was asked for, not what it applied: staging a
+  // new value must retire a verdict that answered a different request.
+  const chatTemplateOutcome =
+    isActiveModel &&
+    (configState.chatTemplateOverride ?? null) ===
+      (loadedChatTemplateOverride ?? null)
+      ? chatTemplateOverrideReason
+      : null;
+  const mlxKvQuantOutcome =
+    isActiveModel &&
+    (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+      ? // Both, not either: dropping the note promises savings before the offset
+        // where quantization actually starts.
+        [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
+      : null;
+  const servedByMlx = isServedByMlx(
+    target.isGguf,
+    platformDeviceType,
+    platformChatOnlyReason,
+  );
   // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -774,7 +1040,14 @@ export function ModelConfigPage({
   // Until the switch is used anywhere, a model carrying non-default advanced values opens the
   // section itself. Frozen at mount so editing a field back to its default cannot close it.
   const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(configState));
-  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  // Frozen like the rest of the auto-open decision, so editing the width does not
+  // reopen the section the user just closed.
+  const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
+  // Applicability stays live, unlike the snapshot above: MLX can become available
+  // after mount, and a width that starts applying then has to surface.
+  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const showAdvanced =
+    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -878,7 +1151,10 @@ export function ModelConfigPage({
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
-    (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
+    (config.gpuMemoryMode === "manual" ||
+      config.selectedGpuIds != null ||
+      config.nBatch != null ||
+      config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
   const update = (patch: Partial<PerModelConfig>) =>
@@ -1210,23 +1486,10 @@ export function ModelConfigPage({
               />
             )}
 
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-                  Advanced settings
-                </span>
-                <InfoHint>
-                  Extra options for how the model loads. Most setups don't need
-                  these.
-                </InfoHint>
-              </div>
-              <Switch
-                className="panel-switch shrink-0"
-                checked={showAdvanced}
-                onCheckedChange={toggleAdvanced}
-                aria-label="Show advanced settings"
-              />
-            </div>
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
           </>
         )}
         {!target.isGguf && (
@@ -1242,10 +1505,19 @@ export function ModelConfigPage({
                 })
               }
             />
-            <ChatTemplateSetting
-              config={config}
-              onEditTemplate={() => setTemplateOpen(true)}
-              readOnly={true}
+            {showAdvanced && (
+              <MlxAdvancedSettings
+                config={config}
+                update={update}
+                outcome={mlxKvQuantOutcome}
+                servedByMlx={servedByMlx}
+                onEditTemplate={() => setTemplateOpen(true)}
+                templateOutcome={chatTemplateOutcome}
+              />
+            )}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
             />
           </>
         )}
@@ -1309,7 +1581,7 @@ export function ModelConfigPage({
         value={config.chatTemplateOverride}
         defaultTemplate={resolvedDefaultTemplate}
         defaultLoading={resolvedDefaultLoading}
-        readOnly={!target.isGguf}
+        readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
     </div>

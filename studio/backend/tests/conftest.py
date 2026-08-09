@@ -11,6 +11,9 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+import contextlib
+import errno
+import itertools
 import os
 import sys
 from pathlib import Path
@@ -30,7 +33,38 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
+@pytest.fixture(scope = "session")
+def _studio_home_root(tmp_path_factory):
+    """One parent directory for every per-test studio home.
+
+    ``tmp_path_factory.mktemp`` scans the whole basetemp on every call to pick
+    the next number, so calling it once per test is quadratic in the number of
+    tests. Paid once per session here, the per-test cost below is a bare mkdir.
+    """
+    return tmp_path_factory.mktemp("studio_homes")
+
+
+_studio_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_studio_home(_studio_home_root, monkeypatch):
+    home = _studio_home_root / f"home-{next(_studio_home_counter)}"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
+            monkeypatch.setattr(module, "_schema_ready", False)
+
+
 # Pytest CLI options
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "allow_network: let this test make non-loopback connections (see _no_outbound_network)",
+    )
 
 
 def pytest_addoption(parser):
@@ -78,6 +112,7 @@ def _isolate_xet_health_home(tmp_path_factory):
     from huggingface_hub import constants as hf_constants
 
     mp = MonkeyPatch()
+    mp.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home_session")))
     # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
     # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
     # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
@@ -135,6 +170,32 @@ def _no_background_model_scan(monkeypatch):
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
 
 
+@pytest.fixture(scope = "session")
+def _empty_hf_hub_cache(tmp_path_factory):
+    """One empty hub-cache root for the whole session; per-test mktemp is quadratic."""
+    return str(tmp_path_factory.mktemp("hf_hub_cache_empty"))
+
+
+@pytest.fixture(autouse = True)
+def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
+    """Point BOTH hub-cache roots at an empty dir, so the suite is host independent.
+
+    Studio pins its live setting out of this env snapshot; huggingface_hub falls back to
+    ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
+    download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
+    reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
+    Tests that own the cache setting replace the whole dict, so they still win."""
+    from utils import hf_cache_settings
+
+    monkeypatch.setitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HUB_CACHE", _empty_hf_hub_cache)
+    monkeypatch.setenv("HF_HUB_CACHE", _empty_hf_hub_cache)
+    try:
+        from huggingface_hub import constants
+    except Exception:  # optional deps absent on some CI legs
+        return
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
 @pytest.fixture(autouse = True)
 def _assume_bare_metal(monkeypatch):
     """Pin the virtualised-Metal detector off so the suite is host independent.
@@ -155,6 +216,378 @@ def _assume_bare_metal(monkeypatch):
         return
     monkeypatch.setattr(
         routes_inference, "_metal_device_is_paravirtual", lambda: False, raising = False
+    )
+
+
+_LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
+
+# The spellings worth writing into NO_PROXY. Same set as above minus the wildcards and
+# the empty string, which mean "every interface" to bind() and nothing to a proxy rule.
+_LOOPBACK_PROXY_BYPASS = ("localhost", "localhost.localdomain", "127.0.0.1", "::1")
+
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
+
+
+def no_proxy_with_test_servers(*existing) -> str:
+    """Every *existing* NO_PROXY value, plus the servers this suite must reach directly.
+
+    Takes all the spellings at once rather than one at a time. A host that exports only
+    ``NO_PROXY`` would otherwise have its entries read for that variable and dropped
+    from the ``no_proxy`` written beside it, and most clients read the lowercase one
+    first -- so a bypass the developer had configured would quietly stop applying.
+    """
+    bypass = list(_LOOPBACK_PROXY_BYPASS) + sorted(_configured_server_hosts())
+    parts = [
+        part.strip() for value in existing for part in (value or "").split(",") if part.strip()
+    ]
+    return ",".join(dict.fromkeys(parts + bypass))
+
+
+# Server URLs the suite is explicitly configured to talk to. Both documented external-server
+# modes may name a remote host, and neither suite carries the allow_network marker, so
+# blocking them would make a deliberately configured integration run unusable.
+_EXTERNAL_SERVER_ENV_VARS = ("UNSLOTH_E2E_BASE_URL", "STUDIO_TEST_URL")
+
+
+def _configured_server_hosts() -> frozenset:
+    """Hostnames from the external-server env vars, so a configured endpoint stays dialable."""
+    from urllib.parse import urlsplit
+
+    hosts = set()
+    for name in _EXTERNAL_SERVER_ENV_VARS:
+        raw = (os.environ.get(name) or "").strip()
+        if not raw:
+            continue
+        try:
+            host = urlsplit(raw).hostname
+        except ValueError:
+            continue
+        if host:
+            hosts.add(host.lower())
+    return frozenset(hosts)
+
+
+# What those hostnames resolved to during this test. socket.create_connection looks the
+# name up and then dials the numeric result, so allowing the name alone still refuses the
+# connect that follows: by then the destination is an address that matches no name rule.
+# Filled in at resolution time, and only for names the rules already allowed, so the
+# address-literal exemption below cannot widen anything through it.
+_RESOLVED_SERVER_ADDRESSES: set = set()
+
+# Lifted only by allow_outbound(), below. A module global rather than something a
+# fixture holds, because the callers that need it run before any per-test fixture
+# exists to hold it for them.
+_outbound_permitted = False
+
+
+@contextlib.contextmanager
+def allow_outbound():
+    """Permit real outbound traffic for the duration of the block.
+
+    For a session- or module-scoped fixture that has to fetch something for real. Those
+    are built before the per-test fixtures, so ``@pytest.mark.allow_network`` on the
+    test that happens to trigger one cannot reach back and lift the guard in time; the
+    fixture has to say so itself. A test body should still use the marker.
+    """
+    global _outbound_permitted
+
+    previous = _outbound_permitted
+    _outbound_permitted = True
+    try:
+        yield
+    finally:
+        _outbound_permitted = previous
+
+
+def _decoded_host(host):
+    """*host* as a comparable string, or None when it is not a name these rules can read.
+
+    The socket API takes a hostname as ``str`` or ``bytes``. Comparing the bytes form
+    against a set of strings matches nothing, so it has to be decoded before the rules
+    see it, or every rule below silently says no and the caller-facing default decides.
+    """
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            return bytes(host).decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if isinstance(host, str):
+        return host
+    return None
+
+
+def _host_is_allowed(host) -> bool:
+    """True for loopback and for any host the suite was explicitly pointed at.
+
+    Anything that is not a readable hostname is refused rather than allowed. Defaulting
+    the other way made ``getaddrinfo(b"huggingface.co", 443)`` a complete way around the
+    guard: the byte string missed every rule, the non-string default let it through to
+    the real resolver, and the address it returned was then dialable.
+    """
+    if host is None:
+        # getaddrinfo(None, port) asks for a local address to bind, not a destination.
+        return True
+    decoded = _decoded_host(host)
+    if decoded is None:
+        return False
+    lowered = decoded.strip().lower()
+    return (
+        lowered.startswith("127.")
+        or lowered in _LOOPBACK_HOSTS
+        or lowered in _configured_server_hosts()
+        or lowered in _RESOLVED_SERVER_ADDRESSES
+    )
+
+
+def _is_ip_literal(host) -> bool:
+    """True when *host* is already an address, so resolving it consults no resolver."""
+    import ipaddress
+
+    decoded = _decoded_host(host)
+    if decoded is None:
+        return False
+    try:
+        ipaddress.ip_address(decoded.strip().strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+def _is_local_endpoint(sock, address) -> bool:
+    """True for anything the suite may dial: local IPC and loopback addresses.
+
+    Family first, because AF_UNIX carries a filesystem path rather than a host and
+    multiprocessing's pools connect over exactly that -- reading ``address[0]`` there
+    yields a directory name that matches no host rule and blocks process pools.
+    """
+    import socket as _socket
+
+    if getattr(sock, "family", None) not in (_socket.AF_INET, _socket.AF_INET6):
+        return True
+    try:
+        host = address[0]
+    except Exception:
+        return True
+    return _host_is_allowed(host)
+
+
+class _RealSocketCalls:
+    """The unpatched socket entry points, kept so a test can hand them back out."""
+
+    def __init__(self, connect, connect_ex, getaddrinfo):
+        self.connect = connect
+        self.connect_ex = connect_ex
+        self.getaddrinfo = getaddrinfo
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _outbound_network_guard():
+    """Refuse every non-loopback connect, so no test depends on a live Hub.
+
+    Several routes probe huggingface.co on paths these tests exercise, and every one
+    of them fails open, so the traffic never showed up as a failure -- it only showed
+    up as time. When the Hub answers slowly rather than refusing (a rate-limited CI
+    egress IP is the usual way), huggingface_hub retries with backoff and a file that
+    normally runs in six seconds sits there for minutes, until the job hits its cap
+    and is killed having reported nothing.
+
+    Blocking the socket keeps the online code path intact -- unlike HF_HUB_OFFLINE,
+    which flips the branch and changes what is under test -- while making the call
+    fail immediately instead of hanging. Mark a test ``allow_network`` if it genuinely
+    needs to dial out; the e2e ``studio_server`` tests reach their server on loopback
+    and are unaffected.
+
+    Installed for the session rather than per test. pytest builds a test's fixtures
+    widest scope first, so a function-scoped guard is not in place yet while session-
+    and module-scoped fixtures are setting up, and those are as able to dial out as any
+    test body. A fixture that wants out says so with ``allow_outbound()``, since by then
+    it is too late for a marker on the test to reach back and lift anything.
+
+    Reaches this interpreter only. A test that spawns a Python process gets a child with
+    ordinary sockets, which is deliberate for the one fixture that does it: ``studio_server``
+    starts a real server in managed mode, and that server is supposed to fetch the GGUF
+    it serves. Blocking the child would break the e2e tests this suite runs on rather
+    than remove a dependency they do not want. Those tests live in ``test_studio_api.py``,
+    which CI skips, and are the only place a child is spawned.
+    """
+    import socket
+
+    real = _RealSocketCalls(socket.socket.connect, socket.socket.connect_ex, socket.getaddrinfo)
+    patch = pytest.MonkeyPatch()
+
+    def blocked_connect(self, address, *args, **kwargs):
+        if _outbound_permitted or _is_local_endpoint(self, address):
+            return real.connect(self, address, *args, **kwargs)
+        raise OSError(
+            errno.ENETUNREACH,
+            f"outbound network blocked in tests (tried {address!r}); "
+            f"stub the call, or mark the test with @pytest.mark.allow_network",
+        )
+
+    def blocked_connect_ex(self, address, *args, **kwargs):
+        if _outbound_permitted or _is_local_endpoint(self, address):
+            return real.connect_ex(self, address, *args, **kwargs)
+        # Returned, not raised: connect_ex reports failure with an errno and callers
+        # branch on it (run.py probes a port that way). Raising here would send code
+        # that only handles a non-zero result down a path a real failure never takes.
+        return errno.ENETUNREACH
+
+    # Resolution runs before either of those: socket.create_connection, which is what the
+    # Hub's HTTP stack ends up in, calls getaddrinfo first. Left live, an uncached request
+    # still hits the host resolver and can stall there, so the dependency is not actually
+    # gone. Refuse the lookup too, which is also where a real resolver would fail.
+    def guarded_getaddrinfo(host, port, *args, **kwargs):
+        # An address literal consults no resolver, so it cannot stall and is left alone;
+        # the SSRF guards resolve private literals on purpose to prove they reject them,
+        # and connect() still refuses anything non-loopback afterwards.
+        allowed_by_name = _outbound_permitted or _host_is_allowed(host)
+        if not (allowed_by_name or _is_ip_literal(host)):
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"name resolution blocked in tests ({host!r}); "
+                f"stub the call, or mark the test with @pytest.mark.allow_network",
+            )
+        infos = real.getaddrinfo(host, port, *args, **kwargs)
+        if allowed_by_name and not _outbound_permitted:
+            # Carry the permission across the lookup, so the numeric address this hands
+            # back is still dialable. Deliberately not done on the literal branch: that
+            # one exists so a private literal can be resolved and then refused.
+            for info in infos:
+                try:
+                    _RESOLVED_SERVER_ADDRESSES.add(str(info[4][0]).lower())
+                except Exception:
+                    continue
+        return infos
+
+    patch.setattr(socket.socket, "connect", blocked_connect)
+    patch.setattr(socket.socket, "connect_ex", blocked_connect_ex)
+    patch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+
+    # A refused connection still looks retryable to huggingface_hub, which backs off
+    # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
+    # this turns a fast failure back into a ~23s one per call. Swap the clock only
+    # inside that module, since `time` is shared and real sleeps elsewhere matter.
+    try:
+        from huggingface_hub.utils import _http as hf_http
+    except Exception:
+        hf_http = None
+    if hf_http is not None and getattr(hf_http, "time", None) is not None:
+        import time as _time
+        class _NoBackoffClock:
+            def __getattr__(self, name):
+                return getattr(_time, name)
+
+            @staticmethod
+            def sleep(_seconds):
+                return None
+
+        patch.setattr(hf_http, "time", _NoBackoffClock())
+
+    # A proxy, where one is configured, is dialled instead of the server the request
+    # names -- so the guard sees the proxy, which is not what the run was pointed at,
+    # refuses it, and the server is unreachable after all. That applies to the managed
+    # loopback server as much as to a configured remote one: a proxy with no loopback
+    # entry in NO_PROXY swallows localhost requests too.
+    #
+    # Bypassed rather than allowed, since allowing the proxy host would let that same
+    # proxy carry Hub traffic straight through, which is the thing being stopped here.
+    # Done at session scope with everything else: the fixtures that dial these servers
+    # (test_providers_api's auth_headers and public_key_pem) are session-scoped, so a
+    # per-test version would be set up long after they had already tried and failed.
+    if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
+        # Both spellings merged once and written back identically, so neither variable
+        # loses what the other one carried.
+        combined = no_proxy_with_test_servers(
+            os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
+        )
+        for name in ("NO_PROXY", "no_proxy"):
+            patch.setenv(name, combined)
+
+    try:
+        yield real
+    finally:
+        patch.undo()
+
+
+@pytest.fixture
+def forget_resolved_servers():
+    """Drop the addresses resolved so far, so a test can check something is refused."""
+    return _RESOLVED_SERVER_ADDRESSES.clear
+
+
+@pytest.fixture(scope = "session")
+def no_proxy_bypass_value():
+    """Hand out the NO_PROXY builder, which is otherwise only reachable as a fixture."""
+    return no_proxy_with_test_servers
+
+
+@pytest.fixture(scope = "session")
+def allow_outbound_network(_outbound_network_guard):
+    """Hand a fixture the context manager that lifts the guard around a real fetch."""
+    return allow_outbound
+
+
+@pytest.fixture(autouse = True)
+def _no_outbound_network(request, monkeypatch, _outbound_network_guard):
+    """Per-test half of the guard: reset what the last test was allowed to reach.
+
+    Also lifts the guard for the whole of an ``allow_network`` test, which is where a
+    marker can still do the job: the test body has not started yet.
+    """
+    # Per test, so a name a test pointed the env vars at itself does not stay dialable
+    # for the rest of the run.
+    _RESOLVED_SERVER_ADDRESSES.clear()
+
+    if request.node.get_closest_marker("allow_network") is not None:
+        import socket
+
+        real = _outbound_network_guard
+        monkeypatch.setattr(socket.socket, "connect", real.connect)
+        monkeypatch.setattr(socket.socket, "connect_ex", real.connect_ex)
+        monkeypatch.setattr(socket, "getaddrinfo", real.getaddrinfo)
+
+
+@pytest.fixture(autouse = True)
+def _hub_reachable_without_probing(monkeypatch):
+    """Report the Hub as reachable without dialling it.
+
+    The reachability probes are themselves network calls, so with outbound traffic
+    blocked they would report the Hub down and send every caller into its offline
+    branch -- which is a different code path from the one these tests mean to cover.
+    Pinning them to "reachable" keeps the online path selected; the individual
+    request that follows is still blocked, and the callers already fail open on it.
+    Tests about offline behaviour patch these back.
+
+    Seeded through the memo rather than by patching ``hf_dns_dead`` /
+    ``hf_unreachable``: callers ``from utils.utils import`` those names, so patching
+    the source module leaves already-imported bindings pointing at the real probes.
+    Every caller reaches the memo through a function that reads the module global at
+    call time, so seeding it covers them all regardless of import style.
+
+    The verdict is also pinned fresh for the whole test. The memo expires after
+    ``_HF_REACHABILITY_TTL_S`` (five seconds), so a seed stamped now would lapse in any
+    test that reaches a Hub-guarded operation later than that, and the real probe would
+    run into the blocked socket and select the offline branch this fixture exists to
+    avoid. The stamp is dated far ahead instead, which keeps it fresh under the real
+    freshness rule rather than disabling that rule for every test.
+    """
+    import time
+
+    from utils import utils as utils_utils
+
+    # Dated far ahead rather than by overriding _reachability_fresh: the freshness rule is
+    # itself under test (test_verdict_expires_so_a_disconnect_is_noticed shortens the TTL and
+    # asserts the verdict lapses), so it has to keep working. A future stamp keeps this seed
+    # fresh under the real rule, and a test that writes its own verdict replaces it.
+    monkeypatch.setattr(
+        utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
     )
 
 
@@ -273,7 +706,7 @@ def stub_embeddings(monkeypatch):
     monkeypatch.setattr(
         embeddings,
         "token_counter",
-        lambda model_name = None: (lambda t: len(t.split())),
+        lambda model_name = None: lambda t: len(t.split()),
     )
     monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
     return dim

@@ -28,11 +28,15 @@ name: Lint CI
 on:
   pull_request:
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -43,11 +47,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -153,6 +157,15 @@ jobs:
           printf '  %s\n' "${CHANGED[@]}"
           python scripts/verify_import_hoist.py \
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
+
+      - name: No silent llama-server parallel-slot downgrades
+        # #7717 clamped --parallel to 1 whenever MTP resolved, costing batched
+        # callers 4x throughput. Launch fewer slots only for a real capability
+        # or VRAM limit, marked '# allow-slot-clamp: <reason>'. Self-test first,
+        # so a regression in the rule fails before we trust it on the tree.
+        run: |
+          python scripts/lint_no_parallel_clamp.py --self-test
+          python scripts/lint_no_parallel_clamp.py
 
       - name: No leftover debugger / pdb / breakpoint calls
         # Catches the "I'll just stick a breakpoint() here" mistake
