@@ -120,7 +120,6 @@ class _Run:
         )
 
 
-
 @pytest.fixture(autouse = True)
 def _healthy_diffusers(healthy_diffusers):
     """The resume route runs the same preflight as start, which asserts the family's pipeline

@@ -833,7 +833,10 @@ def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> s
 
 
 def assert_pipeline_class_available(
-    pipeline_class: str, family_name: str, *, strict: bool = False
+    pipeline_class: str,
+    family_name: str,
+    *,
+    strict: bool = False,
 ) -> None:
     """Raise ``ValueError`` before any download when the installed diffusers has no
     ``pipeline_class``.
