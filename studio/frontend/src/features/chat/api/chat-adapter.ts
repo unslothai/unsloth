@@ -974,6 +974,18 @@ export interface McpImageToolResult {
  * A python/terminal result carrying the chat's sandbox context alongside the
  * text the model actually saw.
  */
+/** ``files`` as the cards need it: absent, or entries with a usable name. */
+export function isSandboxFileList(val: unknown): boolean {
+  if (val === undefined || val === null) return true;
+  if (!Array.isArray(val)) return false;
+  return val.every(
+    (entry) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === "string",
+  );
+}
+
 export function isSandboxToolResult(
   val: unknown,
 ): val is { text: string; sessionId: string } {
@@ -991,9 +1003,9 @@ export function isSandboxToolResult(
     typeof v.text === "string" &&
     typeof v.sessionId === "string" &&
     Array.isArray(v.images) &&
-    // Persisted content can carry anything: the cards map over this, so a
-    // string or an object here would take the whole chat view down.
-    (v.files === undefined || Array.isArray(v.files))
+    // Persisted content can carry anything: the cards map over this and read
+    // name off each entry, so anything else takes the whole chat view down.
+    isSandboxFileList(v.files)
   );
 }
 

@@ -7815,6 +7815,24 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         return _remove_session_sandbox_locked(session_id, delete_files)
 
 
+def _holds_no_user_files(target: str) -> bool:
+    """Whether a sandbox holds nothing but (possibly empty) directories.
+
+    Our own marker does not count. Bounded like every other walk here, and a
+    tree too big to check is not one to remove without being asked.
+    """
+    budget = _MAX_SNAPSHOT_DIRS
+    for parent, _dirs, files in os.walk(target):
+        for name in files:
+            if parent == target and name in _INTERNAL_SANDBOX_FILES:
+                continue
+            return False
+        budget -= 1
+        if budget <= 0:
+            return False
+    return True
+
+
 def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
     root = os.path.realpath(sandbox_root())
     entry = os.path.join(root, _sandbox_name(session_id))
@@ -7861,10 +7879,13 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
                 daemon = True,
             ).start()
             return True
-        marker = os.path.join(target, _SANDBOX_MARKER)
-        if os.path.isfile(marker) and os.listdir(target) == [_SANDBOX_MARKER]:
-            os.unlink(marker)  # our own file, so the folder still counts as empty
-        os.rmdir(target)  # raises when non-empty, which is the intent
+        # Empty means no files of the user's: a tool that only ran mkdir, or
+        # deleted what it wrote, leaves directories behind, and the chat record
+        # is already gone by the time this runs.
+        if not _holds_no_user_files(target):
+            return False
+        shutil.rmtree(target, ignore_errors = True)
+        return not os.path.isdir(target)
         return True
     except OSError:
         return False

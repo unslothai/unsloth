@@ -1413,15 +1413,15 @@ def test_removal_and_the_busy_check_are_one_decision(tmp_path, monkeypatch):
     started = threading.Event()
     entered = threading.Event()
 
-    real_rmdir = tools.os.rmdir
+    real_rmtree = tools.shutil.rmtree
 
-    def slow_rmdir(path):
+    def slow_rmtree(path, **kwargs):
         # Stand in for the window between deciding and unlinking.
         entered.set()
         time.sleep(0.3)
-        return real_rmdir(path)
+        return real_rmtree(path, **kwargs)
 
-    monkeypatch.setattr(tools.os, "rmdir", slow_rmdir)
+    monkeypatch.setattr(tools.shutil, "rmtree", slow_rmtree)
     result = {}
 
     def remover():
@@ -2471,8 +2471,69 @@ def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
     python_card = (root / "components" / "assistant-ui" / "tool-ui-python.tsx").read_text(
         encoding = "utf-8"
     )
+    assert "export function isSandboxFileList" in adapter
+    # Every entry, not just the array: the rows read name off each one.
+    assert 'typeof (entry as { name?: unknown }).name === "string"' in adapter
     for source in (adapter, python_card):
-        assert "v.files === undefined || Array.isArray(v.files)" in source
+        assert "isSandboxFileList(v.files)" in source
+
+
+def test_a_sandbox_of_empty_directories_is_still_reclaimed(tmp_path, monkeypatch):
+    """A tool that only ran mkdir, or deleted what it wrote, leaves a folder no
+    chat can reach once its record is gone."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_dirs111"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "outputs" / "runs").mkdir(parents = True)
+
+    assert tools.remove_session_sandbox(session) is True
+    assert not workdir.exists()
+
+    # One with a file in it still needs the opt-in.
+    other = Path(tools.get_sandbox_workdir("__LOCALID_dirs222"))
+    (other / "outputs").mkdir()
+    (other / "outputs" / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    assert tools.remove_session_sandbox("__LOCALID_dirs222") is False
+    assert (other / "outputs" / "report.csv").is_file()
+
+
+def test_a_symlinked_builtin_cache_is_left_usable(tmp_path, monkeypatch):
+    """Clearing resolves the link and removes the target, so without this the
+    link dangles and the next compile cannot write through it."""
+    real = tmp_path / "real_cache"
+    real.mkdir()
+
+    from utils import cache_cleanup
+
+    (real / cache_cleanup.CACHE_MARKER).touch()
+    (real / "unsloth_compiled_module_gemma3.py").write_text("x = 1\n", encoding = "utf-8")
+    link = tmp_path / "unsloth_compiled_cache"
+    link.symlink_to(real, target_is_directory = True)
+    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [link])
+    monkeypatch.delenv("UNSLOTH_COMPILE_LOCATION", raising = False)
+
+    cache_cleanup.clear_unsloth_compiled_cache()
+    assert real.is_dir(), "the link was left dangling"
+    assert (real / cache_cleanup.CACHE_MARKER).is_file()
+    assert not (real / "unsloth_compiled_module_gemma3.py").exists()
+    # Writable through the link, which is what the compiler does next.
+    os.makedirs(link, exist_ok = True)
+
+
+def test_the_sandbox_listing_runs_in_a_worker():
+    """It walks up to a couple of thousand entries and stats each one."""
+    import inspect
+
+    from routes import inference as inference_routes
+
+    source = inspect.getsource(inference_routes.list_sandbox_files)
+    assert "run_in_threadpool(_sandbox_listing" in source
+    assert "os.stat" not in source
 
 
 if __name__ == "__main__":

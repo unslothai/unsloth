@@ -13606,6 +13606,28 @@ def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
     return names
 
 
+def _sandbox_listing(sandbox_dir: str) -> "list[dict]":
+    """Name, size and mtime for everything this chat's tools left behind."""
+    files = []
+    if not os.path.isdir(sandbox_dir):
+        return files
+    for name in _sandbox_listing_names(sandbox_dir):
+        path = os.path.join(sandbox_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        files.append(
+            {
+                "name": name,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime),
+                "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
+            }
+        )
+    return files
+
+
 @router.get("/sandbox/{session_id}")
 async def list_sandbox_files(
     session_id: str,
@@ -13619,23 +13641,12 @@ async def list_sandbox_files(
     """
     await _authenticate_header_or_query(request, token)
 
+    from starlette.concurrency import run_in_threadpool
+
     sandbox_dir = _sandbox_dir_for(session_id, create = False)
-    files = []
-    if os.path.isdir(sandbox_dir):
-        for name in _sandbox_listing_names(sandbox_dir):
-            path = os.path.join(sandbox_dir, name)
-            try:
-                stat = os.stat(path)
-            except OSError:
-                continue
-            files.append(
-                {
-                    "name": name,
-                    "size": stat.st_size,
-                    "modified": int(stat.st_mtime),
-                    "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
-                }
-            )
+    # In a worker: this walks up to a couple of thousand entries and stats each
+    # one, which on a slow or network filesystem would hold the event loop.
+    files = await run_in_threadpool(_sandbox_listing, sandbox_dir)
     return {"path": sandbox_dir, "files": files}
 
 

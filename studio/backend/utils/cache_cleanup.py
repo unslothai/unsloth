@@ -244,7 +244,12 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
         # (setup_cache_env only writes it when it first sets the variable), so
         # the next cleanup would demote our own cache to "shared". Built-in
         # paths are recognised without one and stay deleted.
-        if dedicated and str(cache_dir) not in _builtin_cache_paths():
+        # A built-in path needs no marker, so it needs no restoring either,
+        # unless it is a link: the clear resolved it and removed the target,
+        # which leaves the link dangling and every later write failing.
+        if dedicated and (
+            str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()
+        ):
             try:
                 restored = Path(os.path.realpath(cache_dir))
                 restored.mkdir(parents = True, exist_ok = True)

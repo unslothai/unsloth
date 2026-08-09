@@ -8,6 +8,7 @@ import { authFetch } from "@/features/auth";
 
 import { SandboxFiles } from "./sandbox-files-view";
 import type { SandboxFile } from "./sandbox-files";
+import { isSandboxFileList } from "@/features/chat/api/chat-adapter";
 import {
   preferSanitizedFullToolOutput,
   useChatRuntimeStore,
@@ -44,8 +45,9 @@ function isStructuredResult(val: unknown): val is StructuredResult {
     "text" in val &&
     "images" in val &&
     "sessionId" in val &&
-    // Persisted content can carry anything, and the card maps over this.
-    (v.files === undefined || Array.isArray(v.files))
+    // Persisted content can carry anything, and the card maps over this and
+    // reads name off each entry.
+    isSandboxFileList(v.files)
   );
 }
 
