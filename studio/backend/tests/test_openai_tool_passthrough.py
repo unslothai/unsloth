@@ -1984,6 +1984,84 @@ class TestDropEmptyAssistantSentinels:
         # The orphaned synthetic tool reply is still dropped.
         assert not [m for m in out if m["role"] == "tool"]
 
+    def test_scrub_merges_retained_reasoning_into_the_next_assistant(self):
+        """A synthetic-tool turn kept for its trace must not sit next to the
+        provider's real answer: Gemma 3 raises "Conversation roles must alternate"
+        on adjacent assistant turns instead of generating. The two were one logical
+        response, so the trace moves onto the answer."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "search for it"},
+            {"role": "assistant", "reasoning_content": "I should search",
+             "tool_calls": [{"id": "c0", "type": "function", "function": {
+                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "results"},
+            {"role": "assistant", "content": "Here is what I found."},
+            {"role": "user", "content": "more?"},
+        ]
+        out = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(msgs))
+        assert [m["role"] for m in out] == ["user", "assistant", "user"]
+        assert out[1]["content"] == "Here is what I found."
+        assert out[1]["reasoning_content"] == "I should search"
+
+    def test_scrub_merge_keeps_both_traces_oldest_first(self):
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "reasoning_content": "first",
+             "tool_calls": [{"id": "c0", "type": "function", "function": {
+                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "r"},
+            {"role": "assistant", "content": "answer", "reasoning_content": "second"},
+        ]
+        out = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(msgs))
+        assert [m["role"] for m in out] == ["user", "assistant"]
+        assert out[1]["reasoning_content"] == "first\n\nsecond"
+
+    def test_scrub_keeps_standalone_reasoning_turn_when_a_user_follows(self):
+        """No adjacency to fix here, so the padded turn stays: llama-server still
+        needs the trace, and the content key it requires alongside it."""
+        from routes.inference import _strip_provider_synthetic_tool_history
+
+        msgs = [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "reasoning_content": "trace",
+             "tool_calls": [{"id": "c0", "type": "function", "function": {
+                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {"role": "tool", "tool_call_id": "c0", "content": "r"},
+            {"role": "user", "content": "more?"},
+        ]
+        out = _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(msgs))
+        assert [m["role"] for m in out] == ["user", "assistant", "user"]
+        assert out[1]["reasoning_content"] == "trace"
+        assert out[1]["content"] == ""
+
+    def test_local_template_drops_turn_left_empty_by_the_reasoning_scrub(self):
+        """The padded turn has nothing but its trace, so once the trace is scrubbed
+        for local templating there is no turn left to render."""
+        from routes.inference import _drop_reasoning_for_local_template
+
+        out = _drop_reasoning_for_local_template([
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "reasoning_content": "trace"},
+            {"role": "assistant", "content": "answer", "reasoning_content": "t2"},
+        ])
+        assert out == [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "answer"},
+        ]
+
+    def test_local_template_keeps_tool_call_turn_without_content(self):
+        from routes.inference import _drop_reasoning_for_local_template
+
+        calls = [{"id": "c", "type": "function",
+                  "function": {"name": "lookup", "arguments": "{}"}}]
+        out = _drop_reasoning_for_local_template(
+            [{"role": "assistant", "tool_calls": calls, "reasoning_content": "t"}])
+        assert out == [{"role": "assistant", "tool_calls": calls}]
+
     def test_sentinel_and_scrub_compose_to_llama_cpp_message_contract(self):
         """llama.cpp throws "Expected 'content' or 'tool_calls'" unless one of those
         KEYS is present (common_chat_msgs_parse_oaicompat checks presence, not

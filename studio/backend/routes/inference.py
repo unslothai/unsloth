@@ -18614,7 +18614,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         sanitized_assistant.append(m_clean)
 
     if not dropped_ids:
-        return sanitized_assistant
+        return _merge_padded_reasoning_turns(sanitized_assistant)
     out: list[dict] = []
     for m in sanitized_assistant:
         if (
@@ -18624,6 +18624,37 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
         ):
             continue
         out.append(m)
+    return _merge_padded_reasoning_turns(out)
+
+
+def _merge_padded_reasoning_turns(messages: list[dict]) -> list[dict]:
+    """Fold a padded reasoning-only assistant turn into the assistant turn after it.
+
+    Stripping a turn down to its trace and dropping the matching tool result leaves
+    that turn back to back with the provider's real answer, and strict alternating
+    templates (Gemma 3) raise on adjacent assistant turns rather than generate. The
+    two were one logical response anyway, so the trace moves onto the answer,
+    oldest first when both carry one. ``content == ""`` only ever comes from the
+    padding above, since ChatMessage collapses an empty string to None."""
+    out: list[dict] = []
+    for msg in messages:
+        prev = out[-1] if out else None
+        if (
+            msg.get("role") == "assistant"
+            and prev is not None
+            and prev.get("role") == "assistant"
+            and prev.get("content") == ""
+            and not prev.get("tool_calls")
+            and prev.get("reasoning_content")
+        ):
+            merged = dict(msg)
+            own = merged.get("reasoning_content")
+            merged["reasoning_content"] = (
+                prev["reasoning_content"] + "\n\n" + own if own else prev["reasoning_content"]
+            )
+            out[-1] = merged
+            continue
+        out.append(msg)
     return out
 
 
@@ -18743,13 +18774,22 @@ def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
     render it (Qwen3.x and GLM gate on the last user turn, Qwen3.6 and gemma-4
     also on ``preserve_thinking``), and the body is swept for control markup
     first. A local template is rendered here directly, with no ``preserve_thinking``
-    plumbed through, so passthrough stays llama-server-only until it is."""
-    return [
-        {k: v for k, v in msg.items() if k != "reasoning_content"}
-        if "reasoning_content" in msg
-        else msg
-        for msg in messages
-    ]
+    plumbed through, so passthrough stays llama-server-only until it is.
+
+    A turn the scrubber padded down to its trace has nothing left once the trace
+    goes, so it is dropped rather than left as a blank assistant turn doubling up
+    on the next one."""
+    out = []
+    for msg in messages:
+        if "reasoning_content" not in msg:
+            out.append(msg)
+            continue
+        stripped = {k: v for k, v in msg.items() if k != "reasoning_content"}
+        if stripped.get("role") == "assistant" and not stripped.get("content") \
+                and not stripped.get("tool_calls"):
+            continue
+        out.append(stripped)
+    return out
 
 
 def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
