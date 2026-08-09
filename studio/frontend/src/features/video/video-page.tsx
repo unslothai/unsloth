@@ -46,7 +46,6 @@ import {
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
 import { NegativePromptField } from "@/components/negative-prompt-field";
-import { ImageDropzone } from "@/components/image-dropzone";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -462,20 +461,6 @@ function RecipePopover({
           <RecipeRow label="Steps" value={String(video.steps)} />
           <RecipeRow label="Guidance" value={String(video.guidance)} />
           <RecipeRow label="Seed" value={String(video.seed)} mono />
-          {video.keyframe_anchors && video.keyframe_anchors.length > 0 ? (
-            <RecipeRow
-              label="Frames"
-              value={
-                video.keyframe_anchors.includes("first") &&
-                video.keyframe_anchors.includes("last")
-                  ? "First and last reference frames"
-                  : video.keyframe_anchors.includes("first")
-                    ? "First reference frame"
-                    : "Last reference frame"
-              }
-              wrap
-            />
-          ) : null}
         </div>
         <div className="border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(video)}>
@@ -580,10 +565,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
-  // MiniMax-H3 reference frames, as data URLs. Either alone is valid: a first frame is
-  // image-to-video, a last frame alone generates up to one, and both generate between them.
-  const [firstFrame, setFirstFrame] = useState<string | null>(null);
-  const [lastFrame, setLastFrame] = useState<string | null>(null);
   // The chosen resolution preset index into the current preset list.
   const [resolutionIdx, setResolutionIdx] = useState(0);
   // The chosen frame count must lie on the family's temporal lattice.
@@ -716,18 +697,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, [resolutionPresets.length]);
   const loadedFamily = status?.loaded ? status.family : null;
   const familyDefaultFrames = status?.defaults?.num_frames;
-  // Only a family that declares keyframe conditioning gets the reference-frame controls.
-  const supportsKeyframes = status?.loaded === true && status.supports_keyframes === true;
-  const hasKeyframe = supportsKeyframes && (firstFrame !== null || lastFrame !== null);
-
-  // Drop the attached frames when the loaded model changes or goes away: they are conditioning for
-  // a specific model, and leaving them attached would silently send them to the next one.
-  useEffect(() => {
-    if (!supportsKeyframes) {
-      setFirstFrame(null);
-      setLastFrame(null);
-    }
-  }, [supportsKeyframes, loadedFamily]);
   const prevFamilyRef = useRef<string | null>(null);
   useEffect(() => {
     const familyChanged = loadedFamily !== prevFamilyRef.current;
@@ -1483,10 +1452,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
-        // Only sent for a family that declares keyframe conditioning; anything else refuses the
-        // request outright rather than silently ignoring the frames.
-        image: supportsKeyframes ? (firstFrame ?? undefined) : undefined,
-        last_image: supportsKeyframes ? (lastFrame ?? undefined) : undefined,
       });
     } catch (err) {
       if (!isMounted.current) return;
@@ -1508,9 +1473,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     fps,
     steps,
     status?.supports_cfg,
-    supportsKeyframes,
-    firstFrame,
-    lastFrame,
     startGenPoll,
   ]);
 
@@ -1704,46 +1666,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             />
           )}
 
-          {supportsKeyframes && (
-            <Field
-              label="Reference frames"
-              hint="Optional. A first frame turns the prompt into image-to-video; a last frame on its own generates up to that frame; both generate the motion between them. The first attached frame's aspect ratio sets the clip's size, so the Resolution preset is ignored while one is attached."
-            >
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-1">
-                  <span className="text-ui-11 text-muted-foreground/70">First frame</span>
-                  <ImageDropzone
-                    value={firstFrame}
-                    onChange={setFirstFrame}
-                    label="First frame"
-                    prompt="Click or drop"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <span className="text-ui-11 text-muted-foreground/70">Last frame</span>
-                  <ImageDropzone
-                    value={lastFrame}
-                    onChange={setLastFrame}
-                    label="Last frame"
-                    prompt="Click or drop"
-                  />
-                </div>
-              </div>
-            </Field>
-          )}
-
           <Field
             label="Resolution"
-            hint={
-              hasKeyframe
-                ? "Set by the first attached reference frame: its aspect ratio resolves the clip's size, the way the model itself does. Remove the frame to choose a preset."
-                : "The frame size. Presets come from the loaded model; portrait presets are marked."
-            }
+            hint="The frame size. Presets come from the loaded model; portrait presets are marked."
           >
             <Select
               value={String(resolutionIdx)}
               onValueChange={(v) => setResolutionIdx(Number(v))}
-              disabled={hasKeyframe}
             >
               <SelectTrigger>
                 <SelectValue />

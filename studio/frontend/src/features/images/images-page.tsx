@@ -47,7 +47,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
-import { ImageDropzone } from "@/components/image-dropzone";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -626,6 +625,91 @@ function AdvancedSelect({
       </div>
       {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
     </div>
+  );
+}
+
+// Source-image picker for Transform (img2img): click or drag-drop an image, read it to a data URL sent as init_image.
+function ImageDropzone({
+  value,
+  onChange,
+}: {
+  value: string | null;
+  onChange: (dataUrl: string | null) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  const readFile = useCallback(
+    (file: File | undefined | null) => {
+      if (!file || !file.type.startsWith("image/")) {
+        if (file) toast.error("Please choose an image file");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => onChange(typeof reader.result === "string" ? reader.result : null);
+      reader.onerror = () => toast.error("Could not read the image");
+      reader.readAsDataURL(file);
+    },
+    [onChange],
+  );
+
+  if (value) {
+    return (
+      <div className="relative overflow-hidden rounded-[10px] border border-border">
+        <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              aria-label="Remove source image"
+              className="absolute right-1.5 top-1.5 size-7"
+              onClick={() => {
+                onChange(null);
+                if (inputRef.current) inputRef.current.value = "";
+              }}
+            >
+              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Remove</TooltipContent>
+        </Tooltip>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        readFile(e.dataTransfer.files?.[0]);
+      }}
+      className={cn(
+        "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
+        dragging
+          ? "border-primary/60 bg-primary/5 text-foreground"
+          : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+      )}
+    >
+      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
+      <span>Click or drop an image</span>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => readFile(e.target.files?.[0])}
+      />
+    </button>
   );
 }
 

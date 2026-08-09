@@ -235,11 +235,6 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
-            # Keyframes ride in as base64 on the JSON body, the same transport the image routes use
-            # for init_image / references. begin_generate decodes and validates them synchronously,
-            # so an undecodable or out-of-range frame is a 400 here rather than a failed job.
-            image = request.image,
-            last_image = request.last_image,
         )
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.

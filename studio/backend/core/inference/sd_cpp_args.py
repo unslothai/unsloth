@@ -100,11 +100,6 @@ class SdCppVideoGenParams:
     steps: Optional[int] = None
     cfg_scale: float = 1.0
     seed: Optional[int] = None
-    # Keyframe conditioning (MiniMax-H3 FL2VA): on-disk frames the clip starts from / ends on.
-    # Either alone is valid -- a first frame is image-to-video, a last frame alone generates up to
-    # one -- and both together generate between them. sd-cli reads them from a path, never inline.
-    init_image_path: Optional[str] = None
-    end_image_path: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -370,12 +365,6 @@ def build_sd_cpp_video_command(
         cmd += ["--steps", str(int(params.steps))]
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
-    # Keyframes. --width/--height are already on the command line above, and sd-cli resizes a
-    # loaded frame to them, so the canvas the caller resolved is the one that is generated.
-    if params.init_image_path:
-        cmd += ["--init-img", params.init_image_path]
-    if params.end_image_path:
-        cmd += ["--end-img", params.end_image_path]
     cmd += ["--output", output_path]
     offload = list(offload or [])
     if offload:
