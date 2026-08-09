@@ -374,17 +374,26 @@ class TestGetModelName(unittest.TestCase):
     def test_legacy_cache_accepts_all_supported_tokenizer_formats(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
-        for tokenizer_format in ("vocab.txt", "spiece.model"):
+        tokenizer_formats = (
+            ("vocab.txt",),
+            ("spiece.model",),
+            ("spm.model",),
+            ("tokenizer.model.v3",),
+            ("sentencepiece.bpe.model",),
+            ("sentencepiece.model",),
+            ("source.spm", "target.spm"),
+            ("vocab-src.json", "vocab-tgt.json"),
+            ("qwen.tiktoken",),
+        )
+        for tokenizer_files in tokenizer_formats:
             with (
-                self.subTest(tokenizer_format = tokenizer_format),
+                self.subTest(tokenizer_files = tokenizer_files),
                 tempfile.TemporaryDirectory() as cache_dir,
             ):
                 legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
-                _write_cached_model(
-                    legacy_cache,
-                    "legacy-main",
-                    tokenizer_format = tokenizer_format,
-                )
+                snapshot = _write_cached_model(legacy_cache, "legacy-main", tokenizer = False)
+                for filename in tokenizer_files:
+                    open(os.path.join(snapshot, filename), "w").close()
                 self.assertEqual(
                     get_model_name(
                         "unsloth/Meta-Llama-3.1-8B-Instruct",
@@ -458,6 +467,82 @@ class TestGetModelName(unittest.TestCase):
             )
 
     @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_legacy_cache_honors_non_pytorch_weight_formats(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        cases = (
+            ({"gguf_file": "model.gguf"}, "model.gguf"),
+            ({"from_tf": True}, "tf_model.h5"),
+            ({"from_flax": True}, "flax_model.msgpack"),
+        )
+        for kwargs, filename in cases:
+            with self.subTest(filename = filename), tempfile.TemporaryDirectory() as cache_dir:
+                legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+                snapshot = _write_cached_model(legacy_cache, "legacy-main")
+                os.remove(os.path.join(snapshot, "model.safetensors"))
+                open(os.path.join(snapshot, filename), "w").close()
+                self.assertEqual(
+                    get_model_name(
+                        "unsloth/Meta-Llama-3.1-8B-Instruct",
+                        cache_dir = cache_dir,
+                        local_files_only = True,
+                        **kwargs,
+                    ),
+                    legacy,
+                )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_auto_weight_format_does_not_bypass_broken_safetensors(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        with tempfile.TemporaryDirectory() as cache_dir:
+            canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+            legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+            canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+            legacy_snapshot = _write_cached_model(legacy_cache, "legacy-main")
+            os.rename(
+                os.path.join(canonical_snapshot, "model.safetensors"),
+                os.path.join(canonical_snapshot, "pytorch_model.bin"),
+            )
+            with open(
+                os.path.join(canonical_snapshot, "model.safetensors.index.json"), "w"
+            ) as file:
+                json.dump({"weight_map": {"model.weight": "missing.safetensors"}}, file)
+            self.assertTrue(os.path.isfile(os.path.join(legacy_snapshot, "model.safetensors")))
+            self.assertEqual(
+                get_model_name(
+                    "unsloth/Meta-Llama-3.1-8B-Instruct",
+                    cache_dir = cache_dir,
+                    local_files_only = True,
+                ),
+                legacy,
+            )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_malformed_weight_index_is_incomplete(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        legacy = canonical.lower()
+        for index in ([], {"weight_map": []}):
+            with self.subTest(index = index), tempfile.TemporaryDirectory() as cache_dir:
+                canonical_cache = os.path.join(cache_dir, "models--" + canonical.replace("/", "--"))
+                legacy_cache = os.path.join(cache_dir, "models--" + legacy.replace("/", "--"))
+                canonical_snapshot = _write_cached_model(canonical_cache, "canonical-main")
+                _write_cached_model(legacy_cache, "legacy-main")
+                os.remove(os.path.join(canonical_snapshot, "model.safetensors"))
+                with open(
+                    os.path.join(canonical_snapshot, "model.safetensors.index.json"), "w"
+                ) as file:
+                    json.dump(index, file)
+                self.assertEqual(
+                    get_model_name(
+                        "unsloth/Meta-Llama-3.1-8B-Instruct",
+                        cache_dir = cache_dir,
+                        local_files_only = True,
+                    ),
+                    legacy,
+                )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
     def test_remote_code_cache_requires_referenced_module(self):
         canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
         legacy = canonical.lower()
@@ -515,7 +600,7 @@ class TestGetModelName(unittest.TestCase):
                 ) as file:
                     json.dump(tokenizer_config, file)
                 with open(os.path.join(snapshot, "tokenization_custom.py"), "w") as file:
-                    file.write("from .helpers import normalize\n")
+                    file.write("from . import helpers\n")
             open(os.path.join(legacy_snapshot, "helpers.py"), "w").close()
             self.assertEqual(
                 get_model_name(

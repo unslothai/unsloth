@@ -186,6 +186,31 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
     )
 
 
+def test_cache_processor_requirement_uses_actual_text_only_support():
+    method = _class_method(ast.parse(_source(LOADER_PATH)), "FastModel", "from_pretrained")
+    assert _assigns_name(
+        method,
+        "cache_load_text_only",
+        lambda value: {
+            "text_only",
+            "auto_model",
+            "user_config",
+            "_loadable_text_config",
+        }.issubset(_names_in(value)),
+    )
+    cache_calls = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "get_model_name"
+    ]
+    assert len(cache_calls) == 2
+    for call in cache_calls:
+        requirement = next(kw.value for kw in call.keywords if kw.arg == "require_processor")
+        assert "cache_load_text_only" in _names_in(requirement)
+
+
 def test_fast_base_model_text_only_bypasses_vision_auto_model():
     source = _source(VISION_PATH)
     method = _class_method(ast.parse(source), "FastBaseModel", "from_pretrained")

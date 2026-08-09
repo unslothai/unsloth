@@ -259,6 +259,19 @@ def _get_user_task_config_attrs(user_config):
     return attrs
 
 
+def _loadable_text_config(model_config, model_name):
+    if model_config is None or not hasattr(model_config, "vision_config"):
+        return None
+    text_config = _get_text_only_config(model_config, model_name)
+    text_class = resolve_model_class(AutoModelForCausalLM, text_config)
+    if text_class is None or not _is_family_text_decoder(
+        getattr(model_config, "model_type", ""),
+        getattr(text_config, "model_type", ""),
+    ):
+        return None
+    return text_config
+
+
 DISABLE_COMPILE_MODEL_NAMES = [
     "aya_vision",
     "modernbert",
@@ -607,6 +620,9 @@ class FastLanguageModel(FastLlamaModel):
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
                 use_safetensors = kwargs.get("use_safetensors"),
+                gguf_file = kwargs.get("gguf_file"),
+                from_tf = kwargs.get("from_tf", False),
+                from_flax = kwargs.get("from_flax", False),
                 return_mapper_changed = True,
             )
             if new_model_name is None and load_in_fp8 != False:
@@ -822,6 +838,9 @@ class FastLanguageModel(FastLlamaModel):
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
                     use_safetensors = kwargs.get("use_safetensors"),
+                    gguf_file = kwargs.get("gguf_file"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
@@ -1375,6 +1394,11 @@ class FastModel(FastBaseModel):
         cache_processor_name = _resolve_checkpoint_tokenizer_name(
             old_model_name, dict(kwargs), require_processor = True
         )
+        cache_load_text_only = (
+            text_only
+            and auto_model is None
+            and _loadable_text_config(user_config, old_model_name) is not None
+        )
         fp8_mode = None
         if not use_exact_model_name:
             new_model_name, mapper_selected_name = get_model_name(
@@ -1386,13 +1410,16 @@ class FastModel(FastBaseModel):
                 revision = revision,
                 require_tokenizer = cache_tokenizer_name is None,
                 require_config = user_config is None,
-                require_processor = not text_only and cache_processor_name is None,
+                require_processor = not cache_load_text_only and cache_processor_name is None,
                 subfolder = kwargs.get("subfolder"),
                 variant = kwargs.get("variant"),
                 use_safetensors = kwargs.get("use_safetensors"),
                 trust_remote_code = trust_remote_code,
                 return_mapper_changed = True,
                 config = user_config,
+                gguf_file = kwargs.get("gguf_file"),
+                from_tf = kwargs.get("from_tf", False),
+                from_flax = kwargs.get("from_flax", False),
             )
             if new_model_name is None and load_in_fp8 != False:
                 fp8_mode = _get_fp8_mode_and_check_settings(
@@ -1804,12 +1831,15 @@ class FastModel(FastBaseModel):
                     local_files_only = kwargs.get("local_files_only", False),
                     require_tokenizer = cache_tokenizer_name is None,
                     require_config = user_config is None,
-                    require_processor = not text_only and cache_processor_name is None,
+                    require_processor = not cache_load_text_only and cache_processor_name is None,
                     subfolder = kwargs.get("subfolder"),
                     variant = kwargs.get("variant"),
                     use_safetensors = kwargs.get("use_safetensors"),
                     trust_remote_code = trust_remote_code,
                     config = user_config,
+                    gguf_file = kwargs.get("gguf_file"),
+                    from_tf = kwargs.get("from_tf", False),
+                    from_flax = kwargs.get("from_flax", False),
                 )
             # Check if pre-quantized models are allowed
             # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)

@@ -64,6 +64,21 @@ def _revision_kwarg(call):
     return None
 
 
+def test_cache_probes_forward_requested_weight_format():
+    tree = _tree(LOADER)
+    for class_name in ("FastLanguageModel", "FastModel"):
+        function = _function(tree, "from_pretrained", class_name)
+        calls = _calls(function, "get_model_name")
+        assert len(calls) == 2
+        for call in calls:
+            kwargs = {keyword.arg: keyword.value for keyword in call.keywords}
+            for name in ("gguf_file", "from_tf", "from_flax"):
+                value = kwargs[name]
+                assert isinstance(value, ast.Call)
+                assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+                assert isinstance(value.args[0], ast.Constant) and value.args[0].value == name
+
+
 def test_fast_llama_model_reads_its_revision_argument():
     """The whole of #3544: the parameter existed but had zero reads."""
     function = _function(_tree(LLAMA), "from_pretrained", "FastLlamaModel")

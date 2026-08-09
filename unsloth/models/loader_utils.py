@@ -254,6 +254,9 @@ def _prefer_legacy_lowercase_cache(
     use_safetensors = None,
     trust_remote_code = False,
     model_config = None,
+    gguf_file = None,
+    from_tf = False,
+    from_flax = False,
 ):
     """Use a pre-fix lowercase cache only when offline and no canonical cache exists."""
     if (
@@ -286,15 +289,42 @@ def _prefer_legacy_lowercase_cache(
         return repo_id
 
     def _snapshot_has_tokenizer(snapshot):
+        try:
+            has_tiktoken = any(
+                entry.is_file() and entry.name.endswith(".tiktoken")
+                for entry in os.scandir(snapshot)
+            )
+        except OSError:
+            has_tiktoken = False
         return (
-            os.path.isfile(os.path.join(snapshot, "tokenizer.json"))
-            or os.path.isfile(os.path.join(snapshot, "tokenizer.model"))
+            any(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in (
+                    "tokenizer.json",
+                    "tokenizer.model",
+                    "vocab.txt",
+                    "spiece.model",
+                    "spm.model",
+                    "tokenizer.model.v3",
+                    "sentencepiece.bpe.model",
+                    "sentencepiece.model",
+                    "bpe.codes",
+                    "vocab.bpe",
+                )
+            )
             or (
                 os.path.isfile(os.path.join(snapshot, "vocab.json"))
                 and os.path.isfile(os.path.join(snapshot, "merges.txt"))
             )
-            or os.path.isfile(os.path.join(snapshot, "vocab.txt"))
-            or os.path.isfile(os.path.join(snapshot, "spiece.model"))
+            or all(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("source.spm", "target.spm")
+            )
+            or all(
+                os.path.isfile(os.path.join(snapshot, filename))
+                for filename in ("vocab-src.json", "vocab-tgt.json")
+            )
+            or has_tiktoken
         )
 
     def _snapshot_has_complete_model(snapshot):
@@ -401,9 +431,8 @@ def _prefer_legacy_lowercase_cache(
                     else:
                         for alias in node.names:
                             dependency_file = "/".join(base + [alias.name]) + ".py"
-                            if os.path.isfile(os.path.join(snapshot, dependency_file)):
-                                if dependency_file not in checked:
-                                    pending.append(dependency_file)
+                            if dependency_file not in checked:
+                                pending.append(dependency_file)
             if any(name not in checked for name in module_files):
                 return False
         weights_root = os.path.abspath(
@@ -422,32 +451,49 @@ def _prefer_legacy_lowercase_cache(
             stem, extension = filename.rsplit(".", 1)
             return f"{stem}.{variant}.{extension}"
 
-        weight_names = []
-        index_names = []
-        if use_safetensors is not False:
-            weight_names.append("model.safetensors")
-            index_names.append("model.safetensors.index.json")
-        if use_safetensors is not True:
-            weight_names.append("pytorch_model.bin")
-            index_names.append("pytorch_model.bin.index.json")
-        if any(
-            os.path.isfile(os.path.join(weights_root, _variant_name(filename)))
-            for filename in weight_names
-        ):
-            return True
-        for index_name in index_names:
-            index_path = os.path.join(weights_root, _variant_name(index_name))
+        if gguf_file is not None:
+            gguf_path = os.path.abspath(os.path.join(weights_root, str(gguf_file)))
             try:
-                import json
-                with open(index_path, encoding = "utf-8") as index_file:
-                    shard_names = set(json.load(index_file).get("weight_map", {}).values())
-            except (OSError, ValueError, TypeError):
-                continue
-            if shard_names and all(
-                os.path.isfile(os.path.join(weights_root, shard_name)) for shard_name in shard_names
-            ):
-                return True
-        return False
+                is_cached_gguf = os.path.commonpath((weights_root, gguf_path)) == weights_root
+            except ValueError:
+                is_cached_gguf = False
+            return is_cached_gguf and os.path.isfile(gguf_path)
+        if from_tf:
+            return os.path.isfile(os.path.join(weights_root, _variant_name("tf_model.h5")))
+        if from_flax:
+            return os.path.isfile(os.path.join(weights_root, _variant_name("flax_model.msgpack")))
+
+        safetensors_names = ("model.safetensors", "model.safetensors.index.json")
+        pytorch_names = ("pytorch_model.bin", "pytorch_model.bin.index.json")
+        if use_safetensors is True:
+            weight_name, index_name = safetensors_names
+        elif use_safetensors is False:
+            weight_name, index_name = pytorch_names
+        elif any(
+            os.path.isfile(os.path.join(weights_root, _variant_name(filename)))
+            for filename in safetensors_names
+        ):
+            weight_name, index_name = safetensors_names
+        else:
+            weight_name, index_name = pytorch_names
+        if os.path.isfile(os.path.join(weights_root, _variant_name(weight_name))):
+            return True
+        index_path = os.path.join(weights_root, _variant_name(index_name))
+        try:
+            import json
+
+            with open(index_path, encoding = "utf-8") as index_file:
+                index = json.load(index_file)
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict):
+                return False
+            shard_names = set(weight_map.values())
+        except (OSError, ValueError, TypeError):
+            return False
+        return bool(shard_names) and all(
+            isinstance(shard_name, str) and os.path.isfile(os.path.join(weights_root, shard_name))
+            for shard_name in shard_names
+        )
 
     def _snapshot_for_revision(repo_cache):
         requested_revision = "main" if revision is None else str(revision)
@@ -502,6 +548,9 @@ def get_model_name(
     use_safetensors = None,
     return_mapper_changed = False,
     config = None,
+    gguf_file = None,
+    from_tf = False,
+    from_flax = False,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -545,6 +594,9 @@ def get_model_name(
             use_safetensors,
             trust_remote_code,
             config,
+            gguf_file,
+            from_tf,
+            from_flax,
         )
 
     if (
