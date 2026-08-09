@@ -115,9 +115,11 @@ _H3_TARGET_LEAVES = (
     "ff.net.0.proj",
     "ff.net.2",
 )
-_H3_TARGETS = r"transformer_blocks\.\d+\.(?:" + "|".join(
-    leaf.replace(".", r"\.") for leaf in _H3_TARGET_LEAVES
-) + ")"
+_H3_TARGETS = (
+    r"transformer_blocks\.\d+\.(?:"
+    + "|".join(leaf.replace(".", r"\.") for leaf in _H3_TARGET_LEAVES)
+    + ")"
+)
 
 # Modules whose weights the transformer reads a DTYPE off to align an activation with
 # (``x.to(self.linear.weight.dtype)``). A bitsandbytes ``Params4bit`` reports ``uint8``, so
@@ -290,7 +292,6 @@ def _load_transformer(cfg, device, base_precision):
 
     if base_precision == "nf4":
         from diffusers import BitsAndBytesConfig as DiffusersBnb
-
         quant = DiffusersBnb(
             load_in_4bit = True,
             bnb_4bit_quant_type = "nf4",
@@ -316,12 +317,18 @@ def _load_transformer(cfg, device, base_precision):
 def _patchify(latents, patch: tuple[int, int, int]):
     """``(1, C, F, H, W)`` video latents -> the transformer's rows, frame-major then row-major."""
     from diffusers.modular_pipelines.minimax_h3.before_denoise import patchify_video_latents
-
     return patchify_video_latents(latents, patch)
 
 
-def _build_layout(num_text_tokens: int, latent_frames: int, latent_h: int, latent_w: int,
-                  num_audio_latents: int, patch: tuple[int, int, int], device):
+def _build_layout(
+    num_text_tokens: int,
+    latent_frames: int,
+    latent_h: int,
+    latent_w: int,
+    num_audio_latents: int,
+    patch: tuple[int, int, int],
+    device,
+):
     """The packed ``[text | audio | video]`` layout for one training sample.
 
     Built by the pipeline's own ``@staticmethod`` so the trainer and the sampler cannot drift:
@@ -331,8 +338,15 @@ def _build_layout(num_text_tokens: int, latent_frames: int, latent_h: int, laten
     from diffusers.modular_pipelines.minimax_h3.before_denoise import MiniMaxH3PrepareLayoutStep
 
     text_token_tags = torch.full((num_text_tokens,), H3_TEXT_TAG, dtype = torch.long)
-    (position_ids, token_tags, video_indices, audio_indices, text_indices,
-     n_cond_video, n_cond_audio) = MiniMaxH3PrepareLayoutStep.build_packed_sequence(
+    (
+        position_ids,
+        token_tags,
+        video_indices,
+        audio_indices,
+        text_indices,
+        n_cond_video,
+        n_cond_audio,
+    ) = MiniMaxH3PrepareLayoutStep.build_packed_sequence(
         text_token_tags,
         latent_frames,
         latent_h,
@@ -472,14 +486,16 @@ def run_h3_lora_training(
     _emit(on_event, "model_load_started", num_images = len(pairs))
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
-        _emit(on_event, "complete", output_dir = str(out_dir), lora_path = None,
-              stopped = True, steps_run = 0)
+        _emit(
+            on_event, "complete", output_dir = str(out_dir), lora_path = None, stopped = True, steps_run = 0
+        )
         return str(out_dir)
 
     perf_snap = _apply_perf_flags(cfg, device)
     try:
-        return _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop,
-                         lambda: save_on_stop)
+        return _train_h3(
+            cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, lambda: save_on_stop
+        )
     finally:
         _restore_perf_flags(perf_snap)
 
@@ -507,8 +523,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     # here and nowhere else; the 66 GB transformer has not been fetched yet.
     pipe = _load_conditioners(cfg, device)
     caption_embeds = {cap: _encode_prompt(pipe, cap, device) for cap in to_encode}
-    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode),
-          total = len(to_encode))
+    _emit(on_event, "preparing", stage = "encode_prompts", done = len(to_encode), total = len(to_encode))
     pipe.text_encoder = None
     if getattr(pipe, "processor", None) is not None:
         pipe.processor = None
@@ -523,9 +538,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     latent_h, latent_w = height // H3_SPATIAL_COMPRESSION, width // H3_SPATIAL_COMPRESSION
     cache: list[tuple[Any, Any, Any]] = []
     for i, path in enumerate(clip_paths):
-        frames, waveform = decode_clip(
-            path, num_frames = num_frames, width = width, height = height
-        )
+        frames, waveform = decode_clip(path, num_frames = num_frames, width = width, height = height)
         video_a, video_b = _encode_video_stats(pipe.vae, frames, device)
         audio = _encode_audio_latents(pipe.audio_vae, waveform, device)
         if audio.shape[-1] != num_audio_latents:
@@ -536,8 +549,14 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         cache.append((video_a, video_b, audio))
         _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
         if _check_stop():
-            _emit(on_event, "complete", output_dir = str(out_dir), lora_path = None,
-                  stopped = True, steps_run = 0)
+            _emit(
+                on_event,
+                "complete",
+                output_dir = str(out_dir),
+                lora_path = None,
+                stopped = True,
+                steps_run = 0,
+            )
             return str(out_dir)
     del pipe
     gc.collect()
@@ -574,7 +593,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     if cfg.gradient_checkpointing:
         import functools
         import torch.utils.checkpoint as _ckpt
-
         transformer.enable_gradient_checkpointing(
             gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
         )
@@ -597,14 +615,17 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         num_training_steps = cfg.train_steps,
     )
     video_shift = (
-        float(cfg.flow_shift)
-        if isinstance(cfg.flow_shift, (int, float))
-        else _H3_VIDEO_SHIFT
+        float(cfg.flow_shift) if isinstance(cfg.flow_shift, (int, float)) else _H3_VIDEO_SHIFT
     )
-    _emit(on_event, "model_load_completed", compiled = False, base_precision = base_precision,
-          sequence_length = h3_packed_sequence_length(
-              max(e.shape[1] for e in caption_embeds.values()), num_frames, height, width
-          ))
+    _emit(
+        on_event,
+        "model_load_completed",
+        compiled = False,
+        base_precision = base_precision,
+        sequence_length = h3_packed_sequence_length(
+            max(e.shape[1] for e in caption_embeds.values()), num_frames, height, width
+        ),
+    )
 
     transformer.train()
     patch = tuple(transformer.config.patch_size)
@@ -648,14 +669,15 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             audio_rows = noisy_audio.permute(0, 2, 1).reshape(-1, H3_AUDIO_LATENT_CHANNELS)
             # DATA-ward velocity: x0 = x_t + sigma * v, so the target is latents - noise.
             target_video = _patchify(clean_video - noise_video, patch)
-            target_audio = (clean_audio - noise_audio).permute(0, 2, 1).reshape(
-                -1, H3_AUDIO_LATENT_CHANNELS
+            target_audio = (
+                (clean_audio - noise_audio).permute(0, 2, 1).reshape(-1, H3_AUDIO_LATENT_CHANNELS)
             )
 
             embeds = caption_embeds[captions[index]].to(device, weight_dtype)
             num_text_tokens = embeds.shape[1]
-            layout = _build_layout(num_text_tokens, latent_frames, latent_h, latent_w,
-                                   num_audio_latents, patch, device)
+            layout = _build_layout(
+                num_text_tokens, latent_frames, latent_h, latent_w, num_audio_latents, patch, device
+            )
             timestep, timestep_indices = _row_timesteps(
                 layout, num_text_tokens, 1.0 - sigma_video, 1.0 - sigma_audio, device
             )
@@ -731,8 +753,9 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         if ema is not None and ema.updates > 0:
             try:
-                ema_dir = save_ema_adapter(ema, transformer, lambda _pipe, d, l: _save_lora(d, l),
-                                           str(out_dir))
+                ema_dir = save_ema_adapter(
+                    ema, transformer, lambda _pipe, d, l: _save_lora(d, l), str(out_dir)
+                )
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")

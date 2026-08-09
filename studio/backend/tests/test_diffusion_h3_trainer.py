@@ -268,9 +268,7 @@ def test_discover_training_pairs_leaves_an_image_family_on_the_image_discovery(t
 
     Image.new("RGB", (8, 8)).save(tmp_path / "a.png")
     _clip(tmp_path, "b.mp4")  # present, and must be ignored for an image family
-    pairs = discover_training_pairs(
-        "sdxl", tmp_path, instance_prompt = "p", verify_images = True
-    )
+    pairs = discover_training_pairs("sdxl", tmp_path, instance_prompt = "p", verify_images = True)
     assert [Path(p).name for p, _ in pairs] == ["a.png"]
 
 
@@ -290,7 +288,6 @@ def test_the_clip_families_are_exactly_the_ones_whose_trainer_takes_clips():
 # ── the two coupled schedules ────────────────────────────────────────────────
 def test_the_two_shifts_come_from_the_released_scheduler_configs():
     from core.training.diffusion_h3_trainer import _H3_AUDIO_SHIFT, _H3_VIDEO_SHIFT
-
     assert _H3_VIDEO_SHIFT == 12.0
     assert _H3_AUDIO_SHIFT == 3.0
 
@@ -332,7 +329,6 @@ def test_an_explicit_flow_shift_still_overrides_the_video_default():
 
 def test_shifted_sigma_matches_the_schedulers_exponential_shift():
     from core.training.diffusion_h3_trainer import _shifted_sigma
-
     for shift in (3.0, 12.0):
         # The endpoints are fixed points of the shift, which is what keeps t = 0 clean and
         # t = 1 pure noise.
@@ -350,14 +346,12 @@ def test_a_larger_shift_pushes_sigma_higher_so_video_is_always_noisier_than_audi
         _H3_VIDEO_SHIFT,
         _shifted_sigma,
     )
-
     for u in (0.05, 0.2, 0.5, 0.8, 0.95):
         assert _shifted_sigma(u, _H3_VIDEO_SHIFT) > _shifted_sigma(u, _H3_AUDIO_SHIFT)
 
 
 def test_shifted_sigma_is_monotonic_in_u():
     from core.training.diffusion_h3_trainer import _shifted_sigma
-
     previous = -1.0
     for i in range(101):
         value = _shifted_sigma(i / 100, 12.0)
@@ -399,7 +393,6 @@ _H3_LINEARS = (
 def _selected(target_regex: str) -> set:
     """PEFT's own rule for a STRING target_modules: re.fullmatch on the module name."""
     import re
-
     return {name for name in _H3_LINEARS if re.fullmatch(target_regex, name)}
 
 
@@ -408,7 +401,6 @@ def test_h3_targets_are_a_regex_because_peft_does_not_glob():
     # written "transformer_blocks.*.attn.to_q" matches nothing at all, so the adapter would
     # train zero parameters while every step still reported a loss.
     from core.training.diffusion_h3_trainer import _H3_TARGETS
-
     assert isinstance(_H3_TARGETS, str)
     assert "*" not in _H3_TARGETS
 
@@ -418,7 +410,6 @@ def test_h3_targets_never_adapt_the_text_refiner():
     # transformer block, so a bare "to_q" would also adapt the two refiner blocks, i.e. the
     # text stream rather than the denoiser.
     from core.training.diffusion_h3_trainer import _H3_TARGETS
-
     assert not any(name.startswith("token_refiner") for name in _selected(_H3_TARGETS))
 
 
@@ -457,7 +448,6 @@ def test_the_nf4_skip_list_covers_every_dtype_reading_module():
     # audio_proj_out / time_embedder are already excluded by _keep_in_fp32_modules; the three
     # here are not.
     from core.training.diffusion_h3_trainer import _H3_NF4_SKIP_MODULES
-
     assert set(_H3_NF4_SKIP_MODULES) == {"context_embedder", "adaln_proj", "norm_out"}
 
 
@@ -468,7 +458,6 @@ def test_minimax_h3_is_a_trainable_video_family():
 
 def test_minimax_h3_routes_to_its_own_trainer():
     from core.training import diffusion_h3_trainer
-
     assert get_trainer("minimax-h3") is diffusion_h3_trainer.run_h3_lora_training
 
 
@@ -476,7 +465,6 @@ def test_minimax_h3_does_not_route_to_the_dit_trainer():
     # Its objective is a two-schedule joint loss over one packed sequence, which the DiT
     # loop's single sigma and single target cannot express.
     from core.training import diffusion_dit_trainer
-
     assert get_trainer("minimax-h3") is not diffusion_dit_trainer.run_dit_lora_training
 
 
@@ -500,7 +488,6 @@ def test_the_official_h3_base_is_trusted_for_training():
     # The image-side inference allowlist never covered a video family, so without the training
     # allowlist entry the official repo is refused as untrusted and only a local path trains.
     from core.training.diffusion_train_common import _assert_trusted_base_model
-
     _assert_trusted_base_model("MiniMaxAI/MiniMax-H3")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("some-random-user/minimax-h3-repack")
@@ -554,7 +541,6 @@ def test_h3_resolves_to_its_family_through_normalized():
 # ── entrypoint refusals, all of which must fire BEFORE anything loads ─────────
 def _run(**kw):
     from core.training.diffusion_h3_trainer import run_h3_lora_training
-
     return run_h3_lora_training(_cfg(**kw))
 
 
@@ -597,7 +583,6 @@ try:
     from diffusers.modular_pipelines.minimax_h3.before_denoise import (  # noqa: F401
         MiniMaxH3PrepareLayoutStep,
     )
-
     _H3_BLOCKS = True
     _H3_BLOCKS_WHY = ""
 except Exception as _exc:  # noqa: BLE001 -- a host without the H3 diffusers revision
@@ -607,9 +592,14 @@ except Exception as _exc:  # noqa: BLE001 -- a host without the H3 diffusers rev
 needs_h3_blocks = pytest.mark.skipif(not _H3_BLOCKS, reason = _H3_BLOCKS_WHY)
 
 
-def _layout(text_tokens = 6, latent_frames = 2, latent_h = 4, latent_w = 6, audio_latents = 3):
+def _layout(
+    text_tokens = 6,
+    latent_frames = 2,
+    latent_h = 4,
+    latent_w = 6,
+    audio_latents = 3,
+):
     from core.training.diffusion_h3_trainer import _build_layout
-
     return _build_layout(
         text_tokens, latent_frames, latent_h, latent_w, audio_latents, (1, 2, 2), "cpu"
     )
@@ -622,10 +612,7 @@ def test_the_layout_reserves_one_row_per_token_of_every_modality():
     assert layout["text_indices"].numel() == 6
     assert layout["audio_indices"].numel() == 3 * H3_AUDIO_CHANNELS
     assert layout["video_indices"].numel() == 2 * rows
-    assert layout["position_ids"].shape == (
-        6 + 3 * H3_AUDIO_CHANNELS + 2 * rows,
-        3,
-    )
+    assert layout["position_ids"].shape == (6 + 3 * H3_AUDIO_CHANNELS + 2 * rows, 3)
 
 
 @needs_h3_blocks
@@ -640,9 +627,7 @@ def test_the_layout_has_no_conditioning_rows():
 @needs_h3_blocks
 def test_every_row_of_the_layout_is_claimed_by_exactly_one_modality():
     layout = _layout()
-    claimed = torch.cat(
-        [layout["text_indices"], layout["audio_indices"], layout["video_indices"]]
-    )
+    claimed = torch.cat([layout["text_indices"], layout["audio_indices"], layout["video_indices"]])
     assert claimed.numel() == layout["position_ids"].shape[0]
     assert torch.equal(claimed.sort().values, torch.arange(claimed.numel()))
 
@@ -835,7 +820,6 @@ def test_the_real_h3_base_is_still_trainable():
 
 def _h3_cfg(**kw):
     from core.training.diffusion_train_common import DiffusionLoraConfig
-
     return DiffusionLoraConfig(
         base_model = "MiniMaxAI/MiniMax-H3",
         data_dir = "/tmp/d",

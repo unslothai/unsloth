@@ -1187,9 +1187,7 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     # explicit scheme this host cannot honour. That refusal is its own contract, covered by
     # test_video_download_plan_refuses_an_unavailable_transformer_quant; here it would only mean
     # the request never reaches download_plan, so the forwarding under test is never exercised.
-    monkeypatch.setattr(
-        video_module, "assert_video_precision_available", lambda fam, **kw: None
-    )
+    monkeypatch.setattr(video_module, "assert_video_precision_available", lambda fam, **kw: None)
 
     resp = client.post(
         "/api/inference/video/download-plan",

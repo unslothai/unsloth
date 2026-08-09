@@ -484,9 +484,9 @@ def test_both_axes_and_neither_stay_valid_with_a_keyframe():
     from models.inference import VideoGenerateRequest
 
     frame = _tiny_png_b64()
-    assert VideoGenerateRequest(
-        prompt = "a cat", first_frame = frame, width = 768, height = 512
-    ).width == 768
+    assert (
+        VideoGenerateRequest(prompt = "a cat", first_frame = frame, width = 768, height = 512).width == 768
+    )
     assert VideoGenerateRequest(prompt = "a cat", first_frame = frame).width is None
 
 

@@ -247,11 +247,7 @@ def discover_clip_caption_pairs(
 
 
 def decode_clip(
-    path: str | os.PathLike[str],
-    *,
-    num_frames: int,
-    width: int,
-    height: int,
+    path: str | os.PathLike[str], *, num_frames: int, width: int, height: int
 ) -> tuple[Any, Any]:
     """Decode one training clip to ``(frames, waveform)``.
 
@@ -328,9 +324,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     tail is padded rather than refused: the video stream is the authority on the clip's length
     and containers routinely end their audio a few milliseconds early.
     """
-    resampler = av.AudioResampler(
-        format = "flt", layout = "stereo", rate = H3_AUDIO_SAMPLING_RATE
-    )
+    resampler = av.AudioResampler(format = "flt", layout = "stereo", rate = H3_AUDIO_SAMPLING_RATE)
     chunks = []
     with av.open(str(path)) as container:
         for frame in container.decode(audio = 0):

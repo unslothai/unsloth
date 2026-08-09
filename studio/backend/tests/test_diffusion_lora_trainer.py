@@ -266,6 +266,7 @@ def test_force_bf16_families_matches_trainer_specs():
     # the union rather than the _SPECS projection alone.
     from core.training.diffusion_dit_trainer import _SPECS
     from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
+
     dit_bf16_only = {fam for fam, spec in _SPECS.items() if spec.force_bf16}
     assert dit_bf16_only <= _FORCE_BF16_FAMILIES
     assert _FORCE_BF16_FAMILIES - dit_bf16_only == {"minimax-h3"}

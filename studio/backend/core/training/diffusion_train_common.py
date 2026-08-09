@@ -171,9 +171,7 @@ def _component_only_repos() -> dict[str, tuple[str, str, str]]:
     video_families = [detect_video_family("", override = n) for n in supported_video_family_names()]
     components: dict[str, tuple[str, str, str]] = {}
     bases: set[str] = set()
-    for fam, is_video in [(f, False) for f in image_families] + [
-        (f, True) for f in video_families
-    ]:
+    for fam, is_video in [(f, False) for f in image_families] + [(f, True) for f in video_families]:
         if fam is None:
             continue
         for attr in ("base_repo", "deploy_base_repo"):
@@ -1363,7 +1361,6 @@ def discover_training_pairs(
     quietly implying a check that did not happen."""
     if str(resolved_family or "").strip().lower() in CLIP_TRAINED_FAMILIES:
         from core.training.diffusion_h3_clips import discover_clip_caption_pairs
-
         return discover_clip_caption_pairs(
             data_dir, instance_prompt = instance_prompt, caption_column = caption_column
         )
