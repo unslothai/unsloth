@@ -16,6 +16,11 @@ network-touching entry point calls :func:`activate_native_tls` before its first
 TLS connection; the ``python -c`` probes and the standalone prebuilt installers
 carry an inline copy of the gating because they cannot import backend modules.
 
+truststore is vendored at ``backend/vendor/`` rather than depended on, so no
+Studio user gains a package for a proxy they do not have; see the README there.
+Every consumer appends that directory to ``sys.path`` and imports the top-level
+name, which keeps a truststore the user installed themselves in front of ours.
+
 Defaults mirror install.sh: on for macOS and Windows, opt-in on Linux via
 ``UNSLOTH_STUDIO_NATIVE_TLS=1`` (distro OpenSSL configurations vary), opt-out
 anywhere with ``0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep
@@ -35,11 +40,16 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
 _DEFAULT_ON_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
+
+# Resolved from this file, so it is right in a checkout and in an installed
+# wheel alike. Never build it from the cwd or a hardcoded "studio/backend".
+_VENDOR_DIR = str(Path(__file__).resolve().parent.parent / "vendor")
 
 _logger = logging.getLogger(__name__)
 _activated = False
@@ -58,11 +68,16 @@ def native_tls_enabled() -> bool:
 # Children that cannot import this module carry the gate as source instead: the
 # `python -c` probes, and prebuilt_core.py, which is vendored standalone beside
 # the backend. Generating it from the same constants is what stops the copies
-# drifting from native_tls_enabled(); the child only needs os and sys imported.
+# drifting from native_tls_enabled(); the child only needs os and sys imported,
+# plus _TRUSTSTORE_VENDOR, which it defines itself because each child locates
+# the vendor directory differently. Keeping that out of the rendered text is
+# what lets every child share one byte-identical gate.
 _INLINE_GATE = """\
 _flag = os.environ.get({env!r}, '').strip().lower()
 if _flag in {truthy!r} or (_flag not in {falsey!r} and sys.platform in {platforms!r}):
     try:
+        if _TRUSTSTORE_VENDOR not in sys.path:
+            sys.path.append(_TRUSTSTORE_VENDOR)
         import truststore
         truststore.inject_into_ssl()
     except Exception:
@@ -71,8 +86,16 @@ del _flag
 """
 
 
+def vendor_dir() -> str:
+    """Where the vendored truststore lives, for a child that must be told."""
+    return _VENDOR_DIR
+
+
 def inline_gate_source() -> str:
-    """The gate as executable source, for a child that cannot import this module."""
+    """The gate as executable source, for a child that cannot import this module.
+
+    The child must bind ``_TRUSTSTORE_VENDOR`` to the vendor directory first.
+    """
     return _INLINE_GATE.format(
         env = _NATIVE_TLS_ENV,
         truthy = _TRUTHY,
@@ -99,6 +122,10 @@ def activate_native_tls() -> bool:
     # one spelling has to carry to the other or the unset name re-enables it.
     os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
     os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
+    # append, NOT insert(0, ...) as everywhere else in the backend: a truststore
+    # the user installed themselves must keep winning over the vendored copy.
+    if _VENDOR_DIR not in sys.path:
+        sys.path.append(_VENDOR_DIR)
     try:
         import truststore
         truststore.inject_into_ssl()

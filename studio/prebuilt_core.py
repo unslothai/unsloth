@@ -61,12 +61,17 @@ except ImportError:
 # cannot import backend modules, so the gate is pasted from
 # backend/utils/native_tls.py's inline_gate_source(); test_native_tls_entrypoints.py
 # asserts the copy below still parses to the same statements (the formatter
-# restyles it, so the check is on the AST, not the text).
+# restyles it, so the check is on the AST, not the text). truststore is vendored
+# rather than installed, and this module sits one level above the backend, so it
+# finds the vendor directory from its own location.
+_TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
 _flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
 if _flag in ("1", "true", "yes") or (
     _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")
 ):
     try:
+        if _TRUSTSTORE_VENDOR not in sys.path:
+            sys.path.append(_TRUSTSTORE_VENDOR)
         import truststore
         truststore.inject_into_ssl()
     except Exception:

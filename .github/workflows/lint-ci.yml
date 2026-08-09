@@ -227,9 +227,11 @@ jobs:
               "Licensed under the Apache License",  # Apache-2.0 long form
               "General Public License",         # GPL / LGPL / AGPL long form
           )
+          # "vendor" holds upstream third-party source kept byte-identical to its
+          # release, so it carries the upstream licence, not one of ours.
           SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
                         "unsloth_compiled_cache", "node_modules",
-                        "unsloth.egg-info"}
+                        "unsloth.egg-info", "vendor"}
 
           studio_missing = []
           other_missing  = []

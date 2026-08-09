@@ -45,7 +45,7 @@ import time
 from pathlib import Path
 
 from utils.native_path_leases import child_env_without_native_path_secret
-from utils.native_tls import inline_gate_source
+from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -1412,7 +1412,10 @@ import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # This -c child cannot import backend modules, and AutoConfig.from_pretrained
 # below may download from the Hub, so it carries the gate as generated source.
-"""
+# repr() the path: a Windows backslash or a space must survive into the source.
+_TRUSTSTORE_VENDOR = """
+    + repr(vendor_dir())
+    + "\n"
     + inline_gate_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]

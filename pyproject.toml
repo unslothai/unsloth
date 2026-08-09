@@ -69,6 +69,8 @@ studio = [
     "frontend/*.yaml",
     "frontend/.git*",
     "backend/requirements/**/*",
+    # Vendored truststore: not a package (no __init__.py), so it ships as data.
+    "backend/vendor/**/*",
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
@@ -95,7 +97,6 @@ studio = [
     "datasets==4.3.0",
     "pyjwt",
     "huggingface-hub==0.36.2",
-    "truststore>=0.10.4,<0.11; python_version >= '3.10'",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",
@@ -1392,6 +1393,8 @@ extend-exclude = [
     "*ollama_template_mappers.py",
     "*_auto_install.py",
     "*mapper.py",
+    # Vendored upstream source: reformatting it would break the digest test.
+    "studio/backend/vendor/",
 ]
 
 [tool.ruff.lint]

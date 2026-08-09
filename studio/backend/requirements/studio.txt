@@ -11,10 +11,8 @@ datasets==4.3.0
 pyjwt
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub==0.36.2
-# OS-trust-store TLS for corporate TLS-inspection proxies; see utils/native_tls.py.
-# Capped at the next minor: pre-1.0, and a 0.x minor is where truststore has
-# changed verification behaviour, which here would silently apply process-wide.
-truststore>=0.10.4,<0.11; python_version >= "3.10"
+# truststore is deliberately NOT here: it is vendored at backend/vendor/ so no
+# Studio user gains a package for a proxy they do not have. See its README.
 structlog>=24.1.0
 diceware
 ddgs
