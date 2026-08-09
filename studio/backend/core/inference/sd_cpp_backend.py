@@ -196,21 +196,27 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
     ``ensure_*`` return any runnable binary they find, so without this the CPU sd-server is
     reused forever and generation stays on the CPU even though a matching GPU build now exists.
 
+    The reverse matters too: a host with a recorded GPU install whose device target later
+    resolves to CPU keeps running on the GPU, because nothing in the sd-server/sd-cli command
+    line asks for a CPU backend -- the build itself is the choice. So a recorded accelerator
+    that is not the one now wanted is a change in either direction.
+
     Deliberately conservative -- only a copy the installer owns is ever replaced (the user's own
-    build or an in-tree checkout is left alone), an install with no record is only replaced when a
-    GPU build is requested (an unrecorded install predates the record and cannot be a GPU one, as
-    the record has shipped since the first GPU-capable asset), and asking for the CPU build back
-    never triggers a reinstall."""
+    build or an in-tree checkout is left alone), and an install with NO record is left alone when
+    the CPU build is wanted: unrecorded is unknown (GPU assets shipped before the record did), and
+    reinstalling every legacy install on a CPU target would redownload the bundle for the common
+    case, where the install almost certainly is the CPU one already."""
     if not is_managed_binary(binary):
         return False
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
-        if want == "cpu":
-            return False  # the plain build is what an unrecorded install already is
         if want in _failed_accelerator_upgrades:
             return False
-        return mod.installed_accelerator(managed_install_root()) != want
+        have = mod.installed_accelerator(managed_install_root())
+        if want == "cpu":
+            return have is not None and have != "cpu"
+        return have != want
     except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary, as before
         return False
 
@@ -443,6 +449,9 @@ class SdCppDiffusionBackend:
         # sd-server started for an in-flight load, before it commits to _state; tracked so an unload can stop it mid-startup.
         self._pending_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
+        # Set by _resolve_backend when it had to skip an accelerator install because the managed
+        # tree was still in use; the load retries it once the tree is free.
+        self._deferred_accelerator_install = False
         # Set once this load's graph proved unrunnable on the GPU backend (a ggml unsupported-op abort), so the CPU restart happens once per load. Cleared by each load.
         self._cpu_backend_forced = False
 
@@ -484,7 +493,15 @@ class SdCppDiffusionBackend:
         # executable for writing (ETXTBSY) and Windows locks it, so installing here would fail
         # every time a native model is loaded. Defer it: resolve against what is on disk now, and
         # let the load re-run this once the old server is stopped (see _upgrade_server_after_teardown).
-        upgrade_pending = self._state is not None and self._state.server is not None
+        #
+        # A one-shot load holds the tree just as hard: begin_load only SIGNALS the in-flight
+        # generation to cancel and this runs before the load waits on _generate_lock, so the
+        # previous sd-cli can still be executing out of the managed tree. Defer for an active
+        # generation too, in either mode.
+        upgrade_pending = (self._state is not None and self._state.server is not None) or (
+            self._active_generate_cancel is not None
+        )
+        self._deferred_accelerator_install = upgrade_pending
         server_binary = ensure_sd_server_binary(
             allow_install = _install_allowed() and not upgrade_pending, accelerator = accelerator
         )
@@ -716,11 +733,11 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                 if old_state is not None and old_state.server is not None:
                     old_state.server.stop()
-                    # The file is free now, so an accelerator upgrade deferred in _resolve_backend
-                    # can land. Nothing else holds it: this runs under both locks, the old server
-                    # is stopped and no generation can start.
-                    if mode == "server":
-                        server_binary = self._upgrade_server_after_teardown(server_binary)
+                # The tree is free now, so an accelerator upgrade deferred in _resolve_backend can
+                # land: this runs under both locks, the old server is stopped, the previous
+                # generation has finished and no new one can start.
+                if mode == "server" and self._deferred_accelerator_install:
+                    server_binary = self._upgrade_server_after_teardown(server_binary)
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
