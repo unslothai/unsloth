@@ -243,7 +243,6 @@ def _read_card_metadata(path: Path) -> Any:
     return payload if isinstance(payload, dict) else _UNPARSABLE_METADATA
 
 
-
 # --- Split inference for cached datasets whose card declares nothing ------------------
 #
 # datasets resolves a metadata-free directory with get_data_patterns: it tries sharded
@@ -299,9 +298,7 @@ _FOLDER_EXTENSIONS = frozenset(
     ".avi .mkv .mov .mp4 .mpeg .pdf".split()
 )
 _EXTENSION_MODULES = {
-    extension: module
-    for module, names in _MODULE_EXTENSIONS.items()
-    for extension in names.split()
+    extension: module for module, names in _MODULE_EXTENSIONS.items() for extension in names.split()
 }
 # datasets' tie-break once the counts are level, then the extension string itself.
 _EXTENSION_PRIORITY = (".parquet", ".jsonl", ".json", ".csv")
@@ -400,9 +397,7 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
             dirnames[:] = []
             continue
         # datasets hides dot and __ directories from its own patterns.
-        dirnames[:] = [
-            name for name in dirnames if not name.startswith((".", "__"))
-        ]
+        dirnames[:] = [name for name in dirnames if not name.startswith((".", "__"))]
         for filename in filenames:
             if filename in _IGNORED_DATA_FILENAMES or filename.startswith("."):
                 continue
