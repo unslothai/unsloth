@@ -165,7 +165,11 @@ def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch)
     assert not list(run_dir.glob("checkpoint-*"))
 
 
-def _cosine_schedule(optimizer, num_training_steps: int, num_warmup_steps: int = 0):
+def _cosine_schedule(
+    optimizer,
+    num_training_steps: int,
+    num_warmup_steps: int = 0,
+):
     """The zero-warmup cosine ``LambdaLR`` that ``diffusers.optimization.get_scheduler("cosine")``
     builds, written out here rather than imported.
 
