@@ -62,7 +62,10 @@ test("an oversized reference is refused before a FileReader ever exists", () => 
     });
 
     assert.equal(constructed(), 0, "the file must not be read into memory at all");
-    assert.deepEqual(loaded, []);
+    // Length rather than deepEqual against []: node's deepEqual is an assertion
+    // signature, so comparing to an empty literal narrows loaded to never[] and
+    // the audio push below stops typechecking.
+    assert.equal(loaded.length, 0);
     assert.equal(errors.length, 1);
     assert.match(errors[0], /too large \(limit 72 MB\)/);
 
