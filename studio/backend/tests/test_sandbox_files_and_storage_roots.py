@@ -2798,13 +2798,19 @@ def test_a_delete_waits_for_a_call_running_in_another_studio(tmp_path, monkeypat
 
     # What the other process leaves in the ledger while its tool runs.
     tools._record_workdir(
-        tools._session_key(session), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY,
+        tools._session_key(session),
+        f"{os.getpid() + 1}:{time.time():.0f}",
+        tools._BUSY,
     )
     assert tools.remove_session_sandbox(session, delete_files = True) is False
     assert (workdir / "report.csv").is_file(), "removed under another process's call"
-    assert tools._recorded_workdir(
-        tools._session_key(session), tools._PENDING_DELETE,
-    ) == f"1|{session}"
+    assert (
+        tools._recorded_workdir(
+            tools._session_key(session),
+            tools._PENDING_DELETE,
+        )
+        == f"1|{session}"
+    )
 
     # Once that process is gone, the next startup carries it out.
     tools._record_workdir(tools._session_key(session), None, tools._BUSY)
@@ -2814,9 +2820,7 @@ def test_a_delete_waits_for_a_call_running_in_another_studio(tmp_path, monkeypat
             break
         time.sleep(0.05)
     assert not workdir.exists()
-    assert tools._recorded_workdir(
-        tools._session_key(session), tools._PENDING_DELETE,
-    ) is None
+    assert tools._recorded_workdir(tools._session_key(session), tools._PENDING_DELETE) is None
 
 
 def test_a_stale_busy_entry_does_not_keep_a_sandbox_forever(tmp_path, monkeypatch):
@@ -2830,7 +2834,9 @@ def test_a_stale_busy_entry_does_not_keep_a_sandbox_forever(tmp_path, monkeypatc
     workdir = Path(tools.get_sandbox_workdir(session))
     long_ago = time.time() - tools._BUSY_TTL_SECONDS - 60
     tools._record_workdir(
-        tools._session_key(session), f"{os.getpid() + 1}:{long_ago:.0f}", tools._BUSY,
+        tools._session_key(session),
+        f"{os.getpid() + 1}:{long_ago:.0f}",
+        tools._BUSY,
     )
 
     assert tools._busy_elsewhere(session) is False
@@ -2853,7 +2859,8 @@ def test_our_own_call_still_uses_the_in_memory_count(tmp_path, monkeypatch):
 
     with tools._session_in_flight(session):
         assert tools._recorded_workdir(
-            tools._session_key(session), tools._BUSY,
+            tools._session_key(session),
+            tools._BUSY,
         ), "did not say it was busy"
         assert tools._busy_elsewhere(session) is False
         assert tools.remove_session_sandbox(session, delete_files = True) is False
@@ -2940,7 +2947,9 @@ def test_two_processes_in_one_sandbox_both_hold_it(tmp_path, monkeypatch):
 
     other = os.getpid() + 1
     tools._record_workdir(
-        tools._session_key(session), f"{other}:{time.time():.0f}", tools._BUSY,
+        tools._session_key(session),
+        f"{other}:{time.time():.0f}",
+        tools._BUSY,
     )
     with tools._session_in_flight(session):
         owners = tools._busy_owners(session)
@@ -2964,7 +2973,9 @@ def test_a_busy_note_keyed_by_case_is_seen_by_the_other_casing(tmp_path, monkeyp
     workdir = Path(tools.get_sandbox_workdir("CaseBusy"))
     (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
     tools._record_workdir(
-        tools._session_key("casebusy"), f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY,
+        tools._session_key("casebusy"),
+        f"{os.getpid() + 1}:{time.time():.0f}",
+        tools._BUSY,
     )
     assert tools._busy_elsewhere("CaseBusy") is True
     assert tools.remove_session_sandbox("CaseBusy", delete_files = True) is False
@@ -2986,7 +2997,9 @@ def test_a_delete_left_by_another_studio_happens_when_our_call_ends(tmp_path, mo
     with tools._session_in_flight(session):
         # What the other Studio writes when it finds us busy.
         tools._record_workdir(
-            tools._session_key(session), f"1|{session}", tools._PENDING_DELETE,
+            tools._session_key(session),
+            f"1|{session}",
+            tools._PENDING_DELETE,
         )
     for _ in range(50):
         if not workdir.exists():
