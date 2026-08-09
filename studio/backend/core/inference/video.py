@@ -964,9 +964,7 @@ class VideoBackend:
                     # the base snapshot that no longer carries a dense encoder is still coming
                     # down). Same registration the native H3 path makes for its companions.
                     if h3_te_scheme:
-                        self._loading.asset_repos = self._loading.asset_repos + (
-                            H3_TE_QUANT_REPO,
-                        )
+                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
@@ -1295,7 +1293,9 @@ class VideoBackend:
 
     @staticmethod
     def _h3_te_quant_scheme(
-        fam: Any, text_encoder_quant: Optional[str], base: Optional[str] = None
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        base: Optional[str] = None,
     ) -> Optional[str]:
         """The hosted QUANTIZED conditioner scheme this pick would load, or None.
 

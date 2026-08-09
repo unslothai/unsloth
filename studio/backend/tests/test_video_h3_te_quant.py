@@ -44,10 +44,12 @@ torch = pytest.importorskip("torch", reason = "the ConvRot arithmetic tests need
 H3_BASE = "MiniMaxAI/MiniMax-H3"
 
 
-def _fam(modular_workflow = "fl2va", name = "minimax-h3", base_repo = H3_BASE):
-    return types.SimpleNamespace(
-        name = name, modular_workflow = modular_workflow, base_repo = base_repo
-    )
+def _fam(
+    modular_workflow = "fl2va",
+    name = "minimax-h3",
+    base_repo = H3_BASE,
+):
+    return types.SimpleNamespace(name = name, modular_workflow = modular_workflow, base_repo = base_repo)
 
 
 # ── the resolver ─────────────────────────────────────────────────────────────────
