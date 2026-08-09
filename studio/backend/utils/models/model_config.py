@@ -3577,6 +3577,12 @@ class ModelConfig:
                     is_lora = False,
                     is_gguf = True,
                     gguf_file = gguf_file,
+                    # The identity the CALLER asked for, carried through. Dropping it left the
+                    # load intent with no variant, so llama.cpp recorded the bare label off the
+                    # filename: /status named the root row for a qualified checkpoint, and the
+                    # deletion guard compared that bare label against the selected key and let
+                    # the delete through.
+                    gguf_variant = gguf_variant,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
                     gguf_dspark_file = dspark_file,

@@ -662,3 +662,27 @@ def test_a_parent_only_quant_survives_the_main_file_predicate():
 
     path = "distilled/Q4_K_M/foo.gguf"
     assert is_main_gguf_variant_path(path, gguf_variant_key(path))
+
+
+def test_a_local_load_keeps_the_qualified_identity_it_was_asked_for(tmp_path):
+    """_find_local_gguf_by_variant picks the right file, but the returned config dropped the
+    variant, so the load intent carried none and llama.cpp recorded the bare label off the
+    filename. /status then named the root row for a qualified checkpoint, and the deletion guard
+    compared that bare label against the selected key and let the delete through."""
+    from utils.models.model_config import ModelConfig
+
+    snapshot = tmp_path / "snap"
+    for path, _size in LTX_FILES:
+        target = snapshot / path
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"x" * 512)
+    (snapshot / "config.json").write_text("{}")
+
+    wanted = "distilled/ltx-2.3-22b-distilled-Q6_K"
+    cfg = ModelConfig.from_identifier(str(snapshot), gguf_variant = wanted)
+    assert cfg is not None and cfg.is_gguf and cfg.is_local
+    assert cfg.gguf_variant == wanted
+    assert "distilled/" in Path(cfg.gguf_file).as_posix()
+    # A bare request still records the bare identity it asked for.
+    bare = ModelConfig.from_identifier(str(snapshot), gguf_variant = "Q6_K")
+    assert bare is not None and bare.gguf_variant == "Q6_K"
