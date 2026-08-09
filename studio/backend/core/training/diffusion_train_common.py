@@ -1295,6 +1295,12 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         # LTX-2's official base. It is a video family, so the image-side inference allowlist
         # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
+        # 2.3 resolves to the same ``ltx-2`` family, so family resolution already routes it to
+        # this trainer and declares it trainable, and the trainer reads every shape off the
+        # loaded transformer's own config. Without it here the gate refused the official dense
+        # 2.3 pipeline as untrusted while the routing called it supported. The inference
+        # allowlist already trusts it; the fp8 variant is not a dense training base and stays out.
+        "lightricks/ltx-2.3",
     }
 )
 

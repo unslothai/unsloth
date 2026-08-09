@@ -661,3 +661,102 @@ def test_the_preflight_survives_a_diffusers_that_cannot_import_its_pipeline(monk
 
     monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
     assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
+
+
+# -- int8, the trust gate, and the connector padding side ---------------------
+
+
+def test_int8_excludes_the_one_token_audio_stream():
+    """A still feeds a ONE-token audio stream, and torch._int_mm needs M > 16. Without an
+    LTX-2 entry the generic int8 path quantized audio_proj_in / audio_attn* / audio_ff and the
+    first forward raised, after the whole base had been loaded."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme("int8", "ltx-2")
+    assert "audio" in tokens
+    # The generic list is still there (the M=1 modulation projections).
+    assert "norm" in tokens and "time_embed" in tokens
+    # 2.3 is the same audiovisual DiT.
+    assert "audio" in exclude_tokens_for_scheme("int8", "ltx-2.3")
+    # An image family is unchanged, and a non-int8 scheme still excludes nothing.
+    assert "audio" not in exclude_tokens_for_scheme("int8", "flux.1")
+    assert exclude_tokens_for_scheme("fp8", "ltx-2") == ()
+
+
+def test_the_int8_filter_actually_skips_every_audio_side_linear():
+    """The token list is only useful if the shared filter drops these modules."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+
+    fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8", "ltx-2"))
+    big = torch.nn.Linear(2048, 2048)
+    audio_names = (
+        "transformer_blocks.0.audio_proj_in",
+        "transformer_blocks.0.audio_attn1.to_q",
+        "transformer_blocks.0.audio_attn2.to_k",
+        "transformer_blocks.0.audio_ff.net.0.proj",
+        "transformer_blocks.0.audio_to_video_attn.to_q",
+        "transformer_blocks.0.video_to_audio_attn.to_k",
+    )
+    for name in audio_names:
+        assert fn(big, name) is False, f"{name} must stay dense"
+    # The video stream keeps full int8 coverage.
+    assert fn(big, "transformer_blocks.0.attn1.to_q") is True
+    assert fn(big, "transformer_blocks.0.ff.net.0.proj") is True
+
+
+def test_the_int8_trainer_path_passes_the_family_through(monkeypatch):
+    """The exclusions only apply if the trainer asks for them by family."""
+    seen: dict = {}
+
+    def _fake_quantize(model, config, filter_fn = None):
+        seen["filter_fn"] = filter_fn
+
+    fake = types.ModuleType("torchao.quantization")
+    fake.Int8WeightOnlyConfig = lambda: object()
+    fake.quantize_ = _fake_quantize
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setitem(sys.modules, "torchao.quantization", fake)
+
+    dit._int8_quantize_base(torch.nn.Linear(8, 8), "ltx-2")
+    big = torch.nn.Linear(2048, 2048)
+    assert seen["filter_fn"](big, "transformer_blocks.0.audio_attn1.to_q") is False
+
+
+def test_the_official_ltx23_base_is_trusted_for_training():
+    """2.3 resolves to the ltx-2 family, so routing already sends it to this trainer; the trust
+    gate refusing it as untrusted made the two disagree."""
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    assert resolve_trainable_family("Lightricks/LTX-2.3") == "ltx-2"
+    _assert_trusted_base_model("Lightricks/LTX-2.3")
+    _assert_trusted_base_model("lightricks/ltx-2.3")
+    _assert_trusted_base_model("Lightricks/LTX-2")
+    # An unrelated repo is still refused.
+    with pytest.raises(ValueError):
+        _assert_trusted_base_model("some-random-user/ltx-2-clone")
+
+
+def test_the_connector_padding_side_is_read_after_encode_prompt():
+    """diffusers' own encode_prompt sets tokenizer.padding_side = "left" (Gemma wants left
+    padding), and the pipeline reads the value AFTER calling it. Reading it before baked in a
+    stale "right", and the connectors build the valid-token mask from it, so every caption
+    shorter than the 1024 pad length would have been masked on the wrong end."""
+    seen: list = []
+
+    class _Tok:
+        padding_side = "right"  # what the tokenizer reports before encode_prompt runs
+
+    class _Pipe:
+        tokenizer = _Tok()
+
+        def encode_prompt(self, **_kwargs):
+            # Exactly what diffusers does inside _get_gemma_prompt_embeds.
+            self.tokenizer.padding_side = "left"
+            return torch.zeros(1, 4, 8), torch.ones(1, 4), None, None
+
+        def connectors(self, pe, mask, padding_side = "left"):
+            seen.append(padding_side)
+            return torch.zeros(1, 4, 8), torch.zeros(1, 4, 8), torch.ones(1, 4)
+
+    dit._ltx2_encode_prompts(_Pipe(), ["a sloth", "a second caption"], "cpu")
+    assert seen == ["left", "left"], "the connectors must get the side encode_prompt actually used"

@@ -91,11 +91,21 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 /
+# audio_ff, fed by audio_proj_in) plus the a2v / v2a cross attentions. A video-only run feeds a
+# MINIMAL audio stream -- one token for a still -- so those linears run at M = 1, under the same
+# _int_mm floor of 16 as the cases above. The audio stream is deliberately inert on a video-only
+# run (isolated modalities, out of the loss, out of the LoRA targets), so leaving it in bf16 costs
+# nothing while the video-stream linears keep full int8 coverage. One token covers every audio-side
+# name, including video_to_audio_attn, whose keys/values are that same one-token stream.
+_LTX2_INT8_EXCLUDES = ("audio",)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
+    "ltx-2": _LTX2_INT8_EXCLUDES,
+    "ltx-2.3": _LTX2_INT8_EXCLUDES,  # same audiovisual DiT
 }
 
 

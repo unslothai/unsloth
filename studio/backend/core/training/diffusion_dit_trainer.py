@@ -327,19 +327,26 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     ).to(device)
 
 
-def _int8_quantize_base(transformer) -> None:
+def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     """torchao weight-only int8 on the big frozen linears, applied after add_adapter so
     the base_layer inside each LoRA wrapper quantizes while the adapters stay high
     precision. ``make_filter_fn`` (shared with the inference quant layer) keeps only
     Linears with >= 512 features -- which also naturally skips the rank-sized LoRA
-    matrices -- and drops the M=1 modulation projections int8 kernels reject."""
+    matrices -- and drops the M=1 modulation projections int8 kernels reject.
+
+    ``family`` selects the per-family small-M exclusions on top of those. Passing it is what
+    keeps training and inference on the same list: without it LTX-2's one-token audio stream
+    (and Qwen-Image's unpadded text stream) is quantized here and the first forward raises,
+    after the whole base has been loaded."""
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
     from torchao.quantization import Int8WeightOnlyConfig, quantize_
 
     quantize_(
         transformer,
         Int8WeightOnlyConfig(),
-        filter_fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8")),
+        filter_fn = make_filter_fn(
+            512, exclude_name_tokens = exclude_tokens_for_scheme("int8", family)
+        ),
     )
 
 
@@ -1150,7 +1157,6 @@ def _ltx2_encode_prompts(pipe, captions, device):
     _encoders_to_device(pipe, device)
     # The Gemma3 hidden states are per-LAYER stacked ([1, 1024, 3840 * layers]); only the
     # connector output reaches the transformer, so that is what gets cached.
-    padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
     out = []
     with torch.no_grad():
         for cap in captions:
@@ -1161,6 +1167,13 @@ def _ltx2_encode_prompts(pipe, captions, device):
                 max_sequence_length = 1024,
                 device = device,
             )
+            # Read AFTER encode_prompt, exactly where the pipeline reads it. encode_prompt
+            # sets ``tokenizer.padding_side = "left"`` itself (Gemma wants left padding for
+            # chat-style prompts), so a tokenizer that loaded reporting "right" would have had
+            # that stale value baked in here -- and the connectors build the valid-token mask
+            # from this, so every caption shorter than the 1024 pad length would be masked on
+            # the wrong end and the cached conditioning would not match what inference builds.
+            padding_side = getattr(getattr(pipe, "tokenizer", None), "padding_side", "left")
             video_emb, audio_emb, conn_mask = pipe.connectors(pe, mask, padding_side = padding_side)
             out.append((video_emb.cpu(), audio_emb.cpu(), conn_mask.cpu()))
     return out
@@ -1986,7 +1999,7 @@ def _train_dit(
 
     # int8 / fp8 / mxfp8 convert the frozen base linears AFTER the LoRA attaches, so the adapter modules are excluded and stay high precision.
     if base_precision == "int8":
-        _int8_quantize_base(transformer)
+        _int8_quantize_base(transformer, cfg.resolved_family)
     if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
         base_precision = "bf16"
     if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
