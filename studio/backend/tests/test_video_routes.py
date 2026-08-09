@@ -1160,9 +1160,7 @@ def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
         lambda: types.SimpleNamespace(device = "cuda", dtype = "bfloat16"),
     )
     monkeypatch.setattr(video_module, "dense_transformer_supported", lambda target: True)
-    monkeypatch.setattr(
-        video_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8"
-    )
+    monkeypatch.setattr(video_module, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
     video_module.assert_video_precision_available(
         types.SimpleNamespace(name = "wan2.2"),
         model_kind = "pipeline",
