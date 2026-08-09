@@ -1286,6 +1286,9 @@ def test_keepwarm_tracks_image_video_generation_paths():
     assert not _is_inference_path("/api/inference/images/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate/cancel")
+    # The images cancel route STOPS a generation, so tracking it as an inference request would
+    # keep the model pinned past the run it just cancelled. endswith matching already excludes it.
+    assert not _is_inference_path("/api/inference/images/generate/cancel")
 
 
 def test_import_example_partial_failure_leaves_no_partial_dataset(

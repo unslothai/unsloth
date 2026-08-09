@@ -524,6 +524,47 @@ def test_generate_cancellation_raises_cancelled_not_failure():
         b.generate(prompt = "x", steps = 8, seed = 5)
 
 
+def test_cancel_generate_stops_a_running_native_run():
+    # The native engine serves the same Images page, so the cancel route must reach it too. Here
+    # the cancel arrives from ANOTHER thread mid-run, which is what the route does: the engine
+    # polls the event, kills the sd-cli process tree, and the backend reports a cancellation.
+    started = threading.Event()
+    b = None
+
+    class _BlockingEngine(_FakeEngine):
+        def generate(self, files, params, *, output_path, cancel_event = None, **kw):
+            started.set()
+            assert cancel_event is not None and cancel_event.wait(5)
+            raise SdCppCancelled("cancelled")
+
+    b = _loaded_backend(engine = _BlockingEngine())
+    # Nothing running yet.
+    assert b.cancel_generate() is False
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            b.generate(prompt = "x", steps = 8, seed = 5)
+        except BaseException as exc:  # noqa: BLE001 -- the assertion below pins the type
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert started.wait(5)
+
+    assert b.cancel_generate() is True
+    worker.join(10)
+    assert isinstance(outcome["error"], RuntimeError)
+    # Deregistered on exit, so a later cancel cannot poke a finished run.
+    assert b.cancel_generate() is False
+
+
+def test_cancel_generate_is_a_no_op_when_idle():
+    # The route calls this unconditionally; an idle native backend answers False rather than raising.
+    assert SdCppDiffusionBackend(engine = _FakeEngine()).cancel_generate() is False
+
+
 def test_generate_progress_tracks_parsed_steps():
     b = _loaded_backend()
     b._gen = bk._SdGen(total_steps = 8)
