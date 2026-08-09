@@ -12,12 +12,9 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""A broken TensorFlow / Flax install must not break importing Unsloth.
-
-Transformers 4.x imports either backend merely because it is installed, via
-`processing_utils` -> `image_transforms`; on Colab a protobuf-moving install cell
-then leaves TF raising `cannot import name 'runtime_version'`.
-"""
+"""A broken TensorFlow / Flax install must not break importing Unsloth. Transformers
+4.x imports either backend merely because it is installed, via `processing_utils`
+-> `image_transforms`."""
 
 import ast
 import functools
@@ -38,11 +35,9 @@ _BROKEN_TF = "raise ImportError(\"cannot import name 'runtime_version' from 'goo
 
 
 def _fake_tensorflow(tmp_path):
-    """A `tensorflow` on `sys.path` that Transformers detects but cannot import.
-
-    `_tf_available` needs a `find_spec` hit *and* an installed version >= 2, so the
-    directory carries a matching `.dist-info/METADATA`. Never touches site-packages.
-    """
+    """A `tensorflow` Transformers detects but cannot import. `_tf_available` needs
+    a `find_spec` hit *and* an installed version >= 2, hence the
+    `.dist-info/METADATA`. Never touches site-packages."""
     site = tmp_path / "fakesite"
     package = site / "tensorflow"
     package.mkdir(parents = True)
@@ -57,11 +52,7 @@ def _fake_tensorflow(tmp_path):
 
 
 def _working_tensorflow(tmp_path):
-    """A `tensorflow` that Transformers detects *and* imports cleanly.
-
-    The counterpart to `_fake_tensorflow`: it stands in for a real, working install
-    the user has deliberately imported. Never touches site-packages.
-    """
+    """A `tensorflow` that Transformers detects *and* imports cleanly."""
     site = tmp_path / "worksite"
     package = site / "tensorflow"
     package.mkdir(parents = True)
@@ -75,14 +66,9 @@ def _working_tensorflow(tmp_path):
     return site
 
 
-# Every variable Transformers reads to pick a backend, so a runner's own value
-# cannot decide a case the test meant to set up. `USE_TORCH` belongs here even
-# though Unsloth never writes it: Transformers gates `_tf_available` on
-# `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an inherited `USE_TORCH=1` forces
-# `_tf_available` False no matter what TensorFlow is on the path, and the cases
-# that assert "BEFORE True" fail for a reason that has nothing to do with them.
-# Confirmed against Transformers 4.57.6 with a working TensorFlow on the path:
-# unset -> `_tf_available` True, `USE_TORCH=1` -> False.
+# Every variable Transformers reads to pick a backend. `USE_TORCH` belongs here
+# too: `_tf_available` is gated on `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so an
+# inherited `USE_TORCH=1` forces it False whatever is on the path.
 _BACKEND_ENV = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
 
 
@@ -95,8 +81,7 @@ def _run(
     path = [str(_ROOT)] + ([str(site)] if site is not None else [])
     if os.environ.get("PYTHONPATH"):
         path.append(os.environ["PYTHONPATH"])
-    # Importing Unsloth sets USE_TF/USE_FLAX in this process, so an inherited
-    # value would decide the case before the child starts. Each test says.
+    # Importing Unsloth sets USE_TF/USE_FLAX here; each test says its own.
     clean = {k: v for k, v in os.environ.items() if k not in _BACKEND_ENV}
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(code)],
@@ -123,11 +108,8 @@ _V4_ONLY = ("_tf_available", "_flax_available", "USE_TF")
 @functools.cache
 def _v4_names():
     """Which v4-only `import_utils` names the installed Transformers still has.
-
-    Transformers 5.x dropped the TF/Flax backends, and with them `_tf_available`,
-    `_flax_available` and `USE_TF`, so reading one there is an `AttributeError`
-    rather than a failing assertion. Probed in a subprocess, once.
-    """
+    5.x dropped TF/Flax and these names with them, so reading one there is an
+    `AttributeError` rather than a failing assertion."""
     out = _run(
         """
         from transformers.utils import import_utils
@@ -172,16 +154,12 @@ def _guard_block():
 def test_the_backends_are_opted_out_of_before_transformers_loads():
     block = _guard_block()
     assert block is not None, "the opt-out block is gone"
-    # Asserted by running the block, not by looking for a literal in its
-    # source. The literal check passed only while the code happened to spell
-    # the pair inline, and went red the moment the same behaviour was written
-    # as a loop -- it was tracking the spelling, not the guarantee.
+    # Run the block rather than grep its source: that tracked the spelling.
     environ = {}
     _exec_guard({}, environ)
     assert environ.get("USE_TF") == "0"
     assert environ.get("USE_FLAX") == "0"
-    # The guard has to sit above every `transformers` import in this file, or a
-    # module that already read the variables makes it a no-op.
+    # It has to sit above every `transformers` import here, or it is a no-op.
     first_import = min(
         (
             node.lineno
@@ -196,9 +174,7 @@ def test_the_backends_are_opted_out_of_before_transformers_loads():
 @pytest.mark.parametrize("value", ["1", "true", "YES", "On"])
 def test_an_explicit_choice_is_never_overwritten(value):
     """Someone who wants TF in-process keeps it, in any spelling Transformers
-    accepts as true. Stated as behaviour rather than as "the code says
-    setdefault": `setdefault` was one way to get this, and not a correct one,
-    because it also preserved `AUTO`."""
+    accepts as true."""
     environ = {"USE_TF": value, "USE_FLAX": value}
     _exec_guard({}, environ)
     assert environ["USE_TF"] == value
@@ -207,14 +183,8 @@ def test_an_explicit_choice_is_never_overwritten(value):
 
 @pytest.mark.parametrize("value", ["AUTO", "auto", "Auto"])
 def test_auto_is_overwritten_because_transformers_reads_it_as_enabled(value):
-    """`AUTO` is what an unset variable means to Transformers, and it enables
-    the backend if it is installed -- the exact state this guard exists to
-    prevent. `setdefault` kept it, so a launcher that mirrored Transformers'
-    own defaults into the environment silently disabled the guard.
-
-    Confirmed against a real Transformers with a broken TensorFlow on the
-    path: `USE_TF=AUTO` plus `setdefault` leaves `_tf_available` True.
-    """
+    """`AUTO` is what an unset variable means to Transformers: enable if installed,
+    the exact state this guard prevents and the one `setdefault` used to keep."""
     environ = {"USE_TF": value, "USE_FLAX": value}
     _exec_guard({}, environ)
     assert environ["USE_TF"] == "0"
@@ -222,9 +192,8 @@ def test_auto_is_overwritten_because_transformers_reads_it_as_enabled(value):
 
 
 def test_force_tf_available_alone_counts_as_an_opt_in():
-    """`FORCE_TF_AVAILABLE=1` is the spelling that asks for TensorFlow without
-    also asking Transformers to disable PyTorch, so it is the one a real user
-    reaches for. Writing `USE_TF=0` over it would contradict them."""
+    """`FORCE_TF_AVAILABLE=1` asks for TensorFlow without also asking Transformers
+    to disable PyTorch, so it is the spelling a real user reaches for."""
     environ = {"FORCE_TF_AVAILABLE": "1"}
     _exec_guard({}, environ)
     assert environ.get("USE_TF") != "0", environ
@@ -232,8 +201,7 @@ def test_force_tf_available_alone_counts_as_an_opt_in():
 
 def test_a_value_that_means_off_is_normalised_rather_than_preserved():
     """Anything Transformers does not read as true already means off, so
-    rewriting it to "0" changes no behaviour. Pinned so the overwrite is not
-    mistaken for a regression against the opt-in rule above."""
+    rewriting it to "0" changes no behaviour."""
     environ = {"USE_TF": "0", "USE_FLAX": "false"}
     _exec_guard({}, environ)
     assert environ["USE_TF"] == "0"
@@ -262,13 +230,8 @@ def test_transformers_reads_the_variable_from_the_environment(value):
 
 
 def test_the_variables_are_written_even_once_transformers_is_loaded():
-    """Usually spent by then, and written anyway, because "usually" is not always.
-
-    A fully imported Transformers has already read them, so this write changes
-    nothing there -- the cached flags are what does the work. It is the
-    partly-imported case below that needs it, and this branch cannot tell the two
-    apart without waiting on another thread, which module scope must never do.
-    """
+    """Inert against a fully imported Transformers, but the partly-imported case
+    below needs them, and this branch cannot tell the two apart."""
     environ = {}
     _exec_guard({"transformers": object()}, environ)
     assert environ == {"USE_TF": "0", "USE_FLAX": "0"}
@@ -291,8 +254,7 @@ def test_the_environment_branch_honours_an_already_imported_backend():
 def test_a_broken_backend_still_loses_when_transformers_came_first(tmp_path):
     """The regression: `_tf_available` was cached True before Unsloth got a say."""
     _needs_unsloth()
-    # `getattr`, because 5.x has no such flag; the "TF never loads" half of the
-    # claim is what matters there and it still gets asserted.
+    # `getattr`, because 5.x has no such flag; "TF never loads" still asserts.
     out = _run(
         """
         import transformers
@@ -333,14 +295,10 @@ def test_the_environment_path_still_covers_the_transformers_not_loaded_case(tmp_
 
 
 def _run_env_branch(tmp_path, preamble, site, **env):
-    """Run the real opt-out block with Transformers not yet imported.
-
-    The `import tensorflow; import unsloth` order in one process cannot be tested
-    end to end here: leaving TensorFlow enabled makes Transformers import
-    `TFPreTrainedModel`, which needs a genuine `tf.keras` (and h5py), not a stub.
-    So the block itself is executed against a real interpreter whose `sys.modules`
-    and environment are exactly what that order produces.
-    """
+    """Run the real opt-out block with Transformers not yet imported. The
+    `import tensorflow; import unsloth` order cannot be tested end to end here:
+    leaving TF enabled makes Transformers import `TFPreTrainedModel`, which needs
+    a genuine `tf.keras` (and h5py), not a stub."""
     guard = tmp_path / "env_guard.py"
     guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
     return _run(
@@ -358,21 +316,15 @@ def _run_env_branch(tmp_path, preamble, site, **env):
 
 
 def test_an_imported_backend_is_not_opted_out_when_transformers_comes_later(tmp_path):
-    """The asymmetry: the env-var branch has to honour an in-use backend too.
-
-    A process that imports a working TensorFlow and only then imports Unsloth,
-    without ever setting USE_TF itself, must keep it. `setdefault` does not help:
-    there is no explicit value for it to defer to.
-    """
+    """The env-var branch has to honour an in-use backend too, and `setdefault`
+    cannot: nothing set USE_TF, so there is no explicit value to defer to."""
     site = _working_tensorflow(tmp_path)
     out = _run_env_branch(tmp_path, "import tensorflow", site)
     assert out.returncode == 0, out.stderr[-3000:]
     assert "ENV_USE_TF None" in out.stdout, out.stdout
     # The backend nobody is using still gets opted out.
     assert "ENV_USE_FLAX 0" in out.stdout, out.stdout
-    # And leaving the variable unset is what preserves it. Only 4.x has a flag to
-    # read: `_v4_names()` is also empty when Transformers is absent altogether, and
-    # probing it there is a ModuleNotFoundError rather than a finding.
+    # Only 4.x has a flag to read, and `_v4_names()` is empty without Transformers.
     if _v4_names().get("_tf_available"):
         probe = _run(
             """
@@ -394,10 +346,7 @@ def test_a_broken_uninvolved_backend_is_still_opted_out(tmp_path):
 
 
 def _run_guard(tmp_path, preamble, **env):
-    """Run the real opt-out block against a real, already-imported Transformers.
-
-    Reads `_tf_available`, so these cases are v4-only: on 5.x they skip.
-    """
+    """Run the block against a real, already-imported Transformers (v4 only)."""
     _needs_v4_flag("_tf_available")
     guard = tmp_path / "guard.py"
     guard.write_text(ast.unparse(_guard_block()), encoding = "utf-8")
@@ -417,10 +366,7 @@ def _run_guard(tmp_path, preamble, **env):
 
 def test_an_explicit_opt_in_keeps_the_backend(tmp_path):
     """FORCE_TF_AVAILABLE=1 means the user wants TensorFlow; never sabotage that.
-
-    Spelled with FORCE_TF_AVAILABLE rather than USE_TF because Transformers reads
-    USE_TF=1 as "and disable PyTorch", which Unsloth needs.
-    """
+    Not USE_TF=1, which Transformers also reads as "disable PyTorch"."""
     out = _run_guard(tmp_path, "", FORCE_TF_AVAILABLE = "1")
     assert out.returncode == 0, out.stderr[-3000:]
     assert "BEFORE True" in out.stdout and "AFTER True" in out.stdout, out.stdout
@@ -441,13 +387,8 @@ def test_the_cached_flag_is_cleared_against_a_real_transformers(tmp_path):
 
 
 def test_an_opt_in_that_was_consumed_and_restored_still_counts(tmp_path):
-    """Transformers reads these variables once, at its own import, and keeps
-    the answer. So the environment at *Unsloth's* import is not the whole
-    story: set the variable, let Transformers consume it, put the environment
-    back -- a `patch.dict` around the import, a launcher that tidies up after
-    itself -- and Transformers is still opted in while `os.environ` is clean.
-    Reading only `os.environ` would then undo a choice Transformers honoured.
-    """
+    """Transformers reads these once, at its own import, so a variable that was set,
+    consumed and restored is still an opt-in `os.environ` no longer shows."""
     out = _run_guard(
         tmp_path,
         'del os.environ["FORCE_TF_AVAILABLE"]',
@@ -489,22 +430,10 @@ def test_the_v4_only_cases_skip_on_transformers_5x(monkeypatch, tmp_path, case):
 
 
 def test_a_partly_imported_transformers_still_gets_the_variables():
-    """`"transformers" in sys.modules` does not mean Transformers is ready.
-
-    Python publishes a module object before executing its body, so a thread
-    part-way through `import transformers` -- or a `transformers` submodule that
-    imports Unsloth -- reaches the `else` branch while
-    `transformers.utils.import_utils` is still absent. Verified with an audit hook
-    on the real package: at the moment `import_utils` begins importing,
-    `"transformers" in sys.modules` is already True and
-    `"transformers.utils.import_utils" in sys.modules` is False.
-
-    There is nothing cached to clear in that window, so a branch that only cleared
-    flags did nothing at all and Transformers went on to set `_tf_available` True.
-    The environment is the one lever that still works, because `import_utils` has
-    not read it yet. Waiting for the other thread is not the alternative: blocking
-    on an import from module scope deadlocks.
-    """
+    """`"transformers" in sys.modules` does not mean Transformers is ready: Python
+    publishes a module object before executing its body, so a thread part-way
+    through `import transformers` reaches the `else` branch with `import_utils`
+    still absent. Nothing cached to clear there, so the environment is the lever."""
     environ = {}
     _exec_guard({"transformers": types.ModuleType("transformers")}, environ)
     assert environ == {"USE_TF": "0", "USE_FLAX": "0"}
@@ -552,16 +481,9 @@ def test_a_cached_opt_in_also_blocks_the_partial_window_write():
 
 
 def test_the_subprocess_environment_drops_every_backend_variable(monkeypatch):
-    """A runner that exports one of these must not decide the cases for us.
-
-    `USE_TORCH` is the one that was missing. Transformers gates `_tf_available` on
-    `USE_TORCH not in ENV_VARS_TRUE_VALUES`, so `USE_TORCH=1` in the parent
-    environment makes every "BEFORE True" case fail even with a detectable
-    TensorFlow on the path. Spurious red rather than a hidden green, but red for a
-    reason none of those tests is about.
-    """
-    # Spelled out rather than read from `_BACKEND_ENV`, so shortening that tuple
-    # is a failure here instead of a quietly narrower assertion.
+    """A runner that exports one of these must not decide the cases for us:
+    `USE_TORCH=1` in the parent makes every "BEFORE True" case fail."""
+    # Spelled out, so shortening `_BACKEND_ENV` fails here instead of narrowing.
     names = ("USE_TF", "USE_FLAX", "USE_TORCH", "FORCE_TF_AVAILABLE")
     for name in names:
         monkeypatch.setenv(name, "1")
@@ -603,12 +525,8 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
 
 
 def test_the_snapshot_transformers_kept_counts_as_an_opt_in():
-    """Each variable, in the name Transformers files it under.
-
-    The Flax pair is the one worth spelling out: the environment variable is
-    `USE_FLAX`, and Transformers stores it as `USE_JAX`. Looking for a cached
-    `USE_FLAX` finds nothing and silently keeps the bug.
-    """
+    """Each variable in the name Transformers files it under: env `USE_FLAX` is
+    stored as `USE_JAX`, so looking for a cached `USE_FLAX` finds nothing."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
     modules = {"transformers": object(), "transformers.utils.import_utils": import_utils}
     for flag, cached in (
@@ -624,12 +542,8 @@ def test_the_snapshot_transformers_kept_counts_as_an_opt_in():
 
 
 def test_the_default_snapshot_is_not_an_opt_in():
-    """All three default to `"AUTO"` when unset, and Transformers treats AUTO
-    as "enable if installed" for `USE_TF` and `USE_JAX`. Accepting AUTO here
-    would keep every flag on every machine that never set anything, which is
-    the whole population this guard exists for -- it would be a no-op wearing
-    a fix's clothes rather than a visible failure.
-    """
+    """All three default to `"AUTO"` when unset, which Transformers reads as "enable
+    if installed": accepting it would make the guard a no-op on most machines."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
     import_utils._tf_available = True
     import_utils._flax_available = True
@@ -642,13 +556,8 @@ def test_the_default_snapshot_is_not_an_opt_in():
 
 
 def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
-    """The window between Transformers' two reads of its own decision.
-
-    `import_utils` copies the environment into `USE_TF` / `USE_JAX` at the top and
-    derives the flags from those globals ~150 lines later. A guard landing in between
-    finds the environment spent and no flag to clear, so writing only those two left
-    a cached `AUTO` to mark a broken backend available.
-    """
+    """The window between `import_utils` copying the environment into `USE_TF` /
+    `USE_JAX` (its lines 102-104) and deriving the flags (264 / 355)."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
     import_utils.USE_TF = "AUTO"
     import_utils.FORCE_TF_AVAILABLE = "AUTO"
@@ -676,12 +585,8 @@ def test_the_snapshot_is_overwritten_while_import_utils_is_mid_body():
 
 
 def test_a_broken_backend_loses_inside_the_real_import_utils_window(tmp_path):
-    """The same window against the installed Transformers, not a stand-in.
-
-    Runs the real `import_utils.py` in two halves, constants then flag derivation,
-    with the guard in between. Without the constant write this ends
-    `_tf_available = True` with an unimportable TensorFlow on the path.
-    """
+    """The same window against the real `import_utils.py`, run in two halves with the
+    guard between them. Without the constant write this ends `_tf_available` True."""
     _needs_v4_flag("USE_TF")
     out = _run(
         """
