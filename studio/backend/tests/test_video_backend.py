@@ -2363,9 +2363,7 @@ def test_unified_memory_allows_a_video_load_that_fits(fake_runtime, monkeypatch)
     assert status["loaded"] is True
 
 
-def test_unified_memory_refusal_is_overridable_at_the_video_load_seam(
-    fake_runtime, monkeypatch
-):
+def test_unified_memory_refusal_is_overridable_at_the_video_load_seam(fake_runtime, monkeypatch):
     import core.inference.video as video_mod
     from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
 

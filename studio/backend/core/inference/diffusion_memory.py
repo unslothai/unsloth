@@ -354,9 +354,7 @@ def _unified_oversize_override() -> bool:
     return os.environ.get(UNIFIED_OVERSIZE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def unified_memory_shortfall_message(
-    plan: Any, *, family: Optional[str] = None
-) -> Optional[str]:
+def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None) -> Optional[str]:
     """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the
     safe budget (else None).
 
@@ -420,7 +418,10 @@ def unified_memory_shortfall_message(
 
 
 def raise_on_unified_memory_shortfall(
-    plan: Any, *, family: Optional[str] = None, logger: Any = None
+    plan: Any,
+    *,
+    family: Optional[str] = None,
+    logger: Any = None,
 ) -> None:
     """Refuse a load whose weights cannot fit unified device memory. No-op on every other
     placement, so the discrete-VRAM path is untouched.

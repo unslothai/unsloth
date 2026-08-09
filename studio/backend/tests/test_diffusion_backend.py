@@ -5924,12 +5924,17 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
 
 def _unified_snapshot(total_gib):
     from core.inference.diffusion_memory import DeviceMemory
-
     total = total_gib * 1024
     return lambda target: DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
 
 
-def _oversized_gguf(monkeypatch, tmp_path, total_gib, *, resident_mib = 24 * 1024):
+def _oversized_gguf(
+    monkeypatch,
+    tmp_path,
+    total_gib,
+    *,
+    resident_mib = 24 * 1024,
+):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     monkeypatch.setattr(
         "core.inference.diffusion.settled_snapshot_device_memory", _unified_snapshot(total_gib)
@@ -5983,9 +5988,7 @@ def test_unified_memory_image_refusal_is_overridable(fake_runtime, monkeypatch, 
     assert status["loaded"] is True
 
 
-def test_discrete_vram_image_load_is_unaffected_by_the_refusal(
-    fake_runtime, monkeypatch, tmp_path
-):
+def test_discrete_vram_image_load_is_unaffected_by_the_refusal(fake_runtime, monkeypatch, tmp_path):
     from core.inference.diffusion_memory import DeviceMemory
 
     (tmp_path / "model.gguf").write_bytes(b"weights")

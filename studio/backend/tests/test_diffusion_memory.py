@@ -697,7 +697,6 @@ def test_unified_oversize_never_refuses_discrete_vram():
 def test_unified_oversize_never_refuses_plain_cpu_system_memory():
     # A CPU target reports system_memory, has swap, and is an opt-in fringe path: unchanged.
     from core.inference.diffusion_memory import unified_memory_shortfall_message
-
     plan = _unified_plan(model_dense_mib = 80 * 1024, kind = "system_memory", device = "cpu")
     assert unified_memory_shortfall_message(plan) is None
 
@@ -737,7 +736,6 @@ def test_unified_oversize_env_override_attempts_the_load_anyway(monkeypatch):
 
 def test_unified_oversize_message_survives_a_malformed_plan():
     from core.inference.diffusion_memory import unified_memory_shortfall_message
-
     assert unified_memory_shortfall_message(types.SimpleNamespace()) is None
 
 
@@ -781,9 +779,9 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
         "hunyuanvideo-1.5": {16, 24, 32},
         "hunyuanvideo-1.5-720p": {16, 24, 32},
     }
-    assert {f.name for f in _FAMILIES} == set(expected_refusals), (
-        "a video family was added or renamed: extend the expected refusal matrix"
-    )
+    assert {f.name for f in _FAMILIES} == set(
+        expected_refusals
+    ), "a video family was added or renamed: extend the expected refusal matrix"
     for fam in _FAMILIES:
         width, height = fam.resolution_presets[0]
         dense = int(sum(fam.bf16_components_gb) * mib_per_gb)

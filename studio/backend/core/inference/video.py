@@ -1239,9 +1239,7 @@ class VideoBackend:
         # offload tier left to fall back to, so an oversized load is killed by the OS with no
         # torch OOM to catch. Refuse now, after the eviction above and after the quant re-plan
         # (CUDA-only, but check the plan we committed to), before any weight is materialised.
-        raise_on_unified_memory_shortfall(
-            plan, family = getattr(fam, "name", None), logger = logger
-        )
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
