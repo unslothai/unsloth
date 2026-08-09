@@ -178,6 +178,20 @@ test("fields a future backend adds are ignored, not rendered", () => {
   assert.equal(rows[0].detail, "flux · BF16 · cuda");
 });
 
+test("a backend with no gguf_quant field still reports the compute dtype", () => {
+  // gguf_quant is additive. An older wheel sends model_kind but not the quant, and the row must
+  // keep the line it has always shown rather than losing its precision part entirely.
+  const rows = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(rows[0].detail, "z-image · GGUF · BF16 · cuda");
+});
+
 test("an unrecognised precision is passed through rather than dropped", () => {
   // precisionLabel upper-cases anything it does not know, so a quant added
   // later still tells the user something instead of vanishing.

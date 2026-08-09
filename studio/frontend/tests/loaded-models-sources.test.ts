@@ -219,6 +219,39 @@ test("a GGUF image load does not print GGUF twice", () => {
   assert.equal(image.detail, "flux · GGUF · cuda");
 });
 
+test("a GGUF image row names the quant that was picked, not the compute dtype", () => {
+  // The reported bug: the picker chip said "GGUF · Q8_0" and the row beside it said "BF16",
+  // because `dtype` is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. The
+  // quant is what distinguishes the file that was downloaded and opened.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_quant: "Q8_0",
+    transformer_quant: null,
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image · GGUF · Q8_0 · cuda");
+});
+
+test("a GGUF pick the dense fast path replaced names that build instead", () => {
+  // The fast path denoises with a torchao build of the base transformer and never opens the
+  // .gguf, so the row must neither call it GGUF nor print a quant no tensor carries.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_quant: null,
+    transformer_quant: "fp8",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image · FP8 · cuda");
+});
+
 // Gemma 3n and friends take audio in but answer as chat. Every backend sets
 // is_audio from `audio_type is not None and audio_type != "audio_vlm"`
 // (model_config.py, mlx_inference.py; llama_cpp.py keeps _is_audio False for

@@ -27,6 +27,10 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
+  // Quant of the GGUF actually backing the transformer ("Q8_0"), or null when the GGUF is not what
+  // ran (a pipeline load, or a GGUF pick the dense fast path replaced -- transformer_quant names
+  // that). Absent on backends predating the field, which report only the compute dtype.
+  gguf_quant?: string | null;
   cpu_offload: boolean;
   // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI
   // report what actually ran instead of echoing the load request back at the user.

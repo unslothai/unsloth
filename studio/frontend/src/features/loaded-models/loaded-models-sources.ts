@@ -184,9 +184,10 @@ export function describeInferenceStatus(
 }
 
 /**
- * The precision a pipeline actually loaded at, short enough for the row. Images
- * report a torch dtype, video a resolved quantisation ("none" being plain
- * bf16). Anything unrecognised is shown as the backend spelled it, upper-cased.
+ * The precision a pipeline actually loaded at, short enough for the row. Fed a
+ * torch dtype, a resolved quantisation ("none" being plain bf16) or a GGUF quant
+ * token. Anything unrecognised is shown as the backend spelled it, upper-cased,
+ * which is what keeps "Q8_0" and "IQ4_XS" readable without a table per quant.
  */
 export function precisionLabel(value: string | null | undefined): string | null {
   if (!value || value === "none") return null;
@@ -210,9 +211,17 @@ export function describeDiffusionStatus(
       name: status.repo_id,
       detail: joinDetail(
         status.family,
-        status.model_kind === "gguf" ? "GGUF" : null,
-        // A GGUF load reports "gguf" here too; joinDetail drops the repeat.
-        precisionLabel(status.dtype),
+        // Only while the GGUF is what ran. A GGUF pick the dense fast path replaced is a
+        // torchao build of the base transformer, and calling that row "GGUF" names a file
+        // the pipeline never opened.
+        status.model_kind === "gguf" && !status.transformer_quant ? "GGUF" : null,
+        // What the transformer IS, in the order the build decides it: the dense scheme when
+        // one engaged, else the quant of the GGUF that ran, else the pipeline dtype. `dtype`
+        // is a COMPUTE dtype and reads bf16 for every CUDA load, so on its own it reported
+        // "BF16" for a Q8_0 pick. Older backends send no `gguf_quant` and fall back to it.
+        precisionLabel(status.transformer_quant) ??
+          precisionLabel(status.gguf_quant) ??
+          precisionLabel(status.dtype),
         status.device,
       ),
     },

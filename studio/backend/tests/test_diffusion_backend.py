@@ -4401,6 +4401,83 @@ def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
     assert len(consulted) == 2
 
 
+def test_status_names_the_gguf_quant_that_actually_ran(fake_runtime, tmp_path):
+    # The reported bug: picking unsloth/Z-Image-Turbo-GGUF at Q8_0 showed "BF16" in the loaded
+    # models row. Nothing on /status named the quant -- dtype is the pipeline COMPUTE dtype and
+    # reads bf16 for every CUDA load -- so the row had nothing else to print. The chat runtime
+    # has published gguf_variant all along; this is the same field for diffusion.
+    backend = DiffusionBackend()
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+    )
+    status = backend.status()
+    assert status["model_kind"] == "gguf"
+    assert status["transformer_quant"] is None  # the GGUF ran as-is
+    assert status["gguf_quant"] == "Q8_0"
+
+
+def test_status_drops_the_gguf_quant_when_the_dense_path_replaced_the_gguf(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # A GGUF pick the dense fast path took over denoises with a torchao build of the BASE
+    # transformer, and the .gguf on disk is never opened. Naming its quant there would be the
+    # same lie in the other direction, so the field is None and transformer_quant describes it.
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    _stub_dense_quant(monkeypatch, scheme = "fp8")
+    (tmp_path / "z-image-turbo-Q8_0.gguf").write_bytes(b"x")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "z-image-turbo-Q8_0.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+    )
+    assert status["transformer_quant"] == "fp8"
+    assert status["gguf_quant"] is None
+    assert backend.status()["gguf_quant"] is None
+
+
+def test_resident_gguf_quant_only_answers_for_a_gguf_it_can_name():
+    # Unit cover for the parts a load cannot reach cheaply: a non-GGUF kind carries no quant, and
+    # a checkpoint whose name holds no quant token yields None rather than a filename stem
+    # rendered as a precision.
+    quant = DiffusionBackend._resident_gguf_quant
+
+    def _state(**kw):
+        fields = {"kind": "gguf", "gguf_filename": None, "transformer_quant": None}
+        fields.update(kw)
+        return types.SimpleNamespace(**fields)
+
+    assert quant(_state(gguf_filename = "qwen-image-edit-2511-Q6_K.gguf")) == "Q6_K"
+    assert quant(_state(gguf_filename = "z-image-turbo-BF16.gguf")) == "BF16"
+    # A pipeline / single_file load has no GGUF backing the transformer at all.
+    assert quant(_state(kind = "pipeline", gguf_filename = "z-image-turbo-Q8_0.gguf")) is None
+    assert quant(_state(kind = "single_file", gguf_filename = "model.safetensors")) is None
+    # Nothing to parse, and nothing invented.
+    assert quant(_state(gguf_filename = "model.gguf")) is None
+    assert quant(_state(gguf_filename = "   ")) is None
+    assert quant(_state()) is None
+
+
+def test_status_carries_no_gguf_quant_when_nothing_is_loaded():
+    # The unloaded payload must declare every key the loaded one does, or the row keeps the
+    # previous model's quant after an eject.
+    assert DiffusionBackend().status()["gguf_quant"] is None
+
+
+def test_diffusion_status_response_declares_the_gguf_quant():
+    # Pydantic drops undeclared keys, so an undeclared field reaches the UI as absent and the row
+    # silently falls back to the compute dtype -- the exact bug, with the backend fixed.
+    from models.inference import DiffusionStatusResponse
+
+    resp = DiffusionStatusResponse(loaded = True, model_kind = "gguf", gguf_quant = "Q8_0")
+    assert resp.model_dump()["gguf_quant"] == "Q8_0"
+    assert DiffusionStatusResponse(loaded = False).gguf_quant is None
+
+
 def test_diffusion_status_response_carries_resolved():
     # The backend records per-control auto-policy provenance on state.resolved, so the response model must declare the field or Pydantic drops it.
     from models.inference import DiffusionStatusResponse

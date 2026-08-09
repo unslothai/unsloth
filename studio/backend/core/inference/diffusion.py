@@ -4357,6 +4357,30 @@ class DiffusionBackend:
         del state
         clear_gpu_cache()
 
+    @staticmethod
+    def _resident_gguf_quant(state: "_LoadState") -> Optional[str]:
+        """The quant of the GGUF that ACTUALLY backs the resident transformer ("Q8_0"), or None.
+
+        ``dtype`` is the pipeline's COMPUTE dtype and is bf16 for every CUDA load, so a reader
+        with only that field reports "BF16" whatever the user picked. This is the missing half:
+        the chat runtime has published ``gguf_variant`` all along, and the diffusion one has not.
+
+        None whenever the GGUF is not what ran, so the field never contradicts the build:
+        a ``pipeline`` / ``single_file`` load carries no GGUF, and a GGUF pick the dense fast
+        path replaced with a torchao build is described by ``transformer_quant`` instead (that
+        field's contract is already "null = the GGUF ran as-is"). Also None for a checkpoint
+        whose name carries no quant token, rather than inventing one from the filename."""
+        if state.kind != "gguf" or state.transformer_quant is not None:
+            return None
+        filename = (state.gguf_filename or "").strip()
+        if not filename:
+            return None
+        try:
+            from hub.utils.gguf import extract_quant_token
+            return extract_quant_token(filename)
+        except Exception:  # noqa: BLE001 — a label we cannot parse must not break /status
+            return None
+
     def status(self) -> dict[str, Any]:
         state = self._state
         if state is None:
@@ -4368,6 +4392,7 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "gguf_quant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -4393,6 +4418,7 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "gguf_quant": self._resident_gguf_quant(state),
             "cpu_offload": state.cpu_offload,
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,

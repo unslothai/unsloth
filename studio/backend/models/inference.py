@@ -2969,6 +2969,13 @@ class DiffusionStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    gguf_quant: Optional[str] = Field(
+        None,
+        description = "Quant of the GGUF actually backing the transformer (e.g. Q8_0), or null "
+        "when the GGUF is not what ran: a pipeline / single_file load, or a GGUF pick the dense "
+        "fast path replaced (transformer_quant names that build instead). dtype is a COMPUTE "
+        "dtype and is bf16 for every CUDA load, so it never answers this.",
+    )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
