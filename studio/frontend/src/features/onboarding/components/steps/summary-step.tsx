@@ -4,8 +4,10 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { useTrainingConfigStore } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
+import {
+  getTrainingMethodLabel,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useHardwareInfo } from "@/hooks";
 import { isAdapterMethod } from "@/types/training";
 import { ChipIcon, Database02Icon, GpuIcon, Settings04Icon } from "@hugeicons/core-free-icons";

@@ -13,9 +13,10 @@ use managed::probe_managed_install;
 use std::path::PathBuf;
 use types::{BackendProbe, ManagedProbe};
 pub use types::{DesktopPreflightDisposition, DesktopPreflightResult, ExternalBackendConflict};
+#[cfg(test)]
+pub(crate) use version::DESKTOP_MANAGEABILITY_VERSION;
 pub(crate) use version::{
-    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION,
-    DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 
 #[cfg(test)]
@@ -197,8 +198,8 @@ pub async fn desktop_preflight_result_with_state(
 
     if let Some(snapshot) = crate::process::owned_backend_snapshot(state)? {
         let Some(owner) = snapshot.owner.clone() else {
-            // TAURI_PORT is emitted only after uvicorn lifespan completes; keep
-            // this ownerless path on full health so auth/bootstrap are ready.
+            // Defensive fallback for legacy ownerless handles. Wait for full
+            // health so auth and bootstrap are ready.
 
             let probe = match snapshot.port {
                 Some(port) => backend::probe_ownerless_spawned_backend(port).await,
