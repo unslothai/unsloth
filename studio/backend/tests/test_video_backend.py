@@ -1971,7 +1971,11 @@ def test_base_download_files_stages_the_h3_partition_the_load_will_open():
     assert "transformer_ref/diffusion_pytorch_model-00002-of-00002.safetensors" in references
     assert not any(n.startswith("transformer/") for n in references)
     # Everything shared still comes along on both.
-    for shared in ("model_index.json", "text_encoder/model-00001-of-00001.safetensors", "vae/diffusion_pytorch_model.safetensors"):
+    for shared in (
+        "model_index.json",
+        "text_encoder/model-00001-of-00001.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    ):
         assert shared in keyframes and shared in references
 
 
@@ -2196,10 +2200,9 @@ def test_h3_native_uses_the_local_bundles_own_text_encoder(monkeypatch, tmp_path
     (local / "minimax_h3_fl2va-Q4_K_M.gguf").write_bytes(b"x")
     (local / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf").write_bytes(b"x")
 
-    assert (
-        VideoBackend._h3_text_encoder_repo(str(local), "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
-        == str(local)
-    )
+    assert VideoBackend._h3_text_encoder_repo(
+        str(local), "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    ) == str(local)
     # A clone WITHOUT the encoder still falls back to the hosted copy, so nothing regresses.
     bare = tmp_path / "bare"
     bare.mkdir()

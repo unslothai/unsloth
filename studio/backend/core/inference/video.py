@@ -1642,7 +1642,6 @@ class VideoBackend:
         root = Path(repo_id).expanduser()
         if root.is_dir():
             from .diffusion_families import resolve_local_gguf_child
-
             try:
                 resolve_local_gguf_child(root, qwen_filename)
             except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
