@@ -6176,7 +6176,14 @@ def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
 
     seen: list[tuple] = []
 
-    def _gate(self, fam, kwargs, *, companion_files = None, transformer_files = None):
+    def _gate(
+        self,
+        fam,
+        kwargs,
+        *,
+        companion_files = None,
+        transformer_files = None,
+    ):
         seen.append((tuple(companion_files or ()), tuple(transformer_files or ())))
         return bool(transformer_files)
 
@@ -6189,9 +6196,7 @@ def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
     # The gate saw the listing, split the way _run_load splits it ...
     assert seen, "the deferred gate was never called with the base listing"
     companions, transformer_files = seen[-1]
-    assert transformer_files == (
-        "transformer/diffusion_pytorch_model-00001-of-00003.safetensors",
-    )
+    assert transformer_files == ("transformer/diffusion_pytorch_model-00001-of-00003.safetensors",)
     assert "text_encoder/model.safetensors" in companions
     assert not any(f.startswith("transformer/") for f in companions)
     # ... and the shards it admitted are in the plan the load will match against.
@@ -7236,7 +7241,9 @@ def test_download_plan_files_do_not_shrink_as_a_repo_warms(monkeypatch):
                 lambda *a, **k: "black-forest-labs/FLUX.1-dev",
             )
             mp.setattr(
-                DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+                DiffusionBackend,
+                "_dense_quant_prefetch_needed",
+                lambda self, fam, kwargs, **_kw: False,
             )
             _no_cache(mp)
             mp.setattr(
