@@ -1318,10 +1318,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // was already past its last cancellation check -- means the run was NOT stopped, so an error it
   // raises afterwards is a real failure and not the user's own Stop coming back.
   const cancelAcked = useRef(false);
-  // A Stop already on the wire FOR THIS RUN. Without it each extra click posts again, and a late
-  // duplicate can land after the run settled and stop whichever generation is running by then.
-  // Reset per run, so a slow cancel left over from the previous one cannot swallow this run's Stop.
-  const cancelInFlight = useRef(false);
+  // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
+  const runToken = useRef(0);
+  // The run token owning the Stop currently on the wire, or null. Without it each extra click
+  // posts again, and a late duplicate can land after the run settled and stop whichever
+  // generation is running by then. Held as a token rather than a flag because the clear is
+  // asynchronous: a slow cancel from the PREVIOUS run must neither swallow this run's Stop nor,
+  // when it finally settles, release this run's guard.
+  const cancelInFlight = useRef<number | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -2579,7 +2583,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // Per-run, like the two above. A cancel POST still outstanding from the PREVIOUS run (a 401
     // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
     // run's own Stop entirely.
-    cancelInFlight.current = false;
+    cancelInFlight.current = null;
+    runToken.current += 1;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -2724,8 +2729,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
     // second POST would target whatever is active when IT arrives, which after the stopped run
     // settles can be a generation the user started since.
-    if (cancelInFlight.current) return;
-    cancelInFlight.current = true;
+    const token = runToken.current;
+    if (cancelInFlight.current === token) return;
+    cancelInFlight.current = token;
     try {
       const { cancelled } = await cancelDiffusionGeneration();
       cancelAcked.current = Boolean(cancelled);
@@ -2736,7 +2742,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       cancelAcked.current = false;
       toast.error("Could not reach the server to stop this generation; it is still running");
     } finally {
-      cancelInFlight.current = false;
+      // Only if it is still ours: a slow cancel from an earlier run must not release the guard a
+      // later run set, or a duplicate click gets through and can land on a generation after this.
+      if (cancelInFlight.current === token) cancelInFlight.current = null;
     }
   }, []);
 
