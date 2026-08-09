@@ -560,3 +560,72 @@ def test_decoder_sync_preserves_the_decoder_output(monkeypatch):
 def test_decoder_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
     monkeypatch.setitem(sys.modules, "torch", _mps_torch())
     assert dd.install_decoder_sync(pipe, _target("mps")) is False
+
+
+def _mps_torch_without_recommended(used = 0) -> types.ModuleType:
+    """torch 2.4's mps surface: driver_allocated_memory and synchronize, no working-set reading.
+
+    Verified against torch/mps/__init__.py at v2.4.0 (absent) and v2.5.0 (present), and against
+    an installed torch 2.4.1.
+    """
+    torch = _mps_torch(used = used)
+    del torch.mps.recommended_max_memory
+    return torch
+
+
+def test_decoder_sync_survives_a_torch_without_the_memory_reading(monkeypatch):
+    # install.sh keeps an existing venv's torch (>=2.4), and reading a 2.5 API there raised
+    # AttributeError from inside the video load -- after the download, with no OOM to explain it.
+    torch = _mps_torch_without_recommended()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    # No budget to compare against, so it must not silently decide the decode is fine: an
+    # unbounded Wan decode is what grew past 148 GiB.
+    assert decoder.decode(3) == ["out0", "out1", "out2"]
+    assert torch.syncs == 3
+
+
+def test_decoder_sync_survives_a_working_set_reading_that_raises(monkeypatch):
+    torch = _mps_torch()
+
+    def _boom():
+        raise RuntimeError("MPS backend is not available")
+
+    torch.mps.recommended_max_memory = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    decoder.decode(2)
+    assert torch.syncs == 2
+
+
+def test_decoder_sync_survives_a_gauge_that_raises_mid_decode(monkeypatch):
+    torch = _mps_torch(recommended = 100, used = 10)
+
+    def _boom():
+        raise RuntimeError("driver reading unavailable")
+
+    torch.mps.driver_allocated_memory = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    # The decode survives, and an unreadable gauge takes the safe side rather than skipping.
+    assert decoder.decode(2) == ["out0", "out1"]
+    assert torch.syncs == 2
+
+
+def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
+    # The no-budget fallback synchronises every call, so a torch whose mps surface is degraded
+    # enough to hide recommended_max_memory would then raise on every decoder call. The bound is
+    # an optimisation; losing the generation to it is not a trade worth making.
+    torch = _mps_torch_without_recommended()
+
+    def _boom():
+        raise RuntimeError("Torch not compiled with MPS enabled")
+
+    torch.mps.synchronize = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    assert decoder.decode(2) == ["out0", "out1"]

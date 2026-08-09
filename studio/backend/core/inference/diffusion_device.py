@@ -99,6 +99,13 @@ def install_decoder_sync(
     Fires per decoder call -- per frame on Wan, per tile on the VAEs that decode a whole tensor at
     once -- and only above the threshold, so a decode with room to spare pays only the memory read.
     Synchronising waits on work already enqueued, so what it costs is the pipelining, not the decode.
+
+    The threshold needs ``torch.mps.recommended_max_memory()``, which arrived in torch 2.5 while
+    install.sh keeps an existing venv's torch as far back as 2.4. An unreadable budget must not
+    fail the load, and skipping the hook would leave the unbounded decode it exists to stop, so
+    fall back to synchronising every call -- measured to hold the same decode at 4.90 GiB for no
+    wall-clock cost. Every probe is best-effort for the same reason: a memory reading that raises
+    mid-decode is not worth losing the generation over.
     """
     if target.device != "mps":
         return False
@@ -107,14 +114,27 @@ def install_decoder_sync(
         return False
     import torch
 
-    budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
+    budget: Optional[float] = None
+    try:
+        budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
+    except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
+        if logger is not None:
+            logger.info("video.decoder_sync: no memory reading (%s); synchronising every decode", exc)
 
     def _sync(_module, _args, _output) -> None:
-        if torch.mps.driver_allocated_memory() >= budget:
+        if budget is not None:
+            try:
+                if torch.mps.driver_allocated_memory() < budget:
+                    return
+            except Exception:  # noqa: BLE001 -- an unreadable gauge syncs, the safe side
+                pass
+        try:
             torch.mps.synchronize()
+        except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
+            pass
 
     decoder.register_forward_hook(_sync)
-    if logger is not None:
+    if logger is not None and budget is not None:
         logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
     return True
 
