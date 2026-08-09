@@ -157,6 +157,14 @@ def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch)
     assert not list(run_dir.glob("checkpoint-*"))
 
 
+def _STREAMS() -> dict:
+    """The two random.Random streams both trainers own. A bundle without them cannot restore the
+    crop/flip and variant draws, and the preflight refuses it."""
+    import random as _random
+
+    return {"loop": _random.Random(0), "variant": _random.Random(1)}
+
+
 def test_a_failed_promotion_puts_the_old_checkpoint_back(run_dir, monkeypatch):
     """Re-saving an OCCUPIED step swaps the old bundle out to make room. If the rename that
     puts the new one in place then fails, the slot is empty and the only copy of the run's
@@ -172,7 +180,9 @@ def test_a_failed_promotion_puts_the_old_checkpoint_back(run_dir, monkeypatch):
     def _fail_the_promotion(src, dst):
         # Only the staging -> slot rename. The swap-aside and the rescue that puts the old
         # bundle back both move a "stale" directory and have to be allowed through.
-        if Path(dst).name == "checkpoint-4" and "stale" not in Path(src).name:
+        if Path(dst).name == "checkpoint-4" and not any(
+            tag in Path(src).name for tag in ("stale", "replaced")
+        ):
             raise OSError("promotion failed")
         return real_replace(src, dst)
 
@@ -479,7 +489,7 @@ def test_resuming_reapplies_the_live_lr_schedule(run_dir):
         optimizer = optimizer,
         lr_scheduler = lr_sched,
         # A real bundle carries both, and the preflight now insists on them.
-        rng = dc.capture_rng_state(),
+        rng = dc.capture_rng_state(_STREAMS()),
         sampler_state = {"n": 1, "order": [0], "pos": 0},
     )
 
@@ -763,7 +773,7 @@ def _write_bundle(run_dir: Path, step: int, identity: dc.CheckpointIdentity) -> 
         target_steps = 500,
         optimizer = optimizer,
         lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0),
-        rng = dc.capture_rng_state(),
+        rng = dc.capture_rng_state(_STREAMS()),
         sampler_state = {"n": 1, "order": [0], "pos": 0},
     )
 
@@ -1637,12 +1647,22 @@ def test_a_bundle_overwritten_by_this_run_is_discarded_with_it(run_dir):
     path, error = resumed.save(15)
     assert error is None and path == str(run_dir / "checkpoint-15")
 
+    replacement = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(
+        encoding = "utf-8"
+    )
     dc.clear_own_checkpoints(run_dir, preexisting)
 
     survivors = {p.name for p in dc.list_checkpoints(run_dir)}
-    assert survivors == {
-        "checkpoint-10"
-    }, f"the replacement written by the discarded run survived: {survivors}"
+    # Both come back: the replacement written by the discarded run is gone, and the bundle it
+    # displaced is handed back to its slot rather than dying with the run that overwrote it.
+    assert survivors == {"checkpoint-10", "checkpoint-15"}, survivors
+    settled = (run_dir / "checkpoint-15" / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+    assert settled != replacement, "the discarded run's bundle is still sitting in the slot"
+    assert dc._bundle_identity(run_dir / "checkpoint-15") == dict(preexisting)[
+        run_dir / "checkpoint-15"
+    ]
+    # And nothing is left hidden in the directory afterwards.
+    assert list(run_dir.glob(f"{dc._STAGING_PREFIX}*")) == []
 
 
 def test_resuming_into_another_directory_is_not_treated_as_owning_it(run_dir, tmp_path):
@@ -2221,7 +2241,10 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
 
     # Already pinned, or still unresolvable: left exactly as it was.
     monkeypatch.setattr(dte, "source_revision", lambda ref: "rev-def456")
-    assert dc.with_resolved_revision(pinned, cfg.base_model).base_revision == "rev-abc123"
+    # A pinned revision is RE-READ, not trusted: the local ref can still report the old commit
+    # before the load and be refreshed by from_pretrained itself, and a resume that compared the
+    # pre-load value against itself restored the adapter and the moments onto different weights.
+    assert dc.with_resolved_revision(pinned, cfg.base_model).base_revision == "rev-def456"
     monkeypatch.setattr(dte, "source_revision", lambda ref: "unresolved")
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
 
@@ -2262,3 +2285,81 @@ def test_a_raised_target_survives_a_run_that_died_before_the_resumed_event(run_d
     )
     assert at_target["can_resume"] is False
     assert "nothing left to train" in at_target["resume_blocked_reason"]
+
+
+def test_a_swap_aside_that_cannot_run_fails_the_save_and_keeps_the_old_bundle(
+    run_dir, monkeypatch
+):
+    """Re-saving an OCCUPIED step has to move the old bundle out of the way first. When that
+    rename cannot run at all -- Windows holding a file open, a cross-device oddity -- deleting
+    the occupant to free the slot was the old way out, and a delete that then failed part-way
+    could fail the promotion too, with no copy left to restore. Fail the save instead: the
+    existing bundle is untouched and the run keeps the resume point it already had."""
+    run = _Run(run_dir)
+    first, error = run.save(4)
+    assert error is None and first is not None
+    before = (Path(first) / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8")
+
+    real_replace = dc.os.replace
+
+    def _refuse_the_swap(src, dst):
+        if "replaced" in Path(dst).name:
+            raise OSError("the directory is in use by another process")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(dc.os, "replace", _refuse_the_swap)
+    run.step_once(0.5)
+    second, error = run.save(4)
+    monkeypatch.undo()
+
+    assert second is None and error is not None, "an unwritable slot must be reported"
+    kept = run_dir / "checkpoint-4"
+    assert kept.is_dir(), "the existing bundle must survive a save that could not displace it"
+    assert (kept / dc.TRAINER_STATE_FILENAME).read_text(encoding = "utf-8") == before
+    assert dc.latest_valid_checkpoint(run_dir) is not None
+
+
+def test_a_bundle_that_lost_its_random_streams_is_refused(run_dir):
+    """The torch generator lives in the rng FILE; the two random.Random streams the trainers own
+    live in the manifest beside it. restore_rng_state is per-part best-effort, so a bundle that
+    keeps the file and loses the streams restored torch and left the crop/flip and variant draws
+    at their fresh seeds -- a divergence on the first step, under a resume reporting success."""
+    run = _Run(run_dir)
+    path, error = run.save(4)
+    assert error is None and path is not None
+    assert dc.preflight_resume(path, identity = run.identity, target_steps = 500)[1] == 4
+
+    state = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(state.read_text(encoding = "utf-8"))
+    manifest["rng"].pop("streams")
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+    with pytest.raises(dc.ResumeError, match = "random-number streams"):
+        dc.preflight_resume(path, identity = run.identity, target_steps = 500)
+
+    # And losing only ONE of them is the same failure: the variant stream drives the latent
+    # cache's crop and flip picks on its own.
+    manifest["rng"]["streams"] = {"loop": manifest["rng"].get("streams", {}).get("loop")}
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+    with pytest.raises(dc.ResumeError, match = "random-number streams"):
+        dc.preflight_resume(path, identity = run.identity, target_steps = 500)
+
+
+def test_optimizer_moments_are_refused_when_the_parameter_order_moved(run_dir):
+    """Optimizer state is keyed by parameter POSITION while the adapter is restored by NAME. A
+    PEFT/diffusers upgrade that reorders traversal without renaming anything therefore rebinds
+    every Adam moment to a different tensor -- and LoRA projections share shapes, so it loads
+    cleanly and silently corrupts the continued trajectory."""
+    run = _Run(run_dir)
+    run.step_once(0.5)
+    path, error = run.save(4)
+    assert error is None and path is not None
+
+    state = Path(path) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(state.read_text(encoding = "utf-8"))
+    assert manifest["optimizer_param_names"] == ["weight"], manifest["optimizer_param_names"]
+    manifest["optimizer_param_names"] = ["some.other.lora_A.weight"]
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+
+    resumed = _Run(run_dir, resume_from_checkpoint = path)
+    with pytest.raises(dc.ResumeError, match = "different parameter order"):
+        resumed.restore()

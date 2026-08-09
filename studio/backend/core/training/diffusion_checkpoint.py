@@ -482,16 +482,21 @@ def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "
     fail in seconds, not after a download. But on the first run of an uncached Hub repo there is
     no local ref to read, so the revision records "unresolved" and the bundle it goes into can
     never enforce which commit it was trained on. Re-read once the loader has populated the
-    cache: an unresolved value is not comparable, so this only ever ADDS the constraint, and a
-    later resume against a repo that has advanced is refused instead of quietly restoring the
-    adapter and the Adam moments onto different frozen base weights.
+    cache: an unresolved value is not comparable, so a repo that could not be read keeps
+    whatever was recorded, and a later resume against a repo that has advanced is refused
+    instead of quietly restoring the adapter and the Adam moments onto different frozen base
+    weights.
+
+    The re-read is unconditional. A local ``refs/main`` can still report the OLD commit before
+    the load and be refreshed by ``from_pretrained`` itself, so returning early on an
+    already-comparable value left the pre-load revision standing for a base that had since
+    advanced -- the resume then compared A against A and restored A's adapter and moments onto
+    B's frozen weights, which is the exact outcome this field exists to prevent.
     """
     from core.training.diffusion_train_extras import source_revision
 
-    if _revision_is_comparable(identity.base_revision):
-        return identity
     resolved = source_revision(base_model)
-    if not _revision_is_comparable(resolved):
+    if not _revision_is_comparable(resolved) or resolved == identity.base_revision:
         return identity
     return replace(identity, base_revision = resolved)
 
@@ -765,6 +770,7 @@ def save_checkpoint(
         _save_tensors(save_file, adapter_state, staging / ADAPTER_FILENAME)
         files = {"adapter": ADAPTER_FILENAME}
         optimizer_class: Optional[str] = None
+        optimizer_param_names: Optional[list[str]] = None
         if ema_state:
             _save_tensors(save_file, ema_state, staging / EMA_FILENAME)
             files["ema"] = EMA_FILENAME
@@ -775,6 +781,10 @@ def save_checkpoint(
             _torch_save(torch, optimizer.state_dict(), staging / OPTIMIZER_FILENAME)
             files["optimizer"] = OPTIMIZER_FILENAME
             optimizer_class = optimizer_key(optimizer)
+            # `adapter_state` is trainable_state_dict(model), i.e. named_parameters() order --
+            # the same traversal the trainers build their param list from, so its key order IS
+            # the optimizer's positional order.
+            optimizer_param_names = [str(name) for name in adapter_state]
         if lr_scheduler is not None:
             _torch_save(torch, lr_scheduler.state_dict(), staging / SCHEDULER_FILENAME)
             files["scheduler"] = SCHEDULER_FILENAME
@@ -807,6 +817,13 @@ def save_checkpoint(
             # accept the other's state_dict and then KeyError on the first step, so the resume
             # has to compare this instead.
             "optimizer_class": optimizer_class,
+            # The trainable parameter names in the order the optimizer holds them. Its state is
+            # keyed by POSITION, so a PEFT/diffusers upgrade that changes traversal order while
+            # keeping the same names would rebind every Adam moment to a different tensor --
+            # and many LoRA projections share a shape, so it loads cleanly and silently corrupts
+            # the continued trajectory. Additive: an older bundle has no list and skips the
+            # check rather than failing it.
+            "optimizer_param_names": optimizer_param_names,
             # Loop bookkeeping that is not state to restore into an object (running loss, wall
             # clock). Nested rather than merged, so a caller can never shadow a reserved key.
             "progress": dict(progress or {}),
@@ -956,19 +973,19 @@ def _promote(staging: Path, root: Path, step: int) -> Path:
 
     ``os.replace`` onto an EXISTING directory is not supported (POSIX rename() needs an empty
     target; Windows MoveFileEx rejects it outright), so an occupied slot is first swapped out
-    to a staging name. The old bundle is deleted only AFTER the new one is in place, so a kill
-    during the swap leaves the old one recoverable on disk rather than already gone."""
+    to a staging name. The displaced bundle is KEPT there rather than deleted: two runs can
+    share an output directory (resume checkpoint-10 in a folder that also holds checkpoint-15,
+    then save at 15), and the older run's bundle is not this run's to spend -- discarding this
+    run removes the replacement and hands the slot back to what was there.
+
+    A swap-aside that CANNOT be done (a Windows lock, a cross-device oddity) fails the save.
+    Deleting the occupant to free the slot was the older behaviour and the worse one: a partial
+    delete can fail the promotion too, and by then there is no copy left to put back."""
     final = root / f"{CHECKPOINT_PREFIX}{step}"
-    doomed: Optional[Path] = None
+    displaced: Optional[Path] = None
     if final.exists():
-        doomed = root / f"{_STAGING_PREFIX}stale-{step}-{uuid.uuid4().hex[:8]}"
-        try:
-            os.replace(final, doomed)
-        except OSError:
-            # Cannot move it aside (a lock, a cross-device oddity): removing it is the only way
-            # to free the slot, and it is about to be superseded anyway.
-            doomed = None
-            shutil.rmtree(final, ignore_errors = True)
+        displaced = root / f"{_STAGING_PREFIX}replaced-{step}-{uuid.uuid4().hex[:8]}"
+        os.replace(final, displaced)
     try:
         os.replace(staging, final)
     except OSError:
@@ -976,19 +993,20 @@ def _promote(staging: Path, root: Path, step: int) -> Path:
         # moved aside, so put it back before the failure propagates. Without this, a resave of
         # an occupied step (a resumed run rewriting checkpoint-15) that fails to promote leaves
         # the run with no checkpoint at all -- strictly worse than the stale one it replaced.
-        if doomed is not None:
+        if displaced is not None:
             with contextlib.suppress(OSError):
-                os.replace(doomed, final)
+                os.replace(displaced, final)
         raise
     _fsync_dir(root)
-    if doomed is not None:
-        shutil.rmtree(doomed, ignore_errors = True)
     return final
 
 
-# ``.tmp-checkpoint-stale-<step>-<uuid>``: the step is what _promote encodes, so an orphan can
-# be handed back to the slot it came from.
-_STALE_SLOT = re.compile(r"^stale-(\d+)-")
+# ``.tmp-checkpoint-stale-<step>-<uuid>`` / ``.tmp-checkpoint-replaced-<step>-<uuid>``: the step
+# is what _promote encodes, so an orphan can be handed back to the slot it came from. ``stale``
+# is a promotion killed mid-swap; ``replaced`` is a bundle a later write displaced, held so the
+# slot can be restored if that write is later discarded.
+_STALE_SLOT = re.compile(r"^(?:stale|replaced)-(\d+)-")
+_REPLACED_SLOT = re.compile(r"^replaced-(\d+)-")
 
 
 def _prune_staging(root: Path) -> None:
@@ -998,13 +1016,18 @@ def _prune_staging(root: Path) -> None:
     A ``stale-<step>`` orphan whose slot is EMPTY is not abandoned work: it is the previous
     bundle, moved aside by a promotion that was killed before the rename landed. Deleting it
     would throw away the run's last resumable state, so it is handed back to its slot instead.
+
+    A ``replaced-<step>`` orphan is not abandoned work either, even with its slot occupied: it
+    is the bundle THIS run displaced, held so that discarding this run does not take another
+    run's resume point with it. Only the cleanup paths retire those.
     """
     try:
         entries = list(root.glob(f"{_STAGING_PREFIX}*"))
     except OSError:
         return
     for entry in entries:
-        if _recover_orphaned_slot(root, entry):
+        suffix = entry.name[len(_STAGING_PREFIX) :]
+        if _recover_orphaned_slot(root, entry) or _REPLACED_SLOT.match(suffix):
             continue
         shutil.rmtree(entry, ignore_errors = True)
 
@@ -1037,6 +1060,33 @@ def _recover_orphaned_slot(root: Path, entry: Path) -> bool:
         # copy of the run's last resumable state.
         pass
     return True
+
+
+def _retire_replaced_slots(root: Path, *, restore: bool) -> None:
+    """Settle the bundles this run displaced, once its own are gone.
+
+    ``restore`` hands each one back to the slot the cleanup just emptied, which is the whole
+    reason it was kept: the pre-existing bundle comes back instead of dying with the run that
+    overwrote it. False is the fresh-run case, where the adapter those bundles belong to has
+    just been overwritten and they are a trap rather than resumable state. Either way, nothing
+    is left behind afterwards.
+    """
+    try:
+        entries = sorted(root.glob(f"{_STAGING_PREFIX}replaced-*"))
+    except OSError:
+        return
+    for entry in entries:
+        match = _REPLACED_SLOT.match(entry.name[len(_STAGING_PREFIX) :])
+        slot = root / f"{CHECKPOINT_PREFIX}{int(match.group(1))}" if match else None
+        if restore and slot is not None and not slot.exists():
+            try:
+                os.replace(entry, slot)
+                continue
+            except OSError:
+                # Could not hand it back. Leaving it on disk still beats deleting the only copy
+                # of another run's last resumable state.
+                continue
+        shutil.rmtree(entry, ignore_errors = True)
 
 
 def _source_bundle_path(root: Path, source_checkpoint) -> Optional[Path]:
@@ -1086,8 +1136,10 @@ def prune_checkpoints(
 def clear_checkpoints(output_dir: str | os.PathLike[str]) -> None:
     """Remove every ``checkpoint-<N>`` bundle in ``output_dir``. Used when a fresh (non-resumed)
     run takes over an output directory that an earlier run of the same name left checkpoints in."""
-    for stale in list_checkpoints(output_dir):
+    root = Path(output_dir).expanduser()
+    for stale in list_checkpoints(root):
         shutil.rmtree(stale, ignore_errors = True)
+    _retire_replaced_slots(root, restore = False)
 
 
 def resumed_into_this_dir(cfg: Any, output_dir: "str | os.PathLike[str]") -> bool:
@@ -1142,8 +1194,10 @@ def retire_own_checkpoints(
     if resumed_here:
         clear_own_checkpoints(output_dir, preexisting)
         return
-    for stale in list_checkpoints(output_dir):
+    root = Path(output_dir).expanduser()
+    for stale in list_checkpoints(root):
         shutil.rmtree(stale, ignore_errors = True)
+    _retire_replaced_slots(root, restore = False)
 
 
 def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iterable[Any]") -> None:
@@ -1172,6 +1226,11 @@ def clear_own_checkpoints(output_dir: str | os.PathLike[str], preexisting: "Iter
         if stale in keep and keep[stale] == _bundle_identity(stale):
             continue
         shutil.rmtree(stale, ignore_errors = True)
+    # A bundle this run wrote OVER a pre-existing one has just been removed, so its slot is free
+    # and the displaced original goes back into it. Without this the discard takes the other
+    # run's resume point with it: the replacement is not the bundle it overwrote, so the identity
+    # match above cannot keep it, and the original was already gone.
+    _retire_replaced_slots(Path(output_dir).expanduser(), restore = True)
 
 
 def _bundle_identity(path: Path) -> Optional[tuple]:
@@ -1485,6 +1544,10 @@ def resolve_resume_dir(path_value: str) -> Path:
 # wrong: _assert_loadable only opens the roles the bundle happens to LIST, so a checkpoint that
 # lists an adapter and nothing else passed the route preflight, the resident GPU model was
 # evicted, and the child then died on "This checkpoint carries no optimizer state".
+# The random.Random streams both trainers construct and hand to capture_rng_state. Named here
+# because the preflight has to know what a complete bundle carries.
+_TRAINER_RNG_STREAMS: tuple[str, ...] = ("loop", "variant")
+
 _REQUIRED_STATE: tuple[tuple[str, str], ...] = (
     ("adapter", "the trained LoRA weights"),
     ("optimizer", "the optimizer moments"),
@@ -1513,6 +1576,18 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         manifest.get("sampler"), dict
     ):
         missing.append("the dataset sampler position")
+    # The torch generator lives in the rng FILE; the two random.Random streams the trainers own
+    # (the loop's index/crop draws and the latent-cache variant picks) live in the manifest
+    # beside it. restore_rng_state is per-part best-effort, so a bundle that lists the file but
+    # has lost either stream restores torch and silently leaves those two at their fresh seeds:
+    # crop and flip selection diverges on the first step, and the sampler draws a different
+    # permutation once its saved cycle ends. Both trainers always write both.
+    rng_manifest = manifest.get("rng")
+    saved_streams = rng_manifest.get("streams") if isinstance(rng_manifest, dict) else None
+    if not isinstance(saved_streams, dict) or not all(
+        isinstance(saved_streams.get(name), (list, tuple)) for name in _TRAINER_RNG_STREAMS
+    ):
+        missing.append("the trainer's random-number streams")
     if not missing:
         return
     raise ResumeError(
@@ -1688,6 +1763,15 @@ class LoadedCheckpoint:
     def optimizer_class(self) -> Optional[str]:
         value = self.manifest.get("optimizer_class")
         return str(value) if value else None
+
+    @property
+    def optimizer_param_names(self) -> Optional[list[str]]:
+        """The trainable names in the order the optimizer held them, or None on a bundle from
+        before this was recorded (which skips the check rather than failing it)."""
+        value = self.manifest.get("optimizer_param_names")
+        if not isinstance(value, list) or not value:
+            return None
+        return [str(name) for name in value]
 
     @property
     def progress(self) -> dict[str, Any]:

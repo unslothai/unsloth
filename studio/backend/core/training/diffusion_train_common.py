@@ -1365,6 +1365,19 @@ def restore_resume_state(
                 f"machine builds {live_optimizer}. Install the same optimizer backend (or unset "
                 f"UNSLOTH_DIFFUSION_FP32_OPTIM) to continue this run."
             )
+        # Optimizer state is keyed by parameter POSITION, so load_state_dict rebinds the saved
+        # moments onto whatever order this process built. The adapter tensors above were restored
+        # by NAME, so a PEFT/diffusers upgrade that changes traversal order while keeping the same
+        # names leaves the two disagreeing: many LoRA projections share a shape, so every moment
+        # loads cleanly onto the wrong tensor and the continued trajectory is silently corrupt.
+        saved_names = ckpt.optimizer_param_names
+        live_names = list(trainable_state_dict(model))
+        if saved_names is not None and saved_names != live_names:
+            raise ResumeError(
+                "This checkpoint's optimizer state was written for a different parameter order "
+                "than this build produces, so its moments cannot be matched to this run's "
+                "tensors. Start a new run, or resume on the version that wrote it."
+            )
         # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins
         # over a changed cfg.learning_rate -- the same semantics as HF Trainer's resume, and the
         # UI only ever replays the original run's config anyway.
