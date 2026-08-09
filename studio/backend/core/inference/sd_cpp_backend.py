@@ -275,6 +275,8 @@ def ensure_h3_sd_cpp_binary(
     if binary and not sd_cpp_supports_minimax_h3(binary):
         return None
     return binary
+
+
 def _installer_module():
     """The installer module, importable from the backend's sys.path. None if unavailable."""
     import sys
