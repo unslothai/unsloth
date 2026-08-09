@@ -146,11 +146,61 @@ def managed_install_root() -> Path:
 
     Only a copy under this root may be reinstalled over: replacing anything else would delete
     a build the user chose. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer, so
-    side-by-side Studios stay isolated."""
-    studio_home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    if studio_home:
-        return Path(studio_home).parent / "stable-diffusion.cpp"
-    return Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    side-by-side Studios stay isolated.
+
+    ``<studio home>/stable-diffusion.cpp``, which is where every other managed component lives
+    (``default_managed_llama_dir``, ``managed_whisper_dir``, ``managed_node_dir`` all place their
+    tree *under* the Studio home). The legacy default home ``~/.unsloth/studio`` keeps mapping to
+    ``~/.unsloth/stable-diffusion.cpp`` so existing installs are still found."""
+    return _studio_component_root("stable-diffusion.cpp")
+
+
+def _studio_component_root(name: str) -> Path:
+    """``<studio home>/<name>``, or the legacy ``~/.unsloth/<name>`` when no custom home is set
+    (or the home *is* the legacy ``~/.unsloth/studio``). The home is expanded and made absolute
+    first: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the root relative, because the
+    process' working directory can change and would silently move the managed tree."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    legacy = Path.home() / ".unsloth" / name
+    if not home:
+        return legacy
+    root = Path(home).expanduser()
+    legacy_studio = Path.home() / ".unsloth" / "studio"
+    try:
+        root = root.resolve()
+        is_legacy = root == legacy_studio.resolve()
+    except (OSError, ValueError):
+        root = root.absolute()
+        is_legacy = root == legacy_studio
+    return legacy if is_legacy else root / name
+
+
+def legacy_sibling_install_root() -> Optional[Path]:
+    """The pre-fix managed root, ``<studio home>/../stable-diffusion.cpp``, or None.
+
+    Older builds derived the sd.cpp root from the *parent* of the Studio home, which put the tree
+    outside the Studio home entirely. Two problems: a relative ``UNSLOTH_STUDIO_HOME`` collapsed
+    that parent to the working directory, so an unrelated ``stable-diffusion.cpp`` checkout sitting
+    there became "the managed install" and the installer refused to run; and it disagreed with
+    every other component, which install under the home.
+
+    Kept only so a tree an older build really did install still resolves. Returned solely when it
+    carries the ownership marker, so a checkout that merely happens to sit next to the Studio home
+    is never adopted."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    if not home:
+        return None
+    try:
+        root = Path(home).expanduser().resolve().parent / "stable-diffusion.cpp"
+    except (OSError, ValueError):
+        return None
+    current = managed_install_root()
+    try:
+        if root == current or not (root / OWNER_MARKER).is_file():
+            return None
+    except OSError:
+        return None
+    return root
 
 
 def in_tree_install_root() -> Optional[Path]:
@@ -178,12 +228,21 @@ def is_managed_binary(binary: Optional[str]) -> bool:
     the user is left with no binary at all and no way back."""
     if not binary:
         return False
-    root = managed_install_root()
-    try:
-        Path(binary).resolve().relative_to(root.resolve())
-        return (root / OWNER_MARKER).is_file()
-    except (OSError, ValueError):
-        return False
+    roots = [managed_install_root()]
+    legacy = legacy_sibling_install_root()
+    if legacy is not None:
+        roots.append(legacy)
+    for root in roots:
+        try:
+            Path(binary).resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        try:
+            if (root / OWNER_MARKER).is_file():
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _find_binary(
@@ -207,11 +266,18 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root. Honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer so side-by-side Studios stay isolated; else ~/.unsloth/....
+    # 3. Default install root: <studio home>/stable-diffusion.cpp (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer so side-by-side Studios stay isolated), else ~/.unsloth/....
     default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
+
+    # 3b. A tree an older build installed beside the Studio home. Marker-gated (see legacy_sibling_install_root), so only a real previous install is picked up here.
+    legacy_root = legacy_sibling_install_root()
+    if legacy_root is not None:
+        hit = _first_file(_layout_candidates(legacy_root, layout_stem))
+        if hit:
+            return hit
 
     # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
     in_tree = in_tree_install_root()

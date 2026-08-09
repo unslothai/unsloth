@@ -389,10 +389,97 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
     studio_home = tmp_path / "studio_root"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    binary = tmp_path / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
+    binary = studio_home / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
     binary.parent.mkdir(parents = True)
     binary.write_bytes(b"x")
     assert eng.find_sd_cpp_binary() == str(binary)
+
+
+def test_managed_root_is_under_the_studio_home_like_every_other_component(
+    tmp_path, monkeypatch
+):
+    """The sd.cpp tree installs *under* the Studio home, not beside it.
+
+    llama.cpp (``default_managed_llama_dir``), whisper.cpp and node all place their tree at
+    ``<studio home>/<component>``. sd.cpp used the home's *parent*, which put the tree outside the
+    home the user chose."""
+    from core.inference import sd_cpp_engine as eng
+
+    studio_home = tmp_path / "sxs" / "studio_a"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    assert default_install_dir() == studio_home / "stable-diffusion.cpp"
+    # The installer and the engine must agree, or one installs where the other never looks.
+    assert eng.managed_install_root() == default_install_dir()
+
+
+def test_a_relative_studio_home_does_not_put_the_install_in_the_working_directory(
+    tmp_path, monkeypatch
+):
+    """A relative ``UNSLOTH_STUDIO_HOME`` used to collapse to the working directory.
+
+    ``Path("home").parent`` is ``Path(".")``, so the managed root became ``./stable-diffusion.cpp``
+    -- exactly the name ``git clone`` of the upstream project produces. A checkout sitting in the
+    working directory then shadowed the managed install and the installer refused to run, because
+    the target was a pre-existing non-empty directory without the ownership marker."""
+    from core.inference import sd_cpp_engine as eng
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stable-diffusion.cpp").mkdir()
+    (tmp_path / "stable-diffusion.cpp" / "README.md").write_text("someone else's checkout")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "relative_home")
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+
+    for root in (default_install_dir(), eng.managed_install_root()):
+        assert root.is_absolute(), "a relative home must not leave the root relative"
+        assert root == (tmp_path / "relative_home" / "stable-diffusion.cpp").resolve()
+        assert root != (tmp_path / "stable-diffusion.cpp").resolve()
+
+
+def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(
+    tmp_path, monkeypatch
+):
+    """An install an older build really made is still found; a bare checkout is not.
+
+    Back-compat is marker-gated on purpose: the old location is ``<home>/../stable-diffusion.cpp``,
+    which for a relative home is the working directory, so an unmarked match there is far more
+    likely to be someone's clone than a previous Studio install."""
+    from core.inference import sd_cpp_engine as eng
+
+    monkeypatch.delenv("SD_CLI_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    sibling = tmp_path / "stable-diffusion.cpp"
+    binary = sibling / "build" / "bin" / "sd-cli"
+    binary.parent.mkdir(parents = True)
+    binary.write_bytes(b"x")
+
+    # Unmarked: not ours, so neither discovered nor treated as replaceable.
+    assert eng.legacy_sibling_install_root() is None
+    assert eng.find_sd_cpp_binary() is None
+    assert eng.is_managed_binary(str(binary)) is False
+
+    # Marked by a previous install: found again, and still replaceable.
+    (sibling / eng.OWNER_MARKER).touch()
+    assert eng.legacy_sibling_install_root() == sibling
+    assert eng.find_sd_cpp_binary() == str(binary)
+    assert eng.is_managed_binary(str(binary)) is True
+
+
+def test_the_legacy_default_studio_home_keeps_its_install_dir(tmp_path, monkeypatch):
+    """``UNSLOTH_STUDIO_HOME=~/.unsloth/studio`` is the documented default, not a custom home:
+    it must keep resolving to ``~/.unsloth/stable-diffusion.cpp`` rather than moving the tree to
+    ``~/.unsloth/studio/stable-diffusion.cpp`` and orphaning every existing install."""
+    from core.inference import sd_cpp_engine as eng
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".unsloth" / "studio").mkdir(parents = True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(fake_home / ".unsloth" / "studio"))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    expected = fake_home / ".unsloth" / "stable-diffusion.cpp"
+    assert default_install_dir() == expected
+    assert eng.managed_install_root() == expected
 
 
 # ── Unsloth mirror: default source + the CPU/Apple asset set it publishes ─────

@@ -204,12 +204,34 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
 
 
 def default_install_dir() -> Path:
-    """``~/.unsloth/stable-diffusion.cpp`` (or under ``UNSLOTH_STUDIO_HOME`` /
-    ``STUDIO_HOME`` if set), the sibling of the llama.cpp install the finder
-    probes."""
-    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    base = Path(home).parent if home else Path.home() / ".unsloth"
-    return base / "stable-diffusion.cpp"
+    """``<UNSLOTH_STUDIO_HOME>/stable-diffusion.cpp``, else the legacy
+    ``~/.unsloth/stable-diffusion.cpp``.
+
+    The same placement ``install_llama_prebuilt.default_managed_llama_dir`` uses for
+    llama.cpp, and the whisper.cpp / node installs use for theirs: the tree goes
+    *under* the Studio home, so side-by-side Studios stay isolated and nothing outside
+    the home is ever claimed. The legacy default home ``~/.unsloth/studio`` still maps
+    to ``~/.unsloth/stable-diffusion.cpp`` so an existing install is reused.
+
+    Kept byte-identical in meaning to ``sd_cpp_engine.managed_install_root``; the two
+    are separate because this script must run standalone, before the backend package is
+    importable.
+
+    Derived from an absolute home: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the
+    install dir relative to whatever the working directory happens to be."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    legacy = Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    if not home:
+        return legacy
+    root = Path(home).expanduser()
+    legacy_studio = Path.home() / ".unsloth" / "studio"
+    try:
+        root = root.resolve()
+        is_legacy = root == legacy_studio.resolve()
+    except (OSError, ValueError):
+        root = root.absolute()
+        is_legacy = root == legacy_studio
+    return legacy if is_legacy else root / "stable-diffusion.cpp"
 
 
 def _make_executable(path: Path) -> None:
