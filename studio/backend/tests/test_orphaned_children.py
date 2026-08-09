@@ -2396,5 +2396,36 @@ def test_terminate_pid_leaves_a_pid_that_is_no_longer_ours_alone(monkeypatch):
         stranger.wait(timeout = 5)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "posix group handling")
+def test_a_validation_server_without_a_death_signal_stays_in_the_group(monkeypatch):
+    """macOS has no parent-death signal, and the record only exists once the
+    backend has read the announcement that follows the spawn, so a session of
+    its own leaves a window in which nothing can reach the server."""
+    import importlib
+
+    studio = Path(__file__).resolve().parents[2]
+    if str(studio) not in sys.path:
+        sys.path.insert(0, str(studio))
+    ilp = importlib.import_module("install_llama_prebuilt")
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert ilp._validation_server_kwargs() == {}, "no death signal to pair the session with"
+
+    server = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        **ilp._validation_server_kwargs(),
+    )
+    signalled: list = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)))
+    try:
+        ilp._terminate_validation_server(server, grace = 1.0)
+        assert signalled == [], f"signalled the group it shares with the installer: {signalled}"
+        assert server.poll() is not None, "the server was left running"
+    finally:
+        monkeypatch.undo()
+        _kill(server.pid)
+        server.wait(timeout = 5)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

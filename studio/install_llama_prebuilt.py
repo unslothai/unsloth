@@ -5354,20 +5354,33 @@ def validate_server(
 _PR_SET_PDEATHSIG = 1
 
 
+def _validation_server_leads_group() -> bool:
+    """Whether the validation server is started as its own group leader.
+
+    Only where the parent-death signal can be armed with it, so the two always
+    agree: the kill path may only killpg a group the server actually leads.
+    """
+    return os.name == "posix" and sys.platform.startswith("linux")
+
+
 def _validation_server_kwargs() -> "dict[str, Any]":
     """Popen kwargs tying a validation server to this installer's lifetime.
 
     Its own group keeps whatever the server starts reachable through the leader
     alone, but it also takes the server out of the group Studio force-kills, so
-    on Linux the parent-death signal is armed as well: an installer that is
-    killed mid-validation must not leave a server holding the GPU and the
-    staged files until some later startup sweeps the breadcrumb.
+    the parent-death signal is armed alongside it: an installer that is killed
+    mid-validation must not leave a server holding the GPU and the staged files
+    until some later startup sweeps the breadcrumb.
+
+    macOS has no such signal, and the record only exists once the backend has
+    read the announcement that follows the spawn, so a session of its own there
+    would leave a window in which nothing can reach the server at all. It stays
+    in the inherited group instead, and the termination walk covers whatever it
+    starts.
     """
-    if os.name != "posix":
+    if not _validation_server_leads_group():
         return {}
     kwargs: "dict[str, Any]" = {"start_new_session": True}
-    if not sys.platform.startswith("linux"):
-        return kwargs  # macOS has no equivalent; the breadcrumb is its only reaper
     owner_pid = os.getpid()  # read pre-fork, so the child can tell reparenting apart
 
     def _arm_parent_death() -> None:
@@ -5417,13 +5430,17 @@ def _wait_for_group(pgid: "int | None", grace: float) -> None:
 def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0) -> bool:
     """Stop the validation server and anything it started. True when it is gone.
 
-    It leads its own group, so signalling the leader alone would leave a child
-    of its own behind, and a child that ignores SIGTERM outlives the leader's
-    exit. False means something is still in that group, and the caller keeps
-    the pid announced so a later sweep can still reach it.
+    Where it leads its own group, signalling the leader alone would leave a
+    child of its own behind, and a child that ignores SIGTERM outlives the
+    leader's exit. False means something is still in that group, and the caller
+    keeps the pid announced so a later sweep can still reach it.
+
+    Where it does not lead one it shares this installer's group, and killpg
+    would take the installer and Studio with it, so only the server itself is
+    signalled.
     """
     pgid = None
-    if os.name == "posix" and hasattr(os, "getpgid"):
+    if _validation_server_leads_group() and hasattr(os, "getpgid"):
         try:
             pgid = os.getpgid(process.pid)
         except OSError:
@@ -5431,6 +5448,8 @@ def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0
             # a session of its own, and the kernel holds that number for as long
             # as any member of the group is still there.
             pgid = process.pid
+        if pgid != process.pid:
+            pgid = None  # not the leader after all; never signal a shared group
     if pgid is not None:
         try:
             os.killpg(pgid, signal.SIGTERM)
