@@ -454,13 +454,9 @@ def test_two_checkpoints_in_one_directory_get_distinguishable_labels():
     """Two rows labelled ``Q6_K · experiments`` are two rows a user cannot tell apart."""
     paths = ("experiments/model-a-Q6_K.gguf", "experiments/model-b-Q6_K.gguf")
     variants = [
-        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1)
-        for path in paths
+        GgufVariantInfo(filename = path, quant = gguf_variant_key(path), size_bytes = 1) for path in paths
     ]
     _apply_gguf_display_labels(variants)
     labels = [v.display_label for v in variants]
-    assert labels == [
-        "Q6_K · experiments/model-a-Q6_K",
-        "Q6_K · experiments/model-b-Q6_K",
-    ]
+    assert labels == ["Q6_K · experiments/model-a-Q6_K", "Q6_K · experiments/model-b-Q6_K"]
     assert len(set(labels)) == 2

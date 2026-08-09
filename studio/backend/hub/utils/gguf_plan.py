@@ -212,9 +212,7 @@ def plan_from_expected_files(
     # manifest checks against; leaving the copy there downloaded it, then reclaim deleted it as
     # not-ours (it is absent from main_hashes) and the job reported partial and fetched it again.
     kept = {file.path for file in main_files}
-    expected = tuple(
-        file for file in expected if file not in all_main or file.path in kept
-    )
+    expected = tuple(file for file in expected if file not in all_main or file.path in kept)
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
     # Manifest-resume fallback for the mmproj fields below: companion_files
     # also holds the MTP drafter, so keep an mmproj-only view.
