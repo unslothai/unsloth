@@ -569,6 +569,12 @@ def _group_member_pids(pgid: int) -> "Optional[list[int]]":
                 errors = "replace",
                 timeout = 5,
             )
+            # ps exits nonzero when the group is gone AND when the call itself
+            # failed, and the two are not the same answer: reporting "empty"
+            # for a failure lets forget_pid drop the only record of a live
+            # descendant. Only a clean exit is an answer.
+            if out.returncode != 0:
+                return None
             return [int(x) for x in (out.stdout or "").split()]
         except Exception:
             return None
@@ -1032,8 +1038,12 @@ def _reap_orphaned_group(pgid: object, pid: int, timeout: float) -> bool:
     if not isinstance(pgid, int) or pgid != pid or _is_windows() or not hasattr(os, "killpg"):
         return False
     try:
-        os.killpg(pgid, 0)  # the group still has members
+        os.killpg(pgid, 0)  # the group is still there
     except Exception:
+        return False
+    # A zombie answers that probe, and where pid 1 does not reap it stays that
+    # way, so without this every stale record costs the whole grace period.
+    if not _group_has_members(pgid):
         return False
     import time
 

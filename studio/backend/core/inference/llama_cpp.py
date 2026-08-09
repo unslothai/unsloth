@@ -13378,6 +13378,27 @@ class LlamaCppBackend:
                     torch.cuda.empty_cache()
             return True
 
+    @staticmethod
+    def _leading_process_group(pid):
+        """The pid's own process group, when it leads one. None otherwise."""
+        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+            return None
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return None
+        return pgid if pgid == pid else None
+
+    @staticmethod
+    def _kill_process_group(pgid):
+        """Take down what the leader left behind, if anything is still there."""
+        if pgid is None or not hasattr(os, "killpg"):
+            return
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
     def _kill_process(self):
         """Terminate the subprocess if running."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
@@ -13397,6 +13418,11 @@ class LlamaCppBackend:
         terminable = hasattr(self._process, "terminate")
         if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
+        # Captured before the wait below reaps the leader and getpgid stops
+        # answering. The diffusion shim leads its own group so the startup sweep
+        # can reach its visual server; this is what takes that group down on an
+        # ordinary stop, which is the only path the desktop shutdown waits for.
+        _pgid = self._leading_process_group(getattr(self._process, "pid", None))
         try:
             if terminable:
                 self._process.terminate()
@@ -13417,6 +13443,7 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
+            self._kill_process_group(_pgid)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:

@@ -1407,5 +1407,56 @@ def test_adoption_installs_the_fork_reset(monkeypatch):
     pl.forget_pid(os.getpid())
 
 
+def test_a_group_of_nothing_but_a_zombie_costs_no_grace_period(monkeypatch):
+    """killpg(pgid, 0) answers for a zombie, and where pid 1 does not reap it
+    stays that way, so every stale record would wait out the timeout."""
+    import time as _time
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: None)
+    monkeypatch.setattr(pl, "_group_has_members", lambda pgid: False)
+
+    started = _time.monotonic()
+    assert pl._reap_orphaned_group(4711, 4711, timeout = 5.0) is False
+    assert _time.monotonic() - started < 1.0, "waited out the grace period"
+
+
+def test_an_unanswerable_group_query_is_not_an_empty_group(monkeypatch):
+    """Reporting empty for a failed ps lets forget_pid drop the only record of
+    a live descendant."""
+    import subprocess as _subprocess
+
+    from utils import process_lifetime as pl
+
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    monkeypatch.setattr(pl, "_is_windows", lambda: False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: None)
+
+    class _Failed:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(_subprocess, "run", lambda *a, **k: _Failed())
+    assert pl._group_member_pids(4711) is None
+    assert pl._group_has_members(4711) is True, "a failed query read as gone"
+
+
+def test_the_diffusion_group_goes_down_with_an_ordinary_stop():
+    """The desktop shutdown only waits for this path, so the shim's own group
+    has to be taken down here rather than by the next startup sweep."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend._kill_process)
+    assert "_leading_process_group" in source
+    assert "_kill_process_group(_pgid)" in source
+    # Captured before the wait: getpgid stops answering once the leader is reaped.
+    assert source.index("_leading_process_group") < source.index("self._process.terminate()")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))
