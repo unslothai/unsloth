@@ -2521,6 +2521,29 @@ def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, m
     assert "device=" in line and "offload=" in line
 
 
+def test_a_rejected_request_is_not_recorded_as_a_server_failure(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # _run_generate maps every ValueError from the pipeline to client input feedback and gives it
+    # no video.generate_failed record, so the request-shape log must not turn the same rejection
+    # into an ERROR entry: a user asking for a shape the pipeline refuses is not a server failure.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(ValueError("`height` and `width` have to be divisible by 32")),
+    )
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(ValueError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert records == []
+
+
 def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypatch):
     # A length distinguishes an empty prompt from a long one, which is all a bug report needs; the
     # server log is not the place for user content.

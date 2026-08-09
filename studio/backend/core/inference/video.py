@@ -484,6 +484,12 @@ def _log_failed_generation(request_shape: Optional[dict[str, Any]], exc: BaseExc
             return
         if type(exc).__name__ == "_VideoGenerationCancelled":
             return
+        # A ValueError is client input feedback here, exactly as _run_generate treats it: it is
+        # returned to the caller as a validation message and deliberately gets no
+        # video.generate_failed record. Logging the request shape at ERROR for one would turn a
+        # rejected resolution or frame count into a server-error entry.
+        if isinstance(exc, ValueError):
+            return
         logger.error(
             "video.generate_failed_request: %s",
             " ".join(f"{k}={v}" for k, v in request_shape.items()),
