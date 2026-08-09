@@ -89,9 +89,7 @@ def test_startup_preserves_foreign_leased_work_until_its_lease_expires(rag_home)
             linked_relative_path = "in-flight.txt",
         )
         ingestion_job = ingestion._new_job(conn, document_id, folder["scope"])
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,)
-        )
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,))
         conn.execute(
             "UPDATE rag_job_leases SET owner_id='foreign', expires_at='9999-12-31' "
             "WHERE kind=? AND job_id=?",
@@ -1919,7 +1917,9 @@ def test_startup_deletes_retired_scope_for_deleted_project(rag_home, stub_embedd
 
 
 @requires_sqlite_vec
-def test_retired_scope_waits_for_manual_ingestion_before_purging(rag_home, stub_embeddings, monkeypatch):
+def test_retired_scope_waits_for_manual_ingestion_before_purging(
+    rag_home, stub_embeddings, monkeypatch
+):
     from core.rag import ingestion
     from utils.paths import ensure_dir, rag_uploads_root
 
@@ -1956,9 +1956,10 @@ def test_retired_scope_waits_for_manual_ingestion_before_purging(rag_home, stub_
     try:
         assert store.get_document(conn, document_id) is None
         assert conn.execute("SELECT 1 FROM ingestion_jobs WHERE id=?", (job_id,)).fetchone() is None
-        assert conn.execute(
-            "SELECT 1 FROM chunks WHERE document_id=?", (document_id,)
-        ).fetchone() is None
+        assert (
+            conn.execute("SELECT 1 FROM chunks WHERE document_id=?", (document_id,)).fetchone()
+            is None
+        )
     finally:
         conn.close()
     assert not upload.exists()

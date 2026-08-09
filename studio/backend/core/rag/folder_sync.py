@@ -466,8 +466,7 @@ def _reconcile_retired_folder_deletions() -> None:
         folder_ids = [
             row["id"]
             for row in conn.execute(
-                "SELECT id FROM linked_folders "
-                "WHERE delete_remove_index IS NOT NULL"
+                "SELECT id FROM linked_folders WHERE delete_remove_index IS NOT NULL"
             )
         ]
     finally:
@@ -1381,11 +1380,7 @@ def _reconcile_folder(job_id: str) -> None:
     finally:
         conn.close()
     folder = get_folder(job["folder_id"])
-    if (
-        folder is None
-        or folder["status"] == "retired"
-        or folder["delete_remove_index"] is not None
-    ):
+    if folder is None or folder["status"] == "retired" or folder["delete_remove_index"] is not None:
         _set_job(
             job_id,
             status = "failed",
