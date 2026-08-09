@@ -932,6 +932,63 @@ def test_apply_group_offload_streams_text_encoders_when_asked(monkeypatch):
     assert vae.placed is not None  # the VAE is the companion the tier keeps resident
 
 
+def _stream_te_kwargs(monkeypatch, **call_kw):
+    """The kwargs _apply_group_offload hands diffusers, with a signature-complete fake.
+
+    The other fakes here take **kw, which makes the signature gating in _apply_group_offload read
+    as "diffusers does not support this". This one declares the real parameters so the gate is
+    actually exercised."""
+    seen: dict = {}
+
+    def _apply(
+        module,
+        onload_device = None,
+        offload_device = None,
+        offload_type = None,
+        num_blocks_per_group = None,
+        non_blocking = False,
+        use_stream = False,
+        record_stream = False,
+        low_cpu_mem_usage = False,
+        **_,
+    ):
+        seen[getattr(module, "name", "?")] = dict(
+            use_stream = use_stream,
+            non_blocking = non_blocking,
+            record_stream = record_stream,
+            low_cpu_mem_usage = low_cpu_mem_usage,
+        )
+
+    import core.inference.diffusion_memory as mem
+
+    pipe, _applied, *_ = _stream_te_pipe(monkeypatch)
+    _install_fake_torch_and_hooks(monkeypatch, _apply)
+    assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
+    return seen
+
+
+def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
+    # diffusers pins EVERY offloaded parameter in host RAM on the copy-stream path. That is a fair
+    # trade when group offload was already the plan, but this tier is only ever a rescue FROM
+    # whole-module offload, which pins nothing, on a card too small to hold the companions. Those
+    # hosts are not reliably RAM-rich, and #8188's machine got into trouble precisely by turning a
+    # device shortfall into unswappable host memory. The encoders run once per call, so the slower
+    # unpinned copy is paid once rather than per step.
+    seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True)
+    assert seen, "the applier never reached diffusers"
+    assert all(kw["low_cpu_mem_usage"] is True for kw in seen.values()), seen
+
+
+def test_the_unchanged_group_tier_still_pins_for_speed(monkeypatch):
+    # The existing group plan is untouched: it was chosen because the companions FIT, so the host
+    # is not being rescued and the pinned fast copy is the right default.
+    seen = _stream_te_kwargs(monkeypatch)
+    assert seen, "the applier never reached diffusers"
+    assert all(kw["low_cpu_mem_usage"] is False for kw in seen.values()), seen
+    # ... and the CUDA copy-stream overlap is still requested, which is what makes pinning matter.
+    assert all(kw["use_stream"] and kw["non_blocking"] for kw in seen.values()), seen
+
+
 def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypatch):
     # End of the wire: the planner's decision has to reach _apply_group_offload, or the plan says
     # group-with-streamed-encoders while the pipeline still places them resident and OOMs.

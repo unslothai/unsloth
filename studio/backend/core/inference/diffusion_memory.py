@@ -689,12 +689,23 @@ def _apply_group_offload(
             "use_stream": use_stream,
         }
         # On the CUDA stream path, overlap each block's H2D copy with compute. Lossless, and gated on the signature so older diffusers still works.
+        _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:
-            _params = inspect.signature(apply_group_offloading).parameters
             if "non_blocking" in _params:
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
+        if stream_text_encoders and "low_cpu_mem_usage" in _params:
+            # The streamed path PINS every offloaded parameter in host RAM when a copy stream is
+            # in use (diffusers group_offloading `_init_cpu_param_dict`), which is a fine trade
+            # when group offload was already the plan. It is not a fine trade here: this tier is
+            # only ever reached as a rescue from whole-module offload, which pins nothing, on a
+            # card small enough that the companions did not fit. Those hosts are not reliably
+            # RAM-rich either, and silently converting a device-memory shortfall into ten-plus GB
+            # of unswappable host RAM is how #8188's machine got into trouble in the first place.
+            # low_cpu_mem_usage trades a slower host-to-device copy for not pinning; the encoders
+            # this tier streams run ONCE per call, so that copy is paid once, not per step.
+            gkwargs["low_cpu_mem_usage"] = True
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to() OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group hooks exist.
         for name, comp in getattr(pipe, "components", {}).items():
             if name in streamed:
