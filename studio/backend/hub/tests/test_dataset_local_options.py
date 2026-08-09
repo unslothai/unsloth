@@ -606,3 +606,42 @@ def test_snapshot_options_reject_a_split_holding_an_undecompressible_file(tmp_pa
 
     # datasets keeps the .zst for the json builder and dies on the missing codec.
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_beside_standalone_yaml_dataset_info(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text(
+        "dataset_info:\n  features:\n  - name: text\n    dtype: string\n", encoding = "utf-8"
+    )
+    _rows(snapshot, "train.jsonl")
+
+    # 4.3.0 builds no config from dataset_info declared there, so it infers the files.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_stand_down_beside_unparsable_legacy_metadata(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "dataset_infos.json").write_text("{not json", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    # datasets json.loads it while resolving configs and raises before any split exists.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_beside_an_empty_readme(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "README.md").write_text("", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    # A card with no bytes declares nothing, so it blocks nothing.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_count_bw_images_as_a_folder_builder(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / "a.bw").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (snapshot / "b.bw").write_bytes(b"\x89PNG\r\n\x1a\n")
+    _rows(snapshot, "notes.jsonl")
+
+    # imagefolder wins the vote and drops the jsonl, so there is nothing to train on.
+    assert local_options._snapshot_options(snapshot) == set()

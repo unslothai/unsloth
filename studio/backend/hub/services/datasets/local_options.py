@@ -298,7 +298,7 @@ _MODULE_EXTENSIONS = {
 # extensions match case-insensitively; everything else is matched by a case-sensitive glob.
 _FOLDER_EXTENSIONS = frozenset(
     # imagefolder
-    ".apng .blp .bmp .bufr .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc .ftu "
+    ".apng .blp .bmp .bufr .bw .cur .dcx .dds .dib .emf .eps .fit .fits .flc .fli .ftc .ftu "
     ".gbr .gif .grib .icb .icns .ico .iim .im .j2c .j2k .jfif .jp2 .jpc .jpe .jpeg .jpf "
     ".jpg .jpx .msp .pbm .pcd .pcx .pgm .png .pnm .ppm .ps .psd .pxr .ras .rgb .rgba .sgi "
     ".tga .tif .tiff .vda .vst .webp .wmf .xbm .xpm "
@@ -569,9 +569,15 @@ def _metadata_present(snapshot: Path, name: str) -> bool:
 
 
 def _unreadable_metadata(snapshot: Path, name: str) -> bool:
-    """Whether the file is there but _snapshot_metadata_file refused it, for its size or
-    for pointing out of the cache. The loader still reads it, so we cannot ignore it."""
-    return _metadata_present(snapshot, name) and _snapshot_metadata_file(snapshot, name) is None
+    """Whether the file is there but _snapshot_metadata_file refused it, for being too big
+    or for pointing out of the cache. The loader still reads it, so we cannot ignore it.
+    An empty file is refused too, but it declares nothing and so blocks nothing."""
+    if not _metadata_present(snapshot, name) or _snapshot_metadata_file(snapshot, name) is not None:
+        return False
+    try:
+        return (snapshot / name).stat().st_size > 0
+    except OSError:
+        return True
 
 
 def _declares_configs(snapshot: Path, name: str) -> bool:
@@ -592,7 +598,9 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
         return True
     if not isinstance(payload, dict):
         return False
-    return bool(payload.get("configs")) or bool(payload.get("dataset_info"))
+    # Only configs count: 4.3.0 builds no config from dataset_info declared here, so a
+    # feature schema in this file leaves the loader inferring the files by pattern.
+    return bool(payload.get("configs"))
 
 
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
@@ -627,6 +635,9 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
             continue
         payload = _safe_json_file(metadata, snapshot, allow_snapshot_symlink = True)
         if filename == "dataset_infos.json":
+            # datasets json.loads this one while resolving configs, so a file it cannot
+            # parse raises before any split exists, inferred or not.
+            declared = declared or payload is None
             _add_dataset_info_options(options, payload)
         else:
             _add_info_options(options, payload)
