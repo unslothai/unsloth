@@ -18785,8 +18785,11 @@ def _drop_reasoning_for_local_template(messages: list[dict]) -> list[dict]:
             out.append(msg)
             continue
         stripped = {k: v for k, v in msg.items() if k != "reasoning_content"}
-        if stripped.get("role") == "assistant" and not stripped.get("content") \
-                and not stripped.get("tool_calls"):
+        if (
+            stripped.get("role") == "assistant"
+            and not stripped.get("content")
+            and not stripped.get("tool_calls")
+        ):
             continue
         out.append(stripped)
     return out

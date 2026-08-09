@@ -1993,9 +1993,17 @@ class TestDropEmptyAssistantSentinels:
 
         msgs = [
             {"role": "user", "content": "search for it"},
-            {"role": "assistant", "reasoning_content": "I should search",
-             "tool_calls": [{"id": "c0", "type": "function", "function": {
-                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {
+                "role": "assistant",
+                "reasoning_content": "I should search",
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c0", "content": "results"},
             {"role": "assistant", "content": "Here is what I found."},
             {"role": "user", "content": "more?"},
@@ -2010,9 +2018,17 @@ class TestDropEmptyAssistantSentinels:
 
         msgs = [
             {"role": "user", "content": "q"},
-            {"role": "assistant", "reasoning_content": "first",
-             "tool_calls": [{"id": "c0", "type": "function", "function": {
-                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {
+                "role": "assistant",
+                "reasoning_content": "first",
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c0", "content": "r"},
             {"role": "assistant", "content": "answer", "reasoning_content": "second"},
         ]
@@ -2027,9 +2043,17 @@ class TestDropEmptyAssistantSentinels:
 
         msgs = [
             {"role": "user", "content": "q"},
-            {"role": "assistant", "reasoning_content": "trace",
-             "tool_calls": [{"id": "c0", "type": "function", "function": {
-                 "name": "web_search", "arguments": '{"_server_tool": true}'}}]},
+            {
+                "role": "assistant",
+                "reasoning_content": "trace",
+                "tool_calls": [
+                    {
+                        "id": "c0",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": '{"_server_tool": true}'},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c0", "content": "r"},
             {"role": "user", "content": "more?"},
         ]
@@ -2043,11 +2067,13 @@ class TestDropEmptyAssistantSentinels:
         for local templating there is no turn left to render."""
         from routes.inference import _drop_reasoning_for_local_template
 
-        out = _drop_reasoning_for_local_template([
-            {"role": "user", "content": "q"},
-            {"role": "assistant", "content": "", "reasoning_content": "trace"},
-            {"role": "assistant", "content": "answer", "reasoning_content": "t2"},
-        ])
+        out = _drop_reasoning_for_local_template(
+            [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "", "reasoning_content": "trace"},
+                {"role": "assistant", "content": "answer", "reasoning_content": "t2"},
+            ]
+        )
         assert out == [
             {"role": "user", "content": "q"},
             {"role": "assistant", "content": "answer"},
@@ -2056,10 +2082,10 @@ class TestDropEmptyAssistantSentinels:
     def test_local_template_keeps_tool_call_turn_without_content(self):
         from routes.inference import _drop_reasoning_for_local_template
 
-        calls = [{"id": "c", "type": "function",
-                  "function": {"name": "lookup", "arguments": "{}"}}]
+        calls = [{"id": "c", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}]
         out = _drop_reasoning_for_local_template(
-            [{"role": "assistant", "tool_calls": calls, "reasoning_content": "t"}])
+            [{"role": "assistant", "tool_calls": calls, "reasoning_content": "t"}]
+        )
         assert out == [{"role": "assistant", "tool_calls": calls}]
 
     def test_sentinel_and_scrub_compose_to_llama_cpp_message_contract(self):
