@@ -478,7 +478,16 @@ def validate_video_request_shape(
         step = max(1, fam.frame_step)
         offset = max(1, fam.frame_offset)
         count = int(num_frames)
-        if count < offset or (count - offset) % step != 0:
+        # The family's RANGE is part of the gate, not only of the hint below. A count can sit
+        # exactly on the lattice and still fall outside the declared range -- for MiniMax-H3
+        # (17k + 5, 124..345) both 107 and 362 do -- and snap_num_frames then clamps it to 124 or
+        # 345. Accepting one recipe and rendering another is precisely what this check exists to
+        # stop, so an out-of-range count is refused here rather than silently substituted.
+        low = max(offset, int(fam.min_num_frames))
+        high = MAX_VIDEO_NUM_FRAMES
+        if fam.max_num_frames is not None:
+            high = min(high, int(fam.max_num_frames))
+        if count < low or count > high or (count - offset) % step != 0:
             # The two lattice points straddling the request say more than a prefix of the lattice would,
             # and stay short. Computed from the lattice rather than via snap_num_frames, which floors for
             # some families and CEILS for others (snap_frames_up) and so cannot be relied on for "below".
@@ -486,10 +495,8 @@ def validate_video_request_shape(
             above = below + step
             # Only name a point the caller could actually load: past the request model's own `le`, or
             # outside this family's declared range, it answers with a second, differently-shaped 422.
-            ceiling = MAX_VIDEO_NUM_FRAMES
-            if fam.max_num_frames is not None:
-                ceiling = min(ceiling, int(fam.max_num_frames))
-            floor = max(offset, int(fam.min_num_frames))
+            # Same bounds the gate above judged on, so the two can never disagree.
+            floor, ceiling = low, high
             loadable = [n for n in (below, above) if floor <= n <= ceiling]
             if len(loadable) == 2:
                 nearest = f"the nearest supported counts are {loadable[0]} and {loadable[1]}"
