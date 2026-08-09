@@ -96,6 +96,23 @@ from .video_families import (
     snap_video_size,
     supported_video_family_names,
     validate_video_request_shape,
+    video_family_prequant_repo,
+    video_family_prequant_schemes,
+)
+from .video_minimax_h3 import (
+    H3_ANCHOR_FIRST,
+    H3_ANCHOR_LAST,
+    H3_CANVAS_MAX_PIXELS,
+    H3_CANVAS_SHORT_EDGE,
+    H3_REF_SIZE_MATCH,
+    H3_REF_SIZE_MAX,
+    H3_TASK_KEYFRAMES,
+    H3_TASK_REFERENCES,
+    fit_h3_keyframe,
+    fit_h3_reference_image,
+    h3_canvas_for_aspect,
+    h3_conditioning_mode,
+    h3_transformer_task,
 )
 from utils.hardware import clear_gpu_cache
 
@@ -119,6 +136,7 @@ _TRUSTED_NON_GGUF_VIDEO_REPOS = frozenset(
         # HunyuanVideo-1.5 community Diffusers repacks (tencent's own repo has no model_index.json).
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
         "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-720p_t2v",
+        "minimaxai/minimax-h3",
     }
 )
 
@@ -184,6 +202,34 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
         return arch.strip() if isinstance(arch, str) and arch.strip() else None
     except Exception:  # noqa: BLE001 -- a header read glitch just falls through to name detection
         return None
+
+
+# Enough for a 15-second reference video after base64 decoding.
+_MAX_REFERENCE_MEDIA_BYTES = 96 * 1024 * 1024
+
+
+def _decode_b64_media(data: Optional[str]) -> bytes:
+    """Decode a base64 media payload, optionally wrapped in a data URL."""
+    import base64
+    import binascii
+
+    raw = (data or "").strip()
+    if not raw:
+        raise ValueError("A reference was sent empty.")
+    if raw.startswith("data:"):
+        _, _, raw = raw.partition(",")
+    try:
+        blob = base64.b64decode(raw, validate = False)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"Invalid base64 media data: {exc}") from exc
+    if not blob:
+        raise ValueError("A reference decoded to no data.")
+    if len(blob) > _MAX_REFERENCE_MEDIA_BYTES:
+        raise ValueError(
+            f"A reference is too large ({len(blob) / 1e6:.0f} MB); the limit is "
+            f"{_MAX_REFERENCE_MEDIA_BYTES / 1e6:.0f} MB."
+        )
+    return blob
 
 
 class _VideoGenerationCancelled(Exception):
@@ -260,7 +306,10 @@ class _VideoLoadState:
     device: str
     dtype: str
     kind: str
+    engine: str = "diffusers"
     gguf_filename: Optional[str] = None
+    # Resident MiniMax-H3 denoiser partition, if any.
+    h3_task: Optional[str] = None
     offload_policy: str = "none"
     vae_tiling: bool = True
     memory_mode: str = "auto"
@@ -287,6 +336,9 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
+    # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
+    # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
+    asset_repos: tuple[str, ...] = ()
 
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
@@ -376,6 +428,7 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        h3_task: Optional[str] = None,
     ) -> VideoFamily:
         """Cheap, network-free validation shared by the route and the load path."""
         kind = resolve_video_model_kind(gguf_filename, model_kind)
@@ -392,10 +445,77 @@ class VideoBackend:
                 f"{', '.join(supported_video_family_names())}. If this is a variant of one "
                 f"of them, pass family_override with that family name."
             )
-        # Refuse a too-old diffusers here rather than deep in the load (LTX2Pipeline / HunyuanVideo15Pipeline are 0.39-only).
-        from .diffusion_families import assert_pipeline_class_available
+        # ── modular-workflow refusals, before anything heavier.
+        # Deliberately the FIRST thing after the family resolves: everything below reaches into
+        # diffusers (assert_pipeline_class_available, the transformer_class probe), so a refusal
+        # placed after them would be unreachable on any install whose diffusers cannot even be
+        # imported -- and these two are exactly the picks that cost the most to discover late.
+        if fam.modular_workflow and kind == "single_file":
+            # A modular workflow has no single-file assembly: its components each load through
+            # their own from_pretrained from the modular index, and nothing consumes a lone
+            # .safetensors DiT. Today that only surfaces inside the loader, i.e. after ~98.7 GB
+            # has downloaded AND after the resident pipeline was torn down to make room for it.
+            gguf_hint = (
+                f", or a .gguf checkpoint from '{fam.gguf_repo}' for a quantized single-file load"
+                if fam.gguf_repo
+                else ""
+            )
+            raise ValueError(
+                f"'{fam.name}' cannot load from a single .safetensors checkpoint: it is assembled "
+                f"by its Modular Diffusers workflow, which builds every component from a repo. "
+                f"Load the diffusers pipeline repo '{fam.base_repo}' for the full bfloat16 "
+                f"model{gguf_hint}."
+            )
+        if fam.modular_workflow and kind == "pipeline":
+            # Same normaliser the load uses, so a malformed value raises the identical message it
+            # would below and only a real scheme reaches the availability check.
+            requested_scheme = normalize_transformer_quant(transformer_quant)
+            # The base the modular load resolves for a pipeline kind IS repo_id, so a
+            # variant-keyed checkpoint is judged against the one the load will ask for and
+            # validation can never refuse a load that would have worked.
+            quant_base = repo_id
+            # "auto" is a request for the backend's own choice, not for a specific scheme, so it is
+            # never refused: it simply stays on the released bfloat16 components.
+            if requested_scheme is not None and requested_scheme != TQ_AUTO:
+                if video_family_prequant_repo(fam, requested_scheme, quant_base) is None:
+                    # There is no in-place quantise seam here: the workflow's own component loader
+                    # builds the denoiser, so a scheme without a hosted pre-quantized checkpoint
+                    # cannot be served at all, and letting it through would download ~98.7 GB of
+                    # dense weights and then silently ignore the request.
+                    available = video_family_prequant_schemes(fam)
+                    hint = (
+                        f"Use one of: {', '.join(available)}."
+                        if available
+                        else "Leave transformer_quant unset for this model."
+                    )
+                    raise ValueError(
+                        f"transformer_quant '{requested_scheme}' is unavailable for "
+                        f"'{fam.name}': its Modular Diffusers workflow builds the denoiser itself, "
+                        f"so only schemes with a hosted pre-quantized checkpoint can be applied "
+                        f"and the dense weights cannot be quantized in place. {hint}"
+                    )
+        from .video_minimax_h3 import is_h3_native, validate_h3_transformer_filename
 
-        assert_pipeline_class_available(fam.pipeline_class, fam.name)
+        if is_h3_native(fam, kind):
+            validate_h3_transformer_filename(gguf_filename or "")
+            # The GGUF filename and explicit task must name the same partition.
+            picked = h3_transformer_task(gguf_filename or "")
+            if h3_task and h3_task != picked:
+                raise ValueError(
+                    f"'{Path(gguf_filename or '').name}' is the {picked} partition, but the "
+                    f"load asked for {h3_task}. Pick the matching checkpoint."
+                )
+        else:
+            # Refuse a too-old diffusers here rather than deep in the load.
+            from .diffusion_families import assert_pipeline_class_available
+            assert_pipeline_class_available(fam.pipeline_class, fam.name)
+            if fam.modular_workflow:
+                import diffusers
+                if not hasattr(diffusers, fam.transformer_class):
+                    raise ValueError(
+                        "MiniMax-H3 needs the Diffusers revision bundled with this Studio "
+                        "version. Reinstall Studio dependencies and retry."
+                    )
         if kind != "gguf" and not _is_trusted_video_repo(repo_id):
             raise ValueError(
                 f"Non-GGUF video loads are limited to unsloth/* repos, the official "
@@ -463,10 +583,17 @@ class VideoBackend:
         if kind == "pipeline":
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
-            if root.exists() and not (root.is_dir() and (root / "model_index.json").is_file()):
+            indexes = (
+                ("model_index.json", "modular_model_index.json")
+                if fam.modular_workflow
+                else ("model_index.json",)
+            )
+            if root.exists() and not (
+                root.is_dir() and any((root / name).is_file() for name in indexes)
+            ):
                 raise ValueError(
                     f"Local pipeline path is not a diffusers directory "
-                    f"(no model_index.json): {repo_id}"
+                    f"(no {' or '.join(indexes)}): {repo_id}"
                 )
         # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind only, matching the image backend).
         normalize_transformer_quant(transformer_quant)
@@ -493,6 +620,7 @@ class VideoBackend:
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
+        h3_task: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -504,6 +632,7 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            h3_task = h3_task,
         )
         with self._lock:
             if self._loading is not None and self._loading.error is None:
@@ -532,6 +661,7 @@ class VideoBackend:
                 transformer_quant = transformer_quant,
                 text_encoder_quant = text_encoder_quant,
                 model_kind = model_kind,
+                h3_task = h3_task,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -548,6 +678,19 @@ class VideoBackend:
                 kwargs["repo_id"], kwargs.get("gguf_filename"), kwargs.get("family_override")
             )
             kind = resolve_video_model_kind(kwargs.get("gguf_filename"), kwargs.get("model_kind"))
+            from .video_minimax_h3 import is_h3_native
+
+            if is_h3_native(fam, kind):
+                self._run_load_h3_native(
+                    fam = fam,
+                    token = token,
+                    cancel_event = cancel_event,
+                    **kwargs,
+                )
+                with self._lock:
+                    if self._load_token == token:
+                        self._loading = None
+                return
             base = (
                 kwargs["repo_id"]
                 if kind == "pipeline"
@@ -556,6 +699,11 @@ class VideoBackend:
             kwargs["base_repo"] = base
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
+            # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
+            # DiT shards, so the estimate and the scoped pull below both drop them.
+            skip_transformer_weights = self._denoiser_prequant_covered(
+                fam, kwargs.get("transformer_quant"), base
+            )
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -563,6 +711,7 @@ class VideoBackend:
                 kwargs.get("hf_token"),
                 kind,
                 te_sources = te_sources,
+                skip_transformer_weights = skip_transformer_weights,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
@@ -610,6 +759,7 @@ class VideoBackend:
                         kind,
                         ltx23 = True,
                         te_sources = te_sources,
+                        skip_transformer_weights = skip_transformer_weights,
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
@@ -625,6 +775,7 @@ class VideoBackend:
                 kind,
                 ltx23 = ltx23,
                 skip_te_components = te_skipped,
+                skip_transformer_weights = skip_transformer_weights,
                 cancel_event = cancel_event,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache.
@@ -649,6 +800,208 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
+
+    def _run_load_h3_native(
+        self,
+        *,
+        fam: VideoFamily,
+        token: Optional[int],
+        cancel_event: threading.Event,
+        repo_id: str,
+        gguf_filename: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        memory_mode: Optional[str] = None,
+        **_: Any,
+    ) -> None:
+        """Download and commit the four-file stable-diffusion.cpp H3 runtime."""
+        from huggingface_hub import HfApi
+
+        from .sd_cpp_args import SdCppModelFiles, offload_flags
+        from .diffusion_engine_router import _install_accelerator_for
+        from .sd_cpp_backend import (
+            _install_allowed,
+            ensure_h3_sd_cpp_binary,
+            sd_cpp_lists_accelerator_device,
+        )
+        from .sd_cpp_engine import SdCppEngine
+        from .video_minimax_h3 import (
+            H3_AUDIO_VAE,
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_VIDEO_VAE,
+            h3_download_error,
+            h3_text_encoder_filename,
+        )
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        filename = gguf_filename or ""
+        qwen_filename = h3_text_encoder_filename(filename)
+        requests = (
+            (repo_id, filename),
+            (H3_GGUF_REPO, qwen_filename),
+            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
+            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+        )
+        total = 0
+        try:
+            api = HfApi(token = hf_token or None)
+            for repo, wanted in requests:
+                if Path(repo).expanduser().exists():
+                    continue
+                info = api.model_info(repo, files_metadata = True)
+                total += sum(
+                    int(s.size or 0) for s in (info.siblings or []) if s.rfilename == wanted
+                )
+        except Exception:  # noqa: BLE001 -- progress estimate is optional
+            total = 0
+        with self._lock:
+            if self._load_token == token and self._loading is not None:
+                self._loading.base_repo = fam.base_repo
+                # The download list below pulls from the H3 companion repos too, and neither is
+                # repo_id or base_repo, so without this the delete-cached guard would let one be
+                # deleted out from under the in-flight load. The committed twin is loaded_repo_ids().
+                self._loading.asset_repos = (H3_GGUF_REPO, H3_COMPONENT_REPO)
+                self._loading.expected_bytes = total or None
+
+        resolved: list[Path] = []
+        for repo, wanted in requests:
+            if cancel_event.is_set():
+                raise RuntimeError(VIDEO_CANCELLED_MSG)
+            root = Path(repo).expanduser()
+            if root.is_file():
+                local = root
+            elif root.is_dir():
+                from .diffusion_families import resolve_local_gguf_child
+                local = resolve_local_gguf_child(root, wanted)
+            else:
+                try:
+                    local = Path(
+                        hf_hub_download_with_xet_fallback(
+                            repo, wanted, hf_token, cancel_event = cancel_event
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
+                    raise h3_download_error(repo, wanted, exc) from exc
+            resolved.append(local)
+
+        target = resolve_diffusion_device_target()
+        allow_install = _install_allowed()
+        # The H3-gated ensure, not the plain one: a build that predates H3 runs fine and so clears
+        # the version() gate below, then aborts on the first generation, i.e. after the whole
+        # bundle has downloaded.
+        binary = ensure_h3_sd_cpp_binary(
+            allow_install = allow_install,
+            accelerator = _install_accelerator_for(target.backend),
+        )
+        native_device = target.device
+        if target.backend not in ("cpu", "mps") and not sd_cpp_lists_accelerator_device(binary):
+            # Upstream currently publishes no Linux CUDA archive. Keep the picker
+            # functional with the CPU prebuilt when the user has not supplied a
+            # locally compiled CUDA binary through the normal sd.cpp discovery path.
+            #
+            # The test is what the binary actually offers, not whether one was returned: the
+            # accelerator install fails only ONCE, and every later load finds the CPU binary this
+            # branch put there and gets it back unchanged. "binary is truthy" therefore skipped
+            # the fallback from the second load on, left native_device on the GPU, and applied GPU
+            # offload policy and held the VIDEO claim while sd-cli ran wholly on the CPU -- so the
+            # next chat/image acquire evicted a model to make room for one that was never there.
+            binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
+            native_device = "cpu"
+        engine = SdCppEngine(binary)
+        if not binary or engine.version() is None:
+            raise RuntimeError(
+                "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
+            )
+        requested_mode = normalize_memory_mode(memory_mode) or "auto"
+        policy = {
+            "auto": "none" if native_device == "cpu" else "group",
+            "fast": "none",
+            "balanced": "group",
+            "low_vram": "model",
+        }[requested_mode]
+        # NOT --vae-on-cpu. H3 ships an audio VAE, and its 1-D convolutions abort on the CPU
+        # path: ggml_conv_1d hardcodes an F16 im2col destination (ggml/src/ggml.c) and
+        # ggml_compute_forward_im2col_f16 then asserts the KERNEL is F16, while sd.cpp's
+        # audio_conv_weight_type maps only BF16 to F16 and lets F32 through. The result is
+        # GGML_ASSERT(src0->type == GGML_TYPE_F16) failed, SIGABRT, exit 134, deterministically.
+        # Bisected on the flags: --vae-on-cpu with --audio-vae aborts, without --audio-vae it
+        # renders in 95.87s, and converting the audio VAE checkpoint to fp16 does NOT help, so
+        # the type is imposed inside sd.cpp rather than by the file and cannot be fixed by
+        # shipping a different checkpoint. low_vram is the one mode a small-card user reaches
+        # for, so drop the flag rather than the mode; --offload-to-cpu and --clip-on-cpu, which
+        # are where the savings actually are, still apply.
+        #
+        # The abort itself is fixed in the Unsloth sd.cpp fork (it casts F32 conv1d kernels to
+        # F16 in-graph on CPU backends), so this is no longer only a crash workaround, and it
+        # should not be reverted when that fix reaches the pinned prebuilt. Measured on a build
+        # carrying the fix, 640x384, 25 frames, 4 steps, q4_K, with --offload-to-cpu
+        # --clip-on-cpu already on: adding --vae-on-cpu moved peak VRAM 12.42 -> 12.42 GiB and
+        # wall time 20.9s -> 100.4s. Under --offload-to-cpu the peak is set by the streamed
+        # denoiser, so the flag buys nothing and costs 4.8x.
+        native_offload = tuple(
+            offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
+        )
+        from .video_minimax_h3 import MiniMaxH3NativeRuntime
+
+        runtime = MiniMaxH3NativeRuntime(
+            engine = engine,
+            files = SdCppModelFiles(
+                diffusion_model = str(resolved[0]),
+                llm = str(resolved[1]),
+                vae = str(resolved[2]),
+                audio_vae = str(resolved[3]),
+            ),
+            offload_flags = native_offload,
+        )
+
+        with self._lock:
+            if token is not None and token != self._load_token:
+                raise RuntimeError("Video load was cancelled or superseded.")
+            if self._active_generate_cancel is not None:
+                self._active_generate_cancel.set()
+            self._teardown_waiters += 1
+        with self._generate_lock:
+            with self._lock:
+                try:
+                    if token is not None and token != self._load_token:
+                        raise RuntimeError("Video load was cancelled or superseded.")
+                    self._teardown_state_locked()
+                    self._state = _VideoLoadState(
+                        pipe = runtime,
+                        family = fam,
+                        repo_id = repo_id,
+                        base_repo = fam.base_repo,
+                        device = native_device,
+                        dtype = Path(filename).stem.split("-")[-1],
+                        kind = "gguf",
+                        engine = "sd_cpp",
+                        h3_task = h3_transformer_task(filename),
+                        gguf_filename = filename,
+                        offload_policy = policy,
+                        vae_tiling = False,
+                        memory_mode = requested_mode,
+                        attention_backend = "flash",
+                        resolved = build_resolved_record(
+                            {
+                                "memory_mode": (memory_mode, policy, "native model offload"),
+                                "attention_backend": (
+                                    None,
+                                    "flash",
+                                    "sd.cpp diffusion flash attention",
+                                ),
+                            }
+                        ),
+                    )
+                finally:
+                    self._teardown_waiters -= 1
+        if native_device == "cpu":
+            # /video/load acquired the VIDEO GPU claim off the resolved device target, but no
+            # accelerator binary was available and this runtime committed to the CPU build, so it
+            # holds no VRAM. Drop the stale claim, or the next chat/image acquire evicts a model
+            # that is not on the GPU. release_if keeps the token check atomic against a newer load
+            # that took ownership already. Mirrors /images/load's release for a CPU-only native load.
+            from .gpu_arbiter import VIDEO, release_if
+            release_if(VIDEO, lambda: token is None or token == self._load_token)
 
     def _rollback_precommit_globals(self, token: Optional[int]) -> None:
         """Restore process-wide speed globals (cudnn.benchmark / TF32 / the compiled
@@ -682,6 +1035,30 @@ class VideoBackend:
             te_quant_mode = text_encoder_quant,
             target = resolve_diffusion_device_target(),
         )
+
+    @staticmethod
+    def _denoiser_prequant_covered(
+        fam: Any, transformer_quant: Optional[str], base: Optional[str]
+    ) -> bool:
+        """True when a hosted PRE-QUANTIZED denoiser checkpoint replaces the dense DiT shards.
+
+        The one place the plan, the byte estimate and the scoped pull all ask, so none of them can
+        stage weights another one skipped. Only a modular-workflow family qualifies: every other
+        family quantises its own dense transformer on device and still needs those shards.
+
+        Never raises and never touches the network -- a pure registry lookup -- because it runs on
+        the download-planning path, where a failure would cost the whole plan."""
+        try:
+            if not getattr(fam, "modular_workflow", None):
+                return False
+            scheme = normalize_transformer_quant(transformer_quant)
+            # "auto" leaves the choice to the backend, which keeps the released bfloat16 components
+            # for a modular workflow, so it must NOT drop the dense shards that load then wants.
+            if scheme is None or scheme == TQ_AUTO:
+                return False
+            return video_family_prequant_repo(fam, scheme, base) is not None
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
+            return False
 
     @staticmethod
     def _te_prequant_hub_files(
@@ -720,6 +1097,7 @@ class VideoBackend:
         *,
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
+        skip_transformer_weights: bool = False,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -737,18 +1115,45 @@ class VideoBackend:
         - the dense weight shards of any ``skip_te_components`` encoder, supplied
           instead by a hosted pre-cast fp8 checkpoint (LTX-2's Gemma3 encoder is
           ~49 GB of the base repo). Their configs stay: the pre-cast loader
-          meta-inits the encoder from the base repo's component config."""
+          meta-inits the encoder from the base repo's component config;
+        - the dense ``transformer/`` weight shards under
+          ``skip_transformer_weights``, supplied instead by a hosted PRE-QUANTIZED
+          denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
+          ``transformer/config.json`` is kept for the same reason the pre-cast
+          encoders keep theirs: the pre-quant loader meta-inits the DiT from it,
+          so dropping it would break the very load that made the skip safe."""
         from .diffusion_te_prequant import is_prequant_covered_weight
 
+        siblings = list(info.siblings or [])
+        is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
+        h3_prefixes = (
+            "audio_scheduler/",
+            "audio_vae/",
+            "processor/",
+            "scheduler/",
+            "text_encoder/",
+            "tokenizer/",
+            "transformer/",
+            "vae/",
+        )
         files: list[tuple[str, int]] = []
-        for sibling in info.siblings or []:
+        for sibling in siblings:
             name, size = sibling.rfilename, sibling.size or 0
+            if is_h3_modular and not (
+                name in ("model_index.json", "modular_model_index.json")
+                or name.startswith(h3_prefixes)
+            ):
+                continue
             # .jinja: tokenizer/chat_template.jinja is needed at generation time; a snapshot without it crashes the first generation.
             if not name.endswith((".safetensors", ".json", ".model", ".txt", ".jinja")):
                 continue
             if "/" not in name and name.endswith(".safetensors"):
                 continue
             if kind != "pipeline" and name.startswith("transformer/"):
+                continue
+            # is_prequant_covered_weight is component-agnostic (it matches "<component>/" against a
+            # weight suffix), so the encoder helper serves the denoiser verbatim.
+            if skip_transformer_weights and is_prequant_covered_weight(name, ("transformer",)):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
                 continue
@@ -768,13 +1173,16 @@ class VideoBackend:
         kind: str,
         ltx23: bool = False,
         te_sources: Optional[dict[str, Any]] = None,
+        skip_transformer_weights: bool = False,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
         Dense encoder shards covered by an available pre-cast checkpoint are excluded, since
-        the pull below skips them too. The pre-cast checkpoint's own bytes are deliberately
-        NOT added: the progress bar counts cached bytes for the checkpoint and base repos
-        only, so a third repo in the total would leave the bar permanently short of 100%."""
+        the pull below skips them too, and so are the dense denoiser shards a hosted
+        pre-quantized checkpoint replaces (``skip_transformer_weights``). Neither hosted
+        checkpoint's own bytes are added: the progress bar counts cached bytes for the checkpoint
+        and base repos only, so a third repo in the total would leave the bar permanently short
+        of 100%."""
         try:
             from huggingface_hub import HfApi
 
@@ -791,7 +1199,11 @@ class VideoBackend:
                 total += sum(
                     size
                     for _, size in self._base_download_files(
-                        info, kind, ltx23 = ltx23, skip_te_components = skip_te_components
+                        info,
+                        kind,
+                        ltx23 = ltx23,
+                        skip_te_components = skip_te_components,
+                        skip_transformer_weights = skip_transformer_weights,
                     )
                 )
             return total or None
@@ -807,6 +1219,7 @@ class VideoBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         hf_token: Optional[str] = None,
+        transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
@@ -817,11 +1230,20 @@ class VideoBackend:
         ``text_encoder_quant`` is read for the same reason the image plan reads the DiT
         quant: an fp8 request loads a hosted PRE-CAST encoder, so the base repo's dense
         encoder shards must not be staged (~49 GB of Lightricks/LTX-2) and the pre-cast
-        checkpoint must be."""
+        checkpoint must be.
+
+        ``transformer_quant`` is read for the mirror-image reason on the denoiser: a scheme with a
+        hosted PRE-QUANTIZED checkpoint replaces the dense DiT, so staging those shards would cost
+        66.3 GB the load never opens. It used to be swallowed by ``**load_kwargs`` and the plan
+        stayed dense-sized."""
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        from .video_minimax_h3 import is_h3_native
+
+        if is_h3_native(fam, kind):
+            return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
         # Only the header tells an LTX-2.3 checkpoint from 2.0 and it is not on disk yet, so narrow the base pull by NAME: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
@@ -894,12 +1316,64 @@ class VideoBackend:
                         kind,
                         ltx23 = ltx23,
                         skip_te_components = tuple(te_files),
+                        skip_transformer_weights = self._denoiser_prequant_covered(
+                            fam, transformer_quant, base
+                        ),
                     ),
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
         return {"entries": list(entries.values()), "total_bytes": total}
+
+    @staticmethod
+    def _h3_native_download_plan(
+        repo_id: str, gguf_filename: str, *, hf_token: Optional[str]
+    ) -> dict[str, Any]:
+        from huggingface_hub import HfApi
+
+        from .video_minimax_h3 import (
+            H3_AUDIO_VAE,
+            H3_COMPONENT_REPO,
+            H3_GGUF_REPO,
+            H3_VIDEO_VAE,
+            h3_text_encoder_filename,
+            validate_h3_transformer_filename,
+        )
+
+        validate_h3_transformer_filename(gguf_filename)
+        wanted = (
+            (repo_id, gguf_filename),
+            (H3_GGUF_REPO, h3_text_encoder_filename(gguf_filename)),
+            (H3_COMPONENT_REPO, H3_VIDEO_VAE),
+            (H3_COMPONENT_REPO, H3_AUDIO_VAE),
+        )
+        grouped: dict[str, dict[str, Any]] = {}
+        total = 0
+        try:
+            api = HfApi(token = hf_token or None)
+            for repo, filename in wanted:
+                if Path(repo).expanduser().exists():
+                    continue
+                info = api.model_info(repo, files_metadata = True)
+                match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
+                if match is None:
+                    raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
+                size = int(match.size or 0)
+                entry = grouped.setdefault(
+                    repo,
+                    {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None},
+                )
+                if filename not in entry["files"]:
+                    entry["files"].append(filename)
+                    entry["bytes"] += size
+                    total += size
+                if filename == gguf_filename:
+                    entry["gguf_filename"] = filename
+        except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
+            logger.warning("video.h3_native_download_plan_failed: %s", exc)
+            return {"entries": [], "total_bytes": 0}
+        return {"entries": list(grouped.values()), "total_bytes": total}
 
     @staticmethod
     def _pick_looks_like_ltx23(
@@ -970,6 +1444,7 @@ class VideoBackend:
         *,
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
+        skip_transformer_weights: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
@@ -989,7 +1464,11 @@ class VideoBackend:
 
             info = HfApi(token = hf_token or None).model_info(base, files_metadata = True)
             files = self._base_download_files(
-                info, kind, ltx23 = ltx23, skip_te_components = skip_te_components
+                info,
+                kind,
+                ltx23 = ltx23,
+                skip_te_components = skip_te_components,
+                skip_transformer_weights = skip_transformer_weights,
             )
             if not any(name == "model_index.json" for name, _ in files):
                 return None
@@ -1071,14 +1550,33 @@ class VideoBackend:
         """Repo ids an in-flight background load is downloading (empty when idle).
 
         The delete-cached guard needs this: during a load ``status()["loaded"]`` is
-        still False, but deleting the target repo (or its companion base) would yank
-        blobs and snapshot files from under the download/assembly. Mirrors the image
-        backend's guard (DiffusionBackend.loading_repo_ids)."""
+        still False, but deleting the target repo (or its companion base, or one of the
+        native H3 companion repos an H3 load also downloads from) would yank blobs and
+        snapshot files from under the download/assembly. The in-flight twin of
+        loaded_repo_ids(); mirrors the image backend's guard
+        (DiffusionBackend.loading_repo_ids)."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+            ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
+            return tuple(r for r in ids if r)
+
+    def loaded_repo_ids(self) -> tuple[str, ...]:
+        """Repo ids the COMMITTED model reads from disk (empty unless a native model is loaded).
+
+        The one-shot sd-cli re-reads H3's Qwen encoder and both VAEs from the cache on every
+        generation, and those live in companion repos that are neither ``repo_id`` nor the BF16
+        ``base_repo`` ``status()`` publishes, so the delete-cached guard must refuse them too.
+        Mirrors the image backend's guard (SdCppBackend.loaded_repo_ids)."""
+        with self._lock:
+            state = self._state
+            if state is None or state.engine != "sd_cpp":
+                return ()
+            repo_id = state.repo_id
+        from .video_minimax_h3 import H3_COMPONENT_REPO, H3_GGUF_REPO
+
+        return (repo_id, H3_GGUF_REPO, H3_COMPONENT_REPO)
 
     # ── the load itself ──────────────────────────────────────────────────────
 
@@ -1098,13 +1596,11 @@ class VideoBackend:
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
         model_kind: Optional[str] = None,
+        h3_task: Optional[str] = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        import diffusers
-        import torch
-
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -1113,8 +1609,26 @@ class VideoBackend:
             model_kind = model_kind,
             transformer_quant = transformer_quant,
             text_encoder_quant = text_encoder_quant,
+            h3_task = h3_task,
         )
         kind = resolve_video_model_kind(gguf_filename, model_kind)
+        from .video_minimax_h3 import is_h3_native
+
+        if is_h3_native(fam, kind):
+            self._run_load_h3_native(
+                fam = fam,
+                token = _load_token,
+                cancel_event = threading.Event(),
+                repo_id = repo_id,
+                gguf_filename = gguf_filename,
+                hf_token = hf_token,
+                memory_mode = memory_mode,
+            )
+            return self.status()
+
+        import diffusers
+        import torch
+
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:
@@ -1146,6 +1660,28 @@ class VideoBackend:
             dtype = torch.float32
         # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator.
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
+
+        if fam.modular_workflow:
+            return self._load_h3_modular_pipeline(
+                diffusers = diffusers,
+                torch = torch,
+                fam = fam,
+                repo_id = repo_id,
+                base = base,
+                kind = kind,
+                dtype = dtype,
+                device = device,
+                hf_token = hf_token,
+                memory_mode = memory_mode,
+                # transformer_quant is only normalised BELOW this dispatch, and the modular branch
+                # returns before reaching that, so normalise here with the same function rather
+                # than moving the dispatch past a block written for the conventional path (its
+                # speed_mode/auto-ladder defaulting means nothing to a modular workflow).
+                transformer_quant = normalize_transformer_quant(transformer_quant),
+                h3_task = h3_task,
+                _load_token = _load_token,
+                _base_local_dir = _base_local_dir,
+            )
 
         # Precision tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins dense bf16; an explicit scheme pins it. Pipeline-kind only.
         if transformer_quant is None or str(transformer_quant).strip().lower() in (
@@ -1580,6 +2116,220 @@ class VideoBackend:
         )
         return self.status()
 
+    def _load_h3_modular_pipeline(
+        self,
+        *,
+        diffusers: Any,
+        torch: Any,
+        fam: VideoFamily,
+        repo_id: str,
+        base: str,
+        kind: str,
+        dtype: Any,
+        device: str,
+        hf_token: Optional[str],
+        memory_mode: Optional[str],
+        transformer_quant: Optional[str] = None,
+        h3_task: Optional[str] = None,
+        _load_token: Optional[int] = None,
+        _base_local_dir: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Load MiniMax-H3 through its official Modular Diffusers workflow.
+
+        ``transformer_quant`` is an ALREADY-normalised scheme (or None / "auto"). A scheme with a
+        hosted pre-quantized denoiser checkpoint is built here and pre-seeded into the pipeline;
+        anything else keeps the released bfloat16 components."""
+        # Defence in depth: validate_load_request now refuses a single_file modular pick outright,
+        # so this is unreachable from the routes. It stays because this method is also reachable
+        # directly, and by the time it runs the resident pipeline has already been torn down.
+        if kind != "pipeline":
+            raise ValueError("MiniMax-H3 Diffusers loading requires the pipeline artifact.")
+        # Load one denoiser partition. fl2va also covers text-only generation.
+        workflow = h3_task or fam.modular_workflow
+        manager = diffusers.ComponentsManager()
+        load_kwargs: dict[str, Any] = {
+            "components_manager": manager,
+            "cache_dir": hub_cache_dir(),
+        }
+        if hf_token:
+            load_kwargs["token"] = hf_token
+        pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
+        # ── hosted pre-quantized denoiser, BEFORE load_components builds a dense one.
+        transformer_quant_engaged: Optional[str] = None
+        transformer_quant_reason = "released bfloat16 components"
+        # "auto" asks the backend to choose, and the auto ladder quantises a DENSE module on device
+        # -- something this workflow never materialises -- so it stays on the released components.
+        # Only an explicitly requested scheme takes the hosted path.
+        scheme = transformer_quant if transformer_quant not in (None, TQ_AUTO) else None
+        if scheme is not None:
+            from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
+            from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
+            from .video_minimax_h3_adaln import h3_prepare_prequant_model
+
+            source = resolve_prequant_source(fam, scheme, base_repo = base)
+            if source is None:
+                # validate_load_request already refused this on the route; a direct call lands here.
+                transformer_quant_reason = (
+                    f"no hosted pre-quantized {scheme} checkpoint for {fam.name}"
+                )
+            else:
+                transformer = load_prequantized_transformer(
+                    getattr(diffusers, fam.transformer_class),
+                    base,
+                    source,
+                    # CPU: enable_auto_cpu_offload below owns placement for every component, so a
+                    # pre-placed denoiser would just be moved again (and a 66 GB pin on a device the
+                    # manager wanted to offload from is how this OOMs). Same as the pre-cast text
+                    # encoder path, which also hands the pipeline a CPU-resident module.
+                    device = "cpu",
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    scheme = scheme,
+                    # Reject a checkpoint baked under a different Linear filter, exactly as the
+                    # image path does, so prequant and runtime-quant stay the same model.
+                    min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                    # Pin the live cache root, as every other loader call does: unset, the fetch
+                    # lands under huggingface_hub's import-time constant and a later cache change
+                    # re-downloads multiple GB into a root Studio no longer reads.
+                    cache_dir = hub_cache_dir(),
+                    # The hosted H3 denoisers carry the PRUNED (curve-form) adaLN: the modulation is
+                    # a rank-8 factorization of the time-embedding curve plus a shared table, which
+                    # is where ~40% of the released model's parameters went. Built from the base
+                    # repo's dense config, the model is 4 keys short, 1 over and 51 shapes wrong, so
+                    # without this reshape the strict load fails and every hosted checkpoint falls
+                    # back to the dense download it exists to avoid.
+                    prepare_model = h3_prepare_prequant_model(logger),
+                    logger = logger,
+                )
+                if transformer is None:
+                    # Best-effort by contract (missing / mismatched / unreadable checkpoint), so the
+                    # load continues dense rather than failing after the teardown.
+                    transformer_quant_reason = (
+                        f"hosted pre-quantized {scheme} checkpoint unusable; "
+                        f"loaded the released bfloat16 denoiser instead"
+                    )
+                else:
+                    # Seeding is what actually saves the download: load_components(names=None) skips
+                    # every component whose attribute is already set, so the dense 66.3 GB
+                    # transformer is never fetched. It must happen BEFORE load_components -- after,
+                    # the dense one has already been pulled and built.
+                    pipe.update_components(transformer = transformer)
+                    transformer_quant_engaged = scheme
+                    transformer_quant_reason = (
+                        f"hosted pre-quantized {scheme} denoiser checkpoint ({source.location})"
+                    )
+                    logger.info(
+                        "video.transformer_quant: %s pre-quantized denoiser seeded for %s",
+                        scheme,
+                        fam.name,
+                    )
+        # The token above only opens the modular index. Every component's own from_pretrained runs
+        # here, against the repos that index names, so it has to be passed again or a gated/private
+        # component load goes out anonymously (load_components only WARNS on a failed component).
+        # Restrict component loading to what this workflow's blocks expect, WITHOUT pruning the
+        # block graph itself (the blocks are what route each request between t2va and the
+        # keyframe/reference paths). workflow= only narrows the name list load_components already
+        # built, and that list skips every component whose attribute is set, so the seeding above
+        # still keeps the dense 66.3 GB transformer from being fetched.
+        pipe.load_components(
+            workflow = workflow,
+            dtype = dtype,
+            **({"token": hf_token} if hf_token else {}),
+        )
+        # The video VAE loads at float32 and the decode runs under float16 autocast, so both
+        # copies are resident for the whole decode. Pre-casting the decoder removes the pair
+        # without changing a single output value. The encoder stays resident because the
+        # keyframe and reference paths both encode their conditioning frames through it.
+
+        from .video_minimax_h3 import trim_h3_video_vae
+
+        try:
+            trimmed = trim_h3_video_vae(getattr(pipe, "vae", None), workflow = workflow)
+        except Exception as exc:  # noqa: BLE001 -- a saving is not worth failing a load over
+            logger.warning("video.h3_vae_trim failed, keeping the full VAE: %s", exc)
+        else:
+            if trimmed["encoder_freed"] or trimmed["decoder_freed"]:
+                logger.info(
+                    "video.h3_vae_trim: freed %.2f GB (encoder %.2f, decoder pre-cast %.2f)",
+                    (trimmed["encoder_freed"] + trimmed["decoder_freed"]) / 1_000_000_000,
+                    trimmed["encoder_freed"] / 1_000_000_000,
+                    trimmed["decoder_freed"] / 1_000_000_000,
+                )
+        offload_policy = "none"
+        denoiser_pinned = False
+        if device != "cpu":
+            manager.enable_auto_cpu_offload(
+                # Measured H3 activations need substantially more than the
+                # official 12 GB example at 10-15 seconds. Forty GB also keeps
+                # very large GPUs from retaining both 66 GB components and OOMing
+                # while smaller caps succeed by offloading one of them.
+                device = device,
+                memory_reserve_margin = "40GB",
+            )
+            offload_policy = "model"
+            if transformer_quant_engaged:
+                # enable_auto_cpu_offload just parked every component on the CPU and will move
+                # each one back inside its own pre_forward. A torchao pre-quantized denoiser does
+                # not survive that mid-block move (see pin_prequantized_module), so place it now
+                # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
+                # keep their hooks and still offload around it.
+                from .diffusion_prequant import pin_prequantized_module
+                denoiser_pinned = pin_prequantized_module(
+                    manager, getattr(pipe, "transformer", None), device, logger = logger
+                )
+
+        resolved = build_resolved_record(
+            {
+                "memory_mode": (
+                    memory_mode,
+                    offload_policy,
+                    "MiniMax-H3 ComponentsManager auto CPU offload"
+                    + ("; the pre-quantized denoiser stays resident" if denoiser_pinned else ""),
+                ),
+                "speed_mode": (None, "off", "modular pipeline uses its native execution path"),
+                "attention_backend": (None, "native", "Diffusers model default"),
+                "transformer_cache": (None, "off", "not supported by this modular workflow"),
+                "transformer_quant": (
+                    transformer_quant,
+                    transformer_quant_engaged or "off",
+                    transformer_quant_reason,
+                ),
+                "text_encoder_quant": (None, "off", "released bfloat16 components"),
+            }
+        )
+        with self._lock:
+            if _load_token is not None and _load_token != self._load_token:
+                del pipe
+                clear_gpu_cache()
+                raise RuntimeError("Video load was cancelled or superseded.")
+            self._state = _VideoLoadState(
+                pipe = pipe,
+                family = fam,
+                repo_id = repo_id,
+                base_repo = base,
+                device = device,
+                dtype = str(dtype).replace("torch.", ""),
+                kind = kind,
+                engine = "diffusers",
+                h3_task = workflow,
+                offload_policy = offload_policy,
+                vae_tiling = True,
+                memory_mode = normalize_memory_mode(memory_mode),
+                speed_mode = SPEED_OFF,
+                # The ENGAGED scheme, not the requested one, exactly as the conventional path
+                # records it: status() reports this field, and a dense fallback must not claim a
+                # quant the resident denoiser does not have.
+                transformer_quant = transformer_quant_engaged,
+                resolved = resolved,
+            )
+        logger.info(
+            "video.loaded: %s (%s, modular diffusers, transformer_quant=%s)",
+            repo_id,
+            fam.name,
+            transformer_quant_engaged or "off",
+        )
+        return self.status()
+
     @staticmethod
     def _resolve_checkpoint_path(
         repo_id: str, gguf_filename: Optional[str], hf_token: Optional[str]
@@ -1644,6 +2394,14 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        first_frame: Optional[str] = None,
+        last_frame: Optional[str] = None,
+        reference_images: Optional[list[str]] = None,
+        reference_videos: Optional[list[dict]] = None,
+        reference_audios: Optional[list[str]] = None,
+        reference_image_size: Optional[str] = None,
+        flow_shift: Optional[float] = None,
+        audio_flow_shift: Optional[float] = None,
     ) -> None:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -1657,6 +2415,31 @@ class VideoBackend:
         sentinels the route maps to 409.
         """
         cancel = threading.Event()
+        # Snapshot load state before decoding outside the backend lock.
+        with self._lock:
+            if self._state is None:
+                raise RuntimeError(VIDEO_NOT_LOADED_MSG)
+            if self._generate_job_active:
+                raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
+            family = self._state.family
+            task = self._state.h3_task
+            engine = self._state.engine
+        # Validate conditioning before creating the asynchronous job so request errors return 400.
+        _, _, canvas_w, canvas_h, _ = self._resolve_keyframes(
+            family, task, first_frame, last_frame, width, height
+        )
+        self._resolve_references(
+            family,
+            task,
+            engine,
+            reference_images,
+            reference_videos,
+            reference_audios,
+            reference_image_size,
+            canvas_w,
+            canvas_h,
+        )
+        self._resolve_flow_shifts(family, engine, flow_shift, audio_flow_shift)
         with self._lock:
             if self._state is None:
                 raise RuntimeError(VIDEO_NOT_LOADED_MSG)
@@ -1693,6 +2476,14 @@ class VideoBackend:
                 guidance = guidance,
                 guidance_2 = guidance_2,
                 seed = seed,
+                first_frame = first_frame,
+                last_frame = last_frame,
+                reference_images = reference_images,
+                reference_videos = reference_videos,
+                reference_audios = reference_audios,
+                reference_image_size = reference_image_size,
+                flow_shift = flow_shift,
+                audio_flow_shift = audio_flow_shift,
                 cancel_event = cancel,
             ),
             daemon = True,
@@ -1742,6 +2533,9 @@ class VideoBackend:
                     "guidance_2": gen_kwargs.get("guidance_2"),
                     "seed": result["seed"],
                     "has_audio": result["has_audio"],
+                    "conditioning": result["conditioning"],
+                    "flow_shift": result.get("flow_shift"),
+                    "audio_flow_shift": result.get("audio_flow_shift"),
                     "model": result["repo_id"],
                     "created_at": created_at,
                 },
@@ -1803,10 +2597,16 @@ class VideoBackend:
         guidance: Optional[float] = None,
         guidance_2: Optional[float] = None,
         seed: Optional[int] = None,
+        first_frame: Optional[str] = None,
+        last_frame: Optional[str] = None,
+        reference_images: Optional[list[str]] = None,
+        reference_videos: Optional[list[dict]] = None,
+        reference_audios: Optional[list[str]] = None,
+        reference_image_size: Optional[str] = None,
+        flow_shift: Optional[float] = None,
+        audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
-        import torch
-
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
@@ -1820,13 +2620,26 @@ class VideoBackend:
                 self._active_generate_cancel = cancel
             try:
                 fam = state.family
-                width, height = snap_video_size(
-                    fam,
-                    width or fam.resolution_presets[0][0],
-                    height or fam.resolution_presets[0][1],
+                first_pil, last_pil, width, height, conditioning = self._resolve_keyframes(
+                    fam, state.h3_task, first_frame, last_frame, width, height
                 )
+                references = self._resolve_references(
+                    fam,
+                    state.h3_task,
+                    state.engine,
+                    reference_images,
+                    reference_videos,
+                    reference_audios,
+                    reference_image_size,
+                    width,
+                    height,
+                )
+                if references:
+                    conditioning = h3_conditioning_mode(has_references = True)
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
-                out_fps = int(fps or fam.default_fps)
+                out_fps = (
+                    fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
+                )
                 default_steps, default_guidance = default_video_generation_params(
                     state.gguf_filename,
                     state.repo_id,
@@ -1835,8 +2648,71 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+                shift, audio_shift = self._resolve_flow_shifts(
+                    fam, state.engine, flow_shift, audio_flow_shift
+                )
 
-                generator = torch.Generator(device = state.device)
+                if state.engine == "sd_cpp":
+                    return self._generate_h3_native(
+                        state = state,
+                        prompt = prompt,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        fps = out_fps,
+                        steps = steps,
+                        guidance = guidance,
+                        seed = seed,
+                        first_frame = first_pil,
+                        last_frame = last_pil,
+                        references = references,
+                        conditioning = conditioning,
+                        flow_shift = shift,
+                        cancel = cancel,
+                    )
+
+                import torch
+
+                if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
+                    from .video_minimax_h3 import (
+                        estimate_h3_diffusers_host_ram_gb,
+                        estimate_h3_diffusers_vram_gb,
+                    )
+
+                    device_obj = torch.device(state.device)
+                    device_module = getattr(torch, device_obj.type, None)
+                    if device_module is not None and hasattr(device_module, "mem_get_info"):
+                        free_bytes, _ = device_module.mem_get_info(device_obj)
+                        reserved_bytes = (
+                            device_module.memory_reserved(device_obj)
+                            if hasattr(device_module, "memory_reserved")
+                            else 0
+                        )
+                        available_vram_gb = (free_bytes + reserved_bytes) / 1_000_000_000
+                        required_vram_gb = estimate_h3_diffusers_vram_gb(width, height, frames)
+                        if available_vram_gb + 0.25 < required_vram_gb:
+                            raise RuntimeError(
+                                f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
+                                f"VRAM for {width}x{height} at {frames} frames; "
+                                f"{available_vram_gb:.1f} GB is available. Lower the resolution "
+                                "or duration, or load the GGUF artifact."
+                            )
+
+                        import psutil
+
+                        process_rss = psutil.Process().memory_info().rss
+                        host_capacity_gb = (
+                            psutil.virtual_memory().available + process_rss
+                        ) / 1_000_000_000
+                        required_host_gb = estimate_h3_diffusers_host_ram_gb(available_vram_gb)
+                        if host_capacity_gb + 0.5 < required_host_gb:
+                            raise RuntimeError(
+                                f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
+                                f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
+                                "available. Load the GGUF artifact instead."
+                            )
+
+                generator = torch.Generator(device = "cpu" if fam.modular_workflow else state.device)
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
@@ -1865,7 +2741,9 @@ class VideoBackend:
                     ):
                         kwargs["sigmas"] = list(LTX23_DISTILLED_SIGMAS)
                         sigma_ctx = ltx23_verbatim_sigmas(pipe)
-                if fam.guidance_via_guider:
+                if not fam.supports_cfg:
+                    pass
+                elif fam.guidance_via_guider:
                     # HunyuanVideo-1.5: __call__ has no guidance kwarg; CFG scale is a guider attribute set per request.
                     pipe.guider.guidance_scale = float(guidance)
                 else:
@@ -1878,6 +2756,24 @@ class VideoBackend:
                 # Dual-DiT MoE: pass the low-noise expert guidance only when the family declares it AND the signature accepts it (WanPipeline raises with boundary_ratio=None).
                 if fam.cfg2_kwarg and fam.cfg2_kwarg in call_params and guidance_2 is not None:
                     kwargs[fam.cfg2_kwarg] = float(guidance_2)
+                if fam.modular_workflow:
+                    kwargs["output"] = ["videos", "audio", "sampling_rate"]
+                # Auto-blocks distinguish omitted conditioning from empty conditioning.
+                if first_pil is not None:
+                    kwargs["image"] = first_pil
+                if last_pil is not None:
+                    kwargs["last_image"] = last_pil
+                if references:
+                    from .video_minimax_h3 import h3_diffusers_references
+                    kwargs["references"] = h3_diffusers_references(references)
+                # Set scheduler shifts every run so prior requests cannot leak state.
+                for component, value in (
+                    ("scheduler", shift),
+                    ("audio_scheduler", audio_shift),
+                ):
+                    setter = getattr(getattr(pipe, component, None), "set_shift", None)
+                    if callable(setter) and value is not None:
+                        setter(float(value))
 
                 started = time.monotonic()
                 self._gen = {
@@ -1915,6 +2811,9 @@ class VideoBackend:
                     progress_ctx = contextlib.nullcontext()
                 else:
                     # HunyuanVideo-1.5 has no step callback, so wrap scheduler.step for progress + cancel and restore afterwards.
+                    # Same for H3's modular workflow: ModularPipeline takes no callback (an unknown input is only warned
+                    # about), but MiniMaxH3LoopSchedulerStep calls components.scheduler.step -- pipe.scheduler -- once per
+                    # denoise step, so the wrapper ticks and can unwind a multi-minute run on Cancel.
                     progress_ctx = _scheduler_step_progress(pipe, _on_scheduler_step)
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
@@ -1957,12 +2856,28 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
 
                 self._gen.update(phase = "export", eta_seconds = None)
-                video_frames = output.frames[0]
-                audio = getattr(output, "audio", None)
-                audio_track = audio[0] if fam.has_audio and audio is not None else None
-                mp4_bytes = self._encode_mp4(
-                    video_frames, out_fps, audio_track, pipe if fam.has_audio else None
-                )
+                if fam.modular_workflow:
+                    video_frames = output["videos"][0]
+                    audio = output.get("audio")
+                    audio_track = audio[0] if audio is not None else None
+                    audio_sample_rate = output.get("sampling_rate")
+                else:
+                    video_frames = output.frames[0]
+                    audio = getattr(output, "audio", None)
+                    audio_track = audio[0] if fam.has_audio and audio is not None else None
+                    audio_sample_rate = None
+                if audio_sample_rate is None:
+                    mp4_bytes = self._encode_mp4(
+                        video_frames, out_fps, audio_track, pipe if fam.has_audio else None
+                    )
+                else:
+                    mp4_bytes = self._encode_mp4(
+                        video_frames,
+                        out_fps,
+                        audio_track,
+                        pipe if fam.has_audio else None,
+                        audio_sample_rate = int(audio_sample_rate),
+                    )
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
@@ -1978,8 +2893,11 @@ class VideoBackend:
                     "fps": out_fps,
                     "duration_s": duration_s,
                     "has_audio": bool(audio_track is not None),
+                    "conditioning": conditioning,
                     "steps": steps,
                     "guidance": guidance,
+                    "flow_shift": shift,
+                    "audio_flow_shift": audio_shift,
                 }
             except Exception:
                 self._gen = {"active": False}
@@ -1990,7 +2908,342 @@ class VideoBackend:
                         self._active_generate_cancel = None
 
     @staticmethod
-    def _encode_mp4(video_frames, fps: int, audio, pipe) -> bytes:
+    def _resolve_keyframes(
+        fam: VideoFamily,
+        h3_task: Optional[str],
+        first_frame: Optional[str],
+        last_frame: Optional[str],
+        width: Optional[int],
+        height: Optional[int],
+    ) -> tuple[Any, Any, int, int, str]:
+        """Decode keyframes and resolve their shared generation canvas.
+
+        Unsupported keyframes are rejected. Omitting both dimensions matches the source aspect.
+        """
+        if first_frame or last_frame:
+            if not fam.supports_keyframes:
+                raise ValueError(
+                    f"{fam.name} generates from the prompt alone; it takes no first or last frame."
+                )
+            if h3_task == H3_TASK_REFERENCES:
+                raise ValueError(
+                    "The loaded MiniMax-H3 checkpoint is the Ref2VA partition, which conditions "
+                    "on references rather than keyframes. Load a minimax_h3_fl2va checkpoint to "
+                    "generate from a first or last frame."
+                )
+        first = last = None
+        if first_frame or last_frame:
+            from .diffusion import decode_b64_image
+            first = decode_b64_image(first_frame, mode = "RGB") if first_frame else None
+            last = decode_b64_image(last_frame, mode = "RGB") if last_frame else None
+
+        if (width is None or height is None) and (first is not None or last is not None):
+            width, height = h3_canvas_for_aspect(*(first if first is not None else last).size)
+        else:
+            # begin_generate runs this for EVERY family, keyframes or not, so it cannot assume a
+            # family declares presets: an unusual/custom one with an empty tuple used to die here
+            # with an IndexError (a 500) before the request reached the worker. Fall back to the
+            # generic 768x512 the rest of the video path already treats as the default canvas.
+            default_w, default_h = (
+                fam.resolution_presets[0] if fam.resolution_presets else (768, 512)
+            )
+            width, height = snap_video_size(
+                fam,
+                width or default_w,
+                height or default_h,
+            )
+        # Fit once so both engines condition on identical pixels.
+        if first is not None:
+            first = fit_h3_keyframe(first, width, height, anchor = H3_ANCHOR_FIRST)
+        if last is not None:
+            last = fit_h3_keyframe(last, width, height, anchor = H3_ANCHOR_LAST)
+        conditioning = h3_conditioning_mode(has_first = first is not None, has_last = last is not None)
+        return first, last, width, height, conditioning
+
+    @staticmethod
+    def _resolve_flow_shifts(
+        fam: VideoFamily,
+        engine: str,
+        flow_shift: Optional[float],
+        audio_flow_shift: Optional[float],
+    ) -> tuple[Optional[float], Optional[float]]:
+        """Resolve requested or released sigma shifts.
+
+        sd.cpp rejects non-default audio shifts because it cannot apply them.
+        """
+        if flow_shift is not None and fam.default_flow_shift is None:
+            raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
+        if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
+            raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+        shift = flow_shift if flow_shift is not None else fam.default_flow_shift
+        audio_shift = (
+            audio_flow_shift if audio_flow_shift is not None else fam.default_audio_flow_shift
+        )
+        if (
+            audio_flow_shift is not None
+            and engine == "sd_cpp"
+            and audio_flow_shift != fam.default_audio_flow_shift
+        ):
+            raise ValueError(
+                "stable-diffusion.cpp derives the audio schedule against a fixed "
+                f"{fam.default_audio_flow_shift:g} shift, so audio_flow_shift needs the "
+                "Diffusers engine."
+            )
+        return shift, audio_shift
+
+    @staticmethod
+    def _resolve_references(
+        fam: VideoFamily,
+        h3_task: Optional[str],
+        engine: str,
+        reference_images: Optional[list[str]],
+        reference_videos: Optional[list[dict]],
+        reference_audios: Optional[list[str]],
+        reference_image_size: Optional[str],
+        width: int,
+        height: int,
+    ) -> Any:
+        """Decode the request's omni references into the one object both engines consume.
+
+        Sizing is settled here for the same reason keyframes are: sd.cpp scales every reference
+        to the generation's pixel area and the Diffusers blocks scale to their own 2048px short
+        edge, and both are min(1, ...) scales, so pre-fitting to the requested policy makes each
+        engine's own rule a no-op and the two agree. That is also why ``max`` is refused on the
+        native engine rather than accepted and quietly undone.
+        """
+        from .video_minimax_h3 import (
+            MiniMaxH3References,
+            decode_h3_reference_audio,
+            decode_h3_reference_video,
+        )
+
+        images = list(reference_images or [])
+        videos = list(reference_videos or [])
+        audios = list(reference_audios or [])
+        if not (images or videos or audios):
+            if h3_task == H3_TASK_REFERENCES:
+                # Ref2VA has no text-only denoiser, so every request needs an image or video.
+                raise ValueError(
+                    "The loaded MiniMax-H3 checkpoint is the Ref2VA partition, which generates "
+                    "from references. Add at least one reference image or video, or load a "
+                    "minimax_h3_fl2va checkpoint for text-to-video."
+                )
+            return MiniMaxH3References()
+        if not fam.supports_references:
+            raise ValueError(f"{fam.name} takes no reference images, videos or audio.")
+        if h3_task != H3_TASK_REFERENCES:
+            raise ValueError(
+                "The loaded MiniMax-H3 checkpoint is the FL2VA partition, which conditions on "
+                "keyframes rather than references. Load a minimax_h3_ref2va checkpoint to "
+                "generate from references."
+            )
+        policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
+        if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
+            raise ValueError(
+                f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'."
+            )
+        if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
+            raise ValueError(
+                "stable-diffusion.cpp scales every reference to the generation's pixel area, so "
+                f"'{H3_REF_SIZE_MAX}' reference sizing needs the Diffusers engine. Use "
+                f"'{H3_REF_SIZE_MATCH}' with this checkpoint."
+            )
+
+        from .diffusion import decode_b64_image
+
+        fitted_images = tuple(
+            fit_h3_reference_image(
+                decode_b64_image(item, mode = "RGB"),
+                width = width,
+                height = height,
+                policy = policy,
+            )
+            for item in images
+        )
+        decoded_videos = []
+        for item in videos:
+            blob = _decode_b64_media(item.get("video") if isinstance(item, dict) else item)
+            frames, waveform, sample_rate = decode_h3_reference_video(blob)
+            override = item.get("audio") if isinstance(item, dict) else None
+            if override:
+                waveform, sample_rate = decode_h3_reference_audio(_decode_b64_media(override))
+            decoded_videos.append((frames, waveform, sample_rate))
+        if engine == "sd_cpp":
+            soundtrack_gap = False
+            for index, (_, waveform, _) in enumerate(decoded_videos, start = 1):
+                if waveform is None:
+                    soundtrack_gap = True
+                elif soundtrack_gap:
+                    # sd-cli pairs soundtrack flags by position, so gaps would misattach audio.
+                    raise ValueError(
+                        "stable-diffusion.cpp can pair reference-video soundtracks only from "
+                        f"Video 1 onward without gaps, but Video {index} has audio after a "
+                        "silent earlier video. Reorder the videos so ones with soundtracks "
+                        "come first, or add a replacement soundtrack to each earlier video."
+                    )
+        decoded_audios = tuple(
+            decode_h3_reference_audio(_decode_b64_media(item)) for item in audios
+        )
+        return MiniMaxH3References(
+            images = fitted_images,
+            videos = tuple(decoded_videos),
+            audios = decoded_audios,
+        )
+
+    def _generate_h3_native(
+        self,
+        *,
+        state: _VideoLoadState,
+        prompt: str,
+        width: int,
+        height: int,
+        frames: int,
+        fps: int,
+        steps: int,
+        guidance: float,
+        seed: Optional[int],
+        # Canvas-fitted keyframes, and the task name they add up to (see _resolve_keyframes).
+        first_frame: Any,
+        last_frame: Any,
+        references: Any,
+        conditioning: str,
+        flow_shift: Optional[float],
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        import random
+        import re
+
+        from .sd_cpp_args import SdCppVideoGenParams
+        from .sd_cpp_engine import SdCppCancelled
+        from .video_minimax_h3 import (
+            inspect_video,
+            stage_h3_references,
+            transcode_video_to_mp4,
+        )
+
+        runtime = state.pipe
+        if seed is None:
+            seed = random.SystemRandom().randrange(0, 2**53)
+        started = time.monotonic()
+        self._gen = {
+            "active": True,
+            "phase": "denoise",
+            "step": 0,
+            "total": steps,
+            "started": started,
+            "eta_seconds": None,
+            "error": None,
+        }
+        # sd.cpp reuses an unlabeled bar for loading, denoising, and VAE work. Count only
+        # iteration-rated bars inside its denoise window.
+        denoise_open = re.compile(r"generate_video\s+\d+x\d+x\d+")
+        denoise_close = re.compile(r"sampling completed", re.IGNORECASE)
+        step_bar = re.compile(r"\|\s*(\d+)\s*/\s*(\d+)\s*-\s*[\d.]+\s*(?:it/s|s/it)")
+        denoising = False
+
+        def on_log(line: str) -> None:
+            nonlocal denoising
+            if denoise_open.search(line):
+                denoising = True
+                return
+            if denoise_close.search(line):
+                denoising = False
+                # sd.cpp still has to decode both latent streams and write its
+                # intermediate video. Do not leave the UI at a completed denoise bar.
+                self._gen.update(phase = "decode", eta_seconds = None)
+                return
+            match = step_bar.search(line) if denoising else None
+            if match is None:
+                return
+            done, total = int(match.group(1)), int(match.group(2))
+            elapsed = time.monotonic() - started
+            self._gen.update(
+                step = done,
+                total = total,
+                eta_seconds = (elapsed / max(1, done)) * max(0, total - done),
+            )
+
+        tmp = tempfile.NamedTemporaryFile(suffix = ".webm", delete = False)
+        tmp.close()
+        output_path = Path(tmp.name)
+        # Stage in-memory conditioning in sd-cli's temporary disk format.
+        with tempfile.TemporaryDirectory(prefix = "unsloth-h3-keyframes-") as scratch:
+
+            def stage(image: Any, name: str) -> Optional[str]:
+                if image is None:
+                    return None
+                path = Path(scratch) / f"{name}.png"
+                image.save(path, format = "PNG")
+                return str(path)
+
+            init_img = stage(first_frame, "first")
+            end_img = stage(last_frame, "last")
+            staged = stage_h3_references(references, Path(scratch))
+            try:
+                try:
+                    generated = runtime.engine.generate_video(
+                        runtime.files,
+                        SdCppVideoGenParams(
+                            prompt = prompt,
+                            width = width,
+                            height = height,
+                            num_frames = frames,
+                            fps = fps,
+                            steps = steps,
+                            cfg_scale = 1.0,
+                            seed = int(seed),
+                            init_img = init_img,
+                            end_img = end_img,
+                            ref_images = staged.images,
+                            ref_videos = staged.videos,
+                            ref_video_audios = staged.video_audios,
+                            ref_audios = staged.audios,
+                            flow_shift = flow_shift,
+                        ),
+                        output_path = str(output_path),
+                        offload = list(runtime.offload_flags),
+                        on_log = on_log,
+                        cancel_event = cancel,
+                    )
+                except SdCppCancelled:
+                    raise RuntimeError(VIDEO_CANCELLED_MSG) from None
+                if cancel.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
+                self._gen.update(phase = "export", eta_seconds = None)
+                actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
+                mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
+                if cancel.is_set():
+                    raise RuntimeError(VIDEO_CANCELLED_MSG)
+                self._gen = {"active": False}
+                return {
+                    "mp4_bytes": mp4_bytes,
+                    "seed": int(seed),
+                    "repo_id": state.repo_id,
+                    "width": actual_width,
+                    "height": actual_height,
+                    "num_frames": actual_frames,
+                    "fps": fps,
+                    "duration_s": actual_frames / float(fps),
+                    "has_audio": has_audio,
+                    "conditioning": conditioning,
+                    "steps": steps,
+                    "guidance": guidance,
+                    "flow_shift": flow_shift,
+                    # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
+                    "audio_flow_shift": state.family.default_audio_flow_shift,
+                }
+            finally:
+                output_path.unlink(missing_ok = True)
+
+    @staticmethod
+    def _encode_mp4(
+        video_frames,
+        fps: int,
+        audio,
+        pipe,
+        *,
+        audio_sample_rate: Optional[int] = None,
+    ) -> bytes:
         """Encode frames (+ optional audio) to H.264 MP4 bytes via diffusers' PyAV
         exporter. A temp file bridges the exporter's path-based API; the bytes are
         what the gallery persists."""
@@ -2002,7 +3255,7 @@ class VideoBackend:
             encode_kwargs: dict[str, Any] = {}
             if audio is not None and pipe is not None:
                 encode_kwargs["audio"] = audio
-                sample_rate = getattr(
+                sample_rate = audio_sample_rate or getattr(
                     getattr(getattr(pipe, "vocoder", None), "config", None),
                     "output_sampling_rate",
                     None,
@@ -2109,6 +3362,7 @@ class VideoBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "engine": None,
                 "offload_policy": None,
                 "vae_tiling": False,
                 "memory_mode": None,
@@ -2119,6 +3373,10 @@ class VideoBackend:
                 "transformer_quant": None,
                 "text_encoder_quant": None,
                 "has_audio": False,
+                "supports_cfg": True,
+                "supports_keyframes": False,
+                "supports_references": False,
+                "h3_task": None,
                 "defaults": None,
                 "resolved": None,
             }
@@ -2137,6 +3395,7 @@ class VideoBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "engine": state.engine,
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,
             "memory_mode": state.memory_mode,
@@ -2147,14 +3406,29 @@ class VideoBackend:
             "transformer_quant": state.transformer_quant,
             "text_encoder_quant": state.text_encoder_quant,
             "has_audio": fam.has_audio,
+            "supports_cfg": fam.supports_cfg,
+            # Expose only conditioning supported by the resident partition.
+            "supports_keyframes": fam.supports_keyframes and state.h3_task != H3_TASK_REFERENCES,
+            "supports_references": fam.supports_references and state.h3_task == H3_TASK_REFERENCES,
+            "h3_task": state.h3_task,
             "defaults": {
                 "steps": default_steps,
                 "guidance": default_guidance,
                 "num_frames": fam.default_num_frames,
                 "fps": fam.default_fps,
                 "frame_step": fam.frame_step,
+                "frame_offset": fam.frame_offset,
+                "duration_presets": list(fam.duration_presets),
                 "resolution_multiple": fam.resolution_multiple,
                 "resolution_presets": [list(p) for p in fam.resolution_presets],
+                # Let the frontend preview the backend-owned "match source" rule.
+                "canvas_short_edge": H3_CANVAS_SHORT_EDGE if fam.supports_keyframes else None,
+                "canvas_max_pixels": H3_CANVAS_MAX_PIXELS if fam.supports_keyframes else None,
+                "flow_shift": fam.default_flow_shift,
+                "audio_flow_shift": fam.default_audio_flow_shift,
+                # sd.cpp has no flag for the audio shift, so the control is only real on Diffusers.
+                "supports_audio_flow_shift": fam.default_audio_flow_shift is not None
+                and state.engine != "sd_cpp",
             },
             "resolved": state.resolved,
         }

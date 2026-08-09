@@ -3307,7 +3307,7 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     return folder
 
 
-# Per-side dimension bound for uploaded training images, matching diffusion._decode_b64_image's 4096px guard, so a compressible PNG cannot smuggle huge pixels past the byte limit.
+# Match diffusion's 4096px decoded-image limit.
 _MAX_TRAINING_IMAGE_SIDE = 4096
 
 

@@ -3181,11 +3181,36 @@ class VideoLoadRequest(BaseModel):
         "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
     )
 
+    h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(
+        None,
+        description = "Which MiniMax-H3 denoiser partition to bring up: fl2va (text-to-video "
+        "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
+        "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
+        "whose filename already names the partition; rejected if it contradicts that filename.",
+    )
+
     @field_validator("attention_backend", mode = "before")
     @classmethod
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class VideoReferenceVideo(BaseModel):
+    """One reference video, with the soundtrack MiniMax-H3 conditions on alongside it."""
+
+    video: str = Field(
+        ...,
+        max_length = 96 * 1024 * 1024,
+        description = "Base64/data-URL video file, 2 to 15 seconds. Resampled onto the model's "
+        "24 fps and onto the canvas its own aspect ratio resolves to.",
+    )
+    audio: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
+        "embedded in the file, if it has one; sent explicitly it replaces it.",
+    )
 
 
 class VideoGenerateRequest(BaseModel):
@@ -3197,7 +3222,7 @@ class VideoGenerateRequest(BaseModel):
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The
-    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + 1 lattice), which the generate
+    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + frame_offset lattice), which the
     # route checks with validate_video_request_shape and rejects with a 422 naming the supported shapes. Nothing tighter
     # belongs here: with no model loaded there is no family to judge against, and that path must keep snapping as before.
     width: Optional[int] = Field(
@@ -3216,7 +3241,7 @@ class VideoGenerateRequest(BaseModel):
         None,
         ge = 1,
         le = MAX_VIDEO_NUM_FRAMES,
-        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + 1)",
+        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + frame_offset)",
     )
     fps: Optional[int] = Field(
         None, ge = 1, le = 120, description = "Playback frame rate (default per family)"
@@ -3240,6 +3265,103 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
+    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
+    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    first_frame: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
+        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
+        "family that takes no keyframes.",
+    )
+    last_frame: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
+        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
+        "follows the first and is centre cover-cropped onto the canvas.",
+    )
+
+    # Separate lists preserve the model's image, video, then audio packing order.
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 9,
+        description = "Subject / style / scene reference images (base64/data-URL), at most 9. "
+        "The prompt refers to them as <Picture 1>, <Picture 2>, ... in this order.",
+    )
+    reference_videos: Optional[list[VideoReferenceVideo]] = Field(
+        None,
+        max_length = 3,
+        description = "Motion / camera reference videos, at most 3. The prompt refers to them "
+        "as <Video 1>, <Video 2>, ... in this order.",
+    )
+    reference_audios: Optional[list[str]] = Field(
+        None,
+        max_length = 3,
+        description = "Standalone reference audio (base64/data-URL), at most 3, for voice or "
+        "score. The prompt refers to them as <Audio 1>, <Audio 2>, ... in this order. Audio "
+        "cannot be the only kind of reference a request carries.",
+    )
+    flow_shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Sigma shift of the video schedule (MiniMax-H3 ships 12.0). Higher spends "
+        "more of the schedule at high noise, which reads as more motion and less detail. null "
+        "keeps the released value.",
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Sigma shift of the audio schedule (MiniMax-H3 ships 3.0). Needs the "
+        "Diffusers engine: stable-diffusion.cpp derives the audio schedule against a hardcoded "
+        "3.0, so it has no flag to map this onto. null keeps the released value.",
+    )
+    reference_image_size: Optional[Literal["match", "max"]] = Field(
+        None,
+        description = "How reference images are sized: match (default) scales each down to the "
+        "generation's pixel area; max uses the reference pipeline's 2048px short edge for "
+        "stronger identity fidelity, several times slower. max needs the Diffusers engine -- "
+        "stable-diffusion.cpp rescales every reference to the generation area regardless.",
+    )
+
+    @field_validator("reference_images", "reference_audios")
+    @classmethod
+    def _bounded_reference_media(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        # Bound each item like first_frame, so a list cannot buffer what one field may not.
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference must be at most 32 MiB (base64)")
+        return value
+
+    @model_validator(mode = "after")
+    def _references_fit_the_models_budget(self) -> "VideoGenerateRequest":
+        images = self.reference_images or []
+        videos = self.reference_videos or []
+        audios = self.reference_audios or []
+        total = len(images) + len(videos) + len(audios)
+        if total > 12:
+            raise ValueError(f"MiniMax-H3 takes at most 12 references in total, got {total}")
+        # Standalone audio must accompany an image or video reference.
+        if audios and not images and not videos:
+            raise ValueError(
+                "reference audio needs at least one reference image or video to go with"
+            )
+        if (images or videos or audios) and (self.first_frame or self.last_frame):
+            raise ValueError(
+                "keyframes and references cannot be combined: MiniMax-H3 runs them against "
+                "different denoiser partitions"
+            )
+        return self
+
+    @model_validator(mode = "after")
+    def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
+        # Omit both axes for "match source", or provide both for an explicit canvas.
+        if (self.width is None) != (self.height is None):
+            raise ValueError("width and height must be sent together, or both omitted")
+        return self
 
 
 class GalleryVideo(BaseModel):
@@ -3259,8 +3381,20 @@ class GalleryVideo(BaseModel):
     guidance_2: Optional[float] = Field(
         None, description = "Second-expert guidance scale (dual-expert families), if sent"
     )
+    flow_shift: Optional[float] = Field(
+        None, description = "Video-schedule sigma shift used, for families that expose it"
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None, description = "Audio-schedule sigma shift used, for families that expose it"
+    )
     seed: int = Field(..., description = "Seed used")
     has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
+    conditioning: Optional[str] = Field(
+        None,
+        description = "How the clip was conditioned, in MiniMax-H3's own task names: t2va "
+        "(prompt only), i2va (first frame), l2va (last frame) or fl2va (both). Absent on "
+        "clips saved before keyframes existed.",
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
 
@@ -3333,12 +3467,38 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
-    frame_step: int = Field(
-        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+    frame_step: int = Field(..., description = "Temporal lattice stride")
+    frame_offset: int = Field(
+        1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
+    )
+    duration_presets: list[float] = Field(
+        default_factory = list, description = "Clip durations in seconds the UI offers"
     )
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+    canvas_short_edge: Optional[int] = Field(
+        None,
+        description = "Short edge a source-derived canvas aims for, or null when the family "
+        "has no keyframe canvas rule. With canvas_max_pixels and resolution_multiple this is "
+        "the whole rule: short edge, then cap the area, then round both axes.",
+    )
+    canvas_max_pixels: Optional[int] = Field(
+        None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
+    )
+    flow_shift: Optional[float] = Field(
+        None,
+        description = "Released video-schedule sigma shift, or null when the family does not "
+        "expose the control",
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None, description = "Released audio-schedule sigma shift, or null (see flow_shift)"
+    )
+    supports_audio_flow_shift: bool = Field(
+        False,
+        description = "Whether the ACTIVE engine can honour audio_flow_shift; false on "
+        "stable-diffusion.cpp, which pins the audio schedule at its released value",
     )
 
 
@@ -3354,6 +3514,7 @@ class VideoStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    engine: Optional[str] = Field(None, description = "Active video engine: diffusers | sd_cpp")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
     )
@@ -3383,6 +3544,25 @@ class VideoStatusResponse(BaseModel):
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    supports_keyframes: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
+        "(gates the image-to-video controls)",
+    )
+    supports_references: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes reference images / videos / audio "
+        "(gates the reference-to-video controls). Never true at the same time as "
+        "supports_keyframes: MiniMax-H3 serves the two from different denoiser partitions.",
+    )
+    h3_task: Optional[str] = Field(
+        None,
+        description = "The MiniMax-H3 denoiser partition that is up: fl2va | ref2va, or null "
+        "for any other family",
+    )
+    supports_cfg: bool = Field(
+        True, description = "Whether guidance and negative prompts apply to this family"
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"

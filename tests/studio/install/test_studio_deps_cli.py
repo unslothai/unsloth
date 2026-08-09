@@ -47,7 +47,11 @@ _MANIFEST = _load(MANIFEST_PATH, "install_manifest_for_deps_test")
 def _studio_distributions() -> list:
     lines = (REQUIREMENTS / "studio.txt").read_text(encoding = "utf-8").splitlines()
     parsed = [_MANIFEST._parse_requirement_line(line) for line in lines]
-    return [name for name, _, _ in (p for p in parsed if p is not None)]
+    return [
+        name
+        for name, marker, _ in (p for p in parsed if p is not None)
+        if _MANIFEST._marker_applies(marker)
+    ]
 
 
 def _studio_distribution_versions() -> dict:
@@ -56,7 +60,9 @@ def _studio_distribution_versions() -> dict:
     for parsed in (_MANIFEST._parse_requirement_line(line) for line in lines):
         if parsed is None:
             continue
-        name, _marker, specifier = parsed
+        name, marker, specifier = parsed
+        if not _MANIFEST._marker_applies(marker):
+            continue
         version = "1.0.0"
         for part in specifier.split(","):
             if part.startswith("=="):

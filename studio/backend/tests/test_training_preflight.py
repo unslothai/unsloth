@@ -497,7 +497,7 @@ def test_first_remote_train_load_records_exact_dataset_snapshot(monkeypatch, tmp
         }
     }
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **_kwargs: train,
@@ -530,7 +530,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
         take = lambda _count: [{"text": "example"}],
     )
 
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     monkeypatch.setattr(
         "core.training.trainer.load_dataset",
         lambda **kwargs: stream

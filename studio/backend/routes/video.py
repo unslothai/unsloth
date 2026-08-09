@@ -104,6 +104,10 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            # Validation is quant-keyed: a scheme this family can serve only from a hosted
+            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
+            # download, or the panel fetches ~98.7 GB before /video/load can say no.
+            transformer_quant = request.transformer_quant,
         )
         plan = await asyncio.to_thread(
             backend.download_plan,
@@ -115,6 +119,10 @@ async def video_download_plan(
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
+            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
+            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
+            # the load never opens.
+            transformer_quant = request.transformer_quant,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -151,6 +159,7 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            h3_task = request.h3_task,
         )
         # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
         _guard_video_load_against_training()
@@ -173,6 +182,7 @@ async def load_video_model(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
+                h3_task = request.h3_task,
             )
 
         if device != "cpu":
@@ -237,6 +247,14 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
+            first_frame = request.first_frame,
+            last_frame = request.last_frame,
+            reference_images = request.reference_images,
+            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+            reference_audios = request.reference_audios,
+            reference_image_size = request.reference_image_size,
+            flow_shift = request.flow_shift,
+            audio_flow_shift = request.audio_flow_shift,
         )
     except VideoShapeError as exc:
         # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body

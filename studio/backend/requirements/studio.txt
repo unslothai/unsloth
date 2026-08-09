@@ -10,7 +10,8 @@ nest_asyncio
 datasets==4.3.0
 pyjwt
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
-huggingface-hub==0.36.2
+huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
+huggingface-hub==0.36.2; python_version < "3.10"
 structlog>=24.1.0
 diceware
 ddgs

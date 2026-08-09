@@ -52,16 +52,23 @@ class VideoFamily:
     cfg2_kwarg: Optional[str] = None
     # HunyuanVideo-1.5 guidance: __call__ takes NO guidance kwarg; CFG lives on a ``guider`` whose scale is set per request.
     guidance_via_guider: bool = False
-    # Generation defaults + shape. ``frame_step`` is the temporal compression: a valid frame count is k*frame_step + 1.
+    # Generation defaults + shape. A valid frame count is k*frame_step + frame_offset.
     default_steps: int = 40
     default_guidance: float = 4.0
     default_num_frames: int = 121
     default_fps: int = 24
     frame_step: int = 8
+    # Offset in the temporal lattice. Existing pipelines use k*step+1; MiniMax-H3 uses 17k+5.
+    frame_offset: int = 1
+    min_num_frames: int = 1
+    max_num_frames: Optional[int] = None
+    snap_frames_up: bool = False
     # Width/height must be divisible by this (LTX-2's pipeline rejects non-/32).
     resolution_multiple: int = 32
     # (width, height) UI presets, landscape first; the first is the default.
     resolution_presets: tuple[tuple[int, int], ...] = ((768, 512),)
+    # Clip lengths offered by the UI. Most families use short previews; H3 is trained for 5-15 seconds.
+    duration_presets: tuple[float, ...] = (1.0, 2.0, 3.0, 5.0)
     # Component bf16-RESIDENT sizes in decimal GB (denoiser(s), text encoder, VAE + audio): what sits on device after the cast.
     bf16_components_gb: Optional[tuple[float, float, float]] = None
     # True when the DiT compiles cleanly with regional torch.compile (declares _repeated_blocks).
@@ -74,9 +81,81 @@ class VideoFamily:
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id). The DiT, NOT the text
+    # encoder that te_prequant_repos above covers: the two are separate artifacts because a load
+    # can take one without the other. Same semantics as DiffusionFamily.prequant_repos, so the
+    # shared diffusion_prequant resolver reads this table through plain attribute access.
+    prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base
+    # id. A pre-quantized checkpoint is baked from ONE base's weights and the loader refuses it for
+    # any other base, so a variant that ships its own denoiser needs its own entry; a variant
+    # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
+    # loader's base_model_id check sends the load back to the dense path.
+    prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline. Its
+    # components are loaded without pruning the workflow's routing blocks.
+    modular_workflow: Optional[str] = None
+    # Released video and audio sigma shifts, when configurable.
+    default_flow_shift: Optional[float] = None
+    default_audio_flow_shift: Optional[float] = None
+    # First/last-frame conditioning: the request may carry keyframe images.
+    supports_keyframes: bool = False
+    # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
+    supports_references: bool = False
+    # Guidance-distilled families expose neither CFG nor a negative prompt.
+    supports_cfg: bool = True
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
+    # FL2VA covers text-only and keyframe generation. Ref2VA is a separate partition.
+    VideoFamily(
+        name = "minimax-h3",
+        pipeline_class = "ModularPipeline",
+        transformer_class = "MiniMaxH3Transformer3DModel",
+        base_repo = "MiniMaxAI/MiniMax-H3",
+        aliases = ("minimax_h3", "minimaxh3", "h3"),
+        has_audio = True,
+        default_steps = 30,
+        default_guidance = 1.0,
+        default_num_frames = 124,
+        default_fps = 24,
+        frame_step = 17,
+        frame_offset = 5,
+        min_num_frames = 124,
+        max_num_frames = 345,
+        snap_frames_up = True,
+        resolution_multiple = 32,
+        # Model-card ratios use H3's canvas rule. Keep the legacy 1024 square and cheaper
+        # 16:9 tiers for compatibility.
+        resolution_presets = (
+            (1344, 768),  # 16:9
+            (1536, 672),  # 21:9
+            (1024, 768),  # 4:3
+            (1024, 1024),  # 1:1
+            (768, 1024),  # 3:4
+            (768, 1344),  # 9:16
+            (960, 544),  # 16:9, faster
+            (544, 960),  # 9:16, faster
+        ),
+        duration_presets = (5.0, 10.0, 14.4),
+        # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
+        bf16_components_gb = (66.3, 66.8, 11.1),
+        supports_torch_compile = False,
+        gguf_repo = "unsloth/MiniMax-H3-GGUF",
+        # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
+        # its own from_pretrained, so there is no dense module to quantise in place: these are the
+        # ONLY way to run the 66.3 GB transformer quantized, and seeding one also stops that
+        # download. Both schemes live in ONE repo, at the root, named <Model>-<SCHEME>.pt, which is
+        # the layout every image-side prequant repo already uses and the one prequant_repo_filename
+        # builds without help.
+        prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        modular_workflow = "fl2va",
+        default_flow_shift = 12.0,
+        default_audio_flow_shift = 3.0,
+        supports_keyframes = True,
+        supports_references = True,
+        supports_cfg = False,
+    ),
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The Gemma3-12B
     # encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the dev config (40 steps, CFG 4).
     VideoFamily(
@@ -252,15 +331,83 @@ def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
+def _prequant_base_key(repo_id: Optional[str]) -> str:
+    """The lookup key ``prequant_variant_repos`` is written against: trimmed and lowercased.
+
+    Deliberately local rather than reusing ``diffusion_families.canonical_base``: this module
+    header keeps the two registries apart so neither picker can reach the other's tables, and the
+    image mirror map holds image repos only, so importing it would buy nothing but the coupling.
+    """
+    return (repo_id or "").strip().lower()
+
+
+def video_family_prequant_repo(
+    fam: VideoFamily,
+    scheme: str,
+    base_repo: Optional[str] = None,
+) -> Optional[str]:
+    """The hosted pre-quantized DENOISER repo for ``scheme`` in this family, or None.
+
+    Mirrors ``diffusion_families.family_prequant_repo``: ``base_repo`` (when known) selects a
+    variant-specific checkpoint first, then the family default. Pure -- no IO, no torch -- so
+    validation and download planning can both ask before anything is downloaded.
+
+    Reads the tables through ``getattr`` and skips malformed rows instead of raising: this runs on
+    the refusal path of a load request, and a table typo must not turn a legitimate pick into a
+    500. A family object that predates these fields simply has no hosted checkpoint.
+    """
+    base = _prequant_base_key(base_repo)
+    if base:
+        for entry in getattr(fam, "prequant_variant_repos", ()) or ():
+            if not isinstance(entry, (tuple, list)) or len(entry) != 3:
+                continue
+            entry_base, entry_scheme, repo_id = entry
+            if _prequant_base_key(entry_base) == base and entry_scheme == scheme and repo_id:
+                return repo_id
+    for entry in getattr(fam, "prequant_repos", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        entry_scheme, repo_id = entry
+        if entry_scheme == scheme and repo_id:
+            return repo_id
+    return None
+
+
+def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
+    """Every scheme this family has a hosted denoiser checkpoint for, in table order.
+
+    Used to name the workable schemes in a refusal message, so a rejected request tells the caller
+    what to pick instead of only what failed. Malformed rows are skipped, as above."""
+    schemes: list[str] = []
+    for entry in getattr(fam, "prequant_repos", ()) or ():
+        if isinstance(entry, (tuple, list)) and len(entry) == 2 and entry[0] not in schemes:
+            schemes.append(entry[0])
+    for entry in getattr(fam, "prequant_variant_repos", ()) or ():
+        if isinstance(entry, (tuple, list)) and len(entry) == 3 and entry[1] not in schemes:
+            schemes.append(entry[1])
+    return tuple(schemes)
+
+
 def snap_num_frames(fam: VideoFamily, num_frames: int) -> int:
-    """The nearest valid frame count at or below the request (k * frame_step + 1).
+    """The nearest valid frame count at or below the request (k * step + offset).
 
     Video latents are allocated as (num_frames - 1) / temporal_compression + 1, so
     an off-lattice count wastes a partial latent frame at best and trips shape
     checks at worst; snapping mirrors the image path's silent /16 size snap.
     """
     step = max(1, fam.frame_step)
-    return max(1, ((max(1, num_frames) - 1) // step) * step + 1)
+    offset = max(1, fam.frame_offset)
+    requested = max(offset, fam.min_num_frames, num_frames)
+    if fam.max_num_frames is not None:
+        requested = min(requested, fam.max_num_frames)
+    delta = requested - offset
+    if fam.snap_frames_up:
+        snapped = ((delta + step - 1) // step) * step + offset
+    else:
+        snapped = (delta // step) * step + offset
+    if fam.max_num_frames is not None:
+        snapped = min(snapped, fam.max_num_frames)
+    return max(offset, fam.min_num_frames, snapped)
 
 
 def snap_video_size(fam: VideoFamily, width: int, height: int) -> tuple[int, int]:
@@ -324,23 +471,36 @@ def validate_video_request_shape(
                 f"Supported resolutions: {format_video_resolution_presets(fam)}."
             )
     if num_frames is not None:
+        # The lattice is k * frame_step + frame_offset, NOT a hardcoded k * step + 1: most families
+        # do sit at offset 1, but MiniMax-H3 is 17k + 5, and judging it against 17k + 1 would refuse
+        # every count its own duration select offers, starting with its default of 124. Read the two
+        # fields snap_num_frames reads, so the gate and the snap can never disagree about what is valid.
         step = max(1, fam.frame_step)
+        offset = max(1, fam.frame_offset)
         count = int(num_frames)
-        if count < 1 or (count - 1) % step != 0:
-            # The two lattice points straddling the request say more than a prefix of the lattice would, and stay short.
-            below = snap_num_frames(fam, count)
+        if count < offset or (count - offset) % step != 0:
+            # The two lattice points straddling the request say more than a prefix of the lattice would,
+            # and stay short. Computed from the lattice rather than via snap_num_frames, which floors for
+            # some families and CEILS for others (snap_frames_up) and so cannot be relied on for "below".
+            below = offset + max(0, (count - offset) // step) * step
             above = below + step
-            # ...but only name the upper one if the request model would accept it. Near the ceiling
-            # (1018-1024 on an 8-step family) it lands past `le`, and advising a count that answers
-            # with a second, differently-shaped 422 is worse than naming one that works.
-            nearest = (
-                f"the nearest supported counts are {below} and {above}"
-                if above <= MAX_VIDEO_NUM_FRAMES
-                else f"the nearest supported count is {below}"
-            )
+            # Only name a point the caller could actually load: past the request model's own `le`, or
+            # outside this family's declared range, it answers with a second, differently-shaped 422.
+            ceiling = MAX_VIDEO_NUM_FRAMES
+            if fam.max_num_frames is not None:
+                ceiling = min(ceiling, int(fam.max_num_frames))
+            floor = max(offset, int(fam.min_num_frames))
+            loadable = [n for n in (below, above) if floor <= n <= ceiling]
+            if len(loadable) == 2:
+                nearest = f"the nearest supported counts are {loadable[0]} and {loadable[1]}"
+            elif len(loadable) == 1:
+                nearest = f"the nearest supported count is {loadable[0]}"
+            else:
+                # The request is outside the family's whole range; point at the range instead.
+                nearest = f"supported counts run from {floor} to {ceiling}"
             raise VideoShapeError(
                 f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
-                f"{step}, so a frame count must be k * {step} + 1; {nearest} "
+                f"{step}, so a frame count must be k * {step} + {offset}; {nearest} "
                 f"(the default is {fam.default_num_frames})."
             )
 

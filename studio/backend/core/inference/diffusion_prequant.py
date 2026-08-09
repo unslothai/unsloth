@@ -125,6 +125,10 @@ def resolve_prequant_source(
     Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
     ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
     checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
+
+    Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
+    checkpoints at the root, so there is no directory to prepend; a repo that nested them would
+    404 on the primary AND on the fallback and the load would silently fall back to dense.
     """
     override = (path_override or "").strip()
     if override:
@@ -255,6 +259,7 @@ def load_prequantized_transformer(
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
     cache_dir: Optional[str] = None,
+    prepare_model: Optional[Any] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -262,6 +267,14 @@ def load_prequantized_transformer(
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Studio no longer reads.
+
+    ``prepare_model`` (optional) is called as ``prepare_model(transformer, metadata)`` on the
+    freshly built skeleton, AFTER ``from_config`` and BEFORE ``load_state_dict``. That window is
+    the only one where a family can reshape the module to match how the checkpoint was baked (a
+    swapped submodule, a patched attention class): earlier there is no module, and later
+    ``strict=True`` has already rejected the mismatch. It gets the checkpoint's own metadata so it
+    can key on what was baked rather than on today's defaults. A raising callback falls out to the
+    outer handler below, i.e. a warning and a dense fallback, never a failed load.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -302,16 +315,33 @@ def load_prequantized_transformer(
         config = _load_transformer_config(transformer_cls, base, hf_token, cache_dir, path)
         from accelerate import init_empty_weights
 
+        metadata = ckpt.get("metadata") or {}
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
+        if prepare_model is not None:
+            prepare_model(transformer, metadata)
         # assign=True swaps in the loaded tensors instead of copying into meta (a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
             transformer = transformer_cls.from_config(config)
+            # The retry REPLACES the module, so the hook has to run again: skipping it here would
+            # load the same state dict into a differently shaped model, and this branch is the one
+            # families with non-persistent buffers always take -- the mismatch would be the norm,
+            # not the corner case, and strict=True would surface it as a bare key error.
+            if prepare_model is not None:
+                prepare_model(transformer, metadata)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
+        # Same small-M row padding the runtime quantise path applies, and for the same reason: a
+        # checkpoint built under the current exclusion set QUANTISES the family's small-M linears,
+        # so without the wrappers they would raise inside _int_mm the moment the compiled scope
+        # reaches them. After load_state_dict, since wrapping reparents the Linears; after .to()
+        # so the granularity probe reads the device tensors the GEMM will actually see.
+        from .diffusion_transformer_quant import apply_small_m_padding
+
+        apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()
@@ -608,6 +638,60 @@ def _same_base_model(a: str, b: str) -> bool:
         return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
 
     return a == b or _tail(a) == _tail(b)
+
+
+def pin_prequantized_module(
+    manager: Any,
+    module: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Keep a pre-quantized module resident on ``device``, out of a ComponentsManager's rotation.
+
+    ``ComponentsManager.enable_auto_cpu_offload`` parks every component on the CPU and moves each
+    one onto the accelerator inside its own ``pre_forward``, i.e. from within the block that is
+    already executing. A torchao-quantized module does not survive that move: the device change
+    reaches ``return_and_correct_aliasing``, which tries to alias a CPU storage to an accelerator
+    tensor and raises ``Attempted to set the storage of a tensor on device "cuda:0" to a storage
+    on different device "cpu"``, and MiniMax-H3's denoise loop dies on its first step. Moving the
+    same module at load time, outside any executing block, works -- so the fix is to place it once
+    here and take it out of the rotation rather than to move it per forward.
+
+    That is also what a pre-quantized denoiser is for: the hosted H3 checkpoint is ~20 GB against
+    66.3 GB dense, so keeping it resident is the saving being spent. The other components keep
+    their hooks, and the strategy sizes its decisions from live free memory, so the encoder and
+    the VAEs still offload around it.
+
+    Returns True when the module was pinned. Best-effort on the hook surgery: if the manager does
+    not look the way this expects, the module is still placed on ``device`` and False is returned,
+    which is the behaviour before pinning existed.
+    """
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
+    pinned = False
+    if target is not None:
+        try:
+            # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
+            target.remove()
+            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to
+            # evict (which would move it to the CPU with no hook left to bring it back).
+            for hook in hooks:
+                others = getattr(getattr(hook, "hook", None), "other_hooks", None)
+                if others:
+                    hook.hook.other_hooks = [item for item in others if item is not target]
+            manager.model_hooks = [hook for hook in hooks if hook is not target]
+            pinned = True
+        except Exception as exc:  # noqa: BLE001 -- placement below still has to happen
+            _warn(logger, "pin:hook", exc)
+    module.to(device)
+    if logger is not None:
+        logger.info(
+            "diffusion.prequant: pre-quantized denoiser pinned on %s (offload rotation: %s)",
+            device,
+            "removed" if pinned else "unchanged",
+        )
+    return pinned
 
 
 def _has_meta_tensors(module: Any) -> bool:

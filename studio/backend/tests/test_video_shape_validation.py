@@ -40,6 +40,7 @@ from core.inference.video_families import (
     snap_video_size,
     validate_video_request_shape,
 )
+from core.inference.video_minimax_h3 import h3_conditioning_mode
 from routes.video import router as video_router
 
 # LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
@@ -125,6 +126,39 @@ def test_wan_lattice_is_step_4_not_step_8():
     validate_video_request_shape(wan, num_frames = 85)
     with pytest.raises(ValueError):
         validate_video_request_shape(LTX2, num_frames = 85)
+
+
+def test_the_lattice_reads_frame_offset_not_a_hardcoded_one():
+    """MiniMax-H3's lattice is 17k + 5, not 17k + 1. A gate written against k*step+1
+    refuses every count H3's own duration select offers, its default of 124 included,
+    so the offset has to come from the family the way snap_num_frames reads it."""
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert (h3.frame_step, h3.frame_offset) == (17, 5)
+    # The three durations the interface offers (5s / 10s / 14.4s at 24 fps, snapped up).
+    for count in (124, 243, 345):
+        assert (count - h3.frame_offset) % h3.frame_step == 0
+        validate_video_request_shape(h3, num_frames = count)
+    # A count on the WRONG offset (17k + 1) is what the old rule would have accepted.
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 137)
+    message = str(excinfo.value)
+    assert "k * 17 + 5" in message
+    assert "124" in message and "141" in message
+
+
+def test_a_suggested_count_never_falls_outside_the_family_range():
+    """Naming a lattice point the family cannot load is the same dead end as naming one
+    past the request ceiling. H3 starts at 124, so 90 (a real 17k+5 point) is not an answer."""
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 100)
+    message = str(excinfo.value)
+    assert "90" not in message
+    assert "124" in message
+    # Above the family ceiling of 345 there is nothing to suggest, so name the range.
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 400)
+    assert "supported counts run from 124 to 345" in str(excinfo.value)
 
 
 def test_omitted_fields_are_always_valid():
@@ -223,6 +257,14 @@ class _ShapeFakeBackend(video_module.VideoBackend):
             "has_audio": fam.has_audio,
             "steps": int(kwargs.get("steps") or fam.default_steps),
             "guidance": fam.default_guidance,
+            # The real generate() records how the clip was conditioned and the job's persist step
+            # reads it unconditionally, so the stub has to speak the same contract or every route
+            # case here dies in persist with a KeyError instead of exercising the gate. Derived
+            # from the shared helper rather than a literal, so a new conditioning mode cannot
+            # leave this stub quietly returning a spelling the gallery no longer accepts.
+            "conditioning": h3_conditioning_mode(),
+            "flow_shift": kwargs.get("flow_shift"),
+            "audio_flow_shift": kwargs.get("audio_flow_shift"),
         }
 
 

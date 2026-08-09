@@ -36,7 +36,7 @@ def _load_training_route():
 
 @pytest.fixture(autouse = True)
 def _cache_roots(monkeypatch, tmp_path):
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: [tmp_path])
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: [tmp_path])
     datasets_cache = tmp_path / "datasets-processed"
     datasets_cache.mkdir()
     monkeypatch.setattr(dataset_cache, "hf_datasets_cache_roots", lambda: [datasets_cache])

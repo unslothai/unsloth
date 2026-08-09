@@ -90,12 +90,93 @@ _HUNYUAN15_INT8_EXCLUDES = (
     "to_add_out",
     "ff_context",
 )
+# MiniMax-H3 is the same small-M story with one extra trap. Its adaLN projection is named
+# ``adaln_proj``, which no token in _INT8_EXCLUDE_NAME_TOKENS matches: "norm" is the closest and it
+# does not appear in the name. On the DENSE checkpoint that projection is Linear(2688 -> 96768), so
+# it clears min_features = 512 and gets quantized, then runs at M = 1 and raises
+# ``self.size(0) needs to be greater than 16, but got 1`` at the first denoise. Measured: the
+# offline builder happily bakes it, and torch.compile then dies on that module.
+#
+# The pruned-modulation form hides the bug rather than fixing it: there adaln_proj is
+# Linear(8 -> 96768), which falls under min_features and is skipped for free (verified on the
+# fl2va_pruned build: the filter rejects all 51 of them for min_features, in_features = 8). So the
+# exclusion is what makes the DENSE path correct, and is a no-op on the pruned one.
+#
+# H3's OTHER small-M linears -- context_embedder and the two token_refiner blocks, 13 in total --
+# used to be excluded here for the same reason. They are not any more: they are padded instead,
+# see _INT8_FAMILY_PAD_NAME_TOKENS below.
+_MINIMAX_H3_INT8_EXCLUDES = ("adaln_proj",)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
     "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
     "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
+    "minimax-h3": _MINIMAX_H3_INT8_EXCLUDES,
 }
+
+
+# int8 PER-FAMILY row PADDING, the alternative to excluding a small-M Linear. ``_int_mm``'s floor is
+# a GEMM shape constraint, not a numerical one: padding the activation up to 32 rows, running the
+# matmul and slicing the result back returns the caller's rows BITWISE unchanged (torchao's int8
+# dynamic path scales activations per row, so the pad rows cannot reach them -- see
+# diffusion_quant_pad for why that is asserted rather than assumed). So a Linear that would have
+# been left dense can be quantized after all, and its weights halve.
+#
+# On MiniMax-H3 that is context_embedder plus the two token_refiner blocks: 13 Linears, 798 M
+# parameters, 0.80 GB of bf16 weights, 3.9% of the whole int8 checkpoint. Measured on B200,
+# 640x384 x 124 frames (see h3_quant/README_int8.md for the paired numbers).
+#
+# Scoped to minimax-h3 deliberately. qwen-image, qwen-image-edit and hunyuanvideo-1.5 have the same
+# small-M shape and could adopt this, but each has a PUBLISHED int8 prequant checkpoint whose
+# metadata bakes the current exclusion set, and _validate_checkpoint compares that set against
+# exclude_tokens_for_scheme: changing it invalidates those artifacts, so they move only together
+# with a rebuild and republish of each.
+_MINIMAX_H3_INT8_PAD_TOKENS = ("context_embedder", "token_refiner")
+_INT8_FAMILY_PAD_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "minimax-h3": _MINIMAX_H3_INT8_PAD_TOKENS,
+}
+
+
+def pad_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Name tokens whose quantized Linears get their activation rows padded to ``_int_mm``'s
+    floor rather than being left dense. int8 only (no other scheme has a row floor), and
+    per-family. Disjoint from ``exclude_tokens_for_scheme`` by construction: an excluded Linear
+    is never quantized, so there is nothing to pad."""
+    if scheme != TQ_INT8:
+        return ()
+    return _INT8_FAMILY_PAD_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def apply_small_m_padding(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Wrap this family's small-M quantized Linears so their GEMM clears ``_int_mm``'s row floor.
+
+    Call AFTER the weights are quantized and in place -- ``quantize_`` on the runtime path, the
+    prequant ``load_state_dict`` on the hosted one -- because it reparents the Linears. Returns
+    the fqns wrapped, empty for a family with no pad list.
+
+    RAISES if a Linear that should be padded cannot be proven safe to pad. A half-padded
+    transformer compiles on the modules that were wrapped and crashes on the ones that were not,
+    which is worse than either end state, so the caller must treat this as a failed quantise."""
+    tokens = pad_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return ()
+    from .diffusion_quant_pad import matching_linear_fqns, wrap_small_m_linears
+
+    wrapped = wrap_small_m_linears(transformer, matching_linear_fqns(transformer, tokens))
+    if wrapped and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: padded %d small-M %s linears on %s",
+            len(wrapped),
+            scheme,
+            family,
+        )
+    return wrapped
 
 
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
@@ -515,6 +596,10 @@ def quantize_transformer(
                 require_divisible = divisible,
             ),
         )
+        # Pad this family's small-M linears now that the weights are quantized and in place. Not
+        # best-effort: a raise here means the transformer is quantized but not safely compilable,
+        # so it falls into the except below and the caller loads GGUF.
+        apply_small_m_padding(transformer, scheme, family, logger = logger)
         # Runtime-only diagnostic marker.
         try:
             transformer._unsloth_runtime_quant = scheme

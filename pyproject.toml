@@ -94,7 +94,8 @@ studio = [
     "nest_asyncio",
     "datasets==4.3.0",
     "pyjwt",
-    "huggingface-hub==0.36.2",
+    "huggingface-hub>=1.23.0,<2.0 ; python_version >= '3.10'",
+    "huggingface-hub==0.36.2 ; python_version < '3.10'",
     "structlog>=24.1.0",
     "diceware",
     "ddgs",
@@ -134,6 +135,8 @@ huggingfacenotorch = [
     # workflow raises without it), the cache_context child-registry behavior, and the
     # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
     # diffusers, so advertised models failed to load until the user upgraded by hand.
+    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
     # diffusers dropped 3.9 in 0.38, and we still support it (requires-python >= 3.9),
     # so the floor is conditional: pinning it outright leaves pip no candidate at all
     # on 3.9 and the whole extra becomes unresolvable.
@@ -165,6 +168,42 @@ huggingface = [
     "torchvision",
     "unsloth[triton]",
 ]
+# xFormers' win_amd64 wheels are per-CUDA-family, not just per-torch: the
+# xformers/_C.pyd is linked against ONE exact (torch, CUDA) pair, and next to any
+# other pair torch.ops.load_library raises and xformers/_cpp_lib.py downgrades to
+# "xFormers can't load C++/CUDA extensions", losing memory-efficient attention,
+# SwiGLU and the sparse ops for the rest of the process -- a silent warning, not
+# an install failure. PyPI publishes only the CUDA-12.8 flavour (0.0.34's
+# win_amd64 cpp_lib.json reads torch 2.10.0+cu128), which is wrong next to the
+# cu126 / cu130 torch install.ps1 pulls from download.pytorch.org -- and cannot
+# be right on a plain PyPI install either, because PyPI's WINDOWS torch carries
+# no CUDA at all (torch 2.10.0's win_amd64 wheel reports __version__
+# '2.10.0+cpu' with cuda = None; only the Linux wheel is +cu128).
+#
+# There is no PEP 508 marker for "which CUDA build of torch is resident", so a
+# single static extra cannot pick the right wheel. The CUDA-matched route on
+# Windows is therefore the same one Linux uses -- the cuXXX-torchYYY extras. Not
+# every one of them carries a win_amd64 row (the cu118 and cu121 rows do not, and
+# cu130onlytorch280 is empty), but the cu126 / cu128 / cu130 rows a current torch
+# resolves to all do:
+#     pip install --index-url https://download.pytorch.org/whl/cu130 "unsloth[cu130-torch2100]"
+#     pip install --index-url https://download.pytorch.org/whl/cu128 "unsloth[cu128-torch2100]"
+# The index is not optional. Those extras pin xFormers by direct URL but pin no
+# torch, and PyPI's Windows torch is CPU-only, so without it pip lands a cu130
+# extension beside a '2.10.0+cpu' torch -- the same silent mismatch, inverted.
+# install.ps1 needs none of this: it picks the wheel from the index it installed
+# torch from, so Studio never reaches the extra below.
+#
+# The extra below is what a `pip install "unsloth[windows]"` resolves, and it
+# stays CUDA-agnostic because it has nothing to key off. It is deliberately NOT
+# capped. An earlier revision bounded it at <0.0.35 on the reasoning that 0.0.35
+# declares only torch>=2.10 while its extension is built for 2.10.0. Upstream says
+# that pairing is supported: v0.0.34's notes record the migration to the PyTorch
+# stable API/ABI, "which means that binary builds targeting PyTorch 2.10+ will be
+# compatible with any later version". Capping also has a cost -- 0.0.34 pins
+# torch==2.10.0 EXACTLY, so a cap strands anyone on 2.10.1. The axis that actually
+# has to match is the CUDA family, which this extra cannot see and install.ps1
+# handles instead.
 windows = [
     "unsloth[huggingface]",
     "bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 ; (sys_platform == 'win32')",

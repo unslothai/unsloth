@@ -3784,7 +3784,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
+    # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
+    base_total = 12 if IS_WINDOWS else 13
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -4165,6 +4166,22 @@ def install_python_stack() -> int:
             str(plugin_dir),
             constrain = False,
         )
+
+    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: install.sh installs
+    #      unsloth itself and then runs this script with SKIP_STUDIO_BASE=1, so the whole
+    #      base-packages step is skipped and anything pinned there reaches `unsloth studio
+    #      update` but never a fresh install -- where unsloth's own metadata has already
+    #      pulled a diffusers RELEASE from PyPI, and Studio then refuses to load MiniMax-H3.
+    #      This step is outside every skip_base / NO_TORCH branch, and it runs after every
+    #      other requirements file, so nothing left can re-resolve diffusers behind it.
+    #      constrain stays on: constraints.txt says nothing about diffusers, and a future
+    #      entry there should win rather than be silently bypassed here.
+    _progress("diffusers pin")
+    pip_install(
+        "Installing the pinned Diffusers revision",
+        "--no-cache-dir",
+        req = REQ_ROOT / "diffusers-pin.txt",
+    )
 
     # 12. Patch metadata for single-env compatibility
     _progress("finalizing")

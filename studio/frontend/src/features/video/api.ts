@@ -22,12 +22,22 @@ export interface VideoGenerationDefaults {
   guidance: number;
   num_frames: number;
   fps: number;
-  // Temporal lattice: valid frame counts are k * frame_step + 1.
+  // Temporal lattice: valid frame counts are k * frame_step + frame_offset.
   frame_step: number;
+  frame_offset: number;
+  duration_presets: number[];
   // Width/height must be divisible by this.
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
   resolution_presets: Array<[number, number]>;
+  // Backend-owned keyframe canvas rule, or null when unsupported.
+  canvas_short_edge?: number | null;
+  canvas_max_pixels?: number | null;
+  // Released schedule shifts, or null when unsupported.
+  flow_shift?: number | null;
+  audio_flow_shift?: number | null;
+  // Whether the active engine can apply audio_flow_shift.
+  supports_audio_flow_shift?: boolean;
 }
 
 export interface VideoStatus {
@@ -39,6 +49,7 @@ export interface VideoStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Null when not loaded.
   model_kind?: string | null;
+  engine?: "diffusers" | "sd_cpp" | null;
   // Resolved offload policy: none | group | model | sequential.
   offload_policy?: string | null;
   vae_tiling: boolean;
@@ -52,6 +63,12 @@ export interface VideoStatus {
   transformer_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
+  supports_cfg: boolean;
+  // Conditioning supported by the loaded checkpoint.
+  supports_keyframes?: boolean;
+  supports_references?: boolean;
+  // Resident MiniMax-H3 denoiser partition, if any.
+  h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
   // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by
@@ -61,7 +78,7 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;
@@ -109,6 +126,16 @@ export interface VideoLoadRequest {
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16). GGUF / single-file checkpoints carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
+  // Pipeline denoiser partition. GGUF filenames already identify theirs.
+  h3_task?: "fl2va" | "ref2va";
+}
+
+/** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
+export interface VideoReferenceVideo {
+  // Base64/data-URL video file, 2 to 15 seconds.
+  video: string;
+  // Base64/data-URL soundtrack for THIS video; omitted takes the one embedded in the file.
+  audio?: string;
 }
 
 export interface VideoGenerateRequest {
@@ -124,6 +151,18 @@ export interface VideoGenerateRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  // MiniMax-H3 keyframes as data URLs. Omit both dimensions to match the source aspect.
+  first_frame?: string;
+  last_frame?: string;
+  // Ref2VA references, grouped in the model's image, video, then audio order.
+  reference_images?: string[];
+  reference_videos?: VideoReferenceVideo[];
+  reference_audios?: string[];
+  // "max" uses Diffusers' 2048px short-edge policy; "match" uses the clip area.
+  reference_image_size?: "match" | "max";
+  // Sigma shift of the video schedule, and of the audio one (Diffusers engine only).
+  flow_shift?: number;
+  audio_flow_shift?: number;
 }
 
 // A persisted clip's full generation recipe (the JSON sidecar of the MP4).
@@ -142,6 +181,10 @@ export interface GalleryVideo {
   guidance: number;
   seed: number;
   has_audio: boolean;
+  // MiniMax-H3 task name, absent on older clips.
+  conditioning?: string | null;
+  flow_shift?: number | null;
+  audio_flow_shift?: number | null;
   model?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
