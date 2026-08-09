@@ -492,7 +492,7 @@ export function useTauriUpdate(isExternalServer = false) {
     if (cleanupRearmedRef.current) return true;
     if (await resumeCleanup()) return true;
     setError(
-      "Crash cleanup could not be re-armed. Restart Unsloth Studio before continuing.",
+      "Crash cleanup could not be re-armed. Restart Unsloth before continuing.",
     );
     setStatus("error");
     return false;
