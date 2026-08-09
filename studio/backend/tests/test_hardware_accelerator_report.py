@@ -534,7 +534,7 @@ def test_the_capability_follows_the_mask_the_app_runs_under(monkeypatch, mask, e
     assert hw._visible_compute_capability() == expected
 
 
-def test_a_busy_gpu_does_not_turn_a_healthy_wheel_red(monkeypatch, fake_probe):
+def test_a_busy_gpu_does_not_turn_a_healthy_wheel_red(monkeypatch, on_accelerator, fake_probe):
     """bitsandbytes keeps CUDA visible on purpose, so opening Settings while a trainer has
     filled the GPU (or holds it in EXCLUSIVE_PROCESS) fails at context creation on a healthy
     install -- and this answer is cached for the life of the backend, so the banner would sit
@@ -558,7 +558,7 @@ def test_a_busy_gpu_does_not_turn_a_healthy_wheel_red(monkeypatch, fake_probe):
     assert "busy" in (row["reason"] or "").lower(), "and the row says why"
 
 
-def test_a_real_import_failure_is_still_degraded(monkeypatch, fake_probe):
+def test_a_real_import_failure_is_still_degraded(monkeypatch, on_accelerator, fake_probe):
     # The classification must not swallow the case the report exists for.
     monkeypatch.setattr(hw, "pkg_version", lambda name: "1.2.3")
     fake_probe(
