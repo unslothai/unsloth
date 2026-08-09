@@ -113,24 +113,12 @@ def prequant_repo_filename(repo_id: str, scheme: str) -> str:
     return f"{model}-{scheme.upper()}.pt"
 
 
-def prequant_subfolder_prefix(subfolder: Optional[str]) -> str:
-    """``"prequant/"`` for a non-empty subfolder, ``""`` otherwise.
-
-    Always a literal forward slash, never ``os.path.join``: these strings are Hub REPO paths, and
-    the ``\\`` a Windows join would produce matches no repo entry and misses the hub cache lookup
-    entirely, so a Windows box would silently download the dense denoiser instead. Any slashes the
-    caller wrote around (or inside) the value are normalised for the same reason."""
-    cleaned = (subfolder or "").strip().replace("\\", "/").strip("/")
-    return f"{cleaned}/" if cleaned else ""
-
-
 def resolve_prequant_source(
     fam: Any,
     scheme: str,
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
-    subfolder: str = "",
 ) -> Optional[PrequantSource]:
     """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
 
@@ -138,11 +126,9 @@ def resolve_prequant_source(
     ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
     checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
 
-    ``subfolder`` is the directory inside that repo holding the checkpoint (default: the repo
-    root, where every image-side repo keeps it). It prefixes BOTH names, primary and fallback,
-    since a repo that nests one nests the other. Everything downstream -- ``try_to_load_from_cache``
-    and ``hf_hub_download`` alike -- takes a ``/``-containing filename as-is, so only the name
-    BUILDER needs to know.
+    Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
+    checkpoints at the root, so there is no directory to prepend; a repo that nested them would
+    404 on the primary AND on the fallback and the load would silently fall back to dense.
     """
     override = (path_override or "").strip()
     if override:
@@ -153,12 +139,11 @@ def resolve_prequant_source(
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
     if repo_id:
-        prefix = prequant_subfolder_prefix(subfolder)
         return PrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = prefix + prequant_repo_filename(repo_id, scheme),
-            fallback_filename = prefix + prequant_filename(scheme),
+            filename = prequant_repo_filename(repo_id, scheme),
+            fallback_filename = prequant_filename(scheme),
         )
     return None
 
@@ -169,21 +154,14 @@ def usable_prequant_source(
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
-    subfolder: str = "",
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would
     accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
     memory planning falls back to dense-fit checks up front, instead of the loader refusing
     the path only after the resident pipeline was evicted and dense bf16 materialises under
     a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
-    # ``subfolder`` is forwarded only when it is actually set, so the default call stays BYTE
-    # IDENTICAL to the one this function has always made. Callers substitute ``resolve_prequant_source``
-    # (the auto-policy planner's probe is exercised that way), and a stub written against the older
-    # signature would raise TypeError on an unexpected keyword -- swallowed upstream as "no prequant
-    # available", which silently sizes the plan for the dense build instead.
-    extra = {"subfolder": subfolder} if subfolder else {}
     src = resolve_prequant_source(
-        fam, scheme, path_override = path_override, base_repo = base_repo, **extra
+        fam, scheme, path_override = path_override, base_repo = base_repo
     )
     if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
         return None

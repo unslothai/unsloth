@@ -3,7 +3,7 @@
 
 """Hosted pre-quantized DENOISER route for video families.
 
-Covers the family table + resolver, the subfolder-aware checkpoint naming, and the
+Covers the family table + resolver, the repo-root checkpoint naming, and the
 ``validate_load_request`` refusals that must fire BEFORE anything downloads. All network-free and
 torch-free: the refusals are deliberately placed ahead of the diffusers availability probe so they
 still run (and still get tested) in an environment where diffusers cannot be imported at all.
@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from core.inference.diffusion_prequant import (
-    prequant_subfolder_prefix,
+    cached_checkpoint_path,
     resolve_prequant_source,
 )
 from core.inference.video import VideoBackend
@@ -89,45 +89,63 @@ def test_minimax_h3_declares_hosted_denoiser_checkpoints():
         assert repo and repo.startswith("unsloth/")
 
 
-def test_minimax_h3_checkpoints_are_nested_under_a_subfolder():
-    # These artifacts keep the checkpoint one level down; resolving it at the repo root 404s and
-    # the load silently falls back to the dense download the route exists to avoid.
+def test_both_h3_schemes_resolve_to_one_repo():
+    # Both schemes live in the SAME hosted repo. Two repos meant one of them had to be named for a
+    # scheme it did not carry, and it is the pair (repo, scheme) that names the file.
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
-    assert fam.prequant_subfolder == "prequant"
+    repos = {s: video_family_prequant_repo(fam, s) for s in ("int8", "fp8")}
+    assert repos["int8"] == repos["fp8"], repos
 
 
-# ── subfolder-aware naming ───────────────────────────────────────────────────────
+# ── repo-root naming ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
-    "raw, expected",
-    [("", ""), (None, ""), ("prequant", "prequant/"), ("/prequant/", "prequant/")],
+    "scheme, expected",
+    [("int8", "MiniMax-H3-INT8.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
 )
-def test_subfolder_prefix_normalisation(raw, expected):
-    assert prequant_subfolder_prefix(raw) == expected
+def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
+    # The name the hosted repo actually publishes. It has to be the PRIMARY, not the fallback:
+    # cached_checkpoint_path deliberately credits only the primary, so landing on the fallback
+    # would report a cached checkpoint as "this would have to download" and hand the pick to GGUF.
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    src = resolve_prequant_source(fam, scheme)
+    assert src.filename == expected
+    # Root-level: no directory component at all, on any platform.
+    assert "/" not in src.filename and "\\" not in src.filename
 
 
-def test_a_subfolder_prefixes_both_candidate_names():
-    fam = _fam(prequant_repos = (("int8", "unsloth/Test-INT8"),))
-    src = resolve_prequant_source(fam, "int8", subfolder = "prequant")
-    assert src.filename == "prequant/Test-INT8.pt"
-    # The fallback is the name the real hosted artifacts actually use, so it must be prefixed too
-    # or the primary 404 is followed by a second 404 and the checkpoint is never found.
-    assert src.fallback_filename == "prequant/transformer_int8.pt"
-
-
-def test_the_prefix_uses_a_forward_slash_on_every_platform():
-    # The hub cache key is built from the literal filename; a backslash would miss the cache and
-    # re-download multiple GB on Windows.
-    fam = _fam(prequant_repos = (("int8", "unsloth/Test-INT8"),))
-    src = resolve_prequant_source(fam, "int8", subfolder = "prequant")
-    assert "\\" not in src.filename and src.filename.count("/") == 1
-
-
-def test_no_subfolder_leaves_the_root_level_names_untouched():
-    # Back-compat: every image family calls this without a subfolder and must be byte-identical.
-    fam = _fam(prequant_repos = (("int8", "unsloth/Test-INT8"),))
+def test_the_h3_primary_name_is_what_memory_planning_credits():
+    # The under-crediting bug in full: seed the cache under the primary name and
+    # cached_checkpoint_path must find it. A nested (or otherwise non-primary) name would not.
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     src = resolve_prequant_source(fam, "int8")
-    assert src.filename == "Test-INT8.pt"
-    assert src.fallback_filename == "transformer_int8.pt"
+    seen = {}
+
+    def _fake_try_to_load_from_cache(repo_id, filename, cache_dir = None):
+        seen["filename"] = filename
+        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8.pt" else None
+
+    import huggingface_hub
+    import os
+    real_hub = huggingface_hub.try_to_load_from_cache
+    real_isfile = os.path.isfile
+    huggingface_hub.try_to_load_from_cache = _fake_try_to_load_from_cache
+    os.path.isfile = lambda p: p == "/cache/blobs/h3" or real_isfile(p)
+    try:
+        assert cached_checkpoint_path(src) == "/cache/blobs/h3"
+    finally:
+        huggingface_hub.try_to_load_from_cache = real_hub
+        os.path.isfile = real_isfile
+    assert seen["filename"] == "MiniMax-H3-INT8.pt"
+
+
+def test_the_names_are_built_from_the_repo_and_the_scheme():
+    # One repo serves both schemes, so the -FP8 suffix on the repo must be stripped and REPLACED by
+    # the requested scheme rather than carried through.
+    fam = _fam(prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")))
+    assert resolve_prequant_source(fam, "int8").filename == "Test-INT8.pt"
+    assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.pt"
+    # The legacy per-scheme name stays available for repos that have not been renamed.
+    assert resolve_prequant_source(fam, "int8").fallback_filename == "transformer_int8.pt"
 
 
 # ── validate_load_request: refuse BEFORE the download ────────────────────────────

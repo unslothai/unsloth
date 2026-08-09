@@ -2103,13 +2103,7 @@ class VideoBackend:
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
             from .video_minimax_h3_adaln import h3_prepare_prequant_model
 
-            source = resolve_prequant_source(
-                fam,
-                scheme,
-                base_repo = base,
-                # These repos nest the checkpoint one level down instead of keeping it at the root.
-                subfolder = fam.prequant_subfolder,
-            )
+            source = resolve_prequant_source(fam, scheme, base_repo = base)
             if source is None:
                 # validate_load_request already refused this on the route; a direct call lands here.
                 transformer_quant_reason = (

@@ -87,11 +87,6 @@ class VideoFamily:
     # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
     # loader's base_model_id check sends the load back to the dense path.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # Subdirectory inside the hosted prequant repo holding the checkpoint ("" = the repo root, which
-    # is where the image-side repos keep theirs). The video artifacts nest theirs one level down, so
-    # the filename the resolver builds needs this prefix or every lookup 404s and the load silently
-    # falls back to downloading the dense denoiser.
-    prequant_subfolder: str = ""
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline.
     modular_workflow: Optional[str] = None
     # Guidance-distilled families expose neither CFG nor a negative prompt.
@@ -128,9 +123,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
         # its own from_pretrained, so there is no dense module to quantise in place: these are the
         # ONLY way to run the 66.3 GB transformer quantized, and seeding one also stops that
-        # download. Their checkpoints sit under prequant/ rather than at the repo root.
-        prequant_repos = (("int8", "unsloth/MiniMax-H3-INT8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
-        prequant_subfolder = "prequant",
+        # download. Both schemes live in ONE repo, at the root, named <Model>-<SCHEME>.pt, which is
+        # the layout every image-side prequant repo already uses and the one prequant_repo_filename
+        # builds without help.
+        prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
         modular_workflow = "t2va",
         supports_cfg = False,
     ),
