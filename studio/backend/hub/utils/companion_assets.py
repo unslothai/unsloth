@@ -142,15 +142,19 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
     with _WRITE_LOCK:
         # Re-read inside the lock: a concurrent resolver's link must not be dropped by this write.
         links = read_companion_links()
-        existing = links.get(_normalise(checkpoint), [])
-        if any(_normalise(b) == _normalise(base) for b in existing):
-            return False
+        key = _normalise(checkpoint)
+        existing = links.get(key, [])
+        known = any(_normalise(b) == _normalise(base) for b in existing)
         # Re-inserted at the end, not updated in place: recording is the only recency signal the
         # trim has, so a checkpoint that just resolved must not keep an old position and be
-        # evicted ahead of one nothing has touched since.
-        links.pop(_normalise(checkpoint), None)
-        links[_normalise(checkpoint)] = [*existing, base]
-        return _write_companion_links(links)
+        # evicted ahead of one nothing has touched since. That applies to a REPEAT resolution too
+        # -- a checkpoint reloaded every day but first recorded long ago is the most-used link
+        # there is, and returning early on it let the cap throw it away.
+        links.pop(key, None)
+        links[key] = existing if known else [*existing, base]
+        wrote = _write_companion_links(links)
+        # False when nothing NEW was recorded; the refresh above still happened.
+        return wrote and not known
 
 
 def _family_bases(repo_id: str) -> set[str]:
@@ -179,8 +183,20 @@ def _family_bases(repo_id: str) -> set[str]:
 
 
 def _with_mirrors(bases: Iterable[str]) -> set[str]:
+    """Every id one companion base can be cached under: itself, the upstream it copies, its
+    ungated mirror, and the community repack that mirror stands in for.
+
+    The repack matters as much as the mirror. ``prefer_cached_legacy_source`` deliberately sends
+    the native fetch back to a repack an upgraded install already holds, so on those machines the
+    bytes protecting an installed GGUF sit under the OLD repo key and nothing else names it. The
+    live loaded-repo guard in the sd.cpp backend already expands all four; this is the same set,
+    for the recorded links."""
     try:
-        from core.inference.diffusion_families import canonical_base, mirror_repo
+        from core.inference.diffusion_families import (
+            canonical_base,
+            legacy_source_repo,
+            mirror_repo,
+        )
     except Exception:  # noqa: BLE001
         return {b for b in bases if b}
     out: set[str] = set()
@@ -194,6 +210,10 @@ def _with_mirrors(bases: Iterable[str]) -> set[str]:
         mirror = mirror_repo(upstream or base)
         if mirror:
             out.add(mirror)
+        for candidate in (base, upstream, mirror):
+            legacy = legacy_source_repo(candidate) if candidate else None
+            if legacy:
+                out.add(legacy)
     return out
 
 
@@ -236,8 +256,14 @@ def is_companion_base(repo_id: str) -> bool:
     key = _normalise(repo_id)
     if key in known_companion_base_ids():
         return True
+    # Through the same identity expansion required_companion_bases uses, so the two agree on
+    # WHICH copy is protected. A link recorded against the unsloth mirror is satisfied on an
+    # upgraded install by the community repack the fetch fell back to, and comparing the literal
+    # id alone left that copy deletable while the checkpoint holding it was still installed.
     return any(
-        _normalise(base) == key for bases in read_companion_links().values() for base in bases
+        key in {_normalise(rid) for rid in _with_mirrors([base])}
+        for bases in read_companion_links().values()
+        for base in bases
     )
 
 

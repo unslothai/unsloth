@@ -409,3 +409,45 @@ def test_freeable_companions_only_names_bases_free_up_space_can_offer(monkeypatc
     assert companion_assets.is_companion_base(link_only) is True
     offered = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [c["repo_id"] for c in offered] == []
+
+
+def test_reusing_an_existing_link_still_refreshes_its_recency(monkeypatch):
+    """A checkpoint reloaded every day but first recorded long ago is the most-used link there
+    is. Returning early because the base was already known left it at its original position, so
+    the 512-link cap could throw away exactly the link that is in constant use, and for a
+    card-tag-only base losing that link is the delete guard going quiet on it."""
+    monkeypatch.setattr(companion_assets, "_MAX_LINKS", 2)
+    assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is True
+    assert companion_assets.record_companion_link("unsloth/new-GGUF", BASE_REPO) is True
+    # The old one resolves again to the SAME base: nothing new to record, but it is now the
+    # freshest link, so the next checkpoint displaces the other one.
+    assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is False
+    assert companion_assets.read_companion_links()["unsloth/old-gguf"] == [BASE_REPO]
+    assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True
+    assert list(companion_assets.read_companion_links()) == [
+        "unsloth/old-gguf",
+        "unsloth/third-gguf",
+    ]
+
+
+def test_a_cached_community_repack_is_a_companion_identity_too(monkeypatch):
+    """prefer_cached_legacy_source deliberately sends the native fetch back to a repack an
+    upgraded install already holds, so on those machines the bytes protecting an installed GGUF
+    sit under the OLD repo key. Expanding only the upstream/mirror pair left that copy
+    unprotected: deletable after unload, and the GGUF stranded."""
+    from core.inference.diffusion_families import legacy_source_repo
+
+    mirror = "unsloth/Z-Image-Turbo-ComfyUI"
+    repack = legacy_source_repo(mirror)
+    assert repack, "the mirror table no longer names a legacy repack; pick another for this test"
+    companion_assets.record_companion_link(GGUF_REPO, mirror)
+    _install(
+        monkeypatch,
+        _gguf_repo(("Q2_K", Q2_K_BYTES)),
+        _repo(repack, [("model_index.json", 460)]),
+    )
+    required = companion_assets.required_companion_bases(cache_inventory.all_hf_cache_scans())
+    assert GGUF_REPO in required.get(repack.lower(), set())
+    assert companion_cleanup.companion_dependents(repack) == [GGUF_REPO]
+    # And it is refused as a delete while the GGUF is installed.
+    assert companion_assets.is_companion_base(repack) is True
