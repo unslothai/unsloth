@@ -988,6 +988,34 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
     assert not (whisper_bin / "llama.dll").exists()
 
 
+def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
+    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, shipped
+    # in the llama bundle and never on the host: without it beside whisper-server
+    # the loader fails with "libomp.so.5: cannot open shared object file".
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so",
+                 "libomp.so.5"):
+        (bin_dir / name).write_bytes(b"x")
+    (bin_dir / "libllama.so").write_bytes(b"x")  # never wired
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == ["libggml-base.so.0", "libggml-cpu-armv8.0_1.so",
+                      "libggml.so.0", "libomp.so.5"]
+    assert (whisper_bin / "libomp.so.5").is_file()
+    assert not (whisper_bin / "libllama.so").exists()
+
+
+def test_link_ggml_runtime_linux_libomp_alone_is_not_a_pairing(tmp_path):
+    # Same fail-closed rule as the Windows libomp case: OpenMP without ggml is
+    # not a usable llama runtime.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    (bin_dir / "libomp.so.5").write_bytes(b"x")
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(bin_dir, tmp_path / "whisper_bin")
+
+
 def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):
     bin_dir = tmp_path / "llama_bin"
     bin_dir.mkdir()
