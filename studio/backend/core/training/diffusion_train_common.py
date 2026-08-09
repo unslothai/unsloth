@@ -232,6 +232,9 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # every family branch below (including an explicit model_family override, which names the
     # family but says nothing about what the repo holds).
     _refuse_component_only_repo(base_model)
+    # Same shape as the component-only refusal: the name resolves to a real, trainable family, but
+    # the repo is not something the training loader can open.
+    _refuse_ltx23_training_base(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -1295,14 +1298,28 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         # LTX-2's official base. It is a video family, so the image-side inference allowlist
         # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
-        # 2.3 resolves to the same ``ltx-2`` family, so family resolution already routes it to
-        # this trainer and declares it trainable, and the trainer reads every shape off the
-        # loaded transformer's own config. Without it here the gate refused the official dense
-        # 2.3 pipeline as untrusted while the routing called it supported. The inference
-        # allowlist already trusts it; the fp8 variant is not a dense training base and stays out.
-        "lightricks/ltx-2.3",
     }
 )
+
+# LTX-2.3 repos hold SINGLE-FILE checkpoints (ltx-2.3-22b-*.safetensors) and no diffusers layout:
+# no model_index.json, no transformer/ or scheduler/ subfolder. Inference assembles them with
+# from_single_file plus 2.3 config overrides and components borrowed from the 2.0 base (see
+# core/inference/video_ltx2.py); the trainer only knows LTX2Pipeline.from_pretrained, which cannot
+# read that layout. The name still resolves to the ``ltx-2`` family, so without an explicit refusal
+# the run passes preflight, evicts the user's resident models, and only then fails in the child.
+_LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+
+
+def _refuse_ltx23_training_base(base_model: str) -> None:
+    """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
+        return
+    raise ValueError(
+        f"'{base_model}' ships LTX-2.3 as single-file checkpoints with no diffusers layout, so it "
+        f"cannot be a training base yet: the trainer loads a base with from_pretrained, while 2.3 "
+        f"has to be assembled with from_single_file plus components from the 2.0 base. Train from "
+        f"'Lightricks/LTX-2' instead."
+    )
 
 
 def _assert_trusted_base_model(base_model: str) -> None:

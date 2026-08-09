@@ -98,7 +98,13 @@ _HUNYUAN15_INT8_EXCLUDES = (
 # run (isolated modalities, out of the loss, out of the LoRA targets), so leaving it in bf16 costs
 # nothing while the video-stream linears keep full int8 coverage. One token covers every audio-side
 # name, including video_to_audio_attn, whose keys/values are that same one-token stream.
-_LTX2_INT8_EXCLUDES = ("audio",)
+#
+# The audio token alone is not enough. LTX-2 also carries LTX2AdaLayerNormSingle projections whose
+# names say nothing about audio -- av_cross_attn_video_scale_shift / av_cross_attn_video_a2v_gate
+# (the cross-modality modulation, computed unconditionally in forward, isolate_modalities or not)
+# and prompt_adaln / audio_prompt_adaln. Each is a Linear over a BATCH-sized input, so M = batch =
+# 1 for a default training run: the same _int_mm floor, reached whatever the audio stream does.
+_LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream

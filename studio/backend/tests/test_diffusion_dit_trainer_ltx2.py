@@ -673,7 +673,7 @@ def test_int8_excludes_the_one_token_audio_stream():
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
 
     tokens = exclude_tokens_for_scheme("int8", "ltx-2")
-    assert "audio" in tokens
+    assert "audio" in tokens and "av_cross_attn" in tokens and "adaln" in tokens
     # The generic list is still there (the M=1 modulation projections).
     assert "norm" in tokens and "time_embed" in tokens
     # 2.3 is the same audiovisual DiT.
@@ -697,7 +697,17 @@ def test_the_int8_filter_actually_skips_every_audio_side_linear():
         "transformer_blocks.0.audio_to_video_attn.to_q",
         "transformer_blocks.0.video_to_audio_attn.to_k",
     )
-    for name in audio_names:
+    modulation_names = (
+        # LTX2AdaLayerNormSingle projections: Linear over a BATCH-sized input, so M = batch = 1.
+        # Nothing in these names says "audio", and none matches a generic token.
+        "av_cross_attn_video_scale_shift.linear",
+        "av_cross_attn_video_a2v_gate.linear",
+        "av_cross_attn_audio_scale_shift.linear",
+        "av_cross_attn_audio_v2a_gate.linear",
+        "prompt_adaln.linear",
+        "audio_prompt_adaln.linear",
+    )
+    for name in audio_names + modulation_names:
         assert fn(big, name) is False, f"{name} must stay dense"
     # The video stream keeps full int8 coverage.
     assert fn(big, "transformer_blocks.0.attn1.to_q") is True
@@ -726,16 +736,21 @@ def test_the_int8_trainer_path_passes_the_family_through(monkeypatch):
     assert seen["filter_fn"](big, "transformer_blocks.0.audio_attn1.to_q") is False
 
 
-def test_the_official_ltx23_base_is_trusted_for_training():
-    """2.3 resolves to the ltx-2 family, so routing already sends it to this trainer; the trust
-    gate refusing it as untrusted made the two disagree."""
+def test_ltx23_is_refused_as_a_training_base_with_the_real_reason():
+    """Lightricks/LTX-2.3 ships single-file checkpoints and no diffusers layout (no
+    model_index.json, no transformer/ subfolder), so LTX2Pipeline.from_pretrained cannot open it.
+    The name still resolves to the ltx-2 family, so it has to be refused explicitly -- in preflight,
+    before the run evicts the user's resident models."""
     from core.training.diffusion_train_common import _assert_trusted_base_model
 
-    assert resolve_trainable_family("Lightricks/LTX-2.3") == "ltx-2"
-    _assert_trusted_base_model("Lightricks/LTX-2.3")
-    _assert_trusted_base_model("lightricks/ltx-2.3")
     _assert_trusted_base_model("Lightricks/LTX-2")
-    # An unrelated repo is still refused.
+    for repo in ("Lightricks/LTX-2.3", "lightricks/ltx-2.3", "Lightricks/LTX-2.3-fp8"):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(repo)
+        message = str(exc.value)
+        assert "single-file" in message and "Lightricks/LTX-2" in message
+        assert "untrusted" not in message
+    # An unrelated repo is still refused by the trust gate.
     with pytest.raises(ValueError):
         _assert_trusted_base_model("some-random-user/ltx-2-clone")
 
