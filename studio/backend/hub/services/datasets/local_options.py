@@ -497,6 +497,16 @@ def _one_module(grouped: dict[str, list[PurePosixPath]]) -> Optional[str]:
     return modules.pop() if len(modules) == 1 else None
 
 
+def _blocked_by_compression(name: str, module: str) -> bool:
+    """Whether datasets keeps this file for the chosen builder but cannot decompress it.
+    Its extension filter reads the whole basename, so train.jsonl.zst still looks like
+    json to it, and the build then dies on the missing codec."""
+    stem, _, suffix = name.rpartition(".")
+    if not stem or f".{suffix}".lower() not in _UNREADABLE_COMPRESSION:
+        return False
+    return _file_module(stem) == module
+
+
 def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Optional[bool]:
     """True when the split holds data Studio can train on, False when it holds none, None
     when the config is unusable. datasets reads every file in the split, so one file that
@@ -506,7 +516,7 @@ def _offerable(entries: list[PurePosixPath], snapshot: Path, module: str) -> Opt
     empty = False
     for path in entries:
         resolved = resolved_dataset_snapshot_file(snapshot, path.as_posix())
-        if resolved is None:
+        if resolved is None or _blocked_by_compression(path.name, module):
             return None
         # Once a builder is chosen, datasets reads only what that builder claims, so a
         # training file left behind by a folder builder is not data this split offers.
@@ -564,13 +574,35 @@ def _unreadable_metadata(snapshot: Path, name: str) -> bool:
     return _metadata_present(snapshot, name) and _snapshot_metadata_file(snapshot, name) is None
 
 
+def _declares_configs(snapshot: Path, name: str) -> bool:
+    """Whether this standalone yaml file names configs the loader would build. Unreadable
+    counts as declaring, since datasets reads it as a card and we cannot see what it says."""
+    if not _metadata_present(snapshot, name):
+        return False
+    path = _snapshot_metadata_file(snapshot, name)
+    if path is None:
+        return True
+    try:
+        from yaml import YAMLError, safe_load
+
+        try:
+            payload = safe_load(path.read_text(encoding = "utf-8"))
+        except YAMLError:
+            return True
+    except (ImportError, OSError, UnicodeError, ValueError):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    return bool(payload.get("configs")) or bool(payload.get("dataset_info"))
+
+
 def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     options: set[tuple[str, str]] = set()
 
     # Metadata we cannot read still names the loader's configs, so inference must not
     # step in beside it: a card too large or too unsafe to open, or the standalone yaml
     # file, which datasets reads as a card and we do not.
-    declared = _unreadable_metadata(snapshot, "README.md") or _metadata_present(
+    declared = _unreadable_metadata(snapshot, "README.md") or _declares_configs(
         snapshot, ".huggingface.yaml"
     )
     readme = _snapshot_metadata_file(snapshot, "README.md")
@@ -582,11 +614,13 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
         if isinstance(card_data, dict):
             # datasets merges the standalone YAML into the card, so a README that
             # declares nothing does not undo a declaration made there.
-            declared = (
-                declared or bool(card_data.get("configs")) or bool(card_data.get("dataset_info"))
-            )
+            declared = declared or bool(card_data.get("configs"))
             _add_config_options(options, card_data.get("configs"))
+            named = len(options)
             _add_dataset_info_options(options, card_data.get("dataset_info"))
+            # dataset_info carrying only a feature schema names no config, so datasets
+            # still resolves the files by pattern and inference has to run.
+            declared = declared or len(options) > named
 
     for filename in ("dataset_infos.json", "dataset_info.json"):
         metadata = _snapshot_metadata_file(snapshot, filename)

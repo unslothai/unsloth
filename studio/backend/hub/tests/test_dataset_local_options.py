@@ -571,3 +571,38 @@ def test_snapshot_options_stand_down_when_standalone_yaml_declares_a_config(tmp_
 
     # A README declaring nothing must not undo the standalone YAML's declaration.
     assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_beside_a_standalone_yaml_declaring_nothing(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text("viewer: false\n", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    # The loader finds no config there either, so it resolves the files by pattern.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_stand_down_beside_an_unreadable_standalone_yaml(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    (snapshot / ".huggingface.yaml").write_text("configs: [\n", encoding = "utf-8")
+    _rows(snapshot, "train.jsonl")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_beside_dataset_info_naming_no_split(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _card(snapshot, "dataset_info:\n  features:\n  - name: text\n    dtype: string\n")
+    _rows(snapshot, "train.jsonl")
+
+    # A feature schema alone names no config, so the loader still infers by pattern.
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_a_split_holding_an_undecompressible_file(tmp_path):
+    snapshot = _snapshot(tmp_path)
+    _rows(snapshot, "train.jsonl")
+    (snapshot / "train2.jsonl.zst").write_bytes(b"\x28\xb5\x2f\xfd\x00\x00")
+
+    # datasets keeps the .zst for the json builder and dies on the missing codec.
+    assert local_options._snapshot_options(snapshot) == set()
