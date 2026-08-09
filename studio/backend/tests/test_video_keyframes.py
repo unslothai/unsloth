@@ -113,6 +113,31 @@ def test_keyframe_canvas_is_always_a_multiple_of_32_and_within_budget():
             assert canvas_w * canvas_h <= fam.canvas_max_pixels + 32 * (canvas_w + canvas_h)
 
 
+def test_keyframe_canvas_agrees_with_the_released_implementation():
+    """The canvas rule is a checkpoint contract, so it is checked against the pipeline's own
+    resolver rather than only against hand-written expectations. Skipped where diffusers does
+    not ship MiniMax-H3, which is most CI runners."""
+    try:
+        from diffusers.modular_pipelines.minimax_h3 import modular_pipeline as modular
+    except Exception as exc:  # noqa: BLE001 -- any import failure means it is not available here
+        pytest.skip(f"needs a diffusers build with MiniMax-H3: {exc}")
+    fam = _h3()
+    compared = 0
+    for width in range(64, 3841, 149):
+        for height in range(64, 2161, 101):
+            if not fam.min_aspect_ratio <= width / height <= fam.max_aspect_ratio:
+                continue
+            reference_h, reference_w = modular.resolve_canvas_size(
+                width, height, fam.resolution_multiple, fam.canvas_short_edge, fam.canvas_max_pixels
+            )
+            assert resolve_keyframe_canvas(fam, width, height) == (reference_w, reference_h), (
+                width,
+                height,
+            )
+            compared += 1
+    assert compared > 100
+
+
 def test_keyframe_canvas_refuses_ratios_outside_the_trained_range():
     fam = _h3()
     with pytest.raises(ValueError, match = "aspect ratios"):
