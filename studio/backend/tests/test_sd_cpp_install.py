@@ -1982,7 +1982,7 @@ def test_a_partial_sweep_never_returns_the_file_it_deleted(tmp_path, monkeypatch
     monkeypatch.setattr(bk, "_sd_cpp_backend", None)
 
     def _sweep_gets_part_way(**_kwargs):
-        old.unlink()                      # the old CLI went
+        old.unlink()  # the old CLI went
         new.write_bytes(b"new-cuda-cli")  # the new bundle did extract one
         resolved["path"] = str(new)
         raise sdmod.SupersededBinaryError("could not remove the superseded binary sd-server")
