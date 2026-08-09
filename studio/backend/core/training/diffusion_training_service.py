@@ -209,6 +209,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             continue
         # Resume state comes from the checkpoints on disk NOW, before the config is dropped.
         _refresh_resume_state(rec)
+        _restate_live_job(rec)
         rec.pop("metric_history", None)
         rec.pop("config", None)
         out.append(rec)
@@ -225,7 +226,34 @@ def get_diffusion_run(job_id: str) -> Optional[dict]:
         rec = json.loads(p.read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001 -- missing/corrupt record
         return None
-    return _refresh_resume_state(rec) if isinstance(rec, dict) else rec
+    if not isinstance(rec, dict):
+        return rec
+    _refresh_resume_state(rec)
+    _restate_live_job(rec)
+    return rec
+
+
+def _restate_live_job(rec: dict) -> dict:
+    """Undo the interim record's pessimism for the job that is still running, in place.
+
+    An interim record is written as interrupted because that is the outcome if Studio never
+    comes back. While the process IS still here and still on that job, the honest answer is
+    running -- and reporting it as errored would offer a Resume for a directory the live run is
+    writing into."""
+    global _service
+    service = _service
+    if service is None:
+        return rec
+    try:
+        live = service.status()
+    except Exception:  # noqa: BLE001 -- a status we cannot read leaves the record as written
+        return rec
+    if not isinstance(live, dict) or not live.get("job_id"):
+        return rec
+    if rec.get("job_id") == live.get("job_id") and live.get("status") == "running":
+        rec["status"] = "running"
+        rec["message"] = live.get("message") or ""
+    return rec
 
 
 def _idle_state() -> dict[str, Any]:
@@ -361,6 +389,13 @@ class DiffusionTrainingService:
         # Bundle paths THIS job reported writing, so a discard the child could not carry out
         # itself removes exactly those and nothing that predated the run.
         self._own_checkpoints: list[str] = []
+        # Set when the child reported a discarded completion, which it emits only AFTER running
+        # its own clear_own_checkpoints. That helper hands a displaced slot back, so the path
+        # this run wrote to can now hold ANOTHER run's restored bundle -- and the parent-side
+        # cleanup, which knows only pathnames, would delete it.
+        self._child_cleared_own = False
+        # Set by a checkpoint_saved event, cleared once the pump has written the record.
+        self._persist_interim = False
         # GPU load admissions in flight (a load between its training guard and its arbiter registration). Same two-sided rule as the dataset mutations.
         self._gpu_admissions = 0
         self._proc: Any = None
@@ -498,6 +533,7 @@ class DiffusionTrainingService:
             job_id = uuid.uuid4().hex
             self._discard_requested = False
             self._own_checkpoints = []
+            self._child_cleared_own = False
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
             self._proc = self._ctx.Process(
@@ -607,14 +643,18 @@ class DiffusionTrainingService:
                     return
                 continue
             self._apply_event(ev, proc = proc)
+            if self._persist_interim:
+                self._persist_interim = False
+                self._persist_run_record(interim = True)
             if ev.get("type") in _TERMINAL:
                 # An exception raised on the current step is a terminal `error`, and the pump
                 # returns here rather than through the dead-process branch -- so the discard the
                 # user asked for has to be applied on this path too.
                 with self._lock:
                     discarding = self._discard_requested and self._proc is proc
+                    child_cleared = self._child_cleared_own
                 if discarding:
-                    self._apply_discard_intent()
+                    self._apply_discard_intent(delete = not child_cleared)
                 self._persist_run_record()
                 return
 
@@ -631,16 +671,21 @@ class DiffusionTrainingService:
         if isinstance(manifest, dict):
             self._state["resumed_source_created_at"] = manifest.get("created_at")
 
-    def _apply_discard_intent(self) -> None:
+    def _apply_discard_intent(self, *, delete: bool = True) -> None:
         """Carry out a stop-without-saving the child could not report itself.
 
         The trainer does this on its own completion path; a child that OOMs, is killed, or dies
         on the current step never gets there. Blocking the resume is the visible half -- the
         bundles are the other one, and they hold optimizer and scheduler state, are sizeable,
         and have no delete path in the UI once the run is marked discarded.
+
+        ``delete`` False is the case where the child DID get there. Its cleanup restores any
+        bundle this run wrote over, so the paths remembered here no longer name this run's
+        bundles -- deleting them then destroys the predecessor that was just handed back, which
+        is another run's resume point. The state half still applies either way.
         """
         with self._lock:
-            own = list(self._own_checkpoints)
+            own = list(self._own_checkpoints) if delete else []
             self._state["resume_blocked_reason"] = (
                 "This run was stopped without saving, so it was discarded."
             )
@@ -655,15 +700,26 @@ class DiffusionTrainingService:
         except Exception:  # noqa: BLE001 -- cleanup must never break the terminal transition
             pass
 
-    def _persist_run_record(self) -> None:
+    def _persist_run_record(self, *, interim: bool = False) -> None:
         """Best-effort JSON record of the finished run (summary + scrubbed config + the
         bounded metric logs) into the studio runs directory. Never fatal: history is a
-        convenience, not part of the training contract."""
+        convenience, not part of the training contract.
+
+        ``interim`` writes the same record for a run that is still going, which is what makes a
+        checkpoint survive Studio itself dying: the bundle is on disk but only a terminal event
+        used to write the JSON that Previous runs and its Resume action are built from. The
+        status recorded is the one that is true if nothing else ever happens -- the run was
+        interrupted -- and the terminal write replaces it in place."""
         try:
             with self._lock:
                 s = dict(self._state)
                 cfg = dict(self._config)
-            if not s.get("job_id") or s.get("status") not in ("completed", "stopped", "error"):
+            if not s.get("job_id"):
+                return
+            if interim:
+                s["status"] = "error"
+                s["message"] = "Studio exited while this run was training."
+            elif s.get("status") not in ("completed", "stopped", "error"):
                 return
             adapter = s.get("output_dir") or cfg.get("output_dir")
             record = {
@@ -799,6 +855,14 @@ class DiffusionTrainingService:
                 written = ev.get("checkpoint_path")
                 if written and written not in self._own_checkpoints:
                     self._own_checkpoints.append(str(written))
+                # The bundle is on disk; the run JSON is not, and only a terminal event writes
+                # one. Studio being killed or shut down after a periodic save therefore left a
+                # resumable checkpoint that Previous runs -- which reads those JSONs and
+                # nothing else -- had no entry for, so the Resume action did not exist. Written
+                # as an interrupted run because that is what it IS until the run ends: the
+                # terminal persist overwrites the same file, and the live job is reported as
+                # running by the reader below.
+                self._persist_interim = True
             elif etype == "checkpoint_failed":
                 # Sticky: whatever older bundle is on disk predates the work this run did, so
                 # resuming from it would silently lose steps. Mirrors the MLX resume_blocked flag.
@@ -868,6 +932,11 @@ class DiffusionTrainingService:
                 if ev.get("discarded"):
                     # Cancelled with "stop without saving": the user threw this run away, so its
                     # own periodic checkpoints must not keep offering to continue it.
+                    #
+                    # The child ran its own cleanup before emitting this, so the parent must not
+                    # repeat it by pathname: a slot this run overwrote has been handed back to
+                    # the bundle it displaced, and that one belongs to another run.
+                    self._child_cleared_own = True
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )

@@ -69,6 +69,7 @@ from core.training.diffusion_checkpoint import (
     snapshot_checkpoints,
     identity_for_config,
     with_cache_mode,
+    with_resolved_base_precision,
     with_resolved_revision,
     preflight_resume,
 )
@@ -1784,6 +1785,10 @@ def _train_dit(
     identity = with_resolved_revision(identity, cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
+    # ...and the precision the frozen base ended up in. base_precision is still the request at
+    # this point ("auto" resolves here, and a failed fp8/mxfp8 conversion has already fallen
+    # back to bf16), so without this a bundle records a base it was never trained against.
+    identity = with_resolved_base_precision(identity, base_precision)
 
     transformer.train()
     n_images = len(image_paths)

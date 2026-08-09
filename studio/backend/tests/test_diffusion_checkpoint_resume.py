@@ -2860,3 +2860,47 @@ def test_a_displaced_bundle_is_stamped_when_it_is_moved_aside(run_dir):
     assert (
         age < dc._LIVE_REPLACEMENT_GRACE_SECONDS
     ), "the swap-aside must stamp the entry, or the grace protects nothing"
+
+
+def test_an_overwritten_startup_slot_counts_toward_the_limit(run_dir):
+    """The exclusion is about bundles this run did not write. A save at a step whose directory
+    was already there REPLACES it, and the bundle occupying that path afterwards is this run's,
+    so excluding it by pathname let the limit be exceeded once per overwritten slot -- real disk
+    on a long run."""
+    seeded = _Run(run_dir, save_total_limit = 0)
+    seeded.step_once(0.5)
+    seeded.save(10)
+    preexisting = dc.snapshot_checkpoints(run_dir)
+    assert {p.name for p, _ in preexisting} == {"checkpoint-10"}
+
+    run = _Run(run_dir, save_total_limit = 2)
+    for step in (10, 20, 30):
+        run.step_once(1.5)
+        path, error = run.save(step, preexisting = preexisting)
+        assert error is None and path is not None
+
+    survivors = {p.name for p in dc.list_checkpoints(run_dir)}
+    assert survivors == {"checkpoint-20", "checkpoint-30"}, survivors
+
+
+def test_the_resolved_base_precision_is_part_of_the_identity(run_dir):
+    """_apply_fp8_training and _apply_mxfp8_training can fail on the host and both fall back to
+    bf16 with only a warning. A bundle requested as fp8 recorded fp8 while its moments were
+    produced against bf16 linears, so resuming on a host where the conversion does take
+    restored them onto an fp8 frozen base and called it a clean continue."""
+    fell_back = _Run(run_dir)
+    fell_back.identity = dc.with_resolved_base_precision(fell_back.identity, "bf16")
+    assert fell_back.identity.base_precision_effective == "bf16"
+    path, error = fell_back.save(4)
+    assert error is None and path is not None
+
+    took = dc.with_resolved_base_precision(fell_back.identity, "fp8")
+    with pytest.raises(dc.ResumeError, match = "base precision"):
+        dc.preflight_resume(path, identity = took, target_steps = 500)
+    # The same resolution still resumes...
+    assert dc.preflight_resume(path, identity = fell_back.identity, target_steps = 500)[1] == 4
+    # ...and a side that never resolved one reads as "cannot tell" rather than as a mismatch,
+    # which is what keeps the route's pre-eviction preflight and the SDXL trainer unaffected.
+    import dataclasses
+    unknown = dataclasses.replace(fell_back.identity, base_precision_effective = None)
+    assert dc.preflight_resume(path, identity = unknown, target_steps = 500)[1] == 4

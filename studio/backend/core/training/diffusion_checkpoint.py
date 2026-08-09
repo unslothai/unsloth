@@ -131,6 +131,11 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("resolution", "training resolution"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
+    # What the frozen base was ACTUALLY converted to. fp8 and mxfp8 conversion can fail on the
+    # host and both fall back to bf16, so a bundle requested as fp8 records fp8 while its
+    # moments were produced against bf16 linears. Resuming that on a host where the conversion
+    # succeeds continues those moments against an fp8 base and reports a clean resume.
+    ("base_precision_effective", "resolved base precision"),
 )
 # Fields whose value can legitimately be unknown on one side (an uncached Hub repo has no
 # resolvable revision; the start route knows the dataset only after its own discovery pass).
@@ -158,6 +163,10 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "train_batch_size",
         "gradient_accumulation_steps",
         "max_grad_norm",
+        # Known only inside the trainer, and only for the DiT path. Unknown on either side
+        # reads as "cannot tell", which is what keeps the route's pre-eviction preflight and
+        # the SDXL trainer unaffected.
+        "base_precision_effective",
     }
 )
 # What source_revision() returns when it cannot resolve a revision offline.
@@ -232,6 +241,9 @@ class CheckpointIdentity:
     gradient_accumulation_steps: Optional[int] = None
     # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
     max_grad_norm: Optional[str] = None
+    # Post-conversion, set by the DiT trainer once it knows whether fp8/mxfp8 took. None
+    # everywhere else, which the optional rule reads as "cannot tell".
+    base_precision_effective: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -264,6 +276,7 @@ class CheckpointIdentity:
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "max_grad_norm": self.max_grad_norm,
+            "base_precision_effective": self.base_precision_effective,
             "precision": self.precision,
             "base_precision": self.base_precision,
             # A hard identity field, not just a label: both trainers resize and crop the
@@ -306,6 +319,7 @@ class CheckpointIdentity:
                 train_batch_size = _optional_int(data.get("train_batch_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
+                base_precision_effective = _optional_str(data.get("base_precision_effective")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -482,6 +496,22 @@ def with_cache_mode(identity: "CheckpointIdentity", used_cache: bool) -> "Checkp
     crops and flips, so a bundle written on one and resumed on the other restores a state that
     no longer reproduces the training stream."""
     return replace(identity, cache_mode = "cached" if used_cache else "in-loop")
+
+
+def with_resolved_base_precision(
+    identity: "CheckpointIdentity", resolved: Any
+) -> "CheckpointIdentity":
+    """Record the base precision the transformer was ACTUALLY converted to.
+
+    The config carries the request, and "auto" is not even a precision. Worse, fp8 and mxfp8
+    conversion can fail on the host and both fall back to bf16 with only a warning in progress,
+    so a bundle requested as fp8 recorded fp8 while its optimizer moments were produced against
+    bf16 linears. A later resume on a host where the conversion does take then restores those
+    moments onto an fp8 frozen base and calls it a clean continue."""
+    value = str(resolved or "").strip().lower()
+    if not value:
+        return identity  # nothing resolved; leave it unknown rather than asserting a value
+    return replace(identity, base_precision_effective = value)
 
 
 def with_resolved_revision(identity: "CheckpointIdentity", base_model: Any) -> "CheckpointIdentity":
@@ -1219,9 +1249,22 @@ def prune_checkpoints(
     back. They are excluded entirely, so the limit governs only what this run wrote."""
     if keep <= 0:
         return
-    kept_from_before = {
-        Path(entry[0]) if isinstance(entry, tuple) else Path(entry) for entry in (preexisting or ())
-    }
+    # Identity, not pathname, for the same reason the cleanup helpers use it: a run can save at
+    # a step whose directory was already there (resume checkpoint-10 in a folder that also holds
+    # checkpoint-15, save at 15), and the bundle occupying that path afterwards is THIS run's.
+    # Excluding it as pre-existing let the limit be exceeded once per overwritten slot -- an old
+    # checkpoint-10 with keep=2 and saves at 10, 20 and 30 retained all three -- which is real
+    # disk on a long run. An entry with no identity (an older caller, or a bundle that could not
+    # be read) keeps the pathname behaviour, which errs towards keeping.
+    kept_from_before: set[Path] = set()
+    for entry in (preexisting or ()):
+        if isinstance(entry, tuple):
+            path, identity = Path(entry[0]), entry[1]
+            if identity is not None and _bundle_identity(path) != identity:
+                continue
+            kept_from_before.add(path)
+        else:
+            kept_from_before.add(Path(entry))
     survivors = [c for c in list_checkpoints(output_dir) if c not in kept_from_before]
     for pinned in (protect, also_protect):
         if pinned is not None and pinned in survivors:
