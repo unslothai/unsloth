@@ -1880,6 +1880,34 @@ def test_the_identity_covers_the_input_stream(run_dir):
     assert dc.identity_for_config(flipped).random_flip == "off"
 
 
+def test_the_identity_covers_the_update_shape_and_the_resolution(run_dir):
+    """The batch and accumulation counts decide how many samples an optimizer step consumes,
+    the clip norm is applied to the restored moments on the very next update, and the
+    resolution decides what the images are cropped to before the restored sampler sees them.
+    All four were loadable-but-different resumes reported as clean."""
+    import dataclasses
+
+    base = _Run(run_dir)
+    for field, value, label in (
+        ("train_batch_size", 4, "batch size"),
+        ("gradient_accumulation_steps", 2, "gradient accumulation"),
+        ("max_grad_norm", 0.0, "gradient clipping"),
+        ("resolution", 768, "training resolution"),
+    ):
+        changed_cfg = dataclasses.replace(base.cfg, **{field: value})
+        reason = dc.identity_for_config(base.cfg).mismatch_reason(
+            dc.identity_for_config(changed_cfg)
+        )
+        assert reason is not None and label in reason, field
+    # 0.0 disables clipping and is a real value, so it is recorded as text rather than as a
+    # float that the optional rule would read as "not recorded".
+    disabled = dataclasses.replace(base.cfg, max_grad_norm = 0.0)
+    assert dc.identity_for_config(disabled).max_grad_norm == "0.0"
+    # resolution is NOT optional: every bundle has recorded it from the first version, so an
+    # unknown there would be a manifest we cannot trust anyway.
+    assert "resolution" not in dc._OPTIONAL_IDENTITY_FIELDS
+
+
 def test_both_trainers_honour_the_fp32_optimizer_override(run_dir):
     """The preflight refuses 8-bit moments when the override is set, which is only sound if
     every trainer actually obeys it -- otherwise DiT checkpoints written on this host become

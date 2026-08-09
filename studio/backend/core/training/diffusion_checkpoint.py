@@ -109,6 +109,16 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
+    # The update shape. The batch and accumulation counts decide how many samples each
+    # optimizer step consumes, and the clip norm is applied to the restored moments on the
+    # very next update, so all three change the trajectory the checkpoint was produced on.
+    ("train_batch_size", "batch size"),
+    ("gradient_accumulation_steps", "gradient accumulation"),
+    ("max_grad_norm", "gradient clipping"),
+    # Recorded from the beginning, but only for the UI until now. Both trainers resize and
+    # crop the incoming images to it before the restored sampler and moments see anything, so
+    # a checkpoint trained at 1024 could report a clean resume and finish at 768.
+    ("resolution", "training resolution"),
     ("precision", "mixed precision"),
     ("base_precision", "base precision"),
 )
@@ -133,6 +143,9 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "cache_variants",
         "center_crop",
         "random_flip",
+        "train_batch_size",
+        "gradient_accumulation_steps",
+        "max_grad_norm",
     }
 )
 # What source_revision() returns when it cannot resolve a revision offline.
@@ -197,6 +210,10 @@ class CheckpointIdentity:
     cache_variants: Optional[int] = None
     center_crop: Optional[str] = None
     random_flip: Optional[str] = None
+    train_batch_size: Optional[int] = None
+    gradient_accumulation_steps: Optional[int] = None
+    # Text, so 0.0 (clipping disabled) is a value and None stays "not recorded".
+    max_grad_norm: Optional[str] = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -224,10 +241,15 @@ class CheckpointIdentity:
             "cache_variants": self.cache_variants,
             "center_crop": self.center_crop,
             "random_flip": self.random_flip,
+            "train_batch_size": self.train_batch_size,
+            "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "max_grad_norm": self.max_grad_norm,
             "precision": self.precision,
             "base_precision": self.base_precision,
-            # Recorded for the UI / debugging only; a resolution change is a different training
-            # regime but leaves the adapter tensors loadable, so it is not a hard reject.
+            # A hard identity field, not just a label: both trainers resize and crop the
+            # incoming images to it before the restored sampler and moments see anything, so a
+            # bundle trained at 1024 could report a clean resume and finish at 768. Loadable
+            # tensors are not a faithful resume.
             "resolution": int(self.resolution),
         }
 
@@ -259,6 +281,11 @@ class CheckpointIdentity:
                 cache_variants = _optional_int(data.get("cache_variants")),
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
+                train_batch_size = _optional_int(data.get("train_batch_size")),
+                gradient_accumulation_steps = _optional_int(
+                    data.get("gradient_accumulation_steps")
+                ),
+                max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
                 resolution = int(data.get("resolution") or 0),
@@ -486,6 +513,9 @@ def identity_for_config(
         cache_variants = int(getattr(cfg, "cache_variants", 0) or 0),
         center_crop = _flag_key(getattr(cfg, "center_crop", None)),
         random_flip = _flag_key(getattr(cfg, "random_flip", None)),
+        train_batch_size = int(getattr(cfg, "train_batch_size", 0) or 0),
+        gradient_accumulation_steps = int(getattr(cfg, "gradient_accumulation_steps", 0) or 0),
+        max_grad_norm = f"{round(float(getattr(cfg, 'max_grad_norm', 0.0) or 0.0), 6)}",
         # The EFFECTIVE precision, not the request: a pre-Ampere card resolves bf16 to fp16, and
         # recording the request let an fp16 bundle resume in bf16 on a newer card -- restored
         # moments continuing under different frozen-base numerics, reported as a clean resume.
