@@ -553,9 +553,11 @@ def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
         return
     try:
         from core.rag.folder_sync import start_auto_sync
+        from storage.studio_db import get_chat_project
         start_auto_sync(
             admission_lock = _post_warm_lock,
             admit = lambda: _post_warm_generation == generation,
+            project_exists = lambda project_id: get_chat_project(project_id) is not None,
         )
     except Exception as exc:
         import structlog as _structlog

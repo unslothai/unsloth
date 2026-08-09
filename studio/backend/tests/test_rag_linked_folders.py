@@ -227,14 +227,36 @@ def test_scan_keeps_distinct_directories_with_duplicate_identity(
     second.mkdir()
     (first / "first.txt").write_text("first", encoding = "utf-8")
     (second / "second.txt").write_text("second", encoding = "utf-8")
-    original_directory_identity = folder_sync._directory_identity
+    original_scandir = os.scandir
 
-    def duplicate_identity(entry):
-        if Path(entry.path) in {first, second}:
-            return directory_identity
-        return original_directory_identity(entry)
+    class WeakIdentityEntry:
+        def __init__(self, entry):
+            self._entry = entry
 
-    monkeypatch.setattr(folder_sync, "_directory_identity", duplicate_identity)
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def stat(self, *, follow_symlinks = True):
+            if self._entry.is_dir(follow_symlinks = follow_symlinks):
+                return SimpleNamespace(st_dev = directory_identity[0], st_ino = directory_identity[1])
+            return self._entry.stat(follow_symlinks = follow_symlinks)
+
+    class WeakIdentityScandir:
+        def __init__(self, path):
+            self._entries = original_scandir(path)
+
+        def __enter__(self):
+            self._entries.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._entries.__exit__(*args)
+
+        def __iter__(self):
+            return (WeakIdentityEntry(entry) for entry in self._entries)
+
+    monkeypatch.setattr(folder_sync, "_root_identity", lambda root: directory_identity)
+    monkeypatch.setattr(folder_sync.os, "scandir", WeakIdentityScandir)
 
     found, _ = folder_sync._scan(str(source))
 
@@ -473,6 +495,84 @@ def test_ambiguous_rename_failure_retains_all_prior_mappings(
         assert paths == {"old-a.txt", "old-b.txt", "renamed-a.txt"}
         assert store.search_lexical(conn, folder["scope"], "alpha", 5)
         assert store.search_lexical(conn, folder["scope"], "bravo", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_one_old_many_new_identity_failure_retains_prior_mapping(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    old = source / "old.txt"
+    old.write_text("durable original", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    first = source / "first.txt"
+    second = source / "second.txt"
+    old.rename(first)
+    try:
+        os.link(first, second)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    original_start = folder_sync.ingestion.start_ingestion
+
+    def fail_second(*args, **kwargs):
+        if args[3] == "second.txt":
+            raise RuntimeError("embed unavailable")
+        return original_start(*args, **kwargs)
+
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", fail_second)
+
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            )
+        }
+        assert paths == {"old.txt", "first.txt"}
+        assert store.search_lexical(conn, folder["scope"], "durable", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_rename_over_existing_path_failure_retains_both_prior_mappings(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    old = source / "old.txt"
+    destination = source / "destination.txt"
+    old.write_text("durable source", encoding = "utf-8")
+    destination.write_text("durable destination", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    os.replace(old, destination)
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    conn = rag_db.get_connection()
+    try:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            )
+        }
+        assert paths == {"old.txt", "destination.txt"}
+        assert store.search_lexical(conn, folder["scope"], "source", 5)
+        assert store.search_lexical(conn, folder["scope"], "destination", 5)
     finally:
         conn.close()
 
@@ -1200,6 +1300,34 @@ def test_start_auto_sync_launches_worker_after_transient_database_error(monkeypa
         folder_sync._thread_stop = original_thread_stop
 
 
+def test_worker_recovers_interrupted_project_retirements_before_scheduling(monkeypatch):
+    stop = threading.Event()
+    calls = []
+
+    def project_exists(project_id):
+        return project_id == "project"
+
+    monkeypatch.setattr(folder_sync, "_recover_startup_state", lambda: calls.append("jobs"))
+    monkeypatch.setattr(
+        folder_sync,
+        "recover_retired_project_scopes",
+        lambda callback: calls.append(("projects", callback is project_exists)),
+    )
+
+    def enqueue():
+        calls.append("periodic")
+        stop.set()
+
+    monkeypatch.setattr(folder_sync, "_enqueue_periodic", enqueue)
+
+    try:
+        folder_sync._worker(stop, project_exists)
+    finally:
+        del folder_sync._worker_state.stop_event
+
+    assert calls == ["jobs", ("projects", True), "periodic"]
+
+
 @requires_sqlite_vec
 def test_unlink_of_another_folder_does_not_wait_for_active_folder(rag_home):
     first_source = rag_home / "first"
@@ -1428,6 +1556,42 @@ def test_project_deletion_restores_scope_when_project_delete_fails(rag_home, mon
         asyncio.run(chat_history.delete_project("p1", SimpleNamespace(), current_subject = "test"))
 
     assert folder_sync.scope_retired(store.project_scope("p1")) is False
+    restored = folder_sync.get_folder(folder["id"])
+    assert restored["auto_sync"] == folder["auto_sync"]
+    assert restored["status"] == folder["status"]
+    assert restored["last_error"] == folder["last_error"]
+    assert folder_sync.get_job(pending_job)["status"] == "pending"
+
+
+@requires_sqlite_vec
+def test_startup_restores_project_scope_retired_before_project_delete_commit(rag_home):
+    from storage import studio_db
+
+    project = studio_db.upsert_chat_project(
+        {
+            "id": "crashed-project",
+            "name": "Project",
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+    )
+    source = rag_home / "crashed-project"
+    source.mkdir()
+    folder = folder_sync.create_folder(
+        scope_type = "project",
+        scope_id = project["id"],
+        path = str(source),
+        auto_sync = False,
+    )
+    pending_job = folder_sync.request_sync(folder["id"])
+    folder_sync.retire_scope(store.project_scope(project["id"]))
+
+    restored_projects = folder_sync.recover_retired_project_scopes(
+        lambda project_id: studio_db.get_chat_project(project_id) is not None
+    )
+
+    assert restored_projects == [project["id"]]
+    assert folder_sync.scope_retired(store.project_scope(project["id"])) is False
     restored = folder_sync.get_folder(folder["id"])
     assert restored["auto_sync"] == folder["auto_sync"]
     assert restored["status"] == folder["status"]

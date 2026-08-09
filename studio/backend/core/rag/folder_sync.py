@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import sqlite3
@@ -36,7 +37,9 @@ _worker_state = threading.local()
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _named_locks_lock = threading.Lock()
+_retirement_schema_lock = threading.Lock()
 _TERMINAL = {"completed", "failed"}
+_MAX_FOLDER_DEPTH = 64
 
 
 class _SyncStopped(Exception):
@@ -159,15 +162,25 @@ def _root_identity(root: str) -> tuple[int, int]:
     return root_stat.st_dev, root_stat.st_ino
 
 
-def _directory_identity(entry: os.DirEntry) -> tuple[int, int]:
-    directory_stat = entry.stat(follow_symlinks = False)
-    return directory_stat.st_dev, directory_stat.st_ino
-
-
-def _usable_directory_identity(identity: tuple[int, int]) -> bool:
-    # An inode of zero means that the filesystem does not expose a usable file
-    # identity. Treating it as unique would drop unrelated directory trees.
-    return identity[1] != 0
+def _mount_points() -> frozenset[str]:
+    """Return known mount boundaries without assuming directory identities are unique."""
+    if os.name != "posix" or not os.path.exists("/proc/self/mountinfo"):
+        return frozenset()
+    escaped = {"\\040": " ", "\\011": "\t", "\\012": "\n", "\\134": "\\"}
+    points = set()
+    try:
+        with open("/proc/self/mountinfo", encoding = "utf-8") as mountinfo:
+            for line in mountinfo:
+                fields = line.split()
+                if len(fields) < 5:
+                    continue
+                path = fields[4]
+                for encoded, decoded in escaped.items():
+                    path = path.replace(encoded, decoded)
+                points.add(_path_key(os.path.realpath(path)))
+    except OSError:
+        return frozenset()
+    return frozenset(points)
 
 
 def create_folder(
@@ -416,11 +429,22 @@ def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
 
 def _retirement_connection():
     conn = rag_db.get_metadata_connection()
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes ("
-        "scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL)"
-    )
-    conn.commit()
+    try:
+        with _retirement_schema_lock:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes ("
+                "scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL, "
+                "restore_state_json TEXT)"
+            )
+            columns = _metadata_table_columns(conn, "linked_folder_retired_scopes")
+            if "restore_state_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT"
+                )
+            conn.commit()
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -456,9 +480,11 @@ def _retire_scope_rows(conn, scope: str, folders: list[dict]) -> None:
             jobs_by_folder.setdefault(job["folder_id"], []).append(dict(job))
         for folder in folders:
             folder["_retired_active_jobs"] = jobs_by_folder.get(folder["id"], [])
+    restore_state = json.dumps(folders, separators = (",", ":"), sort_keys = True)
     conn.execute(
-        "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
-        (scope, _now()),
+        "INSERT OR IGNORE INTO linked_folder_retired_scopes"
+        "(scope, retired_at, restore_state_json) VALUES(?, ?, ?)",
+        (scope, _now(), restore_state),
     )
     if folders_exist:
         conn.execute(
@@ -552,8 +578,33 @@ def retire_and_delete_kb(kb_id: str) -> tuple[list[dict], list[str | None]] | No
             conn.close()
 
 
-def restore_scope(scope: str, folders: list[dict]) -> None:
+def restore_scope(scope: str, folders: list[dict] | None = None) -> None:
     """Undo a retirement when deletion of the owning scope did not commit."""
+    if folders is None:
+        conn = _retirement_connection()
+        try:
+            row = conn.execute(
+                "SELECT restore_state_json FROM linked_folder_retired_scopes WHERE scope=?",
+                (scope,),
+            ).fetchone()
+            if row is None:
+                return
+            if row["restore_state_json"]:
+                folders = json.loads(row["restore_state_json"])
+            else:
+                folders = [
+                    {
+                        **dict(folder),
+                        "auto_sync": 1,
+                        "status": "pending",
+                        "last_error": None,
+                    }
+                    for folder in conn.execute(
+                        "SELECT * FROM linked_folders WHERE scope=?", (scope,)
+                    )
+                ]
+        finally:
+            conn.close()
     with _scope_lock(scope), ExitStack() as locks:
         for folder in sorted(folders, key = lambda row: row["id"]):
             locks.enter_context(_folder_lock(folder["id"]))
@@ -599,6 +650,31 @@ def restore_scope(scope: str, folders: list[dict]) -> None:
         finally:
             conn.close()
     _wake.set()
+
+
+def recover_retired_project_scopes(project_exists) -> list[str]:
+    """Restore RAG scopes whose owning project survived an interrupted deletion."""
+    prefix = "project_"
+    conn = _retirement_connection()
+    try:
+        scopes = [
+            row["scope"]
+            for row in conn.execute("SELECT scope FROM linked_folder_retired_scopes")
+            if row["scope"].startswith(prefix)
+        ]
+    finally:
+        conn.close()
+    restored = []
+    for scope in scopes:
+        project_id = scope[len(prefix) :]
+        if project_id:
+            with _scope_lock(scope):
+                if project_exists(project_id):
+                    restore_scope(scope)
+                    restored.append(project_id)
+    if restored:
+        logger.info("restored %s interrupted project RAG retirement(s)", len(restored))
+    return restored
 
 
 def scope_retired(scope: str) -> bool:
@@ -718,10 +794,11 @@ def _scan(
         raise RuntimeError("Linked folder root identity changed")
 
     found: dict[str, dict] = {}
-    root_ancestors = frozenset({identity}) if _usable_directory_identity(identity) else frozenset()
-    pending = [(root, root_ancestors)]
+    mount_points = _mount_points()
+    root_identities = frozenset({identity}) if identity[1] not in (None, 0) else frozenset()
+    pending = [(root, frozenset({_path_key(root)}), root_identities, 0)]
     while pending:
-        directory, ancestor_identities = pending.pop()
+        directory, ancestor_paths, ancestor_identities, depth = pending.pop()
         with os.scandir(directory) as entries:
             for entry in entries:
                 full = entry.path
@@ -735,13 +812,33 @@ def _scan(
                         or is_denied_system_path(resolved)
                     ):
                         continue
-                    directory_identity = _directory_identity(entry)
-                    child_ancestors = ancestor_identities
-                    if _usable_directory_identity(directory_identity):
-                        if directory_identity in ancestor_identities:
-                            continue
-                        child_ancestors = ancestor_identities | {directory_identity}
-                    pending.append((full, child_ancestors))
+                    resolved_key = _path_key(resolved)
+                    if resolved_key in ancestor_paths:
+                        continue
+                    directory_stat = entry.stat(follow_symlinks = False)
+                    directory_identity = (directory_stat.st_dev, directory_stat.st_ino)
+                    identity_usable = directory_identity[1] not in (None, 0)
+                    if (
+                        identity_usable
+                        and directory_identity in ancestor_identities
+                        and (resolved_key in mount_points or os.path.ismount(full))
+                    ):
+                        continue
+                    if depth >= _MAX_FOLDER_DEPTH:
+                        raise RuntimeError(
+                            f"Folder nesting exceeds the {_MAX_FOLDER_DEPTH}-level scan limit"
+                        )
+                    child_identities = ancestor_identities
+                    if identity_usable:
+                        child_identities = ancestor_identities | {directory_identity}
+                    pending.append(
+                        (
+                            full,
+                            ancestor_paths | {resolved_key},
+                            child_identities,
+                            depth + 1,
+                        )
+                    )
                     continue
                 if not entry.is_file(follow_symlinks = False):
                     continue
@@ -1143,74 +1240,106 @@ def _reconcile_folder(job_id: str) -> None:
     new = set(current) - set(known)
     renamed = 0
     extension_renames: dict[str, str] = {}
-    by_identity: dict[tuple, list[str]] = {}
-    new_by_identity: dict[tuple, set[str]] = {}
+    replacement_succeeded: set[str] = set()
+    materially_changed = {
+        rel
+        for rel in set(current) & set(known)
+        if current[rel]["size_bytes"] != known[rel]["size_bytes"]
+        or current[rel]["mtime_ns"] != known[rel]["mtime_ns"]
+        or current[rel]["device"] != known[rel]["device"]
+        or current[rel]["inode"] != known[rel]["inode"]
+    }
+    rename_destinations = new | materially_changed
+    old_by_identity: dict[tuple, set[str]] = {}
+    destinations_by_identity: dict[tuple, set[str]] = {}
     for rel in missing:
         old = known[rel]
         key = (old["device"], old["inode"])
-        by_identity.setdefault(key, []).append(rel)
-    for rel in new:
-        meta = current[rel]
-        new_by_identity.setdefault((meta["device"], meta["inode"]), set()).add(rel)
-    ambiguous_dependencies = {
-        old_rel: set(new_by_identity[key])
-        for key, old_paths in by_identity.items()
-        if len(old_paths) > 1 and new_by_identity.get(key)
-        for old_rel in old_paths
-    }
-    replacement_succeeded: set[str] = set()
-    for rel in sorted(list(new)):
-        _check_running()
+        old_by_identity.setdefault(key, set()).add(rel)
+    for rel in rename_destinations:
         meta = current[rel]
         key = (meta["device"], meta["inode"])
-        candidates = by_identity.get(key, [])
-        if len(candidates) > 1:
-            snapshot = _snapshot(folder["path"], meta)
+        destinations_by_identity.setdefault(key, set()).add(rel)
+
+    ambiguous_dependencies: dict[str, set[str]] = {}
+    for key, old_group in old_by_identity.items():
+        destination_group = destinations_by_identity.get(key, set())
+        if not destination_group:
+            continue
+        remaining_old = set(old_group)
+        remaining_destinations = set(destination_group)
+        destination_hashes = {}
+        for rel in sorted(destination_group):
+            _check_running()
+            snapshot = _snapshot(folder["path"], current[rel])
             try:
-                content_hash = _hash_file(snapshot)
+                destination_hashes[rel] = _hash_file(snapshot)
             finally:
                 _remove_snapshot(snapshot)
-            matches = [
-                old_rel
-                for old_rel in candidates
-                if known[old_rel].get("content_hash") == content_hash
-            ]
-            if len(matches) == 1:
-                candidates.remove(matches[0])
-                candidates = matches
-        if len(candidates) == 1:
-            old_rel = candidates.pop()
+
+        old_by_hash: dict[str, set[str]] = {}
+        destination_by_hash: dict[str, set[str]] = {}
+        for old_rel in old_group:
+            content_hash = known[old_rel].get("content_hash")
+            if content_hash:
+                old_by_hash.setdefault(content_hash, set()).add(old_rel)
+        for rel, content_hash in destination_hashes.items():
+            destination_by_hash.setdefault(content_hash, set()).add(rel)
+        pairs = []
+        for content_hash, old_paths in old_by_hash.items():
+            destination_paths = destination_by_hash.get(content_hash, set())
+            if len(old_paths) == 1 and len(destination_paths) == 1:
+                pairs.append((next(iter(old_paths)), next(iter(destination_paths))))
+        for old_rel, rel in pairs:
+            remaining_old.discard(old_rel)
+            remaining_destinations.discard(rel)
+        if (
+            len(remaining_old) == 1
+            and len(remaining_destinations) == 1
+            and key[1] not in (None, 0)
+        ):
+            pairs.append((remaining_old.pop(), remaining_destinations.pop()))
+
+        for old_rel, rel in pairs:
             missing.discard(old_rel)
-            new.discard(rel)
-            known[rel] = {**known.pop(old_rel), "relative_path": rel}
             same_extension = (
                 os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
             )
-            same_content = False
-            if same_extension and known[rel].get("content_hash"):
-                snapshot = _snapshot(folder["path"], meta)
-                try:
-                    same_content = _hash_file(snapshot) == known[rel]["content_hash"]
-                finally:
-                    _remove_snapshot(snapshot)
+            same_content = (
+                known[old_rel].get("content_hash") == destination_hashes.get(rel)
+            )
             _check_running()
-            if same_content:
+            if rel in new and same_extension and same_content:
                 _check_root_identity(folder["path"], scanned_identity)
                 _rename_mapping(folder["id"], old_rel, rel)
+                _update_mapping_metadata(
+                    folder["id"], rel, current[rel], destination_hashes[rel]
+                )
+                new.discard(rel)
+                known[rel] = {
+                    **known[old_rel],
+                    **current[rel],
+                    "relative_path": rel,
+                    "content_hash": destination_hashes[rel],
+                }
                 renamed += 1
                 replacement_succeeded.add(rel)
             else:
                 extension_renames[rel] = old_rel
+                if rel in new:
+                    new.discard(rel)
+                    known[rel] = {**known[old_rel], "relative_path": rel}
+
+        if remaining_destinations:
+            for old_rel in remaining_old:
+                ambiguous_dependencies[old_rel] = set(remaining_destinations)
 
     changed = {
         rel
         for rel in set(current) & set(known)
         if rebuild
         or rel in extension_renames
-        or current[rel]["size_bytes"] != known[rel]["size_bytes"]
-        or current[rel]["mtime_ns"] != known[rel]["mtime_ns"]
-        or current[rel]["device"] != known[rel]["device"]
-        or current[rel]["inode"] != known[rel]["inode"]
+        or rel in materially_changed
     }
     work = sorted(new | changed)
     total = len(work) + len(missing)
@@ -1236,6 +1365,7 @@ def _reconcile_folder(job_id: str) -> None:
                 _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
                 _remove_snapshot(snapshot)
                 snapshot = None
+                replacement_succeeded.add(rel)
                 _set_job(job_id, progress = (index + 1) / max(total, 1))
                 continue
             document_id, ingestion_job = ingestion.start_ingestion(
@@ -1475,7 +1605,7 @@ def _next_job() -> tuple[str, str] | None:
         conn.close()
 
 
-def _worker(stop_event: threading.Event | None = None) -> None:
+def _worker(stop_event: threading.Event | None = None, project_exists = None) -> None:
     global _thread, _thread_stop
     stop_event = stop_event or _stop
     try:
@@ -1484,6 +1614,8 @@ def _worker(stop_event: threading.Event | None = None) -> None:
             while not stop_event.is_set():
                 try:
                     _recover_startup_state()
+                    if project_exists is not None:
+                        recover_retired_project_scopes(project_exists)
                     _enqueue_periodic()
                     break
                 except Exception:
@@ -1544,7 +1676,7 @@ def _recover_startup_state() -> None:
         _queue_requested_rebuild(job["id"])
 
 
-def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
+def start_auto_sync(*, admission_lock = None, admit = None, project_exists = None) -> bool:
     global _thread, _thread_stop
     try:
         if not rag_db.rag_available():
@@ -1568,7 +1700,7 @@ def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
             _thread_stop = stop_event
             _thread = threading.Thread(
                 target = _worker,
-                args = (stop_event,),
+                args = (stop_event, project_exists),
                 daemon = True,
                 name = "rag-folder-sync",
             )

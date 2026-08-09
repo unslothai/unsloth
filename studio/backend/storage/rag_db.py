@@ -177,7 +177,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes (
             scope TEXT NOT NULL PRIMARY KEY,
-            retired_at TEXT NOT NULL
+            retired_at TEXT NOT NULL,
+            restore_state_json TEXT
         );
 
         CREATE TABLE IF NOT EXISTS linked_folder_files (
@@ -243,6 +244,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN root_device INTEGER")
     if "root_inode" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN root_inode INTEGER")
+    retired_scope_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_retired_scopes)").fetchall()
+    }
+    if "restore_state_json" not in retired_scope_cols:
+        conn.execute(
+            "ALTER TABLE linked_folder_retired_scopes ADD COLUMN restore_state_json TEXT"
+        )
     folder_file_cols = {
         r[1] for r in conn.execute("PRAGMA table_info(linked_folder_files)").fetchall()
     }
