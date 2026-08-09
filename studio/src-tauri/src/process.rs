@@ -1448,7 +1448,14 @@ async fn validate_candidate_port(
     // the backend answers or that deadline, shared with the watchdog, passes.
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
+    let mut verified_late = false;
     let valid = loop {
+        // Before the probe, not just after a failed one: the announcement
+        // itself can arrive past the deadline on a very slow start, and the
+        // watchdog does not kill the backend when it times out.
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
         attempts += 1;
         let ok = if let Some(owner) = owner.clone() {
             matches!(
@@ -1462,12 +1469,20 @@ async fn validate_candidate_port(
             generic_backend_health_ok(port).await
         };
         if ok {
-            break true;
-        }
-        if std::time::Instant::now() >= deadline {
+            // A probe that started in time can still finish late. Emitting
+            // server-port after the watchdog's server-start-timeout strands the
+            // window in an error state it has no handler to leave.
+            if std::time::Instant::now() < deadline {
+                break true;
+            }
+            verified_late = true;
             break false;
         }
-        tokio::time::sleep(delay).await;
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            break false;
+        }
+        tokio::time::sleep(delay.min(remaining)).await;
         delay = (delay * 2).min(PORT_VALIDATION_RETRY_MAX);
         // Stop once this generation is gone or another path claimed the port,
         // so a restarted backend does not keep an old probe alive. Bound the
@@ -1482,10 +1497,22 @@ async fn validate_candidate_port(
     };
 
     if !valid {
-        warn!(
-            "Ignoring unverified TAURI_PORT candidate {} after {} attempts",
-            port, attempts
-        );
+        if verified_late {
+            warn!(
+                "Backend port {} verified after the start deadline; not emitting",
+                port
+            );
+        } else if attempts == 0 {
+            warn!(
+                "TAURI_PORT candidate {} arrived after the start deadline",
+                port
+            );
+        } else {
+            warn!(
+                "Ignoring unverified TAURI_PORT candidate {} after {} attempts",
+                port, attempts
+            );
+        }
         return;
     }
 
