@@ -532,7 +532,15 @@ def test_cancel_generate_stops_a_running_native_run():
     b = None
 
     class _BlockingEngine(_FakeEngine):
-        def generate(self, files, params, *, output_path, cancel_event = None, **kw):
+        def generate(
+            self,
+            files,
+            params,
+            *,
+            output_path,
+            cancel_event = None,
+            **kw,
+        ):
             started.set()
             assert cancel_event is not None and cancel_event.wait(5)
             raise SdCppCancelled("cancelled")

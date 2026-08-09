@@ -5932,7 +5932,12 @@ def _stepping_call(record):
     "the sampler finished". This mirrors diffusers: invoke callback_on_step_end each step and
     break out when the callback sets ``_interrupt``, exactly as the real denoise loop does."""
 
-    def _call(self, *, callback_on_step_end = None, **kwargs):
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
         record["steps_run"] = 0
         self._interrupt = False
         for index in range(record["total_steps"]):
@@ -5961,7 +5966,9 @@ def _stepping_call(record):
         ("upscale", {"init_image": _tiny_png_b64(), "upscale": 2.0}),
     ],
 )
-def test_cancel_generate_stops_every_workflow(fake_runtime, tmp_path, monkeypatch, surface, gen_kwargs):
+def test_cancel_generate_stops_every_workflow(
+    fake_runtime, tmp_path, monkeypatch, surface, gen_kwargs
+):
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
 
     (tmp_path / "model.gguf").write_bytes(b"x")
@@ -6027,7 +6034,12 @@ def test_cancel_generate_lands_at_the_next_step_boundary(fake_runtime, tmp_path,
 
     seen: list[int] = []
 
-    def _call(self, *, callback_on_step_end = None, **kwargs):
+    def _call(
+        self,
+        *,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
         self._interrupt = False
         for index in range(20):
             if callback_on_step_end is not None:
