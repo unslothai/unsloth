@@ -1,0 +1,426 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Import the optimized-kernel packages and report what happened, as a THROWAWAY process.
+
+Run as a script; prints one JSON object on stdout::
+
+    {"xformers": {"imports": true, "runs": false, "error": "OSError: ..."}, ...}
+
+This exists as a separate process, not a function call, for three reasons -- each of them
+something that has already bitten this codebase:
+
+* A package whose ``__init__`` raises leaves every submodule it already executed behind in
+  ``sys.modules``. The next import re-runs ``__init__`` with those served from cache, so
+  attributes are never rebound and the package imports "successfully" while missing pieces.
+  See ``utils/torch_warmup.purge_partial_import`` and unslothai/unsloth#7580. A diagnostic
+  that poisons the import cache for the warm and for every later request is worse than no
+  diagnostic.
+* ``import bitsandbytes`` creates a CUDA context. The backend deliberately never latches
+  one -- main.py pins CUDA_DEVICE_ORDER before any torch import, and the export planner
+  budgets from free VRAM read before a context exists -- so a diagnostic must not
+  permanently take several hundred MB off every later VRAM reading.
+* A genuinely broken native wheel can abort the interpreter rather than raise (pybind11
+  answers a duplicate type registration with ``std::terminate``). In a child that is just a
+  failed probe. In the server it is a dead app, on exactly the broken installs this is
+  meant to describe.
+
+Kept dependency-free (stdlib only, no studio imports) so the parent can run it with the
+same interpreter and nothing else on the path.
+"""
+
+import json
+import os
+import sys
+from typing import Any, Dict
+
+
+# Mirrors _CC_UNKNOWN in utils/hardware/hardware.py, which sets it.
+_CC_UNKNOWN = "unknown"
+
+
+def _error(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def probe_xformers() -> Dict[str, Any]:
+    """Does xformers import, and do its C++/CUDA extensions load?
+
+    The extension load is what fails on an ABI mismatch: ``torch.ops.load_library`` raises
+    OSError, and xformers catches it and downgrades it to a logger warning, which is why
+    the package imports and reports a version while having no memory-efficient attention.
+
+    Prefer the outcome ``xformers/_cpp_lib.py`` already recorded at its own import over
+    calling ``_register_extensions()`` again: re-calling it re-runs
+    ``os.add_dll_directory`` on Windows, and the private name is not guaranteed to exist in
+    every layout -- treating its absence as "broken" would put a red banner on a working
+    install.
+    """
+    entry: Dict[str, Any] = {"imports": False, "runs": None, "error": None}
+    try:
+        import xformers  # noqa: F401
+    except BaseException as exc:
+        entry["error"] = _error(exc)
+        return entry
+    entry["imports"] = True
+
+    try:
+        from xformers import _cpp_lib
+    except ModuleNotFoundError as exc:
+        # A layout with no _cpp_lib at all. Unknown, not broken: treating a future rename as a
+        # dead install would put a red banner on a working one.
+        entry["error"] = _error(exc)
+        return entry
+    except BaseException as exc:
+        # The module exists and raised: its native load failed, which IS the dead-kernel state
+        # this report exists to surface. Left as None it read "Not checked", stayed out of
+        # `degraded`, and showed no banner at all.
+        entry["runs"] = False
+        entry["error"] = _error(exc)
+        return entry
+
+    if hasattr(_cpp_lib, "_cpp_library_load_exception"):
+        failure = _cpp_lib._cpp_library_load_exception
+        entry["runs"] = failure is None
+        if failure is not None:
+            entry["error"] = _error(failure)
+            return entry
+        return _with_kernel_verdict(entry)
+
+    register = getattr(_cpp_lib, "_register_extensions", None)
+    if register is None:
+        # An xformers layout we do not recognise. Unknown is not broken.
+        return entry
+    try:
+        register()
+        entry["runs"] = True
+    except BaseException as exc:
+        entry["runs"] = False
+        entry["error"] = _error(exc)
+        return entry
+    return _with_kernel_verdict(entry)
+
+
+def _with_kernel_verdict(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Settle a loaded xFormers into "does not run" or "cannot be established".
+
+    The library loading is necessary, not sufficient: a build with no kernel for THIS GPU
+    (an sm_120 card against a wheel that ships none) loads fine, and every attention call
+    is then capability-rejected straight back to SDPA. That is precisely the degraded state
+    this report exists to surface, and it was rendering as "Working".
+
+    Static, not a forward pass: this child runs with no visible GPU on purpose (a probe
+    must not latch a CUDA context or take VRAM from a run in progress), so the verdict
+    comes from the op table plus the capability read out of nvidia-smi, which needs no
+    context. That buys a sound NEGATIVE only: no op admitting this GPU proves attention
+    falls back, but an op that admits it proves nothing about the images the build was
+    compiled with. So every other exit here is unknown, never "Working" -- an install that
+    cannot be checked is neither broken nor verified.
+    """
+    capabilities = _device_compute_capabilities()
+    if not capabilities:
+        return _unverified(entry, "this GPU's compute capability could not be read")
+    try:
+        from xformers.ops import fmha
+    except BaseException:
+        return _unverified(entry, "xformers' attention operators could not be enumerated")
+    ops = getattr(fmha, "ALL_FW_OPS", None)
+    if not ops:
+        return _unverified(entry, "xformers' attention operators could not be enumerated")
+    # ANY visible GPU without a kernel is a degraded install: with CUDA_VISIBLE_DEVICES=0,1
+    # across a mixed pair, the rank that lands on the uncovered card falls back to SDPA
+    # whatever the other card can do.
+    for capability in capabilities:
+        if _has_usable_op(ops, capability):
+            continue
+        entry["runs"] = False
+        entry["error"] = (
+            f"xformers loaded but ships no memory-efficient attention kernel for this GPU "
+            f"(compute capability {capability[0]}.{capability[1]}), so attention falls "
+            f"back to SDPA"
+        )
+        return entry
+    # Coverage NOT established, only not-ruled-out. The capability bounds above are class
+    # constants describing what an op supports in principle; a wheel or source build compiled
+    # for other architectures still registers that op and still fails the first launch with
+    # "no kernel image is available". Establishing the compiled architectures needs a launch,
+    # which this child deliberately does not do (it holds no CUDA context). So the positive
+    # verdict becomes unknown, the same answer probe_flash_attn gives for the same build.
+    return _unverified(entry, "its operators admit this GPU, but no kernel was launched")
+
+
+def _unverified(entry: Dict[str, Any], why: str) -> Dict[str, Any]:
+    """Kernel coverage could not be established. Not broken, not confirmed working."""
+    entry["runs"] = None
+    entry["error"] = (
+        f"xformers loaded, but whether its build ships a usable attention kernel for this "
+        f"GPU is unknown: {why}"
+    )
+    return entry
+
+
+def _has_usable_op(ops, capability) -> bool:
+    for op in ops:
+        minimum = getattr(op, "CUDA_MINIMUM_COMPUTE_CAPABILITY", None)
+        maximum = getattr(op, "CUDA_MAXIMUM_COMPUTE_CAPABILITY", None)
+        if getattr(op, "OPERATOR", False) is None:
+            continue  # the build did not ship this op at all
+        if minimum is not None and capability < minimum:
+            continue
+        if maximum is not None and capability > maximum:
+            continue
+        return True
+    return False
+
+
+def _device_compute_capability():
+    """The FIRST visible compute capability as ``(major, minor)``, or None when unknown."""
+    capabilities = _device_compute_capabilities()
+    return capabilities[0] if capabilities else None
+
+
+def _device_compute_capabilities():
+    """Every compute capability this process can use, as ``(major, minor)`` tuples.
+
+    Through nvidia-smi rather than torch: reading it from torch initialises CUDA, and the
+    whole point of this child is that it never holds a context. UNSLOTH_PROBE_DEVICE_CC
+    carries the parent's already-mask-resolved answer (comma separated), which is also how
+    the tests drive it -- the child cannot resolve the mask itself, because the parent
+    cleared it.
+    """
+    override = os.environ.get("UNSLOTH_PROBE_DEVICE_CC", "").strip()
+    if override == _CC_UNKNOWN:
+        # The parent could not resolve the mask (a numeric ordinal under a non-PCI_BUS_ID
+        # CUDA_DEVICE_ORDER). Falling back to nvidia-smi here would answer from every GPU on
+        # the box, which is exactly the verdict the parent declined to give.
+        return ()
+    text = override
+    if not text:
+        try:
+            import shutil
+            import subprocess
+
+            exe = shutil.which("nvidia-smi")
+            if not exe:
+                return None
+            result = subprocess.run(
+                [exe, "--query-gpu=compute_cap", "--format=csv,noheader"],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+            )
+            if result.returncode != 0:
+                return None
+            # Every row: with no mask in the environment the whole box is visible, and one
+            # uncovered card in it is still an install this report has to call degraded.
+            text = ",".join(
+                line.strip() for line in (result.stdout or "").splitlines() if line.strip()
+            )
+        except BaseException:
+            return ()
+    capabilities = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            major, _, minor = part.partition(".")
+            capabilities.append((int(major), int(minor or 0)))
+        except (AttributeError, ValueError):
+            return ()
+    return tuple(capabilities)
+
+
+def probe_flash_attn() -> Dict[str, Any]:
+    """flash-attn, forced past the lazy bit: the CUDA extension lives in the interface."""
+    entry = probe_import("flash_attn")
+    if not entry["imports"]:
+        return entry
+    try:
+        import flash_attn.flash_attn_interface  # noqa: F401
+    except BaseException as exc:
+        entry["runs"] = False
+        entry["error"] = _error(exc)
+        return entry
+    # Importing the extension is not the question. A build with no cubin or PTX image for
+    # this architecture imports fine and fails its first launch with "no kernel image is
+    # available" -- true of source builds and of older wheels, not only of the sm_100+ cards
+    # our own installer refuses to fetch a prebuilt wheel for. flash-attn exposes no list of
+    # the architectures it was compiled for, and this child deliberately never launches a
+    # kernel, so support cannot be established here. Unknown, with the reason, is the honest
+    # answer; a failed import above is still broken.
+    entry["runs"] = None
+    entry["error"] = (
+        "flash-attn imported; whether its kernels cover this GPU cannot be established "
+        "without launching one, which this probe does not do"
+    )
+    return entry
+
+
+def probe_bitsandbytes() -> Dict[str, Any]:
+    """bitsandbytes, past the import: are the ctypes kernel handles real?
+
+    From 0.46 a wheel whose native library never loaded still imports cleanly and hands
+    back a ``throw_on_call`` closure for every symbol, so ``imports=True`` says nothing and
+    the row rendered as "Working" while the first 4-bit op was going to die mid-run. The
+    repository already answers this question in ``unsloth/bnb_availability.py``, a leaf
+    module that imports nothing from unsloth -- loaded here BY PATH so the verdict is the
+    same one the loader gates on, without dragging ``unsloth/__init__`` (and its patching)
+    into a diagnostic child.
+    """
+    entry = probe_import("bitsandbytes")
+    if not entry["imports"]:
+        return entry
+    ready = _load_bnb_availability()
+    if ready is None:
+        # Cannot find the checker: leave runs unknown rather than inventing a verdict.
+        return entry
+    try:
+        import bitsandbytes
+        ready.check_native_kernels(bitsandbytes, _device_type())
+        entry["runs"] = True
+    except BaseException as exc:
+        entry["runs"] = False
+        entry["error"] = _error(exc)
+    return entry
+
+
+def _device_type() -> str:
+    """The device type ``bitsandbytes_symbols`` keys on. Only "xpu" differs."""
+    return os.environ.get("UNSLOTH_PROBE_DEVICE_TYPE", "cuda").strip().lower() or "cuda"
+
+
+def _bnb_availability_path():
+    """Where ``unsloth/bnb_availability.py`` lives, or None.
+
+    Two ways of asking, because either can come up empty. ``find_spec`` is the right answer
+    for an INSTALLED unsloth, but it needs the package to be importable from this child --
+    which it is not when the backend runs from a checkout whose root is not on the child's
+    path, and the probe then silently reported bitsandbytes as unknown on every host. This
+    file's own location settles that case: studio/backend/utils/hardware -> repo root.
+    """
+    candidates = []
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("unsloth")
+        origin = getattr(spec, "origin", None) if spec is not None else None
+        if origin:
+            candidates.append(os.path.join(os.path.dirname(origin), "bnb_availability.py"))
+    except BaseException:  # noqa: BLE001 -- an unimportable unsloth is not an error here
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+    candidates.append(os.path.join(root, "unsloth", "bnb_availability.py"))
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def _load_bnb_availability():
+    """``unsloth.bnb_availability`` loaded standalone, or None when it cannot be found."""
+    try:
+        import importlib.util
+
+        path = _bnb_availability_path()
+        if path is None:
+            return None
+        leaf = importlib.util.spec_from_file_location("_unsloth_bnb_availability", path)
+        if leaf is None or leaf.loader is None:
+            return None
+        module = importlib.util.module_from_spec(leaf)
+        leaf.loader.exec_module(module)
+        return module
+    except BaseException:
+        return None
+
+
+def probe_torchao() -> Dict[str, Any]:
+    """torchao, past the import: did its C++/CUDA extension actually load?
+
+    A supported install can import torchao while its native operators are absent -- the
+    Python stack pins 0.17.0 on torch 2.10+cu130 precisely because its torch-2.11 extension
+    is "cleanly skipped" rather than crashed. Reporting THAT as "Working" is a false
+    all-clear; reporting it as broken is a false alarm on the managed stack, since torchao
+    keeps working through its supported fallbacks and only the optimized kernels are gone.
+
+    So: unknown, with the reason. It shows in the About row without lighting the banner,
+    which is reserved for an install that genuinely cannot load.
+    """
+    entry = probe_import("torchao")
+    if not entry["imports"]:
+        return entry
+    registered = _registered_ops("torchao")
+    if registered is None:
+        # Cannot tell (an unfamiliar torch): leave the import-only answer rather than invent
+        # a verdict.
+        return entry
+    if registered > 0:
+        entry["runs"] = True
+        return entry
+    entry["runs"] = None
+    entry["error"] = (
+        "torchao imported but registered no native operators: its C++/CUDA extension was "
+        "skipped for this torch build, so the optimized quantization kernels are not "
+        "available and it falls back to its Python paths"
+    )
+    return entry
+
+
+def _registered_ops(namespace: str):
+    """How many operators ``namespace`` has registered with the dispatcher, or None.
+
+    NOT ``dir(torch.ops.<ns>)``: touching that attribute CREATES an empty ``_OpNamespace``,
+    whose dir() is already non-empty (``__name__``, ``__spec__``, ...) before a single operator
+    exists -- so the no-native-operators case this exists to catch read as healthy. The
+    dispatcher's own table is the only thing that answers the question asked.
+    """
+    try:
+        import torch
+        names = torch._C._dispatch_get_all_op_names()
+    except BaseException:  # noqa: BLE001 — an unfamiliar torch means "cannot tell"
+        return None
+    prefix = f"{namespace}::"
+    return sum(1 for name in names if name.startswith(prefix))
+
+
+def probe_import(import_name: str) -> Dict[str, Any]:
+    """Plain import. An ABI mismatch in a native wheel surfaces here as an undefined symbol."""
+    entry: Dict[str, Any] = {"imports": False, "runs": None, "error": None}
+    try:
+        __import__(import_name)
+        entry["imports"] = True
+    except BaseException as exc:
+        entry["error"] = _error(exc)
+    return entry
+
+
+PROBES = {
+    "xformers": probe_xformers,
+    "flash_attn": probe_flash_attn,
+    "torchao": probe_torchao,
+    "bitsandbytes": probe_bitsandbytes,
+}
+
+
+def main(argv) -> int:
+    """Probe the names given on the command line (default: all of them)."""
+    wanted = [name for name in (argv or PROBES) if name in PROBES]
+    results = {}
+    for name in wanted:
+        try:
+            results[name] = PROBES[name]()
+        except BaseException as exc:
+            results[name] = {"imports": False, "runs": None, "error": _error(exc)}
+    # Some of these packages print to stdout on import, so the JSON goes out last behind a
+    # marker the parent can seek to rather than assuming it owns the stream.
+    sys.stdout.write("\n__UNSLOTH_ACCELERATOR_PROBE__" + json.dumps(results) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

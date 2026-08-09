@@ -1089,6 +1089,20 @@ export const it = {
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
+      python: "Python",
+      accelerator: {
+        sectionTitle: "Kernel ottimizzati",
+        sectionDescription:
+          "Kernel di attenzione e quantizzazione più veloci. Ognuno è compilato per una sola build di PyTorch, quindi se le versioni non coincidono non ne viene caricato nessuno e Unsloth torna silenziosamente ai percorsi più lenti.",
+        working: "Funzionante",
+        notLoading: "Non si carica",
+        notInstalled: "Non installato",
+        notChecked: "Non verificato",
+        builtFor: "Compilato per {build}",
+        bannerTitle: "I kernel ottimizzati sono installati ma non si caricano",
+        bannerBody:
+          "{packages} non può essere caricato qui, quindi i suoi kernel ottimizzati non sono disponibili. L'elenco sopra mostra cosa funziona ancora.",
+      },
       updates: "Aggiornamento",
       help: "Aiuto",
       documentation: "Documentazione",

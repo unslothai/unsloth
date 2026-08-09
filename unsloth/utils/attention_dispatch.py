@@ -26,6 +26,10 @@ from torch import Tensor
 from torch.nn.functional import scaled_dot_product_attention
 
 from ..models._utils import *
+from ..models._utils import _announce_xformers_breakage  # not in __all__, needed by the probe gate
+from ..models._utils import (
+    UNSLOTH_ENABLE_LOGGING,
+)  # ditto: the inconclusive branch reads it at import time
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
@@ -38,43 +42,201 @@ if HAS_FLASH_ATTENTION:
 HAS_XFORMERS = xformers is not None
 
 
+# Why the on-device probe last failed, or None when it passed or never ran. Cached
+# alongside the boolean so callers can report WHY xformers went away, not just that it did.
+XFORMERS_PROBE_REASON: Optional[str] = None
+
+# True when the probe failed for a reason that says nothing about the build: the GPU was
+# busy, out of memory, or otherwise unavailable to us right now.
+XFORMERS_PROBE_INCONCLUSIVE = False
+
+# Failures that mean "ask again later", not "this xformers is broken". Disabling
+# memory-efficient attention for the whole process because device 0 happened to be full,
+# or was claimed by another rank in EXCLUSIVE_PROCESS mode, is a silent 2x memory
+# regression caused by the diagnostic itself.
+_INCONCLUSIVE_PROBE_ERRORS = (
+    "out of memory",
+    "busy or unavailable",
+    "all cuda-capable devices are busy",
+    "no cuda-capable device",
+    "cuda_error_not_permitted",
+    "insufficient driver",
+    "initialization error",
+    # Belt and braces for the device index. It is clamped below, so this should be
+    # unreachable -- but if it ever is reached, "we aimed at a device that is not there"
+    # must not be recorded as "your xformers is broken" and disable it process-wide.
+    "invalid device ordinal",
+    "invalid device id",
+    # EXCLUSIVE_PROCESS wording that the phrases above do not cover. The driver says this
+    # when another process holds the device; the wheel was never tested, so turning
+    # xformers off process-wide on the strength of it is the same silent regression.
+    "currently in use",
+    "in use by another process",
+    "exclusive",
+)
+
+
+# Which device to probe. Under torchrun each rank owns a different GPU, and on a mixed box
+# device 0 is often the small display card, so probing 0 for everyone lets a wheel with no
+# kernel for the weakest GPU disable xformers on the good ones.
+#
+# LOCAL_RANK is NOT an index into the devices this process can see. Slurm with
+# --gpus-per-task=1, and anything that narrows CUDA_VISIBLE_DEVICES per rank, gives every
+# rank one visible device while still exporting its global rank -- so rank 3 sees exactly
+# one GPU and LOCAL_RANK says 3. accelerate and transformers also use -1 as their "not
+# distributed" sentinel. Both are out of range, torch.cuda.get_device_capability raises on
+# an invalid ordinal, and that call is at module scope, so an unclamped index turns
+# `import unsloth` into a crash on an ordinary launch. Fall back to 0, which is the only
+# device such a rank has.
+#
+# With no usable LOCAL_RANK, the device the CALLER already selected: a single-process
+# application that runs torch.cuda.set_device(1) before importing us is telling us where its
+# work goes, and probing 0 anyway can disable xformers over a card nothing will touch -- and
+# creates a context on it while doing so.
+def _resolve_probe_device_index() -> int:
+    count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    if count <= 0:
+        return 0
+    try:
+        rank = int(os.environ.get("LOCAL_RANK", "") or -1)
+    except ValueError:
+        rank = -1
+    if 0 <= rank < count:
+        return rank
+    try:
+        current = int(torch.cuda.current_device())
+    except Exception:
+        return 0
+    return current if 0 <= current < count else 0
+
+
+_PROBE_DEVICE_INDEX = _resolve_probe_device_index()
+
+
 def _xformers_runs_on_device() -> bool:
-    """One tiny attention forward; True iff the xformers kernel actually runs here."""
+    """One tiny attention forward; True iff the xformers kernel actually runs here.
+
+    Never raises. Every failure becomes False plus a one-line XFORMERS_PROBE_REASON,
+    because this runs at import and a diagnostic must not be what breaks the import.
+    """
+    global XFORMERS_PROBE_REASON, XFORMERS_PROBE_INCONCLUSIVE
     try:
         # Pre-Ampere GPUs (sm < 80: Turing/Volta) have no bfloat16 attention kernel
         # but run xformers fine in float16, so pick the dtype the device supports.
-        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
-        q = torch.zeros((1, 8, 1, 64), device = "cuda", dtype = dtype)
-        attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
-        xformers_attention(q, q, q, attn_bias = attn_bias)
-        # Launches are async; synchronize so a deferred kernel failure fails the probe here.
-        torch.cuda.synchronize()
+        #
+        # Read off the device being PROBED, not the module-level SUPPORTS_BFLOAT16, which
+        # describes device 0. On a mixed box where 0 is Ampere-or-newer and this rank owns
+        # a Turing card, the global says bf16, the kernel rejects it, and a healthy
+        # xformers is recorded as broken for the whole process.
+        dtype = (
+            torch.bfloat16
+            if torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0] >= 8
+            else torch.float16
+        )
+        device = f"cuda:{_PROBE_DEVICE_INDEX}"
+        # Under the device context, not just device= on the tensor. BlockDiagonalCausalMask
+        # builds its seqstart tensors on the CURRENT device, and at import time that is
+        # still cuda:0 on every rank -- launchers set LOCAL_RANK in the environment but
+        # torch.cuda.set_device happens later, inside the trainer. So q lands on cuda:N and
+        # the bias on cuda:0, xformers rejects the pair, and the probe fails on every rank
+        # but zero. That is the silent drop to SDPA this whole gate exists to prevent, on a
+        # healthy install, caused by the diagnostic itself -- and it allocates on cuda:0
+        # from every rank as well, pinning a second context per rank.
+        with torch.cuda.device(_PROBE_DEVICE_INDEX):
+            q = torch.zeros((1, 8, 1, 64), device = device, dtype = dtype)
+            attn_bias = xformers.attn_bias.BlockDiagonalCausalMask.from_seqlens([8])
+            xformers_attention(q, q, q, attn_bias = attn_bias)
+            # Launches are async; synchronize so a deferred kernel failure fails the probe here.
+            torch.cuda.synchronize(device)
+        XFORMERS_PROBE_REASON = None
+        XFORMERS_PROBE_INCONCLUSIVE = False
         return True
-    except Exception:
+    except Exception as error:
+        XFORMERS_PROBE_REASON = f"{type(error).__name__}: {error}".strip()
+        text = str(error).lower()
+        XFORMERS_PROBE_INCONCLUSIVE = any(marker in text for marker in _INCONCLUSIVE_PROBE_ERRORS)
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
-    # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (caps at
-    # sm_90) and its flash-2 op runs only if the build ships an sm_120 kernel, so run
-    # one real forward to decide. Below sm_120 xformers always works; skip the probe.
-    if capability[0] < 12:
-        return False
+def _xformers_disabled(probe = _xformers_runs_on_device) -> bool:
+    # Probe on EVERY capability, not just sm_120+. The old gate returned early below
+    # sm_120 on the assumption that xformers always works there, which only holds when
+    # the wheel matches the runtime: a cu128-built xformers on a cu130 torch is just as
+    # dead on an sm_90 Hopper, and never probing there is what let a mismatched managed
+    # Windows package ship (NVIDIA P0-1).
+    #
+    # At sm_120 (RTX 50-series) there is a second, unrelated reason to probe: xformers'
+    # cutlass op is capability-rejected (it caps at sm_90) and its flash-2 op runs only
+    # if the build ships an sm_120 kernel (unslothai/unsloth#4631).
+    #
+    # No capability argument: the answer is always the real op now, and reading the
+    # capability at the call site put an UNGUARDED torch.cuda.get_device_capability() at
+    # module scope. CUDA refuses that query when the device is busy, in exclusive mode or
+    # temporarily unavailable, and there it raised before the probe could classify the
+    # failure as inconclusive -- turning `import unsloth` into a crash over a diagnostic
+    # whose worst answer is "keep xformers on and let the forward decide".
     return not probe()
 
 
-# FlashAttention always wins in select_attention_backend and nothing downgrades
-# flash -> xformers, so when it's installed xformers is never selected: skip the probe.
-if HAS_XFORMERS and not HAS_FLASH_ATTENTION and torch.cuda.is_available():
-    if _xformers_disabled_for_capability(torch.cuda.get_device_capability()):
-        HAS_XFORMERS = False
+# Probe whenever xformers imported, including when flash-attn is installed and will win
+# select_attention_backend anyway: a dead xformers is worth knowing about either way, and
+# reporting it is the point. Cost is one 1x8x1x64 forward on a CUDA context torch has
+# already initialised (_XFORMERS_FP32_UNSUPPORTED below forces the same lazy init).
+XFORMERS_DISABLED_REASON = XFORMERS_BROKEN_REASON
+if HAS_XFORMERS and torch.cuda.is_available():
+    if _xformers_disabled():
+        if XFORMERS_PROBE_INCONCLUSIVE:
+            # The GPU was busy or full, which says nothing about the build. Keep xformers
+            # and let the real forward pass decide; turning it off here would be a silent
+            # memory regression caused by the diagnostic.
+            if UNSLOTH_ENABLE_LOGGING:
+                print(
+                    f"Unsloth: Could not probe xformers ({XFORMERS_PROBE_REASON}); keeping it on."
+                )
+        else:
+            HAS_XFORMERS = False
+            XFORMERS_DISABLED_REASON = XFORMERS_PROBE_REASON
+            # Say so. A probe that turns off memory-efficient attention and prints nothing
+            # is the same silent downgrade this whole change exists to remove.
+            #
+            # First line by default, the rest behind UNSLOTH_ENABLE_LOGGING. This reason is
+            # a captured exception, and xformers answers a capability rejection with a dump
+            # of every operator it considered and why -- a dozen lines. Announcing that
+            # verbatim on the default path would put a wall of text in front of every user
+            # of an affected card and bury the one sentence that matters. Truncating HERE
+            # rather than in the announcer, because the announcer's other callers pass
+            # deliberately multi-line, fenced, copy-pasteable instructions that have to
+            # arrive intact.
+            _probe_head, _, _probe_rest = str(XFORMERS_PROBE_REASON).strip().partition("\n")
+            _announce_xformers_breakage(
+                _probe_head,
+                _probe_rest.strip() or None,
+            )
+
 
 # On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass op is capability-rejected and
 # only its fp16/bf16 flash-2 op runs, so fp32 Q/K/V (DoRA, #1013) must be downcast there;
-# below sm_100 cutlass handles fp32 natively. Read once from device 0, like the probe gate.
-_XFORMERS_FP32_UNSUPPORTED = (
-    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
-)
+# below sm_100 cutlass handles fp32 natively. Read once from the same device the probe gate
+# above used, so the two answers describe the same GPU: on a mixed box, reading the fp32
+# capability off device 0 while probing this rank's device is how a display card ends up
+# deciding downcast policy for a compute card.
+def _probe_device_major() -> Optional[int]:
+    """Major compute capability of the probed device, or None if CUDA will not say.
+
+    Guarded for the same reason the probe is: a busy or exclusive-mode device makes this
+    query raise, and at module scope that is an import crash rather than a missing answer.
+    """
+    if not torch.cuda.is_available():
+        return None
+    try:
+        return torch.cuda.get_device_capability(_PROBE_DEVICE_INDEX)[0]
+    except Exception:
+        return None
+
+
+# None (unknown) is treated as supported: downcasting fp32 that did not need it is a
+# quality regression, and the fp16/bf16 paths are unaffected either way.
+_XFORMERS_FP32_UNSUPPORTED = (_probe_device_major() or 0) >= 10
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 # PrefixGrouper kernel, resolved once when the env gate is on so PG-off users never load
@@ -234,6 +396,11 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+    # A non-positive window means "no local attention", not "a window of nothing": a config
+    # spelling it 0 would otherwise put the mask's lower bound above its causal upper bound
+    # and hide every position from every other.
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
     # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
@@ -392,6 +559,18 @@ def run_attention(
                 if local_mask.dtype == torch.bool:
                     no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
+
+            if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
+                # SDPA's is_causal is FULL causal; it has no window. With no padding mask to
+                # hang the window off, a model whose config declares one attended its whole
+                # history the moment neither the xformers bias nor flash's window_size was the
+                # thing running -- which is exactly the SDPA fallback this probe can now cause.
+                q_pos = torch.arange(k_len_local - q_len_local, k_len_local, device = Q.device)
+                k_pos = torch.arange(k_len_local, device = Q.device)
+                local_mask = (
+                    (k_pos[None, :] <= q_pos[:, None])
+                    & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
+                )[None, None, :, :]
 
             is_causal_local = local_mask is None and q_len_local == k_len_local
 
