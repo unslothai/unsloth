@@ -47,6 +47,7 @@ from .diffusion_families import (
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
+    mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -845,6 +846,27 @@ def _uncached_prequant_repo(
         return None
 
 
+def _dense_transformer_cached(base_repo: Optional[str]) -> bool:
+    """Whether ``base_repo``'s dense ``transformer/`` shards are ALREADY on disk, so the
+    dense-quant fast path costs a GGUF pick no extra bytes.
+
+    The mirror is checked too: a gated base is staged under the unsloth copy, so probing the
+    vendor id alone would read zero and decline the fast path for a user who has the weights.
+    Never raises -- an unreadable cache reads as "not cached", which only costs speed."""
+    base = (base_repo or "").strip()
+    if not base:
+        return False
+    for candidate in (base, mirror_repo(base)):
+        if not candidate:
+            continue
+        try:
+            if DiffusionBackend._dense_transformer_resident_bytes(candidate) > 0:
+                return True
+        except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
+            continue
+    return False
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -978,6 +1000,16 @@ class DiffusionBackend:
                     prequant_path = kwargs.get("transformer_prequant_path"),
                 )
                 is not None
+            ):
+                return False
+            # The same rule, applied to the base repo's own dense shards. The fast path loads
+            # transformer/ INSTEAD of the GGUF, so on a pick the user made BY QUANT an uncached
+            # base means fetching a second, much larger denoiser and never opening the first:
+            # Qwen-Image-Edit's Q6_K is 16.9 GB and the base transformer is another 40.9 GB.
+            # Cached shards cost nothing, so anyone who already has the dense base keeps the fast
+            # path, and an EXPLICIT transformer_quant still opts in as before.
+            if auto and not _has_active_lora(kwargs.get("loras")) and not _dense_transformer_cached(
+                kwargs.get("base_repo")
             ):
                 return False
             # Only widen when the loader would take the dense path; same candidate load_pipeline re-plans against.
@@ -2176,6 +2208,20 @@ class DiffusionBackend:
                             "not cached (an auto quant never downloads a second transformer for a "
                             "GGUF pick); loading the GGUF",
                             uncached_prequant,
+                        )
+                        dense_declined = True
+                    # The other half of the same rule, and the half the prefetch decides:
+                    # ``_transformer_prefetched`` is False exactly when the plan left the base
+                    # repo's transformer/ shards out, so taking the dense path here would pull
+                    # them from_pretrained() under the load lock, after eviction, where unload
+                    # cannot preempt it and progress already reported 100%. Declining keeps the
+                    # GGUF the user picked, which is on disk.
+                    elif not _transformer_prefetched:
+                        logger.info(
+                            "diffusion.transformer_quant_declined: %s transformer/ shards are not "
+                            "staged (an auto quant never downloads a second transformer for a "
+                            "GGUF pick); loading the GGUF",
+                            base,
                         )
                         dense_declined = True
                 if (
