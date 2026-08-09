@@ -2712,7 +2712,9 @@ def test_the_first_preflight_does_not_pin_the_bundle_it_accepted(run_dir):
     # target refusal is terminal and this pass cannot yet tell whose dataset the newest
     # bundle belongs to.
     start = inspect.getsource(__import__("routes.training", fromlist = ["x"]))
-    call = start.index("_preflight_diffusion_resume,\n                config,\n                resume_identity,")
+    call = start.index(
+        "_preflight_diffusion_resume,\n                config,\n                resume_identity,"
+    )
     window = start[call : call + 900]
     assert "pin = False" in window
     assert "normalized_cfg.train_steps" not in window, "the first pass must carry no target"
@@ -2855,6 +2857,6 @@ def test_a_displaced_bundle_is_stamped_when_it_is_moved_aside(run_dir):
     displaced = list(run_dir.glob(f"{dc._STAGING_PREFIX}replaced-4-*"))
     assert len(displaced) == 1
     age = time.time() - displaced[0].stat().st_mtime
-    assert age < dc._LIVE_REPLACEMENT_GRACE_SECONDS, (
-        "the swap-aside must stamp the entry, or the grace protects nothing"
-    )
+    assert (
+        age < dc._LIVE_REPLACEMENT_GRACE_SECONDS
+    ), "the swap-aside must stamp the entry, or the grace protects nothing"
