@@ -1274,6 +1274,10 @@ pub fn start_backend(
 
     info!("{}", start_line);
     diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
+    // One deadline for this start, shared with the watchdog below. Port
+    // validation must not outlive it: the watchdog's server-start-timeout puts
+    // the window in an error state that a later server-port does not clear.
+    let start_deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
     start_watchdog(app, state, shutdown, generation, &backend_log);
 
     if let Some(stdout) = stdout {
@@ -1290,6 +1294,7 @@ pub fn start_backend(
                 &backend_log_clone,
                 false,
                 generation,
+                start_deadline,
             );
         });
     }
@@ -1308,6 +1313,7 @@ pub fn start_backend(
                 &backend_log_clone,
                 true,
                 generation,
+                start_deadline,
             );
         });
     }
@@ -1413,6 +1419,7 @@ async fn validate_candidate_port(
     session_id: String,
     generation: u64,
     port: u16,
+    deadline: std::time::Instant,
 ) {
     let started = std::time::Instant::now();
     let owner = {
@@ -1436,10 +1443,9 @@ async fn validate_candidate_port(
     // importing torch, so a single probe races a backend that cannot answer
     // inside LOCAL_HTTP_TIMEOUT yet: on a cold CPU-only machine /api/liveness
     // has been seen taking 2.1 s against a 2 s budget. Discarding the only
-    // announcement left the window waiting out BACKEND_START_DEADLINE on the
-    // port the backend had already reported it could not bind. Keep probing
-    // until the backend answers or that same deadline passes.
-    let deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
+    // announcement left the window waiting out the start deadline on the port
+    // the backend had already reported it could not bind. Keep probing until
+    // the backend answers or that deadline, shared with the watchdog, passes.
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let valid = loop {
@@ -1625,6 +1631,7 @@ fn read_output_stream<R: std::io::Read>(
     backend_log: &BackendLog,
     is_stderr: bool,
     generation: u64,
+    start_deadline: std::time::Instant,
 ) {
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
@@ -1699,6 +1706,7 @@ fn read_output_stream<R: std::io::Read>(
                             session_id,
                             generation,
                             port,
+                            start_deadline,
                         )
                         .await;
                     });
