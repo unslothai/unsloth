@@ -106,7 +106,9 @@ for (const [page, path] of PAGES) {
       SOURCE.indexOf("const handleCancelLoad = useCallback("),
     );
     assert.match(unload, /Promise<boolean>/);
-    assert.match(unload, /return true;/);
+    // Success is "the load this eject was cancelling is actually gone", not "the request
+    // returned 200": handleLoad can put the tracking back while this waits (see below).
+    assert.match(unload, /return !loadTrackingRestored[.]current;/);
     assert.match(unload, /return false;/);
   });
 
@@ -125,7 +127,41 @@ for (const [page, path] of PAGES) {
     assert.match(unload, /const pending = pendingStart[.]current;/);
     // Still busy while it waits: the finally is what clears it, after the await.
     assert.match(unload, /setBusy[(]"unloading"[)];[\s\S]*await pending;/);
-    assert.match(unload, /await pending;[\s\S]*setBusy[(]null[)];/);
+    assert.match(
+      unload,
+      /await pending;[\s\S]*setBusy[(][(]prev[)] => [(]prev === "unloading" [?] null : prev[)][)];/,
+    );
+  });
+
+  test(`the ${page} unload keeps a restored load visible instead of clearing it`, () => {
+    // The wait the eject now takes can end with handleLoad having PUT THE TRACKING BACK: its
+    // compensating unload failed, so the load is still running. An unconditional setBusy(null)
+    // in the finally wiped that restored "loading" state, hiding the toast's Cancel and the
+    // Cancel load button and re-enabling the picker over a live load -- and the unload reported
+    // success, so the page also claimed the model had stopped.
+    const unload = SOURCE.slice(
+      SOURCE.indexOf("const handleUnload = useCallback("),
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+    );
+    assert.match(unload, /loadTrackingRestored[.]current = false;/);
+    assert.match(unload, /return !loadTrackingRestored[.]current;/);
+    assert.match(
+      unload,
+      /setBusy[(][(]prev[)] => [(]prev === "unloading" [?] null : prev[)][)];/,
+    );
+    assert.doesNotMatch(unload, /setBusy[(]null[)];/);
+    // restoreLoadTracking is what raises the flag, and the cancel must not restore twice: a
+    // second call raises a duplicate toast and starts a second poll loop.
+    const restore = SOURCE.slice(
+      SOURCE.indexOf("const restoreLoadTracking = useCallback("),
+      SOURCE.indexOf("}, [pollLoadProgress, cancelLoadFromToast]);"),
+    );
+    assert.match(restore, /loadTrackingRestored[.]current = true;/);
+    const handler = SOURCE.slice(
+      SOURCE.indexOf("const handleCancelLoad = useCallback("),
+      SOURCE.indexOf("useEffect(() => {\n    cancelLoadRef.current"),
+    );
+    assert.match(handler, /if [(]!wasLoading [|][|] loadTrackingRestored[.]current[)] return;/);
   });
 
   test(`the ${page} eject is still offered only for a resident model`, () => {

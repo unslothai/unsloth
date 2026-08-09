@@ -844,6 +844,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // still in flight would tear down whatever the user picked next. Holding busy shuts both.
   const pendingStart = useRef<Promise<unknown> | null>(null);
 
+  // Set by restoreLoadTracking: handleLoad's compensating unload failed, so the load it was
+  // cancelling is STILL running and its toast and poll are back up. handleUnload reads it to
+  // report that the eject stopped nothing, rather than claiming success over a live load.
+  const loadTrackingRestored = useRef(false);
+
   // Client-side state that only means anything while a model is resident: the
   // in-flight replacement load's tracking, and the Reapply target. Shared with
   // the indicator eject, which frees the runtime without going through the
@@ -1424,6 +1429,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // this -- a first load is not resident yet, so status has nothing to report -- and without it a
   // multi-gigabyte load continues with no progress and no way to cancel it a second time.
   const restoreLoadTracking = useCallback(() => {
+    loadTrackingRestored.current = true;
     setBusy("loading");
     lastLoadSig.current = null;
     loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
@@ -2001,6 +2007,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
   const handleUnload = useCallback(async (): Promise<boolean> => {
     dropResidentState();
+    loadTrackingRestored.current = false;
     setBusy("unloading");
     try {
       setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
@@ -2021,13 +2028,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // Its own handler reports the failure; this only waits for the window to close.
         }
       }
-      return true;
+      // The wait above can end with the tracking RESTORED: handleLoad's compensating unload
+      // failed, so the load is still running. This eject stopped nothing, so do not report
+      // success -- the caller would toast "stopped loading" over a live load.
+      return !loadTrackingRestored.current;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
       void refreshStatus();
       return false;
     } finally {
-      setBusy(null);
+      // Not an unconditional clear. A restore during the wait above put the page back to
+      // "loading" deliberately; wiping it hides the toast's Cancel and the "Cancel load"
+      // button and re-enables the picker over a load that is still running.
+      setBusy((prev) => (prev === "unloading" ? null : prev));
     }
   }, [refreshStatus, dropResidentState]);
 
@@ -2045,7 +2058,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       });
       return;
     }
-    if (!wasLoading) return;
+    // Already restored inside handleUnload (its own compensating-unload failure), so the toast
+    // and the poll are up: a second restore would raise a duplicate toast and a second poll loop.
+    if (!wasLoading || loadTrackingRestored.current) return;
     // The unload failed, so the load is still running and its tracking was torn down for nothing.
     restoreLoadTracking();
   }, [busy, handleUnload, restoreLoadTracking]);
