@@ -282,9 +282,7 @@ class CheckpointIdentity:
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
-                gradient_accumulation_steps = _optional_int(
-                    data.get("gradient_accumulation_steps")
-                ),
+                gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
                 max_grad_norm = _optional_str(data.get("max_grad_norm")),
                 precision = str(data.get("precision") or ""),
                 base_precision = str(data.get("base_precision") or ""),
