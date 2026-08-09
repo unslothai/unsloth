@@ -493,12 +493,20 @@ function loadToastDescription(p: DiffusionLoadProgress) {
 }
 
 // Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update in place.
-function loadToastArgs(p: DiffusionLoadProgress, id?: string | number) {
+// `onCancel` adds chat's Cancel action, the one control that reaches a load already in flight: the model
+// selector's eject is hidden for exactly the span a first load runs (nothing is resident, so it has no
+// selection to eject), which left a multi-gigabyte pull with no way out.
+function loadToastArgs(
+  p: DiffusionLoadProgress,
+  id?: string | number,
+  onCancel?: () => void,
+) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
     duration: Infinity,
     closeButton: true,
+    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -1326,6 +1334,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadToastId.current = null;
   }, []);
 
+  // The load toast is built by handleLoad and the progress poll, both of which are defined above
+  // handleCancelLoad (it needs handleUnload, which needs them). Route the action through a ref so
+  // the toast keeps a stable onClick instead of dragging the whole load graph into its deps.
+  const cancelLoadRef = useRef<() => void>(() => {});
+  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
+
   // Client-side state that only means anything while a model is resident: the
   // in-flight replacement load's tracking, and the Reapply target. Shared with
   // the indicator eject, which frees the runtime without going through the
@@ -1791,13 +1805,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current));
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
       }
     } catch {
       // Transient poll failure: keep trying.
     }
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
 
   // Re-enter the per-step poll for a generation already in flight that this page did not start, instead of a stale idle view.
   // generate-progress carries no terminal record, so refresh the gallery on completion to merge any image saved after mount.
@@ -1853,7 +1867,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
         }
       } catch {
@@ -1881,7 +1895,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
 
   // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
   // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
@@ -1991,7 +2005,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // Show the chat-style toast immediately; the poll updates it by id.
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
       // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load
       // that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
@@ -2038,7 +2052,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       void pollLoadProgress();
       return true;
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast],
   );
 
   // Set (or clear) the Transform/Inpaint source image; always drop any painted mask, which is sized to the previous source.
@@ -2424,20 +2438,39 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [busy, handleLoad, pickGuard, setPageMode],
   );
 
-  const handleUnload = useCallback(async () => {
+  // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
+  const handleUnload = useCallback(async (): Promise<boolean> => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
     dropResidentState();
     setBusy("unloading");
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
+      return true;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
       void refreshStatus();
+      return false;
     } finally {
       setBusy(null);
     }
   }, [refreshStatus, dropResidentState]);
+
+  // Cancelling a load IS the unload: it sets the running load's cancel event, bumps the load token so the
+  // worker can never commit, and drops the load marker. What it leaves behind is only cache: bytes already
+  // fetched stay in the HF cache, so loading the same model again resumes instead of restarting, and no
+  // half-built pipeline survives (the worker's commit is token-gated and unload clears the GPU state).
+  const handleCancelLoad = useCallback(async () => {
+    if (await handleUnload()) {
+      toast.info("Stopped loading the model", {
+        description: "Anything already downloaded stays cached, so loading it again resumes.",
+      });
+    }
+  }, [handleUnload]);
+
+  useEffect(() => {
+    cancelLoadRef.current = () => void handleCancelLoad();
+  }, [handleCancelLoad]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -2825,6 +2858,27 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
             />
+          )}
+          {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs a
+              resident model, so it is hidden for exactly the span a first load runs. A real button, not the
+              trigger's aria-hidden eject hit area, so it is reachable by keyboard and a screen reader. Says
+              "load", never "download": the download manager's own Cancel stops a staged pull, a different job. */}
+          {pageMode !== "train" && busy === "loading" && (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label="Cancel load"
+                  className="!h-[34px] rounded-full text-xs"
+                  onClick={() => void handleCancelLoad()}
+                >
+                  Cancel load
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Stop loading this model</TooltipContent>
+            </Tooltip>
           )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
