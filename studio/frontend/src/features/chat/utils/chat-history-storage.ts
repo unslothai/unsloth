@@ -615,6 +615,26 @@ function settleWithin(promise: Promise<unknown>, ms: number): Promise<void> {
   });
 }
 
+const THREAD_RECORD_TIMED_OUT = Symbol("thread record wait timed out");
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(ms, 0)));
+}
+
+/** Bounded, but a stalled or failed write still throws: callers must not read it as success. */
+async function awaitStoredChatThreadRecordOrThrow(threadId: string): Promise<void> {
+  const wait = awaitStoredChatThreadRecord(threadId);
+  // Handled here so losing the race below cannot surface as an unhandled rejection.
+  wait.catch(() => undefined);
+  const outcome = await Promise.race([
+    wait.then(() => undefined),
+    delay(THREAD_RECORD_DRAIN_TIMEOUT_MS).then(() => THREAD_RECORD_TIMED_OUT),
+  ]);
+  if (outcome === THREAD_RECORD_TIMED_OUT) {
+    throw new Error(`Thread ${threadId} row write did not settle in time`);
+  }
+}
+
 /** Wait for a thread's row write, bounded, so a wedged request cannot stall a delete. */
 export function awaitStoredChatThreadRecordBounded(
   threadId: string,
@@ -670,8 +690,9 @@ async function retryFailedThreadRecord(
     return undefined;
   }
   // Rethrows on purpose. A caller handed undefined reads it as "no row to update" and drops its
-  // patch silently, which is how the prompt queue loses its model correction.
-  await awaitStoredChatThreadRecord(threadId);
+  // patch silently, which is how the prompt queue loses its model correction. Bounded too, since
+  // the clear boundary blocks on the append that reaches here.
+  await awaitStoredChatThreadRecordOrThrow(threadId);
   return (await getChatThread(threadId)) ?? undefined;
 }
 

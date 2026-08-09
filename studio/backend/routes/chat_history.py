@@ -815,7 +815,9 @@ def fork_thread(
         id_factory = lambda: str(uuid.uuid4()),
     )
     if forked is None:
-        raise HTTPException(status_code = 500, detail = "Fork failed")
+        # The source can be deleted between the reads above and the fork transaction, which the
+        # threadpool lets run concurrently. Report it gone rather than as a server fault.
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
     messages = list_chat_messages(payload.newThreadId)
     # Best-effort OpenAI container snapshot. Stub: a follow-up patch can
     # call /v1/containers list+download / create+upload here and patch
