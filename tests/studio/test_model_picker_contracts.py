@@ -3423,9 +3423,7 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
         # One implementation, reached from both deferred paths, so neither can drift.
         assert src.count("if (pending) runStagedLoad(pending);") == 2, page
         # Exactly one direct call left, the one inside the helper itself.
-        assert len(
-            re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)
-        ) == 1, page
+        assert len(re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)) == 1, page
 
 
 def test_each_quant_row_reads_its_own_dependency_key():

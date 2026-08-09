@@ -5736,12 +5736,12 @@ def test_a_cached_file_survives_an_unrelated_commit_to_its_repo(tmp_path, monkey
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
 
     assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 4096)
-    assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 4096), (
-        "an unrelated repo commit must not invalidate a file the plan sized identically"
-    )
-    assert not DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 9999), (
-        "a republished file has a different declared size and must be fetched through the manager"
-    )
+    assert DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 4096
+    ), "an unrelated repo commit must not invalidate a file the plan sized identically"
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 9999
+    ), "a republished file has a different declared size and must be fetched through the manager"
     # Nothing declared to compare against: trust the ref rather than call a present file missing.
     assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 0)
 
@@ -5787,9 +5787,9 @@ def test_a_damaged_file_is_restaged_even_under_the_pinned_revision(tmp_path, mon
     monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
 
-    assert not DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 4096), (
-        "the pinned commit is right but the bytes are not, so it must be restaged"
-    )
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "a" * 40, 4096
+    ), "the pinned commit is right but the bytes are not, so it must be restaged"
     assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 1024)
     # Still no size to compare against: an intact-looking hit is trusted, as before.
     assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 0)

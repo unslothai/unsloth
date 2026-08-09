@@ -1354,9 +1354,9 @@ def test_video_speed_off_suppresses_auto_dtype_quant(fake_runtime, monkeypatch):
     # select reseeds to none, so after the user changes Speed and reloads, quantisation stays
     # pinned off for no reason they can see.
     resolved = status["resolved"]["transformer_quant"]
-    assert resolved["requested"] is None, (
-        f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
-    )
+    assert (
+        resolved["requested"] is None
+    ), f"the record reports {resolved['requested']!r} as the user's request; nothing was asked for"
     assert resolved["source"] == "auto"
 
     # Control: with speed NOT off the auto precision promotion still engages, so the suppression above is specific to speed=off.
@@ -2590,9 +2590,9 @@ def test_unload_fences_a_generation_queued_behind_its_barrier(fake_runtime, tmp_
 
     queued = _run_teardown_race(backend, backend.unload)
 
-    assert "out" not in queued, (
-        "a generation queued behind the unload barrier ran against a pipeline being torn down"
-    )
+    assert (
+        "out" not in queued
+    ), "a generation queued behind the unload barrier ran against a pipeline being torn down"
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._state is None
     assert backend._teardown_waiters == 0  # the fence drained
@@ -2605,9 +2605,9 @@ def test_superseding_load_fences_a_generation_queued_behind_its_barrier(fake_run
 
     queued = _run_teardown_race(backend, lambda: _load_gguf(backend, tmp_path))
 
-    assert "out" not in queued, (
-        "a generation queued behind the load barrier ran against a pipeline being torn down"
-    )
+    assert (
+        "out" not in queued
+    ), "a generation queued behind the load barrier ran against a pipeline being torn down"
     assert queued.get("error") in (VIDEO_NOT_LOADED_MSG, VIDEO_CANCELLED_MSG), queued
     assert backend._teardown_waiters == 0  # the fence drained
 
