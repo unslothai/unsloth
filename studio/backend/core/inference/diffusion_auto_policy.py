@@ -70,10 +70,28 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 }
 
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
+# flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and
+# 9B / base-9B (18.2 GB transformer, Qwen3-8B encoder). The 9B pair needs an override on BOTH ids: sizing
+# klein-BASE-9B off the family default understates it by 2.3x, and the base variants are the ones the upstream
+# guidance points fine-tuning at, so it is the likelier of the two to be loaded.
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
     "black-forest-labs/FLUX.2-klein-base-9B": (18.2, 16.4, 0.2),
 }
+
+
+def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[float, float, float]]:
+    """The per-base override for ``base_repo``, or None when it has none.
+
+    No family fallback, unlike ``family_bf16_components_gb``: a caller that already holds a
+    better number for the family default needs to know whether this particular base was
+    actually named in the table, not receive the family figure back."""
+    if not base_repo:
+        return None
+    # Keyed on UPSTREAM ids, so mirrors have to be normalised before the lookup.
+    from .diffusion_families import canonical_base
+
+    return _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
 
 
 def family_bf16_components_gb(
@@ -81,12 +99,10 @@ def family_bf16_components_gb(
 ) -> Optional[tuple[float, float, float]]:
     """(transformer, text encoders, VAE) bf16-resident sizes in GB, or None when the family isn't
     in the table (callers fall back to file-size estimates)."""
-    if base_repo:
-        # Keyed on UPSTREAM ids, and a miss falls through quietly to the coarser family table.
-        from .diffusion_families import canonical_base
-        override = _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
-        if override is not None:
-            return override
+    # A per-base miss falls through quietly to the coarser family table.
+    override = base_repo_bf16_components_gb(base_repo)
+    if override is not None:
+        return override
     name = getattr(fam, "name", None)
     return _FAMILY_BF16_GB.get(name) if name else None
 
@@ -107,6 +123,11 @@ class DenseQuantEstimate:
     companions_mib: int
     prequant: bool
     download_transformer_mib: int = 0
+    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the
+    # group tier that streams the encoders instead of keeping them resident, and this table is
+    # the only place the split exists on the dense-candidate path. Defaulted so any construction
+    # that predates it still works (the planner reads a 0 split as "no split", i.e. no new tier).
+    text_encoders_mib: int = 0
 
     @property
     def transient_total_mib(self) -> int:
@@ -142,6 +163,9 @@ def estimate_dense_quant(
         companions_mib = companions,
         prequant = prequant_available,
         download_transformer_mib = int(transformer_gb * hub_factor * _MIB_PER_GB),
+        # Same conversion as `companions`, of which this is the text-encoder half, so the planner's
+        # `companions - text_encoders` is the VAE and nothing else.
+        text_encoders_mib = int(text_encoders_gb * _MIB_PER_GB),
     )
 
 

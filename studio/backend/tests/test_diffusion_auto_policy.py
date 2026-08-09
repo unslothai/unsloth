@@ -63,6 +63,26 @@ def test_base_repo_override_wins_over_the_family_default():
     assert base_nine_b == nine_b
 
 
+def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
+    # klein-base-9B is the undistilled 9B (18.2 GB transformer + the Qwen3-8B encoder), and it is
+    # the variant upstream points fine-tuning at, so it needs the same override as klein-9B.
+    # Without it the base 9B is planned as a 4B and every size-driven decision under-reserves.
+    default = family_bf16_components_gb(_fam("flux.2-klein"))
+    nine_b = family_bf16_components_gb(
+        _fam("flux.2-klein"), base_repo = "black-forest-labs/FLUX.2-klein-9B"
+    )
+    base_9b = family_bf16_components_gb(
+        _fam("flux.2-klein"), base_repo = "black-forest-labs/FLUX.2-klein-base-9B"
+    )
+    assert base_9b == nine_b
+    assert base_9b is not None and default is not None and base_9b[0] > 2 * default[0]
+    # The unsloth mirror is what Studio actually loads, and canonical_base has to route it here too.
+    assert (
+        family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
+        == base_9b
+    )
+
+
 # ── the estimator ─────────────────────────────────────────────────────────────
 def test_estimate_int8_steady_is_roughly_half_bf16():
     est = estimate_dense_quant(_fam("z-image"), "int8")
