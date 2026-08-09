@@ -608,7 +608,6 @@ class VideoBackend:
                 # generating from the wrong partition instead of failing. Refuse until a matching
                 # checkpoint exists; there is no in-place quantise seam to fall back on.
                 from .video_minimax_h3 import H3_TASK_REFERENCES
-
                 if (h3_task or "").strip().lower() == H3_TASK_REFERENCES:
                     raise ValueError(
                         f"transformer_quant '{requested_scheme}' is unavailable for "
@@ -1213,10 +1212,7 @@ class VideoBackend:
 
     @staticmethod
     def _denoiser_prequant_hub_files(
-        fam: Any,
-        transformer_quant: Optional[str],
-        base: Optional[str],
-        api: Any,
+        fam: Any, transformer_quant: Optional[str], base: Optional[str], api: Any
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
         """``(repo_id, [(rfilename, size)])`` for the hosted pre-quantized denoiser, or
         ``(None, [])``.
@@ -1234,7 +1230,6 @@ class VideoBackend:
             return None, []
         try:
             from .diffusion_prequant import resolve_prequant_source
-
             source = resolve_prequant_source(fam, scheme, base_repo = base)
         except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
             logger.warning("video.denoiser_prequant_unresolved: %s", exc)
@@ -1255,9 +1250,7 @@ class VideoBackend:
         try:
             info = api.model_info(source.location, files_metadata = True)
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
-            logger.warning(
-                "video.denoiser_prequant_unavailable: %s: %s", source.location, exc
-            )
+            logger.warning("video.denoiser_prequant_unavailable: %s: %s", source.location, exc)
             return None, []
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         for name in wanted:
@@ -1514,9 +1507,7 @@ class VideoBackend:
                 total += add(te_sources[component].location, files)
             # The denoiser's replacement artifact, for the same reason: the base entry below drops
             # the dense DiT shards whenever this resolves, so it has to be staged in their place.
-            dq_repo, dq_files = self._denoiser_prequant_hub_files(
-                fam, transformer_quant, base, api
-            )
+            dq_repo, dq_files = self._denoiser_prequant_hub_files(fam, transformer_quant, base, api)
             if dq_repo:
                 total += add(dq_repo, dq_files)
             if base and not Path(base).expanduser().exists():

@@ -2180,9 +2180,7 @@ def test_download_plan_stages_the_prequant_denoiser_it_drops_the_dense_shards_fo
     # int8 and fp8 share one repo, so the SCHEME picks the file, not the repo.
     assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-INT8.pt"]
     base = by_repo["MiniMaxAI/MiniMax-H3"]
-    assert not any(
-        f.startswith("transformer/diffusion_pytorch_model") for f in base["files"]
-    )
+    assert not any(f.startswith("transformer/diffusion_pytorch_model") for f in base["files"])
     # The config still goes, exactly as on the pre-cast encoder path: the class is read from it.
     assert "transformer/config.json" in base["files"]
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
@@ -2194,7 +2192,12 @@ def test_download_plan_keeps_the_dense_denoiser_when_the_prequant_repo_is_missin
     _cuda_bf16_target(monkeypatch)
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             if repo_id == "unsloth/MiniMax-H3-FP8":
                 raise RuntimeError("404 gated")
             return _PlanInfo(_H3_BASE_SIBLINGS)
