@@ -4439,6 +4439,22 @@ def test_dense_transformer_completeness_ignores_an_auxiliary_weight_index(tmp_pa
     assert DiffusionBackend._dense_transformer_tree_complete(tmp_path) is True
 
 
+@pytest.mark.parametrize("invalid_value", [["shard.bin"], {"file": "shard.bin"}])
+def test_dense_transformer_completeness_rejects_unhashable_weight_map_values(
+    tmp_path, invalid_value
+):
+    import json
+
+    transformer = tmp_path / "transformer"
+    transformer.mkdir()
+    (transformer / "config.json").write_text("{}", encoding = "utf-8")
+    (transformer / "diffusion_pytorch_model.bin.index.json").write_text(
+        json.dumps({"weight_map": {"tensor": invalid_value}}), encoding = "utf-8"
+    )
+
+    assert DiffusionBackend._dense_transformer_tree_complete(tmp_path) is False
+
+
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
 def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
     # Weight 0 is disabled everywhere else, so plain truthiness on the list would call this a bake,

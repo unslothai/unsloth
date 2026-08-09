@@ -2102,15 +2102,16 @@ class DiffusionBackend:
                 continue
             if not isinstance(weight_map, dict) or not weight_map:
                 continue
-            names = set(weight_map.values())
-            if all(
+            names = tuple(weight_map.values())
+            if not all(
                 isinstance(name, str)
                 and name
                 and not Path(name).is_absolute()
                 and ".." not in Path(name).parts
-                and (transformer / name).is_file()
                 for name in names
             ):
+                continue
+            if all((transformer / name).is_file() for name in set(names)):
                 return True
 
         return any(
