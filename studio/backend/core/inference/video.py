@@ -602,6 +602,21 @@ class VideoBackend:
             # "auto" is a request for the backend's own choice, not for a specific scheme, so it is
             # never refused: it simply stays on the released bfloat16 components.
             if requested_scheme is not None and requested_scheme != TQ_AUTO:
+                # The hosted checkpoints are FL2VA denoisers. The two partitions share module
+                # shapes and the same base model, so a Ref2VA load would install one, pass every
+                # metadata check, and have load_components skip the real Ref2VA transformer --
+                # generating from the wrong partition instead of failing. Refuse until a matching
+                # checkpoint exists; there is no in-place quantise seam to fall back on.
+                from .video_minimax_h3 import H3_TASK_REFERENCES
+
+                if (h3_task or "").strip().lower() == H3_TASK_REFERENCES:
+                    raise ValueError(
+                        f"transformer_quant '{requested_scheme}' is unavailable for "
+                        f"'{fam.name}' reference video: the hosted pre-quantized checkpoints are "
+                        f"keyframe (fl2va) denoisers, and seeding one into the reference workflow "
+                        f"would generate from the wrong partition. Load reference video without "
+                        f"transformer_quant, or pick a keyframe task."
+                    )
                 if video_family_prequant_repo(fam, requested_scheme, quant_base) is None:
                     # There is no in-place quantise seam here: the workflow's own component loader
                     # builds the denoiser, so a scheme without a hosted pre-quantized checkpoint
@@ -2490,6 +2505,14 @@ class VideoBackend:
         # -- something this workflow never materialises -- so it stays on the released components.
         # Only an explicitly requested scheme takes the hosted path.
         scheme = transformer_quant if transformer_quant not in (None, TQ_AUTO) else None
+        # The hosted checkpoints are keyframe (fl2va) denoisers. validate_load_request refuses this
+        # pairing on the route; a direct call lands here, and seeding one would silently generate
+        # the wrong partition rather than fail, so drop to the released components instead.
+        if scheme is not None and workflow == H3_TASK_REFERENCES:
+            transformer_quant_reason = (
+                f"no hosted pre-quantized {scheme} checkpoint for {fam.name} reference video"
+            )
+            scheme = None
         if scheme is not None:
             from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES

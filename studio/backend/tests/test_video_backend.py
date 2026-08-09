@@ -2238,6 +2238,22 @@ def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
     )
 
 
+def test_a_quantized_reference_load_is_refused_rather_than_run_on_the_wrong_partition():
+    # The hosted checkpoints are FL2VA denoisers. Ref2VA shares their module shapes and base
+    # model, so one installs cleanly, passes every metadata check, and makes load_components skip
+    # the real Ref2VA transformer: the request generates from the keyframe partition instead of
+    # failing. There is no in-place quantise seam to fall back on, so this has to be a refusal.
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "reference video"):
+        backend.validate_load_request(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+            h3_task = "ref2va",
+        )
+
+
 def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     backend = VideoBackend()
     calls = []
