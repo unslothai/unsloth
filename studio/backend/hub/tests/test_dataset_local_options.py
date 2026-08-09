@@ -1396,7 +1396,7 @@ def test_snapshot_all_files_come_back_in_resolved_order(tmp_path):
     for name in ("z/b.csv", "a/y.jsonl", ".hidden.jsonl"):
         (snapshot / name).write_text('{"text":"row"}\n', encoding = "utf-8")
 
-    found, _directories = local_options._snapshot_all_files(snapshot)
+    found, _directories, _unsafe = local_options._snapshot_all_files(snapshot)
     paths = [path.as_posix() for path in found]
     assert paths == sorted(paths)
     assert ".hidden.jsonl" in paths
@@ -3150,3 +3150,114 @@ def test_snapshot_options_keep_a_csv_config_beside_a_tsv_one(tmp_path):
     # Both extensions are the csv builder, so the tsv config's separator does not make
     # the csv one unreadable. tsv itself stays unoffered, being outside TRAINING_DATA_EXTS.
     assert local_options._snapshot_options(snapshot) == {("comma", "train")}
+
+
+def test_snapshot_options_reject_a_wildcard_reaching_out_of_the_cache(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "leaked.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_files: '*.jsonl'\n")
+    (snapshot / "safe.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+    (snapshot / "leaked.jsonl").symlink_to(outside / "leaked.jsonl")
+
+    # The loader would read both, so the safe match alone does not make this offerable.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_check_csv_parameters_under_a_tsv_module(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+                    "- config_name: comma\n  data_files: b/train.csv\n  chunksize: 0\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir()
+    (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # csv+tab is the csv builder, so its parameter rules apply to the sibling as well.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_infer_a_csv_config_under_a_tsv_module(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: tab\n  data_files: a/train.tsv\n"
+                    "- config_name: comma\n  data_dir: b\n")
+    for name in ("a", "b"):
+        (snapshot / name).mkdir()
+    (snapshot / "a" / "train.tsv").write_text("text\trow\nx\ty\n", encoding = "utf-8")
+    (snapshot / "b" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("comma", "train")}
+
+
+def test_snapshot_options_reject_a_converters_mapping_with_entries(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  converters:\n    text: upper\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    # A card is read with safe yaml, so it can never carry the callables pandas wants.
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_an_empty_converters_mapping(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "configs:\n- config_name: cfg\n  data_dir: d\n  converters: {}\n")
+    (snapshot / "d").mkdir()
+    (snapshot / "d" / "train.csv").write_text("text\nrow\n", encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("cfg", "train")}
+
+
+def test_snapshot_options_reject_supervised_keys_the_loader_cannot_build(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  supervised_keys:\n    bogus: x\n"
+                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_accept_well_formed_supervised_keys(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  supervised_keys:\n    input: a\n    output: b\n"
+                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == {("default", "train")}
+
+
+def test_snapshot_options_reject_post_processed_features_it_cannot_build(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    _card(snapshot, "dataset_info:\n  post_processed:\n    features:\n      x:\n"
+                    "        _type: Value\n        dtype: nope\n"
+                    "  splits:\n  - name: train\n    num_examples: 1\n")
+    (snapshot / "train.jsonl").write_text('{"text":"row"}\n', encoding = "utf-8")
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_snapshot_options_reject_an_encrypted_zip_member(tmp_path):
+    snapshot = tmp_path / "datasets--org--data" / "snapshots" / "commit"
+    snapshot.mkdir(parents = True)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("train.jsonl", '{"text":"row"}\n')
+    raw = bytearray(buffer.getvalue())
+    # The general purpose flag sits at offset 6 in the local header and 8 in the directory.
+    for signature, offset in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
+        at = raw.index(signature) + offset
+        raw[at] |= 0x1
+    (snapshot / "train.jsonl.zip").write_bytes(bytes(raw))
+
+    assert local_options._snapshot_options(snapshot) == set()
+
+
+def test_safe_data_dir_keeps_a_posix_relative_path_holding_a_colon(monkeypatch):
+    monkeypatch.setattr(local_options.os, "name", "posix")
+    assert local_options._safe_data_dir("a:b") == "a:b"
+
+
+def test_safe_data_dir_drops_a_drive_path_on_windows(monkeypatch):
+    monkeypatch.setattr(local_options.os, "name", "nt")
+    assert local_options._safe_data_dir("C:data") is None

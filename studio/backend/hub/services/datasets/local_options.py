@@ -338,11 +338,17 @@ def _split_names(value: Any) -> list[str]:
     ]
 
 
+def _drive_prefixed(value: str) -> bool:
+    """Whether this starts with a drive letter the filesystem would act on. On POSIX a:b is
+    an ordinary relative path, and the loader reads it as one."""
+    return os.name == "nt" and re.match(r"^[A-Za-z]:", value) is not None
+
+
 def _safe_data_dir(value: Any) -> Optional[str]:
     """A data_dir we can scan, or None. An absolute one resolves off the snapshot entirely."""
     if not isinstance(value, str):
         return None
-    if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
+    if value.startswith(("/", "\\")) or _drive_prefixed(value):
         return None
     if "\\" in value or "\x00" in value:
         return None
@@ -661,6 +667,23 @@ def _add_dataset_info_options(options: set[tuple[str, str]], payload: Any) -> No
         _add_info_options(options, info, fallback_config = config)
 
 
+def _valid_post_processed(value: Any) -> bool:
+    """PostProcessedInfo takes these two fields, and rebuilds its features like any other."""
+    if value is None:
+        return True
+    if not isinstance(value, dict) or set(value) > {"features", "resources_checksums"}:
+        return False
+    features = value.get("features")
+    return features is None or (
+        isinstance(features, dict) and _valid_info_features(features)
+    )
+
+
+def _valid_supervised_keys(value: Any) -> bool:
+    """SupervisedKeysData takes an input and an output, and nothing else."""
+    return value is None or (isinstance(value, dict) and set(value) <= {"input", "output"})
+
+
 def _valid_split_info(child: Any) -> bool:
     """SplitDict expands each recorded split into SplitInfo, so an unknown key raises."""
     return isinstance(child, dict) and set(child) <= _SPLIT_INFO_FIELDS
@@ -722,10 +745,8 @@ def _valid_dataset_info(payload: Any) -> bool:
     return all(
         isinstance(entry, dict)
         and _valid_info_version(entry.get("version"))
-        and all(
-            entry.get(name) is None or isinstance(entry[name], dict)
-            for name in ("post_processed", "supervised_keys")
-        )
+        and _valid_post_processed(entry.get("post_processed"))
+        and _valid_supervised_keys(entry.get("supervised_keys"))
         and isinstance(field(entry, "features"), (list, dict))
         and isinstance(field(entry, "splits"), (list, dict))
         # datasets walks each child with .get or .pop, so a scalar in there raises too.
@@ -1047,7 +1068,9 @@ def _snapshot_data_files(snapshot: Path) -> Optional[list[_DataFile]]:
     return files
 
 
-def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], set[str]]]:
+def _snapshot_all_files(
+    snapshot: Path,
+) -> Optional[tuple[list[PurePosixPath], set[str], list[PurePosixPath]]]:
     """Every file a declared pattern could name, hidden and __ ones included.
 
     Default inference does not see these: fsspec's ** does not descend a directory link, so
@@ -1057,12 +1080,14 @@ def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], s
     """
     found: list[PurePosixPath] = []
     directories: set[str] = set()
+    # Files the loader would read and we will not: a pattern reaching one condemns its config.
+    unsafe: list[PurePosixPath] = []
     try:
         root = snapshot.resolve(strict = True)
         # <cache>/datasets--org--name/snapshots/<sha>
         repo = snapshot.parent.parent.resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
-        return found, directories
+        return found, directories, unsafe
 
     def inside(path: Path) -> bool:
         try:
@@ -1097,6 +1122,7 @@ def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], s
             if (base / filename).is_symlink() and not inside(base / filename):
                 # Dangling, or pointing out of the cache. Either way it is not a file we
                 # would let training read.
+                unsafe.append(PurePosixPath((relative / filename).as_posix()))
                 continue
             if len(found) >= _MAX_SNAPSHOT_DATA_FILES:
                 # Past the cap this is a traversal-order prefix, and deciding a declaration is
@@ -1105,7 +1131,7 @@ def _snapshot_all_files(snapshot: Path) -> Optional[tuple[list[PurePosixPath], s
             found.append(PurePosixPath((relative / filename).as_posix()))
     # fsspec returns each glob's matches sorted, and only the first files decide the module.
     found.sort(key = lambda path: path.as_posix())
-    return found, directories
+    return found, directories, unsafe
 
 
 def _keyword_splits(path: str, patterns: _KeywordPatterns) -> dict[str, list[tuple[int, int]]]:
@@ -1184,7 +1210,11 @@ def _empty_archive(path: Path) -> bool:
     read, which names every member and its size without unpacking any of them."""
     try:
         with zipfile.ZipFile(path) as archive:
-            return not any(member.file_size for member in archive.infolist())
+            members = archive.infolist()
+            if any(member.flag_bits & 0x1 for member in members):
+                # Encrypted, and nothing here has the password.
+                return True
+            return not any(member.file_size for member in members)
     except (OSError, zipfile.BadZipFile):
         return True
 
@@ -1394,8 +1424,14 @@ class _DeclaredFiles:
     further is determinate and the caller stops inferring.
     """
 
-    def __init__(self, paths: list[PurePosixPath], directories: set[str]) -> None:
+    def __init__(
+        self,
+        paths: list[PurePosixPath],
+        directories: set[str],
+        unsafe: Optional[list[PurePosixPath]] = None,
+    ) -> None:
         self.paths = paths
+        self.unsafe = unsafe or []
         self.index = {path.as_posix(): path for path in paths}
         # Every real directory, including the empty ones a declaration may step through.
         self.directories = directories
@@ -1422,13 +1458,14 @@ class _DeclaredFiles:
         self,
         pattern: str,
         root: str = "",
+        unsafe: bool = False,
     ) -> list[PurePosixPath]:
         """What a declared pattern resolves to, under its config's data_dir.
 
         The loader keeps a hidden or __ path only when the pattern names as many such parts
         as the path has, and it drops anything without a suffix it recognises.
         """
-        if pattern.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", pattern):
+        if pattern.startswith(("/", "\\")) or _drive_prefixed(pattern):
             # The loader resolves this off the snapshot entirely, so nothing can match it.
             return []
         # The filesystem normalises ./x and x/../y before it globs, so the matcher has to
@@ -1450,17 +1487,20 @@ class _DeclaredFiles:
                 and bool(_file_modules(path.name))
             )
 
+        paths = self.unsafe if unsafe else self.paths
         if not any(character in pattern for character in "*?["):
-            found = self.index.get(pattern)
+            index = {path.as_posix(): path for path in paths} if unsafe else self.index
+            found = index.get(pattern)
             return [found] if found is not None and keep(found) else []
         matcher = _glob_matcher(pattern)
         if matcher is None:
             return []
-        self.budget -= len(self.paths)
-        if self.budget < 0:
-            self.exhausted = True
-            return []
-        return [path for path in self.paths if matcher.match(path.as_posix()) and keep(path)]
+        if not unsafe:
+            self.budget -= len(self.paths)
+            if self.budget < 0:
+                self.exhausted = True
+                return []
+        return [path for path in paths if matcher.match(path.as_posix()) and keep(path)]
 
 
 def _config_root(item: dict[str, Any], files: "_DeclaredFiles") -> Optional[str]:
@@ -1534,7 +1574,7 @@ def _in_parameter_range(key: str, value: Any) -> bool:
 def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str) -> set[str]:
     """Configs handing the chosen builder a parameter it cannot use. It takes them without
     complaint and then raises while the split generates, so the option is dead."""
-    rules = _BUILDER_PARAMETERS.get(module)
+    rules = _BUILDER_PARAMETERS.get(_base_module(module))
     if rules is None:
         return set()
     return {
@@ -1547,6 +1587,8 @@ def _misparameterised_configs(collapsed: dict[str, dict[str, Any]], module: str)
                 and _in_parameter_range(key, value)
                 and (key != "encoding" or _known_codec(value))
                 and (key != "header" or _valid_header(value))
+                # converters wants callables, which yaml.safe_load can never produce.
+                and (key != "converters" or not value)
             )
             for key, value in item.items()
         )
@@ -1562,6 +1604,21 @@ def _misversioned_configs(collapsed: dict[str, dict[str, Any]]) -> set[str]:
         if "version" in item
         and (not isinstance(item["version"], str) or _VERSION_RE.fullmatch(item["version"]) is None)
     }
+
+
+def _unsafe_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
+    """Configs whose declaration reaches a file outside the cache. The loader follows it, so
+    the pattern cannot be offered with the unsafe match quietly dropped."""
+    if not files.unsafe:
+        return set()
+    dead = set()
+    for name, item in collapsed.items():
+        root = _config_root(item, files)
+        if root is None:
+            continue
+        if any(files.resolve(pattern, root, unsafe = True) for pattern in _declared_paths(item)):
+            dead.add(name)
+    return dead
 
 
 def _unresolvable_configs(collapsed: dict[str, dict[str, Any]], files: _DeclaredFiles) -> set[str]:
@@ -1763,7 +1820,7 @@ def _inferred_snapshot_options(
         module = _grouped_module(grouped)
         if module is None:
             continue
-        if required_module is not None and module != required_module:
+        if required_module is not None and _base_module(module) != _base_module(required_module):
             # One module is chosen for the whole dataset, so this config would be built with
             # a builder that cannot read its files.
             continue
@@ -1952,7 +2009,10 @@ def _snapshot_card_options(
                 not in _empty_declared_options(collapsed, required, declared_files, snapshot)
             }
         dead = (
-            unresolvable | deterministic | _mismatched_configs(collapsed, required, declared_files)
+            unresolvable
+            | deterministic
+            | _unsafe_configs(collapsed, declared_files)
+            | _mismatched_configs(collapsed, required, declared_files)
         )
         options = {
             entry
