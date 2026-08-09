@@ -4,6 +4,7 @@ Pure CPU, no network, no GPU."""
 
 import os
 import socket
+import traceback
 
 import pytest
 
@@ -792,8 +793,9 @@ def test_a_wrapped_online_error_does_not_pin_the_failed_attempt(monkeypatch):
 
 def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
     """Loaders also chain implicitly (`raise RuntimeError(...)` inside an except, no
-    `from`), so the network error is in `__context__`. Any raise inside the retry's
-    except block overwrites `__context__`, so it has to be kept before that."""
+    `from`), so the network error is in `__context__`. A raise inside the retry's
+    except block overwrites `__context__`, so the surfacing raise has to happen
+    outside it."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     calls = []
@@ -813,8 +815,111 @@ def test_an_implicitly_chained_network_error_stays_recognisable(monkeypatch):
     assert L._is_offline_related_error(
         caught.value
     ), "the retry replaced the implicitly chained connection error that made this classifiable"
-    # The retry failure is still attached, so it is not lost either.
-    assert isinstance(caught.value.__context__, AttributeError)
+    # The connection error keeps the slot the traceback prints, and the retry is
+    # reported alongside it rather than in place of it.
+    assert isinstance(caught.value.__context__, ConnectionError)
+    assert isinstance(caught.value._unsloth_offline_retry_error, AttributeError)
+
+
+def test_the_retry_is_reported_even_when_the_online_error_has_an_explicit_cause(monkeypatch):
+    """`FastModel.from_pretrained` raises `RuntimeError(...) from _cause` for a failed
+    config probe (loader.py:756). Python prints a cause INSTEAD of a context, so hanging
+    the retry off `__context__` there shows the user nothing about the cache attempt."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("could not load model") from ConnectionError("connection reset")
+        raise AttributeError("'NoneType' object has no attribute 'endswith'")
+
+    with pytest.raises(RuntimeError) as caught:
+        fake("model")
+    assert isinstance(caught.value.__cause__, ConnectionError)
+    assert isinstance(caught.value._unsloth_offline_retry_error, AttributeError)
+    if hasattr(caught.value, "add_note"):  # notes are 3.11+
+        rendered = "".join(
+            traceback.format_exception(type(caught.value), caught.value, caught.value.__traceback__)
+        )
+        assert "retrying from the local cache also failed" in rendered
+        assert "'NoneType' object has no attribute 'endswith'" in rendered
+
+
+def test_a_context_the_loader_suppressed_is_not_promoted_to_a_cause(monkeypatch):
+    """`raise ... from None` keeps `__context__` but sets `__suppress_context__` to keep
+    it out of the traceback. Copying it into `__cause__` publishes what the loader chose
+    to hide."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            try:
+                raise ConnectionError("connection reset from 10.0.0.1 with token hf_xxx")
+            except ConnectionError:
+                raise RuntimeError("could not load model") from None
+        raise AttributeError("'NoneType' object has no attribute 'endswith'")
+
+    with pytest.raises(RuntimeError) as caught:
+        fake("model")
+    assert caught.value.__cause__ is None, "the suppressed context was promoted to a cause"
+    assert caught.value.__suppress_context__ is True
+    rendered = "".join(
+        traceback.format_exception(type(caught.value), caught.value, caught.value.__traceback__)
+    )
+    assert "10.0.0.1" not in rendered
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        # A missing vocabulary resolves to None and is then dereferenced, opened or
+        # stat'd, so the family spans four exception types (#7845).
+        AttributeError("'NoneType' object has no attribute 'readlines'"),
+        TypeError(
+            "argument should be a str or an os.PathLike object where __fspath__ "
+            "returns a str, not 'NoneType'"
+        ),
+        TypeError("expected str, bytes or os.PathLike object, not NoneType"),
+        TypeError("stat: path should be string, bytes, os.PathLike or integer, not NoneType"),
+        ValueError("Can't find a vocabulary file at path 'None'."),
+    ],
+)
+def test_a_tokenizer_cache_miss_also_surfaces_the_network_error(monkeypatch, artifact):
+    """The retry loads the tokenizer and processor too, and an empty cache there is just
+    as opaque as it is for the weights."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    calls = []
+
+    @L._offline_aware_load
+    def fake(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ConnectionError("connection reset while downloading tokenizer.json")
+        raise artifact
+
+    with pytest.raises(ConnectionError) as caught:
+        fake("model")
+    assert "connection reset" in str(caught.value)
+    assert caught.value.__cause__ is artifact
+
+
+def test_the_same_wording_about_a_real_path_is_not_a_cache_miss():
+    """The TypeError spellings are generic, so they must stay gated on the None: a real
+    path in that message is a caller bug and has to reach the user unchanged."""
+    assert (
+        L._empty_cache_artifact(
+            TypeError("stat: path should be string, bytes, os.PathLike or integer, not int")
+        )
+        is False
+    )
 
 
 def test_the_vlm_tokenizer_fallback_does_not_pin_the_built_model(monkeypatch):

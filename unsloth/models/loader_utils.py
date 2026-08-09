@@ -1181,29 +1181,66 @@ def _restore_progress_bars(were_disabled):
             pass
 
 
+# Every way a cache miss reaches the caller once offline mode has skipped Transformers'
+# own "does not appear to have a file named" raise: the resolved path stays None and the
+# next line dereferences it, so the message names the None and never the cache. Same set
+# the Studio training worker matches (studio/backend/core/training/worker.py, #7845):
+# weights come out as `endswith`, tokenizers/processors as any of the other four.
+_EMPTY_CACHE_ARTIFACTS = (
+    "'nonetype' object has no attribute 'endswith'",
+    "'nonetype' object has no attribute 'readlines'",
+    "argument should be a str or an os.pathlike object",
+    "expected str, bytes or os.pathlike object",
+    "stat: path should be string, bytes, os.pathlike or integer",
+    "can't find a vocabulary file at path 'none'",
+)
+
+
 def _empty_cache_artifact(exc):
     """True if exc, or something it wraps, is offline mode's empty-cache artifact.
 
-    The ONE retry failure that says nothing useful. Forced offline, Transformers
-    skips its own "does not appear to have a file named" raise and leaves
-    `resolved_archive_file = None`, so a cache with nothing in it surfaces as
-    `AttributeError: 'NoneType' object has no attribute 'endswith'`.
+    The one family of retry failure that says nothing useful.
 
     Named positively, rather than asking "is this an OOM": every other retry
     failure is real news and must reach the user, and enumerating the ways an
     accelerator spells OOM cannot be complete (accelerate re-raises it as a bare
-    RuntimeError, XPU has its own class). Asking for the one artifact instead is
+    RuntimeError, XPU has its own class). Asking for the artifact instead is
     complete by construction.
     """
-    seen = 0
-    while exc is not None and seen < 8:
-        if isinstance(exc, AttributeError):
-            text = str(exc)
-            if "NoneType" in text and "endswith" in text:
-                return True
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        text = str(exc).lower()
+        # Gate on the None: the same TypeError wording about a real path (`not 'int'`)
+        # is a caller bug, not an empty cache.
+        if ("nonetype" in text or "path 'none'" in text) and any(
+            artifact in text for artifact in _EMPTY_CACHE_ARTIFACTS
+        ):
+            return True
         exc = exc.__cause__ or exc.__context__
-        seen += 1
     return False
+
+
+def _note_offline_retry(error, retry_error):
+    """Record the failed cache retry on the online error we are about to surface.
+
+    A note is the only place it can go that survives: the online error usually
+    already has a cause, and Python prints a cause INSTEAD of a context, so
+    chaining the retry on would hide it (and would cost the chain that makes the
+    online error classifiable). Notes are 3.11+; below that this is a no-op and
+    the attribute is all there is."""
+    text = f"Unsloth: retrying from the local cache also failed: {type(retry_error).__name__}: {retry_error}"
+    try:
+        error._unsloth_offline_retry_error = retry_error
+    except Exception:
+        pass
+    add_note = getattr(error, "add_note", None)
+    if add_note is None:
+        return
+    try:
+        add_note(text)
+    except Exception:
+        pass
 
 
 def _offline_aware_load(fn):
@@ -1257,32 +1294,32 @@ def _offline_aware_load(fn):
             with _force_hf_offline():
                 return fn(*args, **kwargs)
         except Exception as e:
-            # Report the ONLINE error: this retry only runs because of it. Its own
-            # failure names an empty cache badly, since offline mode skips
-            # Transformers' "does not appear to have a file named" raise and leaves
-            # `resolved_archive_file = None` -- the user saw `AttributeError:
-            # 'NoneType' ... 'endswith'`. The retry stays as __cause__.
-            surfaced = online_error if _empty_cache_artifact(e) else e
-            # Tag so an enclosing _offline_aware_load skips its own redundant retry.
-            try:
-                surfaced._unsloth_offline_retried = True
-            except Exception:
-                pass
-            if surfaced is e:
+            # A real retry failure (corrupt checkpoint, OOM) is news and goes out as
+            # itself; only the empty-cache artifact is worth replacing.
+            if not _empty_cache_artifact(e):
+                # Tag so an enclosing _offline_aware_load skips its own redundant retry.
+                try:
+                    e._unsloth_offline_retried = True
+                except Exception:
+                    pass
                 raise
-            # `from e` only where there is no chain to lose. A wrapper classified as
-            # network-related THROUGH its `__cause__` would otherwise have that cause
-            # replaced by the retry, and nothing downstream could classify it again.
-            # The retry still reaches the user either way: implicit chaining sets
-            # `__context__` because this raise is inside the except block.
-            if online_error.__cause__ is None:
-                if online_error.__context__ is None:
-                    raise surfaced from e
-                # Classified through an implicit chain: promote it to `__cause__` first,
-                # because the raise below is inside this except block and so overwrites
-                # `__context__` with the retry failure either way.
-                online_error.__cause__ = online_error.__context__
-            raise surfaced
+            retry_error = e
+        # Report the ONLINE error: this retry only runs because of it, and its own
+        # failure names an empty cache badly (offline mode skips Transformers'
+        # "does not appear to have a file named" raise, so the user saw
+        # `AttributeError: 'NoneType' ... 'endswith'`).
+        try:
+            online_error._unsloth_offline_retried = True
+        except Exception:
+            pass
+        # Raise OUTSIDE the handler above: inside it, Python would overwrite
+        # `__context__` with the cache miss, and that chain is often the only thing
+        # that still makes the online error classifiable as network-related.
+        if online_error.__cause__ is None and online_error.__context__ is None:
+            # No chain to lose, so chain the retry on where it also prints.
+            raise online_error from retry_error
+        _note_offline_retry(online_error, retry_error)
+        raise online_error
 
     return _wrapper
 
