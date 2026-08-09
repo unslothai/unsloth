@@ -2783,5 +2783,113 @@ def test_an_id_a_path_segment_cannot_carry_rides_in_the_query():
         assert "session or session_id" in source
 
 
+def test_a_delete_waits_for_a_call_running_in_another_studio(tmp_path, monkeypatch):
+    """Two Studios can share a home, and the in-memory count only knows about
+    calls in this process."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_other11"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    # What the other process leaves in the ledger while its tool runs.
+    tools._record_workdir(session, f"{os.getpid() + 1}:{time.time():.0f}", tools._BUSY)
+    assert tools.remove_session_sandbox(session, delete_files = True) is False
+    assert (workdir / "report.csv").is_file(), "removed under another process's call"
+    assert tools._recorded_workdir(session, tools._PENDING_DELETE) == "1"
+
+    # Once that process is gone, the next startup carries it out.
+    tools._record_workdir(session, None, tools._BUSY)
+    tools.sweep_pending_deletes()
+    for _ in range(50):
+        if not workdir.exists():
+            break
+        time.sleep(0.05)
+    assert not workdir.exists()
+    assert tools._recorded_workdir(session, tools._PENDING_DELETE) is None
+
+
+def test_a_stale_busy_entry_does_not_keep_a_sandbox_forever(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    session = "__LOCALID_stale22"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    long_ago = time.time() - tools._BUSY_TTL_SECONDS - 60
+    tools._record_workdir(session, f"{os.getpid() + 1}:{long_ago:.0f}", tools._BUSY)
+
+    assert tools._busy_elsewhere(session) is False
+    assert tools.remove_session_sandbox(session) is True
+    assert not workdir.exists()
+
+
+def test_our_own_call_still_uses_the_in_memory_count(tmp_path, monkeypatch):
+    """The ledger entry this process wrote must not read as somebody else's."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._pending_removals.clear()
+    session = "__LOCALID_mine444"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    with tools._session_in_flight(session):
+        assert tools._recorded_workdir(session, tools._BUSY), "did not say it was busy"
+        assert tools._busy_elsewhere(session) is False
+        assert tools.remove_session_sandbox(session, delete_files = True) is False
+    # Queued in memory, so it happens as the call ends, not at the next startup.
+    for _ in range(50):
+        if not workdir.exists():
+            break
+        time.sleep(0.05)
+    assert not workdir.exists()
+    assert tools._recorded_workdir(session, tools._BUSY) is None
+
+
+def test_a_migration_is_only_visible_once_it_has_finished(tmp_path, monkeypatch):
+    """Across filesystems the copy fills the destination as it goes, and a card
+    opened meanwhile would read a file that is half there."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_stage11"
+    legacy.mkdir(parents = True)
+    (legacy / "big.bin").write_bytes(b"x" * 4096)
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    seen = []
+
+    real_move = tools.shutil.move
+
+    def watching_move(src, dst, *args, **kwargs):
+        # What a read would find while the copy is running.
+        seen.append(os.path.basename(str(dst)))
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "move", watching_move)
+    tools._migrate_legacy_sandbox(str(root))
+
+    assert seen and all(tools._STAGING_SUFFIX in name for name in seen), seen
+    assert (root / "__LOCALID_stage11" / "big.bin").read_bytes() == b"x" * 4096
+    assert not list(root.glob(f"*{tools._STAGING_SUFFIX}*")), "a staging directory was left"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

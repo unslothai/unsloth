@@ -614,8 +614,10 @@ async def lifespan(app: FastAPI):
         from core.inference.tools import (
             migrate_legacy_sandbox_in_background,
             sweep_detached_sandboxes,
+            sweep_pending_deletes,
         )
         sweep_detached_sandboxes()
+        sweep_pending_deletes()
         migrate_legacy_sandbox_in_background()
     except Exception:  # noqa: BLE001
         pass

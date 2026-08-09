@@ -7121,6 +7121,46 @@ _pending_removals: "dict[str, dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
 
 
+def _mark_busy(session_id: str, busy: bool) -> None:
+    """Note in the ledger that this process is running in that sandbox."""
+    import time
+
+    _record_workdir(
+        session_id,
+        f"{os.getpid()}:{time.time():.0f}" if busy else None,
+        _BUSY,
+    )
+
+
+def _busy_elsewhere(session_id: str) -> bool:
+    """Whether another process says it is running a call for this session."""
+    import time
+
+    entry = _recorded_workdir(session_id, _BUSY)
+    if not entry:
+        return False
+    pid, _, when = entry.partition(":")
+    if pid == str(os.getpid()):
+        return False  # ours, and the in-memory count is the accurate answer
+    try:
+        return (time.time() - float(when)) < _BUSY_TTL_SECONDS
+    except ValueError:
+        return False
+
+
+def sweep_pending_deletes() -> None:
+    """Carry out deletes that were left to whoever outlived the busy process."""
+    entries = _owners_read(_owners_path()).get(_PENDING_DELETE)
+    for name, wanted in list(entries.items() if isinstance(entries, dict) else []):
+        if _busy_elsewhere(name):
+            continue
+        _record_workdir(name, None, _PENDING_DELETE)
+        try:
+            remove_session_sandbox(name, delete_files = wanted == "1")
+        except Exception:  # noqa: BLE001 - best effort, like the rest of this
+            logger.debug("deferred sandbox delete failed", exc_info = True)
+
+
 def _session_key(session_id: "str | None") -> str:
     """Lifecycle key for a session id.
 
@@ -7135,17 +7175,24 @@ def _session_key(session_id: "str | None") -> str:
 def _session_in_flight(session_id: "str | None"):
     key = _session_key(session_id)
     with _active_sessions_lock:
+        first = _active_sessions.get(key, 0) == 0
         _active_sessions[key] = _active_sessions.get(key, 0) + 1
+    if first and session_id:
+        _mark_busy(session_id, True)
     try:
         yield
     finally:
+        last = False
         with _active_sessions_lock:
             if _active_sessions.get(key, 0) <= 1:
+                last = True
                 _active_sessions.pop(key, None)
                 for pending_id, pending_files in _pending_removals.pop(key, {}).items():
                     _remove_session_sandbox_locked(pending_id, pending_files)
             else:
                 _active_sessions[key] -= 1
+        if last and session_id:
+            _mark_busy(session_id, False)
 
 
 # Non-matching session_ids collapse to ``_invalid`` to block cross-session escapes.
@@ -7209,6 +7256,14 @@ _DERIVED_PREFIX = "_id-"
 # one. Written before the move starts and dropped when it finishes, so an
 # interruption is the only thing that leaves one behind.
 _MIGRATING = "migrating"
+# Sessions with a call in flight, and deletes that arrived while one was. Both
+# in the ledger rather than in memory: another Studio sharing this home is
+# running its own tool calls, and its sandbox is the same directory.
+_BUSY = "busy"
+_PENDING_DELETE = "pending_delete"
+# Longer than a tool call can run, so a process that died holding an entry does
+# not keep a folder alive for good.
+_BUSY_TTL_SECONDS = 900
 _SESSIONS = "sessions"
 _owners_lock = threading.Lock()
 
@@ -7581,7 +7636,11 @@ def _finish_partial_move(source: str, target: str) -> bool:
             kept += 1
             continue
         try:
-            shutil.move(below, above)
+            # Same staging trick per file: a copy in progress must not be
+            # readable at the name a download card already points at.
+            staged = f"{above}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+            shutil.move(below, staged)
+            os.rename(staged, above)
         except OSError as error:
             moved_all = False
             logger.warning("Could not move sandbox file %s: %s", name, error)
@@ -7654,7 +7713,13 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
                 # Written first, so a move that dies part way through is still
                 # recognisable as ours on the next launch.
                 _record_workdir(name, target, _MIGRATING)
-                shutil.move(source, target)
+                # Across filesystems shutil.move copies into the destination as
+                # it goes, and a card opened meanwhile would read a file that is
+                # half there. Filled under a name nothing resolves, then renamed
+                # into place, which on one filesystem is atomic.
+                staging = f"{target}{_STAGING_SUFFIX}{uuid.uuid4().hex[:8]}"
+                shutil.move(source, staging)
+                os.rename(staging, target)
                 _mark_migrated(target, name)
                 _record_workdir(name, target)
                 _record_workdir(name, None, _MIGRATING)
@@ -7840,6 +7905,9 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
 
 
 _DETACHED_SUFFIX = ".deleting-"
+# Where a cross-filesystem move is assembled. Not a session name, so nothing
+# resolves to it while it is being filled.
+_STAGING_SUFFIX = ".arriving-"
 # The exact name the rename below produces. A substring test would have matched
 # a user's own report.deleting-backup in a shared root.
 _DETACHED_RE = re.compile(r"\A.+\.deleting-[0-9a-f]{8}\Z")
@@ -7932,6 +8000,11 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     _migrate_legacy_sandbox(sandbox_root())
     # Held across the decision AND the unlink: otherwise a tool can start in
     # between and run in a directory this call then removes.
+    if _busy_elsewhere(session_id):
+        # Another Studio is running in there. Left for whichever process is
+        # still up when that call ends, rather than pulled out from under it.
+        _record_workdir(session_id, "1" if delete_files else "0", _PENDING_DELETE)
+        return False
     key = _session_key(session_id)
     with _active_sessions_lock:
         if _active_sessions.get(key, 0) > 0:
