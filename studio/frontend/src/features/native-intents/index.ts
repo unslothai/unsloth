@@ -7,8 +7,11 @@ export {
   consumeNativePathToken,
   openModelsDir,
   pickHuggingFaceCacheDir,
+  readNativeAttachmentFile,
+  registerNativeAttachmentPath,
   registerNativeDatasetPath,
 } from "./api";
+export { useNativeDropTarget } from "./use-native-drop-target";
 export {
   NativeAttachmentTargetContext,
   useNativeAttachmentTargetKey,

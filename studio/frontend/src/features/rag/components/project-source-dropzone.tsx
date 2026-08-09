@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  consumeNativePathToken,
+  type NativeIntent,
+  registerNativeAttachmentPath,
+  useNativeDropTarget,
+} from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
@@ -14,15 +20,48 @@ import {
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { resolveVisionOverrides } from "./vision-overrides";
 
-/** A file picked before the project exists, held until create commits. */
+/** A source picked before the project exists, held until create commits. A
+ * desktop drop has no File, only a path token the backend redeems at upload. */
 export interface StagedSource {
   id: string;
-  file: File;
+  name: string;
+  size: number;
+  modifiedMs: number;
+  upload: File | { nativeToken: string };
 }
 
 // Client-side dedup key; backend dedups authoritatively by content hash.
-function fileSignature(file: File): string {
-  return `${file.name}|${file.size}|${file.lastModified}`;
+function sourceSignature(entry: StagedSource): string {
+  return `${entry.name}|${entry.size}|${entry.modifiedMs}`;
+}
+
+function stagedId(): string {
+  return `staged_${Math.random().toString(36).slice(2)}`;
+}
+
+function stagedFromFile(file: File): StagedSource {
+  return {
+    id: stagedId(),
+    name: file.name,
+    size: file.size,
+    modifiedMs: file.lastModified,
+    upload: file,
+  };
+}
+
+function stagedFromIntent(intent: NativeIntent): StagedSource {
+  return {
+    id: stagedId(),
+    name: intent.path.displayLabel,
+    size: intent.path.sizeBytes ?? 0,
+    modifiedMs: intent.path.modifiedMs ?? 0,
+    upload: { nativeToken: intent.path.token },
+  };
+}
+
+function nativeFileName(path: string): string {
+  const segments = path.split(/[\\/]/);
+  return segments[segments.length - 1] || path;
 }
 
 function formatSize(bytes: number): string {
@@ -48,39 +87,31 @@ const ACCEPTED_EXTS = new Set(
 // `accept` only filters the picker, so a drop can carry anything. A folder
 // arrives as an extension-less entry, which this rejects along with the types
 // the backend would 400 on.
-function isSupported(file: File): boolean {
-  const dot = file.name.lastIndexOf(".");
+function isSupported(name: string): boolean {
+  const dot = name.lastIndexOf(".");
   if (dot <= 0) return false;
-  return ACCEPTED_EXTS.has(file.name.slice(dot).toLowerCase());
+  return ACCEPTED_EXTS.has(name.slice(dot).toLowerCase());
 }
 
-/** Merge a selection into the staged list. Returns the names it would not take,
- * so the caller can say so once instead of dropping them silently. */
+/** Merge a selection into the staged list, reporting what it would not take so
+ * the caller can say so once instead of dropping it silently. */
 function addStagedSources(
   staged: StagedSource[],
-  incoming: FileList | File[],
-): { next: StagedSource[]; unsupported: string[]; duplicates: string[] } {
-  const seen = new Set(staged.map((entry) => fileSignature(entry.file)));
+  incoming: StagedSource[],
+): { next: StagedSource[]; duplicates: string[] } {
+  const seen = new Set(staged.map(sourceSignature));
   const next = [...staged];
-  const unsupported: string[] = [];
   const duplicates: string[] = [];
-  for (const file of Array.from(incoming)) {
-    if (!isSupported(file)) {
-      unsupported.push(file.name);
-      continue;
-    }
-    const signature = fileSignature(file);
+  for (const entry of incoming) {
+    const signature = sourceSignature(entry);
     if (seen.has(signature)) {
-      duplicates.push(file.name);
+      duplicates.push(entry.name);
       continue;
     }
     seen.add(signature);
-    next.push({
-      id: `staged_${Math.random().toString(36).slice(2)}`,
-      file,
-    });
+    next.push(entry);
   }
-  return { next, unsupported, duplicates };
+  return { next, duplicates };
 }
 
 // Projects created with staged files, so the landing can open on Sources.
@@ -113,15 +144,24 @@ export async function uploadStagedSources(
   const { ocr, caption } = resolveVisionOverrides();
   const documentIds = new Set<string>();
   const merged: string[] = [];
-  for (const { file } of staged) {
+  for (const entry of staged) {
     try {
-      const result = await uploadProjectDocument(projectId, file, ocr, caption);
+      // Leases are short-lived, so mint one per file as its turn comes up.
+      const source =
+        entry.upload instanceof File
+          ? entry.upload
+          : {
+              nativePathLease: (
+                await consumeNativePathToken(entry.upload.nativeToken, "attach")
+              ).nativePathLease,
+            };
+      const result = await uploadProjectDocument(projectId, source, ocr, caption);
       // Same bytes under another name: the backend hashes content, so this is
       // the document already uploaded. Say so rather than imply a new source.
-      if (documentIds.has(result.documentId)) merged.push(file.name);
+      if (documentIds.has(result.documentId)) merged.push(entry.name);
       else documentIds.add(result.documentId);
     } catch (error) {
-      toast.error(`Couldn't upload ${file.name}`, {
+      toast.error(`Couldn't upload ${entry.name}`, {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -152,9 +192,9 @@ export function ProjectSourceDropzone({
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
 
-  const addFiles = useCallback(
-    (files: FileList | File[]) => {
-      const { next, unsupported, duplicates } = addStagedSources(staged, files);
+  const addSources = useCallback(
+    (incoming: StagedSource[], unsupported: string[]) => {
+      const { next, duplicates } = addStagedSources(staged, incoming);
       if (next.length !== staged.length) onChange(next);
       if (unsupported.length > 0) {
         toast.info(
@@ -177,6 +217,47 @@ export function ProjectSourceDropzone({
     [staged, onChange],
   );
 
+  const addFiles = useCallback(
+    (files: FileList | File[]) => {
+      const incoming = Array.from(files);
+      addSources(
+        incoming.filter((file) => isSupported(file.name)).map(stagedFromFile),
+        incoming.filter((file) => !isSupported(file.name)).map((file) => file.name),
+      );
+    },
+    [addSources],
+  );
+
+  const addNativePaths = useCallback(
+    async (paths: string[]) => {
+      const supported = paths.filter((path) => isSupported(nativeFileName(path)));
+      const unsupported = paths
+        .filter((path) => !isSupported(nativeFileName(path)))
+        .map(nativeFileName);
+      // Per path, so one rejected file does not discard the rest of the drop.
+      const settled = await Promise.allSettled(
+        supported.map(registerNativeAttachmentPath),
+      );
+      const staged = settled.flatMap((result) =>
+        result.status === "fulfilled" ? [stagedFromIntent(result.value)] : [],
+      );
+      addSources(staged, unsupported);
+      const failed = settled.length - staged.length;
+      if (failed > 0) {
+        toast.error(
+          failed === 1 ? "Couldn't add a dropped file" : `Couldn't add ${failed} dropped files`,
+        );
+      }
+    },
+    [addSources],
+  );
+
+  const nativeDropRef = useNativeDropTarget({
+    enabled: !disabled,
+    onDrop: (paths) => void addNativePaths(paths),
+    onDragOver: setDragging,
+  });
+
   const endDrag = useCallback(() => {
     dragDepth.current = 0;
     setDragging(false);
@@ -188,6 +269,7 @@ export function ProjectSourceDropzone({
       {/* Panel is the drop target; the inner button owns the click so staged
           rows can carry their own remove buttons. */}
       <div
+        ref={nativeDropRef}
         // preventDefault runs even while disabled: nothing else on the page
         // cancels a file drop, so the browser would navigate to the file and
         // kill the uploads in flight.
@@ -262,16 +344,16 @@ export function ProjectSourceDropzone({
                   />
                   <span
                     className="min-w-0 flex-1 truncate text-ui-14 text-foreground"
-                    title={entry.file.name}
+                    title={entry.name}
                   >
-                    {entry.file.name}
+                    {entry.name}
                   </span>
                   <span className="shrink-0 text-ui-11 text-muted-foreground">
-                    {formatSize(entry.file.size)}
+                    {formatSize(entry.size)}
                   </span>
                   <button
                     type="button"
-                    aria-label={`Remove ${entry.file.name}`}
+                    aria-label={`Remove ${entry.name}`}
                     disabled={disabled}
                     onClick={() =>
                       onChange(staged.filter((row) => row.id !== entry.id))

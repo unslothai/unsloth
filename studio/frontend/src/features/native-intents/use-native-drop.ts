@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
 import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
+import { nativeDropTargetAt } from "./native-drop-targets";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
 
@@ -160,19 +161,31 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
     }
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    // "over" carries no paths, so the ones announced on "enter" are what the
+    // overlay keeps reading as the cursor moves across the window.
+    let draggedPaths: string[] = [];
 
     void import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => getCurrentWindow().onDragDropEvent(async (event) => {
         const currentOptions = optionsRef.current;
-        if (event.payload.type === "enter") {
-          setDropState(dropStateForPaths(event.payload.paths, currentOptions));
-          return;
-        }
         if (event.payload.type === "leave") {
+          draggedPaths = [];
           setDropState({ status: "idle" });
           return;
         }
-        if (event.payload.type !== "drop") return;
+        if (event.payload.type === "enter") {
+          draggedPaths = event.payload.paths;
+        }
+        // A drop zone under the cursor owns this drop; leave it alone.
+        if (nativeDropTargetAt(event.payload.position)) {
+          setDropState({ status: "idle" });
+          return;
+        }
+        if (event.payload.type !== "drop") {
+          setDropState(dropStateForPaths(draggedPaths, currentOptions));
+          return;
+        }
+        draggedPaths = [];
         setDropState({ status: "idle" });
         const dropped = classifyDropPaths(event.payload.paths);
         if (dropped.kind === "none") return;

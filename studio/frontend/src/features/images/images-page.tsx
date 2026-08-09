@@ -17,6 +17,11 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
+import {
+  readNativeAttachmentFile,
+  registerNativeAttachmentPath,
+  useNativeDropTarget,
+} from "@/features/native-intents";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -660,6 +665,29 @@ function ImageDropzone({
     [onChange],
   );
 
+  // Tauri suppresses the webview's drop event, so a native drop arrives as a
+  // path the desktop side reads for us.
+  const readNativePath = useCallback(
+    async (path: string | undefined) => {
+      if (!path) return;
+      try {
+        const intent = await registerNativeAttachmentPath(path);
+        const file = await readNativeAttachmentFile(intent.path.token);
+        onChange(`data:${file.mimeType};base64,${file.base64}`);
+      } catch (error) {
+        toast.error("Could not read the image", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [onChange],
+  );
+
+  const nativeDropRef = useNativeDropTarget({
+    onDrop: (paths) => void readNativePath(paths[0]),
+    onDragOver: setDragging,
+  });
+
   if (value) {
     return (
       <div className="relative overflow-hidden rounded-[10px] border border-border">
@@ -689,6 +717,7 @@ function ImageDropzone({
   return (
     <button
       type="button"
+      ref={nativeDropRef}
       onClick={() => inputRef.current?.click()}
       onDragOver={(e) => {
         e.preventDefault();
