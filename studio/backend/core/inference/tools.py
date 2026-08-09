@@ -7245,6 +7245,44 @@ def _recorded_workdir(session_id: str, section: str = _SESSIONS) -> "str | None"
     return recorded if isinstance(recorded, str) and recorded else None
 
 
+@contextlib.contextmanager
+def _owners_file_lock(path: str):
+    """Hold the ledger across a read-modify-write, between processes too.
+
+    Two Studios can share a studio home, and a whole-file rewrite from a stale
+    snapshot drops the other one's entries. A lock that cannot be taken is not
+    a reason to lose the write, so this gives up and proceeds after a moment,
+    and steals one left behind by a process that died holding it.
+    """
+    import time
+
+    lock = f"{path}.lock"
+    fd = None
+    deadline = time.monotonic() + 2.0
+    while fd is None and time.monotonic() < deadline:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock) > 30:
+                    os.unlink(lock)
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.02)
+        except OSError:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                os.unlink(lock)
+            except OSError:
+                pass
+
+
 def _record_workdir(
     session_id: str,
     workdir: "str | None",
@@ -7259,8 +7297,12 @@ def _record_workdir(
     path = _owners_path()
     if not path:
         return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+    except OSError:
+        return
     session_id = _record_key(session_id, section)
-    with _owners_lock:
+    with _owners_lock, _owners_file_lock(path):
         owners = _owners_read(path)
         entries = owners.get(section)
         if not isinstance(entries, dict):
@@ -7274,7 +7316,6 @@ def _record_workdir(
                 return
             entries[session_id] = workdir
         try:
-            os.makedirs(os.path.dirname(path), exist_ok = True)
             tmp = f"{path}.{os.getpid()}.tmp"
             with open(tmp, "w", encoding = "utf-8") as fh:
                 json.dump(owners, fh)
@@ -7525,28 +7566,31 @@ def _finish_partial_move(source: str, target: str) -> bool:
     sides. Anything already at the target wins and its copy stays below, the
     same rule whole directories follow.
     """
-    done = True
+    moved_all = True
     try:
         names = os.listdir(source)
     except OSError:
         return False
+    kept = 0
     for name in names:
         below = os.path.join(source, name)
         above = os.path.join(target, name)
         if os.path.exists(above):
-            done = False
+            # Deliberately left for the user, so this move is done with it: a
+            # retry would find the same conflict on every launch forever.
+            kept += 1
             continue
         try:
             shutil.move(below, above)
         except OSError as error:
-            done = False
+            moved_all = False
             logger.warning("Could not move sandbox file %s: %s", name, error)
-    if done:
+    if moved_all and not kept:
         try:
             os.rmdir(source)
         except OSError:
-            done = False
-    return done
+            return False
+    return moved_all
 
 
 def _mark_migrated(workdir: str, session_id: str) -> None:
@@ -7631,7 +7675,7 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         return False
 
 
-def _sandbox_fallback(root: str, name: str) -> str:
+def _sandbox_fallback(root: str, name: str, create: bool = False) -> str:
     """``_default`` / ``_invalid`` under the root, contained like any session.
 
     They are ordinary directories in a writable sandbox, so one replaced by a
@@ -7640,18 +7684,30 @@ def _sandbox_fallback(root: str, name: str) -> str:
     user pointed us at, the entry is theirs and a fresh one is used instead.
     """
     path = os.path.join(root, name)
-    if not os.path.islink(path):
+    if os.path.islink(path):
+        if _root_is_ours():
+            try:
+                os.unlink(path)
+                return path
+            except OSError:
+                pass
+    elif _root_is_ours() or not os.path.exists(path) or _marker_owner(path) == name:
         return path
-    if _root_is_ours():
-        try:
-            os.unlink(path)
-            return path
-        except OSError:
-            pass
+    # In a root the user pointed us at, a directory already sitting under this
+    # name is theirs: a call with no session id would otherwise run in it. The
+    # one we made instead is remembered, so it is not a new one every call.
+    ours = _trusted_record(root, name)
+    if ours:
+        return ours
+    if not create:
+        return os.path.join(root, "_unowned", name)
     try:
-        return tempfile.mkdtemp(prefix = f"{name}_", dir = root)
+        made = tempfile.mkdtemp(prefix = f"{name}_", dir = root)
     except OSError:
         return os.path.join(root, f"{name}_unusable")
+    _claim_sandbox(made, name)
+    _record_workdir(name, made)
+    return made
 
 
 def _contained_in_root(workdir: str, root: str) -> bool:
@@ -7716,9 +7772,13 @@ def _get_workdir(session_id: str | None = None) -> str:
         elif session_id:
             workdir = _ensure_session_dir(sandbox_root_path, session_id)
         else:
-            workdir = _sandbox_fallback(sandbox_root_path, "_default")
+            workdir = _sandbox_fallback(sandbox_root_path, "_default", create = True)
         created = not os.path.isdir(workdir)
         os.makedirs(workdir, exist_ok = True)
+        if not project_workdir and not session_id:
+            # The fallbacks are directories like any other: claimed, so the next
+            # run knows this one is the one we made.
+            _claim_sandbox(workdir, "_default")
         # Only a root we just created: the override can name a shared
         # directory, and locking that down would cut off everything else.
         if not root_existed or not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():

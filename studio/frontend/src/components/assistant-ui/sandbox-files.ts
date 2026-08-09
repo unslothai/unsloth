@@ -48,6 +48,27 @@ export function extractCreatedFiles(raw: string): {
   }
 }
 
+/** Ids a path segment can carry: ASGI decodes %2F before it matches a route. */
+const PATH_SAFE_SESSION = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Where this session's files live, as the routes expect to be asked. */
+export function sandboxRoutePrefix(sessionId: string): {
+  prefix: string;
+  query: string;
+} {
+  if (PATH_SAFE_SESSION.test(sessionId)) {
+    return {
+      prefix: `/api/inference/sandbox/${encodeURIComponent(sessionId)}`,
+      query: "",
+    };
+  }
+  // An API client can pick anything; carry it where it survives the round trip.
+  return {
+    prefix: "/api/inference/sandbox/_",
+    query: `?session=${encodeURIComponent(sessionId)}`,
+  };
+}
+
 export function sandboxFilePath(sessionId: string, filename: string): string {
   // Segment by segment: a file written to outputs/report.csv keeps a real "/"
   // in the URL, which encodeURIComponent on the whole name would have escaped.
@@ -55,5 +76,6 @@ export function sandboxFilePath(sessionId: string, filename: string): string {
     .split("/")
     .map((segment) => encodeURIComponent(segment))
     .join("/");
-  return `/api/inference/sandbox/${encodeURIComponent(sessionId)}/${path}`;
+  const { prefix, query } = sandboxRoutePrefix(sessionId);
+  return `${prefix}/${path}${query}`;
 }

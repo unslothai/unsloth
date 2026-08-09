@@ -2676,5 +2676,112 @@ def test_keeping_the_files_keeps_the_note_of_where_they_are(tmp_path, monkeypatc
     assert tools._recorded_workdir(session) is None
 
 
+def test_two_processes_writing_the_ledger_keep_both_entries(tmp_path, monkeypatch):
+    """Two Studios can share a studio home, and a whole-file rewrite from a
+    stale snapshot drops the other one's entries."""
+    import subprocess
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    tools._record_workdir("__LOCALID_first11", str(tmp_path / "first"))
+    path = tools._owners_path()
+    assert path
+
+    # A second process doing the same read-modify-write.
+    code = (
+        "import sys; sys.path.insert(0, %r);"
+        "from core.inference import tools;"
+        "tools._record_workdir('__LOCALID_secon2', %r)"
+        % (str(Path(__file__).resolve().parents[1]), str(tmp_path / "second"))
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output = True, text = True, encoding = "utf-8",
+        env = {**os.environ, "UNSLOTH_STUDIO_HOME": str(tmp_path / "home")},
+        cwd = str(Path(__file__).resolve().parents[1]),
+    )
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert tools._recorded_workdir("__LOCALID_first11") == str(tmp_path / "first")
+    assert tools._recorded_workdir("__LOCALID_secon2") == str(tmp_path / "second")
+    assert not os.path.exists(f"{path}.lock"), "the lock was left behind"
+
+
+def test_a_default_folder_that_was_already_there_is_not_run_in(tmp_path, monkeypatch):
+    """A call with no session id lands on the fallback, which in a shared root
+    can be a directory of the user's own."""
+    root = tmp_path / "shared"
+    root.mkdir()
+    theirs = root / "_default"
+    theirs.mkdir()
+    (theirs / "notes.txt").write_text("theirs", encoding = "utf-8")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(root))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir(None))
+    assert workdir != theirs, workdir
+    assert not (workdir / "notes.txt").exists()
+    assert (theirs / "notes.txt").read_text(encoding = "utf-8") == "theirs"
+    assert not (theirs / tools._SANDBOX_MARKER).exists()
+
+    # Ours is claimed, so the next run recognises it rather than making another.
+    tools._workdirs.clear()
+    assert Path(tools.get_sandbox_workdir(None)) == workdir
+
+
+def test_a_kept_conflict_does_not_make_the_migration_retry_forever(tmp_path, monkeypatch):
+    """The same name on both sides is left alone on purpose, so the move is
+    finished with it rather than rescanned on every first tool call."""
+    fake_home = tmp_path / "userprofile"
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_conf111"
+    legacy.mkdir(parents = True)
+    (legacy / "same.csv").write_text("older", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    tools._legacy_sandbox_migrated = False
+    root = Path(tools.sandbox_root())
+    partial = root / "__LOCALID_conf111"
+    partial.mkdir(parents = True)
+    (partial / "same.csv").write_text("newer", encoding = "utf-8")
+    tools._record_workdir("__LOCALID_conf111", str(partial), tools._MIGRATING)
+
+    tools._migrate_legacy_sandbox(str(root))
+    assert tools._legacy_sandbox_migrated is True, "it would rescan on every call"
+    assert tools._recorded_workdir("__LOCALID_conf111", tools._MIGRATING) is None
+    # The conflict is still down there for the user.
+    assert (legacy / "same.csv").read_text(encoding = "utf-8") == "older"
+    assert (partial / "same.csv").read_text(encoding = "utf-8") == "newer"
+
+
+def test_an_id_a_path_segment_cannot_carry_rides_in_the_query():
+    """ASGI decodes %2F before it matches a route, so an id with a slash in it
+    would arrive as a different id and a different filename."""
+    root = Path(__file__).resolve().parents[2] / "frontend" / "src"
+    helper = (root / "components" / "assistant-ui" / "sandbox-files.ts").read_text(
+        encoding = "utf-8"
+    )
+    assert "export function sandboxRoutePrefix" in helper
+    assert "?session=${encodeURIComponent(sessionId)}" in helper
+
+    from routes import inference as inference_routes
+    import inspect
+
+    for route in (inference_routes.list_sandbox_files, inference_routes.serve_sandbox_file):
+        source = inspect.getsource(route)
+        assert "session: Optional[str] = None" in source
+        assert "session or session_id" in source
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

@@ -13633,6 +13633,7 @@ async def list_sandbox_files(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
+    session: Optional[str] = None,
 ):
     """Where this chat's files are, and what is in there.
 
@@ -13643,7 +13644,9 @@ async def list_sandbox_files(
 
     from starlette.concurrency import run_in_threadpool
 
-    sandbox_dir = _sandbox_dir_for(session_id, create = False)
+    # The query form carries an id a path segment cannot: an API client can
+    # use one with a slash in it, and ASGI decodes %2F before route matching.
+    sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
     # In a worker: this walks up to a couple of thousand entries and stats each
     # one, which on a slow or network filesystem would hold the event loop.
     files = await run_in_threadpool(_sandbox_listing, sandbox_dir)
@@ -13656,6 +13659,7 @@ async def serve_sandbox_file(
     filename: str,
     request: Request,
     token: Optional[str] = None,
+    session: Optional[str] = None,
 ):
     """
     Serve a file a tool call created in this chat's sandbox.
@@ -13675,7 +13679,7 @@ async def serve_sandbox_file(
 
     # ── Filename sanitization + path containment ────────────────
     safe_filename = os.path.basename(filename)
-    _sandbox_dir, file_path = _contained_sandbox_path(session_id, filename)
+    _sandbox_dir, file_path = _contained_sandbox_path(session or session_id, filename)
 
     if not os.path.isfile(file_path):
         raise HTTPException(status_code = 404, detail = "Not found")
