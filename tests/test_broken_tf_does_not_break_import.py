@@ -378,6 +378,22 @@ def test_the_cached_flag_is_cleared_against_a_real_transformers(tmp_path):
     assert "BEFORE True" in out.stdout and "AFTER False" in out.stdout, out.stdout
 
 
+def test_an_opt_in_that_was_consumed_and_restored_still_counts(tmp_path):
+    """Transformers reads these variables once, at its own import, and keeps
+    the answer. So the environment at *Unsloth's* import is not the whole
+    story: set the variable, let Transformers consume it, put the environment
+    back -- a `patch.dict` around the import, a launcher that tidies up after
+    itself -- and Transformers is still opted in while `os.environ` is clean.
+    Reading only `os.environ` would then undo a choice Transformers honoured.
+    """
+    out = _run_guard(
+        tmp_path, 'del os.environ["FORCE_TF_AVAILABLE"]',
+        FORCE_TF_AVAILABLE = "1",
+    )
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "BEFORE True" in out.stdout and "AFTER True" in out.stdout, out.stdout
+
+
 def test_transformers_5x_has_neither_flag_and_nothing_raises():
     """5.x dropped both backends: no attribute to clear, no exception either."""
     import_utils = types.ModuleType("transformers.utils.import_utils")
@@ -396,6 +412,7 @@ def test_transformers_5x_has_neither_flag_and_nothing_raises():
         test_an_explicit_opt_in_keeps_the_backend,
         test_a_backend_already_in_use_is_left_alone,
         test_the_cached_flag_is_cleared_against_a_real_transformers,
+        test_an_opt_in_that_was_consumed_and_restored_still_counts,
         test_transformers_reads_the_variable_from_the_environment,
     ],
 )
@@ -435,3 +452,43 @@ def test_the_flags_are_cleared_only_when_the_backend_is_unused():
     import_utils._tf_available = True
     _exec_guard(dict(modules, tensorflow = object()), {})
     assert import_utils._tf_available is True
+
+
+def test_the_snapshot_transformers_kept_counts_as_an_opt_in():
+    """Each variable, in the name Transformers files it under.
+
+    The Flax pair is the one worth spelling out: the environment variable is
+    `USE_FLAX`, and Transformers stores it as `USE_JAX`. Looking for a cached
+    `USE_FLAX` finds nothing and silently keeps the bug.
+    """
+    import_utils = types.ModuleType("transformers.utils.import_utils")
+    modules = {"transformers": object(), "transformers.utils.import_utils": import_utils}
+    for flag, cached in (
+        ("_tf_available", "USE_TF"),
+        ("_tf_available", "FORCE_TF_AVAILABLE"),
+        ("_flax_available", "USE_JAX"),
+    ):
+        setattr(import_utils, flag, True)
+        setattr(import_utils, cached, "1")
+        _exec_guard(modules, {})
+        assert getattr(import_utils, flag) is True, cached
+        delattr(import_utils, cached)
+
+
+def test_the_default_snapshot_is_not_an_opt_in():
+    """All three default to `"AUTO"` when unset, and Transformers treats AUTO
+    as "enable if installed" for `USE_TF` and `USE_JAX`. Accepting AUTO here
+    would keep every flag on every machine that never set anything, which is
+    the whole population this guard exists for -- it would be a no-op wearing
+    a fix's clothes rather than a visible failure.
+    """
+    import_utils = types.ModuleType("transformers.utils.import_utils")
+    import_utils._tf_available = True
+    import_utils._flax_available = True
+    import_utils.USE_TF = "AUTO"
+    import_utils.FORCE_TF_AVAILABLE = "AUTO"
+    import_utils.USE_JAX = "AUTO"
+    _exec_guard(
+        {"transformers": object(), "transformers.utils.import_utils": import_utils}, {})
+    assert import_utils._tf_available is False
+    assert import_utils._flax_available is False

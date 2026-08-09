@@ -39,13 +39,24 @@ else:
     # genuinely unused, and never against an explicit opt-in.
     _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
     _import_utils = sys.modules.get("transformers.utils.import_utils")
-    for _flag, _modules, _opt_ins in (
-        ("_tf_available", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
-        ("_flax_available", ("flax", "jax"), ("USE_FLAX",)),
+    for _flag, _modules, _opt_ins, _cached in (
+        ("_tf_available", ("tensorflow",),
+         ("USE_TF", "FORCE_TF_AVAILABLE"), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("_flax_available", ("flax", "jax"), ("USE_FLAX",), ("USE_JAX",)),
     ):
         if any(_m in sys.modules for _m in _modules):
             continue
         if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        # Transformers read those variables once, at its own import, and kept
+        # the answer. A caller that set one, let Transformers consume it, then
+        # restored the environment -- a `patch.dict` around the import, a
+        # launcher that cleans up after itself -- is still opted in as far as
+        # Transformers is concerned, and `os.environ` no longer shows it. Read
+        # what Transformers actually used. Note the spelling: the environment
+        # variable is `USE_FLAX`, the constant it lands in is `USE_JAX`.
+        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE
+               for _v in _cached):
             continue
         try:
             # Absent on 5.x, and a module proxy can refuse the write.
@@ -53,7 +64,7 @@ else:
                 setattr(_import_utils, _flag, False)
         except (AttributeError, TypeError):
             pass
-    del _TRUE, _import_utils, _flag, _modules, _opt_ins
+    del _TRUE, _import_utils, _flag, _modules, _opt_ins, _cached
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
