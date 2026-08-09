@@ -5710,6 +5710,17 @@ def test_the_lmstudio_walk_does_not_descend_into_a_pipeline(tmp_path):
     assert not names & {"vae", "transformer", "text_encoder"}
 
 
+def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):
+    """The same walk, entered AT the pipeline. A user adding the model folder itself as a scan
+    folder is the obvious thing to do, and it published vae / transformer / text_encoder as three
+    models instead of the one that is there."""
+    pipeline = _write_pipeline(tmp_path / "MiniMax-H3-local")
+
+    rows = local_inventory._scan_lmstudio_dir(pipeline)
+
+    assert [Path(row.path) for row in rows] == [pipeline]
+
+
 def test_a_custom_folder_offers_the_pipeline_and_not_its_components(tmp_path):
     """End to end over the path the Custom Folders control uses. The format filter keeps only
     gguf / safetensors / adapter rows, and a pipeline root has no loose weight to classify, so
@@ -5733,3 +5744,40 @@ def test_a_directory_that_is_not_a_pipeline_is_still_rejected(tmp_path):
     (root / "nested" / "inner" / "model_index.json").write_text("{}", encoding = "utf-8")
 
     assert local_inventory._scan_models_dir(root) == []
+
+
+def test_the_custom_folder_filter_still_drops_a_row_it_cannot_classify(tmp_path):
+    """The pipeline exemption widens the custom-folder format filter, so pin what it must NOT let
+    through. A folder holding a config.json and no weights (an aborted download) also reports
+    "unknown", and nothing can load it: it has to stay filtered out while the pipeline beside it
+    is offered."""
+    root = tmp_path / "scan"
+    _write_pipeline(root / "MiniMax-H3-local")
+    aborted = root / "half-downloaded"
+    aborted.mkdir(parents = True)
+    (aborted / "config.json").write_text(json.dumps({"model_type": "llama"}), encoding = "utf-8")
+
+    # The scan does see it, so the filter is what decides -- otherwise this proves nothing.
+    assert "half-downloaded" in {
+        Path(row.path).name for row in local_inventory._scan_models_dir(root)
+    }
+    assert {Path(row.path).name for row in local_inventory._scan_custom_folder(root)} == {
+        "MiniMax-H3-local",
+    }
+
+
+def test_the_pipeline_test_is_safe_on_a_path_that_is_not_a_readable_directory(tmp_path):
+    """``_scan_custom_folder`` applies this to every row it did not already accept, and a row's
+    path can be a GGUF FILE, not a directory. A missing path, a file, and a directory whose
+    ``model_index.json`` is itself a directory must all answer False rather than raise: an
+    exception here fails the whole scan and empties the picker."""
+    assert local_inventory._is_diffusers_pipeline_dir(tmp_path / "does-not-exist") is False
+
+    loose = tmp_path / "model.gguf"
+    loose.write_bytes(b"GGUF")
+    assert local_inventory._is_diffusers_pipeline_dir(loose) is False
+    assert local_inventory._is_diffusers_pipeline_dir(loose / "model_index.json") is False
+
+    odd = tmp_path / "odd"
+    (odd / "model_index.json").mkdir(parents = True)
+    assert local_inventory._is_diffusers_pipeline_dir(odd) is False
