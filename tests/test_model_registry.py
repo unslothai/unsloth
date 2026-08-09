@@ -6,7 +6,8 @@ import sys
 from dataclasses import dataclass
 
 import pytest
-from huggingface_hub import ModelInfo as HfModelInfo
+from huggingface_hub import HfApi
+from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 from unsloth.registry import register_models, search_models
 from unsloth.registry._deepseek import register_deepseek_models
@@ -16,7 +17,6 @@ from unsloth.registry._mistral import register_mistral_models
 from unsloth.registry._phi import register_phi_models
 from unsloth.registry._qwen import register_qwen_models
 from unsloth.registry.registry import MODEL_REGISTRY, QUANT_TAG_MAP, QuantType
-from unsloth.utils.hf_hub import get_model_info
 
 MODEL_NAMES = [
     "llama",
@@ -42,12 +42,41 @@ class ModelTestParam:
     register_models: callable
 
 
+class HubUnavailable(Exception):
+    """The Hub could not answer, so the registry cannot be judged from here."""
+
+
+def _model_is_missing(api: HfApi, model_id: str) -> bool:
+    """True when the Hub says the repo does not exist.
+
+    Only RepositoryNotFoundError means "not on the Hub". The suite runs
+    unauthenticated in CI, where the Hub answers a private/deleted repo with
+    401 "Invalid username or password" and huggingface_hub maps that to
+    RepositoryNotFoundError. A *gated* repo is not in that bucket: its metadata
+    is public, so model_info returns 200 and this returns False.
+
+    Anything else (429 rate limit, 5xx, DNS/TLS/timeouts) is a broken
+    connection to the Hub, not a broken registry, and must not be reported as
+    129 missing models.
+    """
+    try:
+        api.model_info(model_id, expand = ["lastModified"])
+    except RepositoryNotFoundError:
+        return True
+    except Exception as exc:
+        raise HubUnavailable(f"{model_id}: {type(exc).__name__}: {exc}") from exc
+    return False
+
+
 def _test_model_uploaded(model_ids: list[str]):
+    api = HfApi()
     missing_models = []
     for _id in model_ids:
-        model_info: HfModelInfo = get_model_info(_id)
-        if not model_info:
-            missing_models.append(_id)
+        try:
+            if _model_is_missing(api, _id):
+                missing_models.append(_id)
+        except HubUnavailable as exc:
+            pytest.skip(f"Hugging Face Hub unavailable: {exc}")
 
     return missing_models
 
@@ -162,3 +191,42 @@ def test_register_models_registers_no_upstream_originals():
     # Deepseek is still registered via the normal path, just without originals.
     deepseek_lines = [line for line in out.splitlines() if line.startswith("NUM_DEEPSEEK")]
     assert deepseek_lines and int(deepseek_lines[0].split()[1]) > 0, out + result.stderr
+
+
+class _FakeApi:
+    def __init__(self, error):
+        self.error = error
+
+    def model_info(self, model_id, expand = None):
+        if self.error is not None:
+            raise self.error
+        return object()
+
+
+def test_missing_repo_is_reported_missing():
+    """A repo the Hub says does not exist is a registry error."""
+    api = _FakeApi(RepositoryNotFoundError("404 Client Error. Repository Not Found"))
+    assert _model_is_missing(api, "unsloth/does-not-exist")
+
+
+def test_present_repo_is_not_reported_missing():
+    assert not _model_is_missing(_FakeApi(None), "unsloth/Qwen2.5-7B")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HfHubHTTPError("429 Client Error: Too Many Requests"),
+        ConnectionError("Failed to establish a new connection"),
+        TimeoutError("read timed out"),
+    ],
+    ids = ["rate_limited", "connection_refused", "timeout"],
+)
+def test_unreachable_hub_skips_instead_of_reporting_missing(monkeypatch, error):
+    """A hub outage must not be reported as every registered model missing."""
+    with pytest.raises(HubUnavailable):
+        _model_is_missing(_FakeApi(error), "unsloth/Qwen2.5-7B")
+
+    monkeypatch.setattr(sys.modules[__name__], "HfApi", lambda: _FakeApi(error))
+    with pytest.raises(pytest.skip.Exception):
+        _test_model_uploaded(["unsloth/Qwen2.5-7B"])
