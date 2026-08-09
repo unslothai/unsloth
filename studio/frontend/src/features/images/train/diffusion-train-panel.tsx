@@ -784,12 +784,11 @@ export function DiffusionTrainPanel({
         const misKeyed = await metadataKeyedOnSubfolders(files);
         // the endpoint accumulates into the same folder, so a tree past the multipart part or
         // byte cap goes up in slices rather than being refused outright.
-        // the cap decides where the slices fall, so guessing it makes the refusal below either
-        // too strict or useless. A limit that cannot be read stops the upload.
+        // the cap decides where the slices fall, so a guess makes the refusal below either too
+        // strict or useless. Forced past the cache, which another tab can leave behind, and a
+        // cap that cannot be read stops the upload.
         let maxBytes: number;
         try {
-          // forced: the cached value is from whenever this tab first asked, and the setting can
-          // be changed elsewhere, which would put the slices out of step with the server.
           maxBytes = (await loadUploadLimitSettings({ force: true })).maxUploadSizeBytes;
         } catch (e) {
           toast.error(
@@ -812,10 +811,8 @@ export function DiffusionTrainPanel({
         // one request is all-or-nothing on the backend, so only a split top-up needs the folder
         // checked as well: there a stem it already holds would 400 a later slice, mid-commit.
         if (chunks.length > 1) {
-          // whether the folder already exists decides whether it needs checking, and the list
-          // held here is the one from mount, so neither its absence nor a name missing from it
-          // proves the folder is new. Only a fresh list can, and one more GET is nothing
-          // against a selection already going up in several requests.
+          // the list held here is the one from mount, so it cannot say the folder is new.
+          // One more GET is nothing against a selection already going up in several requests.
           const known = await refreshInfo();
           if (!known) {
             toast.error(
