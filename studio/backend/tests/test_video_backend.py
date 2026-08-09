@@ -2319,3 +2319,218 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert status["loaded"] is True, mode
         assert calls == [], mode
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
+
+
+# ── a failed video must say what it was rendering (#8225) ────────────────────────
+
+
+def _failing_pipe_call(exc):
+    # The explicit signature matters: generate() inspects it, and a bare **kwargs would advertise
+    # no callback_on_step_end and route the call down the scheduler-wrapping path instead.
+    def _boom(
+        self,
+        *,
+        prompt = None,
+        negative_prompt = None,
+        num_inference_steps = None,
+        guidance_scale = None,
+        width = None,
+        height = None,
+        num_frames = None,
+        frame_rate = None,
+        generator = None,
+        callback_on_step_end = None,
+        **kwargs,
+    ):
+        raise exc
+
+    return _boom
+
+
+def _capture_generate_failures(monkeypatch):
+    """Collect the ``video.generate_failed_request`` lines.
+
+    The module logger is structlog, which caplog does not see, so wrap it and pass everything
+    else straight through to the real one."""
+    import core.inference.video as video_mod
+
+    lines: list = []
+    real = video_mod.logger
+
+    class _Recorder:
+        def error(self, fmt, *a, **k):
+            message = fmt % a if a else fmt
+            if "generate_failed_request" in message:
+                lines.append(message)
+            return real.error(fmt, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(real, name)
+
+    monkeypatch.setattr(video_mod, "logger", _Recorder())
+    return lines
+
+
+def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, monkeypatch):
+    # The reported bug: the entire server-side record of the OOM in #8225 was the exception string,
+    # so the resolution and frame count behind a 66.54 GiB allocation had to be recovered by
+    # dividing it by the head count. Log the request that produced it.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a sloth surfing", width = 1000, height = 700, num_frames = 120)
+
+    assert len(records) == 1
+    line = records[0]
+    # The SNAPPED shape, which is what actually ran, not the caller's raw request.
+    assert "width=992" in line and "height=672" in line and "frames=113" in line
+    assert "steps=" in line and "seed=" in line and "family=ltx-2" in line
+    assert "device=" in line and "offload=" in line
+
+
+def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypatch):
+    # A length distinguishes an empty prompt from a long one, which is all a bug report needs; the
+    # server log is not the place for user content.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a secret about oranges", negative_prompt = "blurry")
+
+    line = records[0]
+    assert "oranges" not in line and "blurry" not in line
+    assert "prompt_chars=22" in line and "negative_prompt_chars=6" in line
+
+
+def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp_path, monkeypatch):
+    # The whole point of #8225: the model was not too big, the score matrix was. When the device
+    # has no fused kernel, an OOM should arrive with that diagnosis attached.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 2
+    assert "score matrix" in records[1] and "SQUARE" in records[1]
+
+
+def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monkeypatch):
+    # Math-only is a real condition, but it did not cause a scheduler bug. Only allocator failures
+    # get the diagnosis, or it becomes noise on every unrelated crash.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
+    )
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    records = _capture_generate_failures(monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        backend.generate(prompt = "a clip")
+
+    assert len(records) == 1
+    assert "score matrix" not in records[0]
+
+
+def test_a_cancel_is_not_logged_as_a_failure(fake_runtime, tmp_path, monkeypatch):
+    # Cancels unwind through the same handler. A user pressing stop is an outcome, not a bug
+    # report, and logging it would bury the real ones.
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(RuntimeError, match = VIDEO_CANCELLED_MSG):
+        backend.generate(prompt = "a clip", cancel_event = cancel)
+
+    assert records == []
+
+
+def test_a_failure_before_the_request_resolves_logs_nothing(fake_runtime, tmp_path, monkeypatch):
+    # There is nothing truthful to report until the shape is snapped, and a half-bound record
+    # would be worse than none.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    records = _capture_generate_failures(monkeypatch)
+
+    def _broken(fam, w, h):
+        raise RuntimeError("resolution table is broken")
+
+    monkeypatch.setattr(video_mod, "snap_video_size", _broken)
+
+    with pytest.raises(RuntimeError, match = "resolution table"):
+        backend.generate(prompt = "a clip")
+
+    assert records == []
+
+
+def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_path, monkeypatch):
+    # If the probe or the formatting raises, the caller must still see the original exception.
+    import core.inference.video as video_mod
+
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    monkeypatch.setattr(
+        type(backend._state.pipe),
+        "__call__",
+        _failing_pipe_call(RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB.")),
+    )
+
+    def _boom(target):
+        raise RuntimeError("the probe itself is broken")
+
+    monkeypatch.setattr(video_mod, "sdpa_math_only", _boom)
+
+    with pytest.raises(RuntimeError, match = "66.54 GiB"):
+        backend.generate(prompt = "a clip")
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (RuntimeError("CUDA out of memory. Tried to allocate 66.54 GiB."), True),
+    (RuntimeError("HIP out of memory"), True),
+    (RuntimeError("Tried to allocate 2.00 GiB"), True),
+    (RuntimeError("scheduler produced NaN sigmas"), False),
+    (ValueError("bad prompt"), False),
+])
+def test_out_of_memory_is_recognised_by_text_not_only_by_class(exc, expected):
+    # torch raises torch.OutOfMemoryError on CUDA but a plain RuntimeError on some backends, so
+    # an isinstance check alone would miss exactly the reports this is for.
+    import core.inference.video as video_mod
+
+    assert video_mod._is_out_of_memory(exc) is expected

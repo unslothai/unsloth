@@ -789,7 +789,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
         "apply_speed_optims",
         lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
     )
-    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+    monkeypatch.setattr(
+        dmod, "apply_attention_backend", lambda pipe, backend, logger = None, target = None: backend
+    )
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
@@ -917,7 +919,9 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         "apply_speed_optims",
         lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
     )
-    monkeypatch.setattr(dmod, "apply_attention_backend", lambda pipe, backend, logger = None: backend)
+    monkeypatch.setattr(
+        dmod, "apply_attention_backend", lambda pipe, backend, logger = None, target = None: backend
+    )
 
     # A select mock that HONORS an explicit request: only an unset request upgrades to cuDNN.
     def fake_select(

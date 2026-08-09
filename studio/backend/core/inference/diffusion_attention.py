@@ -113,6 +113,124 @@ def _is_cuda_nvidia(target: Any) -> bool:
         return False
 
 
+# ── what the native SDPA dispatch can actually run (#8225) ───────────────────
+#
+# torch's ``flash_sdp_enabled()`` / ``mem_efficient_sdp_enabled()`` report the USER TOGGLE, not
+# whether a kernel exists for this device. On the ROCm build in #8225 (gfx1200, torch 2.11+rocm7)
+# both answer True while every dispatch to them raises "No available kernel. Aborting execution.",
+# so the dispatcher degrades silently to MATH -- and MATH is the one backend that materialises the
+# whole B x heads x N x N score matrix. That is how a 3.4 GB Q4_K_M video model asked a 16 GB card
+# for a single 66.54 GiB allocation 70 seconds into a generation.
+#
+# So do not read the flags. Run one tiny attention per backend and record what happens.
+SDPA_FLASH = "flash"
+SDPA_MEM_EFFICIENT = "mem_efficient"
+SDPA_CUDNN = "cudnn"
+SDPA_MATH = "math"
+
+# Backends whose working set is O(N): they never materialise the score matrix.
+_SDPA_SUBQUADRATIC = (SDPA_FLASH, SDPA_MEM_EFFICIENT, SDPA_CUDNN)
+
+_SDPA_PROBE_LOCK = threading.Lock()
+# (device type, dtype name) -> the kernels that ran. A kernel cannot appear or vanish under a
+# running interpreter, so one probe per device/dtype for the life of the process.
+_SDPA_PROBE_CACHE: dict[tuple[str, str], tuple[str, ...]] = {}
+
+
+def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
+    """Run a 4 KB attention under each SDPA backend; return the ones that did not raise."""
+    import torch
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    candidates = (
+        (SDPA_FLASH, getattr(SDPBackend, "FLASH_ATTENTION", None)),
+        (SDPA_MEM_EFFICIENT, getattr(SDPBackend, "EFFICIENT_ATTENTION", None)),
+        (SDPA_CUDNN, getattr(SDPBackend, "CUDNN_ATTENTION", None)),
+        (SDPA_MATH, getattr(SDPBackend, "MATH", None)),
+    )
+    # Small enough to be free, but shaped like real attention: the fused kernels reject head_dim
+    # they cannot serve, and a degenerate 1-element tensor would not exercise that.
+    q = torch.zeros((1, 2, 8, 64), device = device, dtype = dtype)
+    available: list[str] = []
+    for name, backend in candidates:
+        if backend is None:
+            continue
+        try:
+            with sdpa_kernel([backend]):
+                torch.nn.functional.scaled_dot_product_attention(q, q, q)
+            available.append(name)
+        except Exception:  # noqa: BLE001 — "No available kernel" is the answer, not an error
+            continue
+    return tuple(available)
+
+
+def available_sdpa_kernels(target: Any) -> tuple[str, ...]:
+    """The SDPA backends that actually EXECUTE on ``target``, cheapest source of truth available.
+
+    Empty when the probe could not run at all (no torch, no device, an allocator failure) -- an
+    unanswerable probe must never be read as "only math", which is a claim about the hardware."""
+    device = str(getattr(target, "device", "") or "")
+    if not device:
+        return ()
+    dtype = getattr(target, "dtype", None)
+    if dtype is None:
+        try:
+            import torch
+            # fp16 rather than fp32: the fused kernels are half-precision only, so probing at fp32
+            # would report "math only" on hardware where flash is perfectly healthy.
+            dtype = torch.float16
+        except Exception:  # noqa: BLE001
+            return ()
+    key = (device.split(":")[0], str(dtype))
+    with _SDPA_PROBE_LOCK:
+        cached = _SDPA_PROBE_CACHE.get(key)
+        if cached is not None:
+            return cached
+    try:
+        available = _probe_sdpa_kernels(device, dtype)
+    except Exception:  # noqa: BLE001 — a probe is a diagnostic; it may never fail a load
+        available = ()
+    with _SDPA_PROBE_LOCK:
+        _SDPA_PROBE_CACHE.setdefault(key, available)
+        return _SDPA_PROBE_CACHE[key]
+
+
+def sdpa_math_only(target: Any) -> bool:
+    """True only when MATH ran and every sub-quadratic backend refused.
+
+    A probe that answered nothing at all returns False: silence is not evidence."""
+    available = available_sdpa_kernels(target)
+    if not available:
+        return False
+    return SDPA_MATH in available and not any(k in available for k in _SDPA_SUBQUADRATIC)
+
+
+SDPA_MATH_ONLY_MESSAGE = (
+    "attention has no fused kernel on this device, so it will run on the SDPA math backend, "
+    "which materialises the full attention score matrix (batch x heads x tokens x tokens, 4 bytes "
+    "per element). Peak VRAM then grows with the SQUARE of the token count -- resolution x frames "
+    "for video -- and can exceed the card by many times even for a small model. Lower the "
+    "resolution or the frame count, or install a backend with a working kernel for this GPU."
+)
+
+
+def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
+    """Log the math-only diagnosis at LOAD, not 70 seconds into a doomed generation.
+
+    Returns whether the warning fired, so callers can carry it into their resolved controls."""
+    if not sdpa_math_only(target):
+        return False
+    if logger is not None:
+        logger.warning(
+            "diffusion.attention.math_only: device=%s dtype=%s kernels=%s -- %s",
+            getattr(target, "device", None),
+            getattr(target, "dtype", None),
+            ",".join(available_sdpa_kernels(target)) or "none",
+            SDPA_MATH_ONLY_MESSAGE,
+        )
+    return True
+
+
 def select_attention_backend(
     target: Any, requested: Optional[str], *, speed_active: bool
 ) -> Optional[str]:
@@ -455,11 +573,16 @@ def apply_attention_backend(
     backend: Optional[str],
     *,
     logger: Any = None,
+    target: Any = None,
 ) -> Optional[str]:
     """Set ``backend`` on EVERY denoiser DiT via the diffusers dispatcher.
 
     Returns the backend engaged, or None when left at native (``backend`` was None or the kernel
     was unavailable -> graceful fallback, never a load failure).
+
+    ``target`` is the resolved device target. Given, and only when the result is native, the SDPA
+    backends are probed and a math-only device is reported here rather than discovered as a
+    six-figure-MiB allocation mid-generation (#8225). Optional so existing callers are unaffected.
 
     diffusers keeps a process-wide active backend that ``set_attention_backend`` also updates, and
     a fresh transformer's processors follow it (default None). So a load wanting native must
@@ -489,6 +612,10 @@ def apply_attention_backend(
             return backend
     # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset covers every fresh DiT.
     _restore_native_backend(setters[0], logger)
+    # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel
+    # that decision is MATH. Say so now; the flags this would otherwise be read off lie (#8225).
+    if target is not None:
+        warn_if_sdpa_math_only(target, logger)
     return None
 
 

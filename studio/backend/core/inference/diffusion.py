@@ -2517,6 +2517,7 @@ class DiffusionBackend:
                         target, attention_backend, speed_active = effective_speed != SPEED_OFF
                     ),
                     logger = logger,
+                    target = target,
                 )
                 # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps (~1.4x on Flux,
                 # LPIPS ~0.08) and drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
@@ -3487,6 +3488,7 @@ class DiffusionBackend:
             state.pipe,
             select_attention_backend(target, state.attention_request, speed_active = True),
             logger = logger,
+            target = target,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
