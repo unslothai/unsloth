@@ -37,7 +37,6 @@ class MockDataset:
 datasets_mock = type(sys)("datasets")
 datasets_mock.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
 datasets_mock.Dataset = MockDataset
-sys.modules["datasets"] = datasets_mock
 
 # Import raw_text directly to avoid unsloth/__init__.py dependencies.
 current_dir = os.path.dirname(__file__)
@@ -45,7 +44,20 @@ raw_text_path = os.path.join(os.path.dirname(current_dir), "unsloth", "dataprep"
 
 spec = importlib.util.spec_from_file_location("raw_text", raw_text_path)
 raw_text_module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(raw_text_module)
+
+# The mock is only in place while raw_text executes its `from datasets import
+# Dataset`. Leaving it in sys.modules poisoned every later test module in the
+# same session: `from datasets import IterableDataset` then raised ImportError
+# and tests/utils/test_packing.py failed to collect.
+_real_datasets = sys.modules.get("datasets")
+sys.modules["datasets"] = datasets_mock
+try:
+    spec.loader.exec_module(raw_text_module)
+finally:
+    if _real_datasets is None:
+        del sys.modules["datasets"]
+    else:
+        sys.modules["datasets"] = _real_datasets
 
 RawTextDataLoader = raw_text_module.RawTextDataLoader
 TextPreprocessor = raw_text_module.TextPreprocessor

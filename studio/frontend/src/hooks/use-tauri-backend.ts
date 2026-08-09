@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
@@ -11,6 +17,14 @@ import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
+import {
+  APP_CLOSING_CANCELLED_EVENT,
+  APP_CLOSING_EVENT,
+  clearAppClosing,
+  isAppClosing,
+  markAppClosing,
+  subscribeAppClosing,
+} from "@/components/tauri/closing-signal";
 import {
   INITIAL_STARTUP_MESSAGE,
   SERVER_STARTUP_MESSAGE,
@@ -139,6 +153,9 @@ export function useTauriBackend() {
   const authFailureRef = useRef<string | null>(getTauriAuthFailure());
   const elevationResumeRef = useRef<"install" | "repair" | null>(null);
   const [tauriEventsReady, setTauriEventsReady] = useState(!isTauri);
+  // Read through rather than mirrored into state: the app-closing listener is registered
+  // inside the long event effect below, which cannot reach a setState from this render.
+  const closing = useSyncExternalStore(subscribeAppClosing, isAppClosing);
 
   function setBackendStatus(nextStatus: BackendStatus) {
     if (authFailureRef.current) return;
@@ -603,6 +620,16 @@ export function useTauriBackend() {
         setStartupMessage((current) => startupMessageFromLog(current, e.payload));
       });
 
+      // Reaping the backend blocks Rust's quit thread for up to ~15s. Cover the window
+      // for that, or it reads as a freeze.
+      register<void>(APP_CLOSING_EVENT, () => {
+        markAppClosing();
+      });
+
+      register<void>(APP_CLOSING_CANCELLED_EVENT, () => {
+        clearAppClosing();
+      });
+
       register<void>("tray-toggle-server", () => {
         if (statusRef.current === "running") {
           stopServer();
@@ -647,7 +674,7 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error, isExternalServer,
+    status, logs, error, isExternalServer, closing,
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,

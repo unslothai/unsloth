@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 // ── Types ──
 
+#[derive(Default)]
 pub struct InstallProcess {
     /// Process group handle — killing this kills the entire subprocess tree.
     pub child: Option<Box<dyn ChildWrapper + Send>>,
@@ -18,17 +19,6 @@ pub struct InstallProcess {
     pub needed_packages: Vec<String>,
     /// Current diagnostics attempt; kept after NEEDS_ELEVATION so apt output can be linked.
     pub current_attempt: Option<AttemptLog>,
-}
-
-impl Default for InstallProcess {
-    fn default() -> Self {
-        Self {
-            child: None,
-            intentional_stop: false,
-            needed_packages: Vec::new(),
-            current_attempt: None,
-        }
-    }
 }
 
 pub type InstallState = Arc<Mutex<InstallProcess>>;

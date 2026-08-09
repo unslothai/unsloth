@@ -424,7 +424,9 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [legacy], raising = False)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False
+    )
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
@@ -692,7 +694,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -752,7 +754,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -809,7 +811,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -1155,7 +1157,7 @@ def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_pat
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -1189,7 +1191,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -3289,6 +3291,28 @@ def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
     assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
 
 
+def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monkeypatch):
+    # Same contract as the absent-diffusers case, for the install that is PRESENT but only
+    # partially usable. diffusers' top level is a lazy module, so the attribute probe is what
+    # actually imports the pipeline's submodule, and when that submodule's own dependencies are
+    # unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines..."). hasattr
+    # absorbs AttributeError only, so the RuntimeError escaped this guard exactly the way a
+    # missing diffusers used to: not the ValueError the routes map to 400, so a bare 500 with the
+    # message lost.
+    import types
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.40.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+    assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
+
+
 def test_cached_pipeline_needs_a_detectable_image_family(monkeypatch):
     # A top-level model_index.json only proves the repo is a diffusers pipeline: an unsloth-hosted pipeline of a class this backend
     # cannot assemble cleared the trust gate, was advertised, then failed validate_load_request. Both gates now, like the video branch.
@@ -3514,7 +3538,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3557,7 +3581,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3596,7 +3620,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
@@ -3963,7 +3987,8 @@ def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
             source = "test",
         ),
     )
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: list(roots))
+    # **kw so the stub keeps matching the real signature, which now takes scan_errors.
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: list(roots))
 
 
 def _unreachable_hub(monkeypatch) -> None:
@@ -4151,3 +4176,159 @@ def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path)
     )
     assert [v.quant for v in response.variants] == ["Q8_0"]
     assert context_calls == [(str(repo_dir / "snapshots" / "rev"), True)]
+
+
+def test_a_download_scope_is_not_listed_as_a_quant(monkeypatch, tmp_path):
+    """A scoped job ("@diffusion") rides the variant slot, so its manifest names the
+    same .gguf the real quant does: rebuilding from download state listed one file
+    twice, the second permanently partial, costing the picker its single-quant
+    collapse. A real cancelled quant must still survive, or it loses its resume."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(
+        GV,
+        "select_gguf_cache_snapshot",
+        lambda repo_id, root = None: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_S.gguf",
+                    quant = "Q4_K_S",
+                    display_label = None,
+                    size_bytes = 10,
+                )
+            ],
+            False,
+            {"q4_k_s"},
+            repo_dir / "snapshots" / "rev",
+        ),
+    )
+    # State holds both: the scope the diffusion load ran under, and a cancelled quant.
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q4_K_S.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 10,
+                    download_size_bytes = 10,
+                ),
+                SimpleNamespace(
+                    filename = "m-Q6_K.gguf",
+                    quant = "Q6_K",
+                    display_label = None,
+                    size_bytes = 20,
+                    download_size_bytes = 20,
+                ),
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    quants = [v.quant for v in response.variants]
+    assert "@diffusion" not in quants
+    assert quants == ["Q4_K_S", "Q6_K"]
+    # The scope named the quant's own file, so keeping it would list that file twice.
+    filenames = [v.filename for v in response.variants]
+    assert len(filenames) == len(set(filenames))
+
+
+def test_a_scope_alone_in_state_is_not_an_answer(monkeypatch, tmp_path):
+    """A scope reaching the state-only fallbacks is worse than a duplicate row: naming
+    no .gguf, it reconstructs as "@diffusion.gguf", a file never on disk. So scopes
+    alone must make the fallback decline and let the next answer through."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "@diffusion.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 0,
+                    download_size_bytes = 0,
+                )
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert response.variants == []
+
+
+def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, tmp_path):
+    """Dropping scopes must not cost the fallback its reason to exist: a cancelled quant
+    with no snapshot keeps its row, and its resume."""
+    repo_dir = tmp_path / "models--org--repo"
+    (repo_dir / "snapshots" / "rev").mkdir(parents = True)
+
+    monkeypatch.setattr(GV, "select_gguf_cache_snapshot", lambda repo_id, root = None: None)
+    monkeypatch.setattr(
+        GV,
+        "list_partial_gguf_variants_from_state",
+        lambda *a, **k: (
+            [
+                SimpleNamespace(
+                    filename = "m-Q6_K.gguf",
+                    quant = "Q6_K",
+                    display_label = None,
+                    size_bytes = 20,
+                    download_size_bytes = 20,
+                ),
+                SimpleNamespace(
+                    filename = "@diffusion.gguf",
+                    quant = "@diffusion",
+                    display_label = None,
+                    size_bytes = 0,
+                    download_size_bytes = 0,
+                ),
+            ],
+            False,
+        ),
+    )
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            offline = True,
+            local_path = str(repo_dir),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]

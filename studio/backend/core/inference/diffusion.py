@@ -64,6 +64,7 @@ from .diffusion_memory import (
     MEMORY_MODE_BALANCED,
     MEMORY_MODE_LOW_VRAM,
     OFFLOAD_NONE,
+    OFFLOAD_STREAMING,
     apply_memory_plan,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -72,6 +73,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    refine_memory_plan_for_components,
     settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
@@ -112,7 +114,14 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_precision import normalize_te_quant, quantize_text_encoders
+from .diffusion_precision import (
+    effective_te_quant,
+    normalize_te_quant,
+    quantize_text_encoders,
+    te_quant_needs_resident_weights,
+    te_quant_supported,
+    torchao_quantize_importable,
+)
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_prequant import (
     load_prequantized_transformer,
@@ -121,14 +130,20 @@ from .diffusion_prequant import (
     usable_prequant_source,
 )
 from .diffusion_auto_policy import (
+    RESOLVED_APPLIED,
+    RESOLVED_FELL_BACK,
+    RESOLVED_UNSUPPORTED,
     build_resolved_record,
     family_bf16_components_gb,
+    precision_fallback_allowed,
+    precision_refusal_message,
     resolve_dense_quant_candidate,
 )
 from .diffusion_transformer_quant import (
     TQ_AUTO,
     DEFAULT_MIN_LINEAR_FEATURES,
     dense_transformer_supported,
+    explain_unusable_scheme,
     normalize_transformer_quant,
     quantize_transformer,
     select_transformer_quant_scheme,
@@ -144,6 +159,17 @@ install_torchao_windows_rocm_stub()
 
 # "gguf" and "single_file" take companions from the base repo; "pipeline" is a full diffusers repo.
 _MODEL_KINDS = frozenset({"gguf", "single_file", "pipeline"})
+
+
+def _record_sha(shas_out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
+    """Note the commit ``info`` describes so a cache probe can pin to it.
+
+    No ``sha`` just means the plan cannot pin, and stages as before."""
+    if shas_out is None:
+        return
+    sha = getattr(info, "sha", None)
+    if isinstance(sha, str) and sha:
+        shas_out[repo_id] = sha
 
 
 def hub_cache_dir() -> str:
@@ -834,6 +860,19 @@ def _uncached_prequant_repo(
         return None
 
 
+def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool) -> bool:
+    """Whether this memory request offloads the transformer no matter what the weights measure.
+
+    ``balanced`` and ``low_vram`` name their policy outright in ``resolve_offload_policy``, and
+    the legacy ``cpu_offload`` flag forces whole-module offload when no mode was supplied.
+    ``fast`` and ``auto`` are decided from the measured footprint, so they are not knowable here.
+    """
+    mode = normalize_memory_mode(memory_mode)
+    if mode in (MEMORY_MODE_BALANCED, MEMORY_MODE_LOW_VRAM):
+        return True
+    return mode is None and bool(cpu_offload)
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -871,6 +910,128 @@ class DiffusionBackend:
         policy module, kept as a method so tests can still monkeypatch it."""
         target = resolve_diffusion_device_target()
         return target.device, target.dtype
+
+    # Memory requests whose offload policy is decided by the REQUEST rather than by the measured
+    # footprint. `fast` and `auto` are measurements and so cannot be judged network-free.
+    def assert_precision_available(
+        self,
+        fam: Optional[DiffusionFamily],
+        *,
+        model_kind: str,
+        transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
+        memory_mode: Optional[str] = None,
+        cpu_offload: bool = False,
+    ) -> None:
+        """Raise ``RuntimeError`` (the route's 409) when an EXPLICIT precision cannot run here.
+
+        Only the host-level impossibilities, which are knowable network-free: the wrong load kind,
+        a device with no dense-quant path, and a scheme this GPU or family rules out. Anything
+        needing the measured footprint is decided inside ``load_pipeline``. ``auto`` is never
+        refused -- delegating the choice is exactly what it means.
+
+        Public because the ROUTE has to make this call itself, before it takes the GPU: the copy
+        in ``begin_load`` runs inside ``acquire_for``, which evicts chat under the arbiter lock
+        before the register callback, and after ``select_and_activate_engine``, which unloads the
+        resident model on an engine switch."""
+        if precision_fallback_allowed():
+            return
+        pinned = normalize_transformer_quant(transformer_quant)
+        te_mode = normalize_te_quant(text_encoder_quant)
+        if pinned is None and te_mode is None:
+            return
+        # One probe for both checks (it reads the live device).
+        target = self._resolve_device_target(fam)
+        if pinned is not None and pinned != TQ_AUTO:
+            reason = None
+            if model_kind != "gguf":
+                reason = (
+                    f"the dense transformer-quant path applies to GGUF picks only, and this is a "
+                    f"'{model_kind}' load, which runs the precision its checkpoint carries"
+                )
+            elif _memory_request_forces_offload(memory_mode, cpu_offload):
+                # Not a measurement: balanced and low_vram name their policy outright, and the
+                # legacy flag forces model offload. Offload hooks move modules with Module.to(),
+                # which torchao tensors do not survive, so the loader skips the dense build for
+                # any of them -- and the strict refusal then landed after the resident model was
+                # already gone. The two requests are incompatible on their face; say so here.
+                requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
+                reason = (
+                    f"'{requested_memory}' memory places the transformer under CPU offload, and "
+                    "torchao quantised tensors cannot be moved by the offload hooks, so the dense "
+                    "quant is skipped"
+                )
+            elif not dense_transformer_supported(target):
+                reason = (
+                    "this device cannot run a dense torchao quant (it needs a CUDA GPU in bf16)"
+                )
+            elif (
+                select_transformer_quant_scheme(
+                    target,
+                    pinned,
+                    family = getattr(fam, "name", None),
+                    # This gate runs BEFORE the arbiter evicts the resident model, so a smoke probe
+                    # that runs out of VRAM here has not shown the scheme unusable, only that the
+                    # GPU is still full. Refusing on that would reject a load the eviction was
+                    # about to make room for.
+                    unproven_ok = True,
+                )
+                is None
+            ):
+                # An explicit scheme is never swapped for another, so a None means the family's
+                # measured deny list, a torchao that cannot run here, or a GPU without the kernels.
+                # They read the same to the selector and need different fixes from the user.
+                reason = explain_unusable_scheme(getattr(fam, "name", None), pinned)
+            if reason is not None:
+                raise RuntimeError(
+                    precision_refusal_message(
+                        "transformer_quant",
+                        pinned,
+                        reason,
+                        off_label = "Off to run the checkpoint as-is",
+                    )
+                )
+        # The mode the loader will ACTUALLY attempt, not the raw request: an explicit int8
+        # on a family with no keep-bf16 schedule is rewritten to layerwise fp8 before
+        # support is consulted, and that path needs no torchao. Refusing on the raw int8
+        # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
+        # where the torchao stub kills int8 while fp8 still works.
+        te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
+        te_reason = None
+        if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
+            # The casters import torchao only after the pipeline is downloaded and built, so a
+            # broken or absent install failed through load-progress instead of this 409.
+            te_reason = (
+                "torchao is not importable on this install, and these encoder modes are torchao "
+                "quantisations"
+            )
+        elif te_effective is not None and not te_quant_supported(target, te_effective):
+            te_reason = (
+                "this device does not have the tensor cores that backend needs (a CUDA GPU in "
+                "bf16, plus fp8 / int8 / NVFP4 support depending on the mode)"
+            )
+        elif te_quant_needs_resident_weights(te_effective) and _memory_request_forces_offload(
+            memory_mode, cpu_offload
+        ):
+            # Same fence as the dense transformer above, on the encoder: offload hooks move
+            # modules with Module.to(), torchao tensors do not survive it, and the loader reports
+            # those modes unsupported once offload is active -- after the resident pipeline is
+            # already gone. Layerwise fp8 is a dtype cast and is unaffected.
+            requested_memory = normalize_memory_mode(memory_mode) or "cpu_offload"
+            te_reason = (
+                f"'{requested_memory}' memory places the text encoder under CPU offload, and "
+                "torchao quantised tensors cannot be moved by the offload hooks"
+            )
+        if te_reason is not None:
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    te_mode,
+                    te_reason,
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
 
     def _resolve_device_target(self, fam: Optional[DiffusionFamily]) -> DiffusionDeviceTarget:
         """The device target with the family fp16 guard applied.
@@ -1237,6 +1398,16 @@ class DiffusionBackend:
             family_override = family_override,
             model_kind = model_kind,
         )
+        # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the
+        # route answers 409 with the reason instead of evicting the resident model, downloading
+        # several GB and only then failing. The declines that need the real footprint (a VRAM
+        # misfit, a failed build) can only be found mid-load and surface through load-progress.
+        self.assert_precision_available(
+            fam,
+            model_kind = resolve_model_kind(gguf_filename, model_kind),
+            transformer_quant = transformer_quant,
+            text_encoder_quant = text_encoder_quant,
+        )
 
         with self._lock:
             # Allow starting over a previously-failed load, but not over a live one.
@@ -1461,6 +1632,8 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
+        file_sizes_out: Optional[dict[tuple[str, str], int]] = None,
+        shas_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
@@ -1468,6 +1641,9 @@ class DiffusionBackend:
 
         ``sizes_out``, when given, is filled with per-repo byte totals so the download
         plan can size one job per repo off this same single pair of Hub lookups.
+        ``file_sizes_out`` is the per (repo, filename) breakdown, so the plan can drop cached
+        files and size the rest. ``shas_out`` is each repo's CURRENT commit, so a cache hit
+        counts only in that revision.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1500,6 +1676,7 @@ class DiffusionBackend:
         try:
             if kind == "pipeline":
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                _record_sha(shas_out, repo_id, info)
                 picked = [
                     s
                     for s in info.siblings
@@ -1516,16 +1693,21 @@ class DiffusionBackend:
                         continue
                     base_files.append(s.rfilename)
                     total += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(repo_id, s.rfilename)] = s.size or 0
                 if sizes_out is not None:
                     sizes_out[repo_id] = total
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                _record_sha(shas_out, repo_id, info)
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
                 if sizes_out is not None:
                     sizes_out[repo_id] = gguf_bytes
+                if file_sizes_out is not None:
+                    file_sizes_out[(repo_id, gguf_filename)] = gguf_bytes
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1535,17 +1717,86 @@ class DiffusionBackend:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
             base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
+            _record_sha(shas_out, base_repo, base_info)
             base_bytes = 0
             for s in base_info.siblings:
                 if base_filter(s.rfilename) and not _dense_te_shard(s.rfilename):
                     base_files.append(s.rfilename)
                     base_bytes += s.size or 0
+                    if file_sizes_out is not None:
+                        file_sizes_out[(base_repo, s.rfilename)] = s.size or 0
             total += base_bytes
             if sizes_out is not None:
                 sizes_out[base_repo] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
+
+    @staticmethod
+    def _files_already_cached(
+        repo_id: str,
+        files: list[str],
+        revision: Optional[str] = None,
+    ) -> set[str]:
+        """Of ``files``, the names ONE root serves whole at ``revision``: all of them, or none.
+
+        Both roots are searched -- Studio's live setting, and ``cache_dir = None`` for
+        huggingface_hub's constant -- but hits are never UNIONED. A set split between the roots is
+        complete in neither: ``_prefetch_files`` hands back a snapshot only when every file came
+        from the SAME root, else None, and ``from_pretrained`` is then pinned to ``hub_cache_dir()``
+        and cannot see the other root, so dropping the repo moves its refetch inline, outside the
+        panel's progress and disk preflight. One root holding all of it still drops.
+
+        ``revision`` is REQUIRED to drop anything: defaulted, ``try_to_load_from_cache`` reads the
+        cache's OWN ``refs/main``, which a republished repo leaves on the superseded commit, so the
+        stale blob would leave the plan and the loader would pull the new one inline.
+
+        Only a str is a cached path. Never raises: an unreadable cache means "stage it"."""
+        if not revision or not files:
+            return set()
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Once, inside the try: hub_cache_dir is a SQLite read plus Path.home(), which raises
+            # with no home -- per file and outside, it was the one way this could 500.
+            roots = (hub_cache_dir(), None)
+        except Exception:  # noqa: BLE001 — no hub package / unreadable settings: stage everything
+            return set()
+        wanted = set(files)
+        live_root, fallback_root = roots
+
+        def _hits(root: Optional[str]) -> set[str]:
+            found: set[str] = set()
+            for name in wanted:
+                try:
+                    hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
+                except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
+                    continue
+                # is_file() is belt and braces: hub already ends on os.path.isfile today.
+                if isinstance(hit, str) and Path(hit).is_file():
+                    found.add(name)
+            return found
+
+        live = _hits(live_root)
+        if live == wanted:
+            return wanted
+        # A partial live hit IS the split: no single-root snapshot, so the pinned load refetches
+        # the fallback's share.
+        if live:
+            return set()
+        return wanted if _hits(fallback_root) == wanted else set()
+
+    @staticmethod
+    def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
+        """``repo_id``'s current commit, or None when the Hub does not say.
+
+        Only for the MIRROR: it is a separate repo with its own history, so the vendor sha
+        ``_estimate_download_bytes`` recorded would never hit."""
+        try:
+            from huggingface_hub import HfApi
+            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
+        except Exception:  # noqa: BLE001 — no sha means no skip, never a failed plan
+            return None
 
     def download_plan(
         self,
@@ -1581,7 +1832,10 @@ class DiffusionBackend:
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
-        total, base_files = self._estimate_download_bytes(
+        file_sizes: dict[tuple[str, str], int] = {}
+        shas: dict[str, str] = {}
+        # Total discarded: it counts every file the pick needs, not what is left to fetch.
+        _estimate_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
             base,
@@ -1592,6 +1846,8 @@ class DiffusionBackend:
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
+            file_sizes_out = file_sizes,
+            shas_out = shas,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1601,38 +1857,74 @@ class DiffusionBackend:
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
-        for repo, files in te_files.values():
+
+        def _stage(
+            repo: str,
+            files: list[str],
+            sized: dict[str, int],
+            gguf: Optional[str],
+            revision: Optional[str] = None,
+        ) -> None:
+            """Queue the files the cache is missing at ``revision``.
+
+            Entries are what the Downloads panel lists, so an all-cached pick yields none rather
+            than reading as a re-download of a model the user already has. No revision drops
+            nothing, so an unpinnable repo stages in full as it always did.
+
+            All or nothing per repo, never a subset: every diffusion entry for a repo rides the one
+            "@diffusion" scope slot, and download_registry refuses a claim whose scoped_files differ
+            from the live job's, so a shrinking list would 409 a second pick sharing this base where
+            it used to adopt the running job. Staging a cached file costs nothing anyway, since
+            hf_hub_download returns the pointer without a transfer.
+
+            "Cached" is per ROOT, never a union across the two; see ``_files_already_cached``."""
+            cached = self._files_already_cached(repo, files, revision)
+            if files and cached.issuperset(files):
+                return
             entries.append(
                 {
                     "repo_id": repo,
-                    "files": [name for name, _size in files],
-                    "bytes": int(sum(size for _name, size in files)),
-                    "gguf_filename": None,
+                    "files": files,
+                    "bytes": int(sum(sized.get(name, 0) for name in files)),
+                    "gguf_filename": gguf,
                 }
             )
-            total += int(sum(size for _name, size in files))
+
+        for repo, files in te_files.values():
+            # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast
+            # checkpoint stages whole, not off a stale refs/main. Worth surfacing its info.sha:
+            # these replace tens of GB.
+            _stage(repo, [n for n, _s in files], dict(files), None)
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            entries.append(
-                {
-                    "repo_id": repo_id,
-                    "files": [gguf_filename],
-                    "bytes": int(sizes.get(repo_id, 0)),
-                    "gguf_filename": gguf_filename,
-                }
+            _stage(
+                repo_id,
+                [gguf_filename],
+                # file_sizes, not sizes: a base repo equal to this one overwrote sizes[repo_id]
+                # with the base total, mis-sizing this row.
+                {gguf_filename: int(file_sizes.get((repo_id, gguf_filename), 0))},
+                gguf_filename,
+                shas.get(repo_id),
             )
         if base_files and not Path(base).expanduser().exists():
             # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
             # an anonymous user at staging and the swap downstream is never reached. status(), the
             # API base repo, saved configs and LoRA tags keep the vendor id; sizes key on it too.
-            entries.append(
-                {
-                    "repo_id": fetch_base,
-                    "files": base_files,
-                    "bytes": int(sizes.get(base, 0)),
-                    "gguf_filename": None,
-                }
+            # The commit follows the id: the sizes came from the vendor, the probe must not.
+            base_rev = (
+                shas.get(base) if fetch_base == base else self._current_sha(fetch_base, hf_token)
             )
-        return {"entries": entries, "total_bytes": int(total)}
+            _stage(
+                fetch_base,
+                base_files,
+                {name: file_sizes.get((base, name), 0) for name in base_files},
+                None,
+                base_rev,
+            )
+        # Derived, never decremented: a carried total can only drift from the rows the panel shows.
+        return {
+            "entries": entries,
+            "total_bytes": int(sum(e["bytes"] for e in entries)),
+        }
 
     @staticmethod
     def _hub_cache_repo_dir(repo_id: str) -> Path:
@@ -2003,6 +2295,9 @@ class DiffusionBackend:
                     fetch_base = fetch_base,
                 )
 
+                # The caller's RAW request, captured before the tri-state below rewrites it: status
+                # has to be able to say "you asked for fp8" long after the loader declined it.
+                transformer_quant_requested = transformer_quant
                 # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.
                 transformer_quant_auto = transformer_quant is None or str(
                     transformer_quant
@@ -2013,11 +2308,52 @@ class DiffusionBackend:
                         speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
                     )
                     transformer_quant = "off" if speed_off else TQ_AUTO
+                # The one case that must fail closed: a named scheme (not auto, not off). Normalized
+                # here so "FP8" and "fp8" refuse identically; a bogus value already raised above.
+                transformer_quant_pinned = (
+                    None
+                    if transformer_quant_auto
+                    else normalize_transformer_quant(transformer_quant_requested)
+                )
 
                 # Default-on fast path (GGUF kind only): dense bf16 + torchao quant beats GGUF per-matmul dequant on speed AND quality. Needs CUDA + bf16 + a resident fit.
                 pipe = None
                 transformer_quant_engaged = None
                 quant_plan = None
+                # Why the dense quant did not engage, in the caller's terms. Threaded into
+                # `resolved` so a fallback is visible, and into the refusal so it is actionable.
+                transformer_quant_decline: Optional[str] = None
+                transformer_quant_decline_status = RESOLVED_FELL_BACK
+                if transformer_quant_pinned is not None and kind != "gguf":
+                    # The dense fast path replaces a GGUF transformer with a quantised dense build;
+                    # the other kinds run the precision their checkpoint already carries, so an
+                    # explicit scheme here was accepted and then ignored outright.
+                    transformer_quant_decline = (
+                        f"the dense transformer-quant path applies to GGUF picks only, and this is "
+                        f"a '{kind}' load, which runs the precision its checkpoint carries"
+                    )
+                    transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+                elif transformer_quant_pinned is not None and not dense_transformer_supported(
+                    target
+                ):
+                    transformer_quant_decline = (
+                        "this device cannot run a dense torchao quant (it needs a CUDA GPU in "
+                        "bf16)"
+                    )
+                    transformer_quant_decline_status = RESOLVED_UNSUPPORTED
+                elif transformer_quant_pinned is not None and (
+                    select_transformer_quant_scheme(
+                        target, transformer_quant_pinned, family = getattr(fam, "name", None)
+                    )
+                    is None
+                ):
+                    # An explicit scheme is never swapped for another, so a None here means this GPU
+                    # (or this family's measured deny list) rules it out.
+                    transformer_quant_decline = (
+                        f"'{transformer_quant_pinned}' is not usable for family "
+                        f"'{getattr(fam, 'name', None)}' on this GPU"
+                    )
+                    transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # The GGUF-size plan can mis-budget the fast path, so preflight the real footprint pre-eviction. Also set below when an auto quant declines a hosted pre-quant.
                 dense_declined = False
                 # False when the plan only holds a PREQUANT-sized build: a failed prequant load must raise, not materialise the
@@ -2046,6 +2382,12 @@ class DiffusionBackend:
                             uncached_prequant,
                         )
                         dense_declined = True
+                        # Auto-only branch, so this reason only ever reaches an "Auto: OFF" badge.
+                        transformer_quant_decline = (
+                            f"the hosted pre-quant checkpoint in {uncached_prequant} is not "
+                            "cached, and an auto quant never downloads a second transformer for "
+                            "a GGUF pick"
+                        )
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -2064,6 +2406,14 @@ class DiffusionBackend:
                             force_dense = _has_active_lora(loras),
                             logger = logger,
                         )
+                        if candidate is None:
+                            # No basis to re-plan (no size entry, or the model cache is too full for
+                            # the artifact), so the GGUF plan's offload stands and the quant cannot.
+                            transformer_quant_decline = (
+                                f"the memory plan picked '{plan.offload_policy}' offload and there "
+                                "is no quantised candidate to re-plan against on this host (see "
+                                "the server log)"
+                            )
                         if candidate is not None:
 
                             def _replan_candidate():
@@ -2103,6 +2453,14 @@ class DiffusionBackend:
                                     getattr(replanned.device_memory, "free_mib", None),
                                     replanned.offload_policy,
                                     "; ".join(replanned.reasons),
+                                )
+                                transformer_quant_decline = (
+                                    f"the quantised build still needs '{replanned.offload_policy}' "
+                                    f"offload here ("
+                                    f"{replanned.estimates.get('resident_required_mib')} MiB "
+                                    f"required vs a "
+                                    f"{replanned.estimates.get('safe_device_budget_mib')} MiB "
+                                    "budget), and torchao tensors cannot be offloaded"
                                 )
                             if replanned.offload_policy == OFFLOAD_NONE:
                                 quant_plan = replanned
@@ -2159,6 +2517,12 @@ class DiffusionBackend:
                                 # No prequant source: a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
                                 if prequant is None:
                                     dense_declined = True
+                                    transformer_quant_decline = (
+                                        "the dense bf16 transformer this quant is built from does "
+                                        f"not fit resident ({dense_mib} MiB; the plan picked "
+                                        f"'{dense_plan.offload_policy}' offload), and no hosted "
+                                        "pre-quantised checkpoint is available to build it from"
+                                    )
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -2191,6 +2555,13 @@ class DiffusionBackend:
                         )
                         pipe = None
                         transformer_quant_engaged = None
+                        # Formatted BEFORE the del below, and redacted: this reaches the client both
+                        # as a status tooltip and (for an explicit ask) as the refusal message.
+                        from utils.native_path_leases import redact_native_paths
+
+                        transformer_quant_decline = redact_native_paths(
+                            f"the quantised transformer build failed ({exc})"
+                        )
                         # Drop the exception before clearing the cache: its traceback pins the dense transformer's VRAM.
                         del exc
                         # Guarded: a sticky CUDA error can raise; the fallback must reach the GGUF build.
@@ -2215,6 +2586,26 @@ class DiffusionBackend:
                         "declined or failed on this device (see the server log), and the "
                         "GGUF fallback cannot carry them. Retry without transformer_quant "
                         "adapters, free VRAM, or pick a smaller model."
+                    )
+
+                # Fail closed on a declined EXPLICIT precision. Loading the GGUF here produced a
+                # perfectly good image at a precision the caller never asked for, and nothing in
+                # the response said so, which is why a successful render could not be taken as
+                # proof the requested precision ran. `auto` is untouched: falling down the ladder
+                # is what it asks for.
+                if (
+                    pipe is None
+                    and transformer_quant_pinned is not None
+                    and not precision_fallback_allowed()
+                ):
+                    raise RuntimeError(
+                        precision_refusal_message(
+                            "transformer_quant",
+                            transformer_quant_pinned,
+                            transformer_quant_decline
+                            or "the quantised transformer build did not engage on this host",
+                            off_label = "Off to run the checkpoint as-is",
+                        )
                     )
 
                 if pipe is None:
@@ -2496,7 +2887,7 @@ class DiffusionBackend:
                             transformer_quant_engaged,
                         )
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller weights.
-                    te_quant = quantize_text_encoders(
+                    te_outcome = quantize_text_encoders(
                         pipe,
                         target,
                         mode = text_encoder_quant,
@@ -2504,6 +2895,40 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    te_quant = te_outcome.mode
+                    # Same contract for the other half of "the requested precision": an explicit
+                    # encoder mode that engaged NOTHING leaves a dense bf16 encoder the caller did
+                    # not ask for, and a PARTIAL cast leaves a pipeline conditioning off a mixture
+                    # of quantised and dense encoders. A mode that engaged something ELSE
+                    # (int8 -> fp8) is reported by the badge instead: the encoder IS quantised on
+                    # every tower, just not the way asked.
+                    if (
+                        (te_quant is None or te_outcome.partial)
+                        and normalize_te_quant(text_encoder_quant) is not None
+                        and not precision_fallback_allowed()
+                    ):
+                        raise RuntimeError(
+                            precision_refusal_message(
+                                "text_encoder_quant",
+                                normalize_te_quant(text_encoder_quant) or "",
+                                te_outcome.reason or "no text encoder could be cast",
+                                off_label = "leave it unset to keep the dense bf16 encoder",
+                                auto_available = False,
+                            )
+                        )
+
+                    # Whole-module offload still onloads one complete component for its forward.
+                    # Refine it from the loaded, possibly quantized weights so an oversized text
+                    # encoder uses leaf streaming instead of failing during prompt encoding.
+                    refined_plan = refine_memory_plan_for_components(pipe, plan)
+                    if refined_plan.offload_policy != plan.offload_policy:
+                        logger.info(
+                            "diffusion.memory: refined policy %s -> %s (%s)",
+                            plan.offload_policy,
+                            refined_plan.offload_policy,
+                            "; ".join(refined_plan.reasons),
+                        )
+                    plan = refined_plan
 
                     # Persistent conditioning cache (UNSLOTH_DIFFUSION_COND_CACHE_DIR): repeated prompts skip the text-encoder
                     # forward. After the TE quant so the key reflects the encoders that run; ``base`` keys the companion repo.
@@ -2539,18 +2964,41 @@ class DiffusionBackend:
                                 else "requested",
                             ),
                             "transformer_quant": (
-                                transformer_quant,
+                                # The RAW request, not the tri-state rewrite: an "Auto: OFF" badge
+                                # and a declined "FP8" must not look the same.
+                                transformer_quant_requested,
                                 transformer_quant_engaged or "off",
-                                # The None reason matches the load kind (GGUF loaded vs dense kept).
+                                # A recorded decline wins: it names WHY, where the generic strings
+                                # below only say the GGUF ran.
                                 (
-                                    "not engaged (GGUF transformer loaded)"
-                                    if kind == "gguf"
-                                    else "dense transformer kept unquantized"
+                                    transformer_quant_decline
+                                    or (
+                                        "not engaged (GGUF transformer loaded)"
+                                        if kind == "gguf"
+                                        else "dense transformer kept unquantized"
+                                    )
                                 )
                                 if transformer_quant_engaged is None
                                 else "re-planned resident for the quantised artifact"
                                 if quant_plan is not None
                                 else "engaged on the dense fast path",
+                                # Honored when the quant engaged AND when the ask was "off" (a
+                                # request NOT to quantise, which the GGUF build satisfies).
+                                RESOLVED_APPLIED
+                                if transformer_quant_engaged is not None
+                                or transformer_quant_pinned is None
+                                else transformer_quant_decline_status,
+                            ),
+                            "text_encoder_quant": (
+                                text_encoder_quant,
+                                te_quant or "off",
+                                te_outcome.reason
+                                or (
+                                    "dense bf16 text encoder(s) loaded"
+                                    if te_quant is None
+                                    else "dense text encoder(s) quantised in place"
+                                ),
+                                te_outcome.status,
                             ),
                             "attention_backend": (
                                 attention_backend,
@@ -2566,6 +3014,9 @@ class DiffusionBackend:
                                 effective_policy,
                                 "everything fits on the GPU, no offload needed"
                                 if effective_policy == OFFLOAD_NONE
+                                else "a loaded component exceeds the device budget; "
+                                "streaming transformer blocks and text-encoder layers"
+                                if effective_policy == OFFLOAD_STREAMING
                                 else "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (
@@ -3357,6 +3808,13 @@ class DiffusionBackend:
             logger = logger,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
+        # Keep the badge in step with the state it describes: the top-level field moved, so leaving
+        # `resolved` on the load-time value would make the panel report an attention backend that is
+        # no longer the one running. Same in-place update as the fields above.
+        if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
+            entry = dict(state.resolved["attention_backend"])
+            entry["value"] = attention_engaged or "native"
+            object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
         if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(
@@ -3828,6 +4286,11 @@ class DiffusionBackend:
                     "model_kind": state.kind,
                     "gguf_filename": state.gguf_filename,
                     "transformer_quant": state.transformer_quant,
+                    # Read off the ENGAGED state, never the request: a recipe that claimed a
+                    # precision the load declined is the same lie the status badges just fixed.
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                     # Adapters baked in at LOAD time: disabling them at generate time is not the same build, so they belong to the build record.
                     "baked_loras": _baked_lora_names(state.pipe),
                     # The adapters ACTUALLY attached, at non-zero weight, for this generation.
@@ -3923,6 +4386,7 @@ class DiffusionBackend:
                 "device": None,
                 "dtype": None,
                 "model_kind": None,
+                "gguf_variant": None,
                 "cpu_offload": False,
                 "offload_policy": None,
                 "vae_tiling": False,
@@ -3939,6 +4403,7 @@ class DiffusionBackend:
                 "resolved": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
+        from hub.utils.gguf import extract_quant_token
 
         return {
             "loaded": True,
@@ -3948,6 +4413,11 @@ class DiffusionBackend:
             "device": state.device,
             "dtype": state.dtype,
             "model_kind": state.kind,
+            "gguf_variant": (
+                extract_quant_token(state.gguf_filename)
+                if state.kind == "gguf" and state.gguf_filename
+                else None
+            ),
             "cpu_offload": state.cpu_offload,
             "offload_policy": state.offload_policy,
             "vae_tiling": state.vae_tiling,

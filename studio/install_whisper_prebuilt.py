@@ -166,12 +166,18 @@ SLIM_BACKEND_MODULE_GLOBS = {
 
 # Everything the slim wiring mirrors from the llama bin dir: the core ggml
 # sonames plus every dlopen'd backend module (CPU variants included). libggml*
-# matches .so and .dylib alike; ggml*.dll covers Windows. libomp*.dll rides along
-# because llama's clang-built windows-arm64 ggml-base.dll imports
-# libomp140.aarch64.dll, shipped in the llama bundle but never a system DLL, so
-# the loader needs it next to whisper-server.exe (MSVC x64 uses System32
-# vcomp140.dll; Linux ggml needs system libgomp.so.1, which llama already requires).
-SLIM_GGML_LIBRARY_GLOBS = ("libggml*", "ggml*.dll", "libomp*.dll")
+# matches .so and .dylib alike; ggml*.dll covers Windows. libomp* rides along
+# because llama's clang-built slices (windows x64/arm64, linux arm64) link ggml
+# against the LLVM OpenMP runtime and ship it in the bundle, so the loader can
+# never find it on the host. Linux x64 (gcc, host libgomp.so.1) and macOS (Apple
+# clang, no OpenMP) ship none, so the globs match nothing there.
+SLIM_GGML_LIBRARY_GLOBS = (
+    "libggml*",
+    "ggml*.dll",
+    "libomp*.dll",
+    "libomp*.so*",
+    "libomp*.dylib",
+)
 SLIM_ROCM_LIBRARY_GLOBS = (
     "libamd*.so*",
     "libhip*.so*",
@@ -179,7 +185,9 @@ SLIM_ROCM_LIBRARY_GLOBS = (
     "libroc*.so*",
 )
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
-SLIM_RUNTIME_WIRING_VERSION = 2
+# 3: libomp*.so*/dylib joined the wiring, so version 2 installs are missing
+# libomp.so.5 on linux arm64 and must re-wire.
+SLIM_RUNTIME_WIRING_VERSION = 3
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 

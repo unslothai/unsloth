@@ -369,6 +369,9 @@ export interface ApiMonitorEntry {
   updated_at: number;
   finished_at?: number | null;
   duration_ms?: number | null;
+  // duration_ms covers the whole request, queue wait and prefill included. decode_ms is
+  // only the generating span, and is absent unless the engine reported it.
+  decode_ms?: number | null;
   context_length?: number | null;
   context_usage?: number | null;
   prompt_tokens?: number | null;

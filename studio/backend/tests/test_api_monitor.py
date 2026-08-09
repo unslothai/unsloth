@@ -1524,3 +1524,86 @@ def test_direct_busy_reads_the_live_counter(monkeypatch):
     assert inf._direct_llama_is_busy() is False
     monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
     assert inf._direct_llama_is_busy() is True
+
+
+def test_the_decode_span_comes_only_from_engine_timings(monkeypatch):
+    """duration_ms carries the queue wait, which read a 50 tok/s model as 5. decode_ms must not."""
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inference_route._monitor_usage(
+        entry_id,
+        {"prompt_tokens": 11, "completion_tokens": 50},
+        4096,
+        timings = {"prompt_ms": 9000.0, "predicted_ms": 1000.0, "predicted_per_second": 50.0},
+    )
+    monitor.finish(entry_id)
+
+    [row] = monitor.snapshot()
+    assert row["decode_ms"] == 1000
+    assert row["completion_tokens"] / (row["decode_ms"] / 1000) == 50.0
+
+
+def test_a_timings_only_final_chunk_still_sets_the_decode_span(monkeypatch):
+    """llama-server can end a stream with timings and no usage."""
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inference_route._monitor_usage(entry_id, None, None, timings = {"predicted_ms": 1000})
+    monitor.finish(entry_id)
+
+    assert monitor.snapshot()[0]["decode_ms"] == 1000
+
+
+def test_a_streamed_reply_alone_reports_no_decode_span():
+    """Timing the stream misses the first chunk and reasoning tokens, so report nothing."""
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "hi")
+    monitor.append_reply(entry_id, " there")
+    monitor.finish(entry_id)
+
+    row = monitor.snapshot()[0]
+    assert row["decode_ms"] is None
+    assert row["duration_ms"] is not None
+
+
+@pytest.mark.parametrize(
+    # "1000" is absent on purpose: _finite_float_or_none coerces a numeric string.
+    "predicted_ms",
+    [float("inf"), float("nan"), -1, "abc", None, 1e308, 10**400, {}, []],
+)
+def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicted_ms):
+    """json.loads accepts a bare Infinity; a raise in a streaming generator truncates the reply."""
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inference_route, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    inference_route._monitor_usage(
+        entry_id,
+        {"completion_tokens": 50},
+        None,
+        timings = {"predicted_ms": predicted_ms},
+    )
+    monitor.finish(entry_id)
+
+    assert monitor.snapshot()[0]["decode_ms"] is None
