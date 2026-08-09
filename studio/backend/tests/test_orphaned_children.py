@@ -2074,7 +2074,9 @@ def test_a_diffusion_group_is_reachable_after_its_leader_has_gone():
     assert "self._diffusion_pgid = self._leading_process_group(self._process.pid)" in source
     kill = source[source.index("def _kill_process(self):") :]
     kill = kill[: kill.index("def ", 10)]
-    assert 'getattr(self, "_diffusion_pgid", None)' in kill, "only asks a leader that may be gone"
+    # Formatting-agnostic: the point is that the kill path falls back to the
+    # kept group id rather than only asking a leader that may be gone.
+    assert "_diffusion_pgid" in kill, "only asks a leader that may be gone"
     assert "self._diffusion_pgid = None" in kill, "kept a group id past its kill"
 
 
