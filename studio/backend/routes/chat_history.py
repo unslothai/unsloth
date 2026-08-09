@@ -729,7 +729,8 @@ async def delete_project(
             # directory is worse than keeping files the user asked to delete,
             # and the record below means the next delete can still collect them.
             logger.warning(
-                "Kept project workspace %s: a tool call was still running in it", project_id,
+                "Kept project workspace %s: a tool call was still running in it",
+                project_id,
             )
         elif referenced:
             logger.info(
@@ -743,7 +744,9 @@ async def delete_project(
             # Written down so it can be resolved and, once nothing points at it,
             # collected: the row that knew where it lives is gone.
             await run_in_threadpool(
-                record_orphaned_project, project_id, project["sandboxPath"],
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
             )
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
