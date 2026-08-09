@@ -1536,5 +1536,84 @@ def test_a_group_is_waited_on_while_a_member_is_still_running():
             leader.wait(timeout = 5)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_a_live_leader_answers_without_scanning_every_process(monkeypatch):
+    """Enumerating a group reads the state of every process on the machine, and
+    this runs on each stop; a running leader already settles the question."""
+    from utils import process_lifetime as lifetime
+
+    leader = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session = True,
+    )
+    try:
+        for _ in range(50):
+            if lifetime._pid_alive(leader.pid):
+                break
+            time.sleep(0.05)
+
+        def refuse(pgid):
+            raise AssertionError("scanned every process for a group whose leader is alive")
+
+        monkeypatch.setattr(lifetime, "_group_member_pids", refuse)
+        assert lifetime._group_has_members(leader.pid) is True
+    finally:
+        leader.kill()
+        leader.wait(timeout = 5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_a_group_outliving_its_leader_is_still_found():
+    """The short-circuit must not become the whole answer: the case this record
+    exists for is a leader that exited while its child holds the GPU."""
+    from utils import process_lifetime as lifetime
+
+    leader = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys;"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']);",
+        ],
+        start_new_session = True,
+    )
+    survivor = None
+    try:
+        leader.wait(timeout = 30)  # the leader goes, its child stays
+        members = lifetime._group_member_pids(leader.pid) or []
+        survivor = next((pid for pid in members if pid != leader.pid), None)
+        assert survivor, members
+        assert lifetime._group_has_members(leader.pid) is True
+    finally:
+        try:
+            os.killpg(leader.pid, signal.SIGKILL)
+        except Exception:
+            pass
+        if leader.poll() is None:
+            leader.kill()
+            leader.wait(timeout = 5)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "posix process groups")
+def test_forgetting_an_untracked_pid_costs_nothing():
+    """Every tool call ends here, most of them with nothing recorded: neither
+    the group scan nor the record rewrite has anything to do."""
+    from utils import process_lifetime as lifetime
+
+    scanned = []
+    written = []
+    original_scan = lifetime._group_member_pids
+    original_write = lifetime._write_breadcrumb
+    lifetime._group_member_pids = lambda pgid: (scanned.append(pgid), original_scan(pgid))[1]
+    lifetime._write_breadcrumb = lambda: (written.append(1), original_write())[1]
+    try:
+        lifetime.forget_pid(999_001)
+    finally:
+        lifetime._group_member_pids = original_scan
+        lifetime._write_breadcrumb = original_write
+
+    assert scanned == []
+    assert written == [], "rewrote the record for a pid it never held"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

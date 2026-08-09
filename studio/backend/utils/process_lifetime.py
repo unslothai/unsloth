@@ -512,6 +512,8 @@ def forget_pid(pid: Optional[int]) -> None:
     if not pid:
         return
     with _record_lock:
+        if pid not in _tracked_pids and pid not in _tracked_pgids:
+            return  # never recorded, so there is nothing to rewrite or check
         if _group_has_members(_tracked_pgids.get(pid)):
             return
         _tracked_pids.pop(pid, None)
@@ -532,6 +534,11 @@ def _group_has_members(pgid: object) -> bool:
         os.killpg(pgid, 0)
     except Exception:
         return False
+    # The leader is the usual answer, and enumerating a group means reading the
+    # state of every process on the machine: 62ms on a box with 6000 of them,
+    # paid on every stop.
+    if _pid_alive(pgid) and not _pid_is_zombie(pgid):
+        return True
     members = _group_member_pids(pgid)
     if members is None:
         return True  # cannot enumerate, so keep the record rather than lose it
