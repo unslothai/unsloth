@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Advisory VirusTotal pre-flight scan of the built desktop release bundles.
+"""Advisory VirusTotal scan of the desktop release bundles.
+
+Runs after `publish-release` has uploaded the assets, which for the default
+`draft: true` dispatch means they are attached to a draft rather than published.
 
 Stdlib only on purpose: this runs on a bare `ubuntu-latest` runner right after the
 artifacts are downloaded, before any Python environment is provisioned, so it cannot
@@ -185,10 +188,20 @@ def _md_text(text: str) -> str:
     return escaped.replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Also written by the workflow's placeholder step, so a reader sees one heading
+# whether or not the scan produced a summary.
+#
+# Says neither "pre-flight" nor "post-publish": the scan runs after
+# `publish-release`, but `inputs.draft` defaults to true, so the ordinary run
+# has uploaded the assets to a draft rather than published them. Naming the
+# assets is the only wording true of both dispatches.
+SUMMARY_HEADING = "### VirusTotal release asset scan"
+
+
 def render_markdown(reports: Sequence[FileReport], threshold: int) -> str:
     """Render the job-summary table. Kept pure so it is unit testable."""
     lines = [
-        "### VirusTotal pre-flight scan",
+        SUMMARY_HEADING,
         "",
         "| Asset | Malicious | Suspicious | Undetected | Harmless | Timeout | Source |",
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -709,15 +722,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "virustotal_scan: VT_API_KEY is unset or empty; skipping the scan.",
             flush = True,
         )
-        _write_markdown(
-            "### VirusTotal pre-flight scan\n\nSkipped: no API key configured for this run.\n"
-        )
+        _write_markdown(f"{SUMMARY_HEADING}\n\nSkipped: no API key configured for this run.\n")
         return 0
 
     targets = collect_paths(args.paths)
     if not targets:
         print("virustotal_scan: no scannable bundles found.", flush = True)
-        _write_markdown("### VirusTotal pre-flight scan\n\nSkipped: no scannable bundles found.\n")
+        _write_markdown(f"{SUMMARY_HEADING}\n\nSkipped: no scannable bundles found.\n")
         return 0
 
     client = VirusTotalClient(api_key, request_interval = args.request_interval)

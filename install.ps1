@@ -18,6 +18,94 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
+
+    # The user's PowerShell profile has already run by the time this does, and the documented
+    # "irm https://unsloth.ai/install.ps1 | iex" entry point has no script file to re-launch
+    # with -NoProfile, so each way a profile can reach in here is cut individually below.
+    #
+    # Off, not Latest: this script predates strict mode, testing environment variables that are
+    # legitimately unset and reading $script: state only some branches assign. Scoped to here
+    # and below, so the caller keeps its own.
+    Set-StrictMode -Off
+
+    # A profile that sets 'None' -- the startup-time tweak people copy -- is fatal on PowerShell
+    # 7, which loads NO modules at startup: Test-Path, Write-Host, Select-Object,
+    # ConvertFrom-Json, Get-FileHash, Invoke-WebRequest, Expand-Archive, Start-Process and
+    # Get-Content stop resolving, while 5.1 preloads Utility and Management and survives. First
+    # of the four, because the proxy handoff below calls ConvertTo-Json from Utility too.
+    $PSModuleAutoLoadingPreference = 'All'
+
+    # Proxy keys are kept rather than dropped: on a locked-down corporate host such an entry may
+    # be the sole route to python.org and the uv release. IsMatch, not -match, so the filter
+    # leaves no $Matches behind for the rest of the install.
+    $_UnslothKeptDefaults = @{}
+    foreach ($_UnslothDefaultKey in @($PSDefaultParameterValues.Keys)) {
+        # IgnoreCase: 'invoke-webrequest:proxy' is valid PowerShell and binds the same
+        # parameter, so a case-sensitive filter drops a working proxy on a technicality.
+        if ($_UnslothDefaultKey -is [string] -and
+            [regex]::IsMatch(
+                $_UnslothDefaultKey,
+                ':Proxy(Credential|UseDefaultCredentials)?$',
+                [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            $_UnslothKeptDefaults[$_UnslothDefaultKey] = $PSDefaultParameterValues[$_UnslothDefaultKey]
+        }
+    }
+    # One profile entry such as 'Start-Process:WindowStyle' or 'Invoke-WebRequest:TimeoutSec'
+    # silently rebinds every process launch and download here. Assigning with no scope qualifier
+    # shadows the caller's table for this scope and below only.
+    $PSDefaultParameterValues = $_UnslothKeptDefaults
+
+    # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
+    # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
+    # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
+    # a PSCredential does not serialize, and an environment variable is the wrong place for one.
+    $_UnslothProxyHandoff = @{}
+    foreach ($_UnslothDefaultKey in @($_UnslothKeptDefaults.Keys)) {
+        $_UnslothDefaultValue = $_UnslothKeptDefaults[$_UnslothDefaultKey]
+        # [uri] is the form the parameter actually takes and serializes to its own string.
+        if ($_UnslothDefaultValue -is [uri]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue.AbsoluteUri
+        } elseif ($_UnslothDefaultValue -is [string] -or $_UnslothDefaultValue -is [bool]) {
+            $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultValue
+        } elseif ($_UnslothDefaultValue -is [scriptblock]) {
+            # A script block is the supported form for a DYNAMIC default, e.g.
+            # { [uri]$env:CORP_PROXY }, evaluated per call by Invoke-WebRequest. Evaluate here
+            # and hand over the RESULT: executable code must not cross into the child.
+            try {
+                $_UnslothDefaultResolved = & $_UnslothDefaultValue
+                if ($_UnslothDefaultResolved -is [uri]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved.AbsoluteUri
+                } elseif ($_UnslothDefaultResolved -is [string] -or
+                          $_UnslothDefaultResolved -is [bool]) {
+                    $_UnslothProxyHandoff[$_UnslothDefaultKey] = $_UnslothDefaultResolved
+                }
+            } catch { }
+        }
+    }
+    # A FUNCTION-local, not $script: or an environment variable: under "irm ... | iex" this runs
+    # in the caller's own session, and the value can carry credentials (http://user:secret@proxy
+    # is the ordinary corporate form) that must not outlive the install on any of the dozens of
+    # return paths. Module-qualified serializer, as in the probe: a profile alias or function
+    # named ConvertTo-Json would otherwise reshape this record or throw out of the prologue.
+    $UnslothProxyHandoffJson =
+        if ($_UnslothProxyHandoff.Count -gt 0) {
+            $_UnslothProxyHandoff | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
+        }
+        else { $null }
+
+    # PowerShell 7 only, and $false is its default: a profile that flips it on turns every
+    # non-zero native exit into a terminating error, which with "Stop" above would throw out of
+    # the setup handoff instead of reaching Exit-InstallFailure. Harmless on 5.1, where the
+    # variable does not exist.
+    $PSNativeCommandUseErrorActionPreference = $false
+
+    # Reset per invocation, for the reason at $script:IsIntelXpu further down: under
+    # "irm ... | iex" $script: is the caller's session scope, so a second run in the same
+    # console would start on the first run's state. These two are the only ones no later
+    # statement re-assigns unconditionally.
+    $script:UvExe = 'uv'
+    $script:UvInstallDestDir = $null
+
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
     # Same fix as studio/setup.ps1, for the same reason. This script also calls
@@ -1918,7 +2006,14 @@ exit 0
         }
 
     Write-TauriLog "STEP" "Checking system dependencies"
-    $script:WingetAvailable = [bool](Get-Command winget -ErrorAction SilentlyContinue)
+    # -CommandType Application, as for Resolve-UvExecutable below: winget installs Python AND uv,
+    # so a profile "function winget {...}" or "Set-Alias winget ..." would otherwise receive both
+    # installs. The resolved path is pinned so the five call sites cannot be re-resolved later.
+    $script:WingetExe = (
+        Get-Command winget -CommandType Application -All -ErrorAction SilentlyContinue |
+            Where-Object { $_.Source } | Select-Object -First 1 -ExpandProperty Source
+    )
+    $script:WingetAvailable = [bool]$script:WingetExe
     if ($script:WingetAvailable) {
         step "winget" "available"
     } else {
@@ -2185,7 +2280,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
             } catch { }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
@@ -2224,7 +2319,7 @@ exit 0
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try {
-                winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
+                & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
                 $wingetExit = $LASTEXITCODE
             } catch { $wingetExit = 1 }
             $ErrorActionPreference = $prevEAP
@@ -2241,7 +2336,7 @@ exit 0
                 substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
                 $ErrorActionPreference = "Continue"
                 try {
-                    winget install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
+                    & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
                     $wingetExit = $LASTEXITCODE
                 } catch { $wingetExit = 1 }
                 $ErrorActionPreference = $prevEAP
@@ -2300,17 +2395,81 @@ exit 0
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
     $UvMinVersion = "0.8.16"
+
+    # PowerShell ranks aliases and functions above anything on PATH, so a profile carrying
+    # "Set-Alias uv ..." or "function uv {...}" captures every bare uv call here and the version
+    # probe reads a good uv as broken. $null when nothing named uv resolves to an executable, so
+    # the caller's "not installed yet" branch keeps its meaning.
+    function Resolve-UvExecutable {
+        # @(): a one-element return unrolls to a bare string, and indexing THAT gives its
+        # first character.
+        $candidates = @(Get-UvExecutableCandidates)
+        if ($candidates.Count -gt 0) { return $candidates[0] }
+        return $null
+    }
+
+    # Every uv this machine offers, in the order the bare token would pick them: alias first,
+    # then PATH. A LIST rather than one answer, so the version gate can move past an alias
+    # pointing at a stale uv and still find a current one.
+    function Get-UvExecutableCandidates {
+        # An ALIAS pointing at a real executable FIRST, because PowerShell resolves aliases
+        # ahead of PATH. Followed only as far as an Application, returning the resolved path so
+        # the rest of the script is not back in command discovery.
+        $found = [System.Collections.Generic.List[string]]::new()
+        $alias = Get-Command uv -CommandType Alias -ErrorAction SilentlyContinue
+        while ($alias -and $alias.ResolvedCommand) {
+            $target = $alias.ResolvedCommand
+            if ($target.CommandType -eq 'Application' -and $target.Source) {
+                $found.Add($target.Source)
+                break
+            }
+            if ($target.CommandType -ne 'Alias') { break }
+            $alias = $target
+        }
+        # -All, because Get-Command's choice among several matches is otherwise incidental.
+        # Applications come back in PATH order, so with no profile overrides this is the uv the
+        # bare token would run.
+        $apps = @(
+            Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue |
+                Where-Object { $_.Source }
+        )
+        foreach ($app in $apps) {
+            if (-not $found.Contains($app.Source)) { $found.Add($app.Source) }
+        }
+        if ($found.Count -gt 0) { return @($found) }
+        # Anything else named uv is a function, a cmdlet, or an alias to one, and handing back
+        # the bare token would let a wrapper answering `--version` pass the gate and then
+        # receive every install command. An empty list means "not installed yet", so uv gets
+        # installed and the gate re-probes.
+        return @()
+    }
+
     function Test-UvVersionOk {
-        $cmd = Get-Command uv -ErrorAction SilentlyContinue
-        if (-not $cmd) { return $false }
+        # EVERY candidate, not just the first, so an alias pointing at a stale uv cannot hide a
+        # current uv on PATH. Alias first still, so a passing alias keeps winning.
+        foreach ($exe in Get-UvExecutableCandidates) {
+            if (Test-UvCandidateVersion $exe) { return $true }
+        }
+        return $false
+    }
+
+    function Test-UvCandidateVersion {
+        param([string]$exe)
+        if (-not $exe) { return $false }
         try {
-            $raw = (& uv --version 2>$null | Select-Object -First 1)
+            $raw = (& $exe --version 2>$null | Select-Object -First 1)
         } catch {
             return $false
         }
         if ($raw -notmatch 'uv\s+([0-9]+(?:\.[0-9]+)+)') { return $false }
         try {
-            return ([version]$Matches[1] -ge [version]$UvMinVersion)
+            if ([version]$Matches[1] -ge [version]$UvMinVersion) {
+                # Pin the executable that actually answered: every install command below runs
+                # this path, so a later Refresh-SessionPath or a profile alias cannot swap it.
+                $script:UvExe = $exe
+                return $true
+            }
+            return $false
         } catch {
             return $false
         }
@@ -2421,7 +2580,9 @@ exit 0
     }
 
     if (-not (Test-UvVersionOk)) {
-        if (Get-Command uv -ErrorAction SilentlyContinue) {
+        # Resolve-UvExecutable, not a bare Get-Command: a profile alias named uv would
+        # otherwise report "updating" on what is in fact a first install.
+        if (Resolve-UvExecutable) {
             substep "updating uv package manager..."
         } else {
             substep "installing uv package manager..."
@@ -2429,9 +2590,9 @@ exit 0
         if ($script:WingetAvailable) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
-            try { winget upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             if (-not (Test-UvVersionOk)) {
-                try { winget install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
             }
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
@@ -2820,7 +2981,7 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { uv venv $VenvDir --python "$($DetectedPython.Path)" }
+        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
         if ($venvExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
@@ -3994,21 +4155,21 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -4016,13 +4177,13 @@ exit 0
         }
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -4039,7 +4200,7 @@ exit 0
             # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
             $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
             $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $torchSpec $visionSpec $audioSpec }
             if ($torchInstallExit -ne 0) {
                 # Transient AMD-index failure: fall back to a CPU base (Unsloth setup retries
                 # ROCm). Use an explicit CPU index -- for a pinned ROCm index $TorchIndexUrl IS
@@ -4050,7 +4211,7 @@ exit 0
                 # torch (e.g. 2.10.0+rocm on gfx110X/gfx90a) that still satisfies the CPU
                 # torch>= range, so without it uv would keep the ROCm build and only swap
                 # the companions -- a mismatched venv the flavor-repair block won't fix.
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall "torch>=2.4,<2.11.0" "torchvision>=0.19,<0.26.0" "torchaudio>=2.4,<2.11.0" --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -4082,12 +4243,12 @@ exit 0
                 substep "windows on arm: skipping torchaudio (upstream publishes no win_arm64 wheel)."
                 $_xpuCpuSpecs = @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0")
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { uv pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 # Transient XPU-index failure: fall back to CPU base.
                 $CpuFallbackIndexUrl = if ($env:UNSLOTH_PYTORCH_MIRROR) { "$($env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/'))/cpu" } else { "https://download.pytorch.org/whl/cpu" }
                 substep "XPU PyTorch install failed (exit $torchInstallExit); using a CPU base." "Yellow"
-                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { uv pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
+                $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (CPU fallback)" { & $script:UvExe pip install --python $VenvPython --force-reinstall @_xpuCpuSpecs --default-index $CpuFallbackIndexUrl }
                 if ($torchInstallExit -ne 0) {
                     Write-StudioLine "[ERROR] Failed to install PyTorch (XPU and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -4123,7 +4284,7 @@ exit 0
                 substep "win_arm64 wheel); torch and torchvision install normally."
                 $_torchSpecs = @("torch>=2.4,<2.11.0", $_pinVisionSpec)
             }
-            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { & $script:UvExe pip install --python $VenvPython @_torchSpecs --default-index $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -4135,21 +4296,21 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { & $script:UvExe pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6" }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -4158,13 +4319,13 @@ exit 0
 
         if ($StudioLocalInstall) {
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -4175,25 +4336,25 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.6" "unsloth>=2026.8.9" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.8.6" "unsloth>=2026.8.9" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
             }
             substep "overlaying local repo (editable)..."
-            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { uv pip install --python $VenvPython -e $RepoRoot --no-deps }
+            $overlayExit = Invoke-InstallCommand -Label "overlay local repo" { & $script:UvExe pip install --python $VenvPython -e $RepoRoot --no-deps }
             if ($overlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay local repo (exit code $overlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -4215,7 +4376,7 @@ exit 0
     # $TorchIndexUrl, so a failed XPU install reads as "cpu" here. Best-effort: a failure warns.
     if (-not $SkipTorch -and (Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") {
         substep "installing bitsandbytes with Intel XPU kernels..."
-        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { uv pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
+        $bnbXpuExit = Invoke-InstallCommandRetry -Label "install bitsandbytes (Intel XPU)" { & $script:UvExe pip install --python $VenvPython --no-deps "bitsandbytes>=0.50.0" }
         if ($bnbXpuExit -ne 0) {
             substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
         }
@@ -4249,7 +4410,7 @@ exit 0
                     $visionSpec = if ($PinnedRocmVisionSpec) { $PinnedRocmVisionSpec } elseif ($ROCmGfxArch -and $torchvisionFloorMap -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($PinnedRocmAudioSpec) { $PinnedRocmAudioSpec } elseif ($ROCmGfxArch -and $torchaudioFloorMap -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { uv pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch (ROCm)" { & $script:UvExe pip install --python $VenvPython --force-reinstall --default-index $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
@@ -4263,7 +4424,7 @@ exit 0
                     # fails the repair before setup.ps1's ARM-aware fallback.
                     $_fixSpecs = if ($expectedTorchTag -eq 'xpu') { Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython) }
                                  else { @("torch>=2.4,<2.11.0", "torchvision>=0.19,<0.26.0", "torchaudio>=2.4,<2.11.0") }
-                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { uv pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    $torchFixExit = Invoke-InstallCommand -Label "reinstall PyTorch ($expectedTorchTag)" { & $script:UvExe pip install --python $VenvPython @_fixSpecs --default-index $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
                     if ($torchFixExit -ne 0) {
                         Write-StudioLine "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
@@ -4411,7 +4572,7 @@ exit 0
         }
         substep "CI: overlaying source checkout (editable, no deps): $CiOverlayRoot"
         # Retry: the editable build fetches its backend from PyPI, same network risk.
-        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { uv pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
+        $CiOverlayExit = Invoke-InstallCommandRetry -Label "overlay CI source checkout" -Command { & $script:UvExe pip install --python $VenvPython --no-deps -e $CiOverlayRoot }
         if ($CiOverlayExit -ne 0) {
             return (Exit-InstallFailure "Failed to overlay the CI source checkout (exit code $CiOverlayExit)" $CiOverlayExit)
         }
@@ -4483,6 +4644,15 @@ exit 0
     $previousSetupRuntimeGateHandoff = $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF
     $hadPreviousSetupRuntimeGateHandoff = ($null -ne $previousSetupRuntimeGateHandoff)
     $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = "1"
+    # The proxy defaults kept out of the discarded profile table, for the duration of the child
+    # only. setup.ps1 runs with -NoProfile and downloads on its own; see the prologue.
+    $previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS
+    $hadPreviousProxyHandoff = ($null -ne $previousProxyHandoff)
+    # Set even when there is nothing to hand over: its ABSENCE is how the CLI recognises a
+    # standalone update and goes looking through the user's profiles. An empty object says "the
+    # installer looked, and there is none".
+    $env:_UNSLOTH_PS_PROXY_DEFAULTS =
+        if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4502,6 +4672,14 @@ exit 0
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
         }
+        if ($hadPreviousProxyHandoff) {
+            $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS -ErrorAction SilentlyContinue
+        }
+        # ...and the copy this function holds goes with it, rather than sitting in the frame for
+        # the rest of a long install.
+        $UnslothProxyHandoffJson = $null
         Remove-Item Env:UNSLOTH_LOCAL_LLAMA_CPP_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -ErrorAction SilentlyContinue
         Remove-Item Env:UNSLOTH_SETUP_PYTHON -ErrorAction SilentlyContinue

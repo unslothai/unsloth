@@ -1452,6 +1452,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     ): Promise<boolean> => {
       const owns = () => token === undefined || pickGuard.holds(token);
       if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      // Read inside the try, acted on outside it, as on the images page.
+      let incompatible: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: repoId,
@@ -1473,7 +1475,13 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (!owns()) return false;
-        if (plan.entries.length > 0) {
+        // Same selection-time refusal the images page makes: the plan is the last point at which
+        // an incompatible pairing can be caught before the download it would waste. No video
+        // family declares one today (the check is the FLUX.2 GGUF/base size pairing, and the video
+        // planner has no diffusers base to pair against), so this is the shared envelope's half of
+        // the contract rather than a live path -- keep it, or a future one lands unguarded.
+        incompatible = plan.incompatible_reason ?? null;
+        if (!incompatible && plan.entries.length > 0) {
           pendingStagedLoad.current = { repoId, opts, token: token ?? pickGuard.claim() };
           stage(
             plan.entries.map((e) => ({
@@ -1489,6 +1497,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       if (!owns()) return false;
+      if (incompatible) {
+        toast.error(incompatible);
+        return false;
+      }
       return handleLoadRef.current(repoId, opts);
     },
     [stage, pickGuard],
