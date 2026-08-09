@@ -633,3 +633,28 @@ def test_a_parent_only_quant_survives_the_endian_filter():
     assert plans, "the only file in the repo was filtered out of every plan"
     key = next(iter(plans))
     assert plans[key].main_filenames == {"distilled/Q4_K_M/foo.gguf"}
+
+
+def test_admission_resolves_a_bare_alias_instead_of_404ing():
+    """Admission rejects against its own size map before the worker plan is ever consulted, so
+    the container-directory fallback has to exist on both. Without it a legacy org/repo:Q4_K_M
+    got a 404 and the worker fix was unreachable."""
+    from core.inference.openai_auto_download import _match_variant
+
+    variants = {"weights/model-Q4_K_M": 10, "weights/model-Q6_K": 20}
+    assert _match_variant("Q4_K_M", variants) == "weights/model-Q4_K_M"
+    assert _match_variant("weights/model-q6_k", variants) == "weights/model-Q6_K"
+    assert _match_variant("Q8_0", variants) is None
+    # Ambiguous stays a miss: with two checkpoints at one quant the bare name names neither.
+    ambiguous = {"distilled/m-Q6_K": 10, "distilled-1.1/m-Q6_K": 20}
+    assert _match_variant("Q6_K", ambiguous) is None
+
+
+def test_a_parent_only_quant_survives_the_main_file_predicate():
+    """is_main_gguf_variant_path runs the endian test too. Handed the qualified key it could not
+    see the parent-only quant, so the plan came back with no main files and an interrupted
+    download had no hashes to resume against."""
+    from hub.utils.gguf_plan import is_main_gguf_variant_path
+
+    path = "distilled/Q4_K_M/foo.gguf"
+    assert is_main_gguf_variant_path(path, gguf_variant_key(path))

@@ -80,7 +80,10 @@ def is_main_gguf_variant_path(path: str, variant: str) -> bool:
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
-        and not is_big_endian_gguf_path(path, variant)
+        # The endian predicate reads a quant TOKEN, so it gets the label: handed the qualified key
+        # it cannot see a parent-only quant and drops the file, leaving the plan with no main
+        # files at all and an interrupted download with no hashes to resume against.
+        and not is_big_endian_gguf_path(path, extract_quant_label(path))
         and gguf_variant_key(path).lower() == variant.lower()
     )
 

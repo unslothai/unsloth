@@ -748,6 +748,26 @@ def preferred_quant(labels) -> Optional[str]:
     return synthetic.get(best) if best else None
 
 
+def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
+    """The one qualified variant whose quant token is *wanted*, or None when it names 0 or 2+.
+
+    A key is a pure function of the path, so a repo that files every quant under one shared
+    container qualifies all of them even though the directory disambiguates nothing, and the bare
+    spelling every stored id uses then matches no key at all.
+    """
+    from hub.utils.gguf import extract_quant_label
+
+    target = (wanted or "").strip().lower()
+    if not target:
+        return None
+    matches = [
+        name
+        for key, name in lowered.items()
+        if "/" in key and extract_quant_label(key.rsplit("/", 1)[-1]).lower() == target
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 
@@ -762,6 +782,12 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         # and defaulting past one would fetch a model nobody asked for.
         lowered = {name.lower(): name for name in variants}
         exact = lowered.get(wanted.strip().lower())
+        if exact is None:
+            # Same bare-quant fallback the plan lookup makes, and it has to be made HERE too:
+            # admission rejects against this map first, so a repo that files every quant under
+            # one shared container answered a legacy org/repo:Q4_K_M with a 404 and the worker's
+            # fallback was never reached. Unambiguous only, for the same reason.
+            exact = _bare_quant_alias(wanted, lowered)
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
