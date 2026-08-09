@@ -9940,14 +9940,54 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _adopt_tool_pid(pid: "int | None") -> None:
+    """Record a tool subprocess for the startup sweep.
+
+    macOS has no parent-death signal, so a force quit mid-call would otherwise
+    leave a session-leading tool (and whatever it spawned) with nothing able to
+    find it. Best-effort: a failure here must never break a tool call.
+    """
+    if not pid:
+        return
+    try:
+        from utils.process_lifetime import adopt_pid
+        adopt_pid(pid)
+    except Exception:
+        pass
+
+
+def _forget_tool_pid(proc) -> None:
+    """Drop the record once the process has actually exited."""
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        return
+    try:
+        if getattr(proc, "poll", lambda: None)() is None:
+            return
+        from utils.process_lifetime import forget_pid
+        forget_pid(pid)
+    except Exception:
+        pass
+
+
 def _capture_process_group(proc):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
-    the leader cannot make ``os.getpgid(proc.pid)`` fail first. POSIX-only:
-    Windows has no process groups (and no ``os.getpgid``), so return ``None``
-    there and let the single-pid ``proc.kill()`` fallback handle cleanup.
+    the leader cannot make ``os.getpgid(proc.pid)`` fail first.
+
+    Windows has no process groups, so capture the wrapper pid instead, tagged
+    for ``_killpg_captured`` to reach with ``taskkill /T``; returning ``None``
+    there left a payload that outlived its wrapper unsignalled.
     """
+    if os.name == "nt":
+        job = _windows_job_capture(proc)
+        if job is not None:
+            return ("windows-job", job)
+        # No job available, so fall back to the pid, carrying its creation-time
+        # identity: a posix group id cannot be recycled while a member lives,
+        # but this bare pid can, and the timeout path may fire much later.
+        return ("windows-tree", proc.pid, _windows_pid_identity(proc.pid))
     if os.name != "posix" or not hasattr(os, "getpgid"):
         return None
     try:
@@ -9956,9 +9996,119 @@ def _capture_process_group(proc):
         return None
 
 
+class _WindowsToolJob:
+    """A job object holding one tool call's process tree.
+
+    Windows has no process groups, and ``taskkill`` cannot reach a tree whose
+    root has already exited, which is exactly the case this capture exists for.
+    The job stays a valid handle on every descendant either way. Created without
+    kill-on-close, so releasing it never kills a process that outlived the call.
+    """
+
+    def __init__(self, handle, kernel32):
+        self._handle = handle
+        self._kernel32 = kernel32
+
+    def terminate(self) -> bool:
+        if not self._handle:
+            return False
+        return bool(self._kernel32.TerminateJobObject(self._handle, 1))
+
+    def close(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle:
+            try:
+                self._kernel32.CloseHandle(handle)
+            except Exception:  # noqa: BLE001 - interpreter teardown
+                pass
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def _windows_job_capture(proc) -> "_WindowsToolJob | None":
+    """Put ``proc`` in its own job. ``None`` when that is not possible, leaving
+    the pid-based fallback."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        # Explicit widths: without them ctypes truncates a 64-bit handle to
+        # c_int and every call silently works on a bogus one.
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        kernel32.CreateJobObjectW.restype = H
+        kernel32.AssignProcessToJobObject.argtypes = [H, H]
+        kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.TerminateJobObject.argtypes = [H, UINT]
+        kernel32.TerminateJobObject.restype = BOOL
+        kernel32.CloseHandle.argtypes = [H]
+        kernel32.CloseHandle.restype = BOOL
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        # The Popen handle, not a fresh OpenProcess: it already refers to this
+        # child, so there is no window for the pid to be recycled first.
+        if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        return _WindowsToolJob(job, kernel32)
+    except Exception:  # noqa: BLE001 - falls back to the pid-based kill
+        return None
+
+
+def _windows_pid_identity(pid: int) -> "str | None":
+    """Process creation time, so a recycled pid is never mistaken for this one."""
+    if os.name != "nt":
+        return None
+    try:
+        from utils.process_lifetime import _pid_identity
+        return _pid_identity(pid)
+    except Exception:
+        return None
+
+
+def _windows_taskkill_tree(pid: int, identity: "str | None" = None) -> bool:
+    """``taskkill /T /F`` a pid and its descendants. True when it succeeded.
+
+    Every tool call runs under a shell wrapper, and Windows has no process
+    groups, so a bare ``proc.kill()`` reaps the wrapper and orphans the payload
+    (usually the venv python), which then blocks `unsloth studio update`.
+
+    ``identity`` is the creation time captured at spawn; a mismatch means the pid
+    now belongs to something else, so nothing is signalled.
+    """
+    if os.name != "nt":
+        return False
+    if identity is not None and _windows_pid_identity(pid) != identity:
+        return False
+    try:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output = True,
+            timeout = 15,
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode in (0, 128)  # 128: already gone
+
+
 def _kill_process_tree(proc) -> None:
     """SIGKILL the setsid process group; fall back to single-pid kill."""
     if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        if _windows_taskkill_tree(proc.pid):
+            return
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
         return
     pgid = None
     if hasattr(os, "getpgid"):
@@ -9984,9 +10134,23 @@ def _killpg_captured(pgid) -> None:
     Once ``proc`` exits, ``os.getpgid(proc.pid)`` fails and ``_kill_process_tree``
     short-circuits, so a stdout-holding grandchild that outlived the parent could
     not otherwise be signaled. The pre-captured setsid group id still targets the
-    whole tree. No-op with no ``os.killpg`` (Windows) or nothing captured.
+    whole tree. On Windows the capture is a tagged pid and the equivalent reach
+    is ``taskkill /T /F``. No-op when nothing was captured.
     """
-    if pgid is None or not hasattr(os, "killpg"):
+    if pgid is None:
+        return
+    if isinstance(pgid, tuple):
+        if pgid[0] == "windows-job":
+            pgid[1].terminate()
+            return
+        _tag, pid, identity = pgid
+        # Fail closed: this runs long after the capture, so without a verified
+        # identity the pid may be someone else's now. The job object still takes
+        # the whole tree when Studio exits, which is the safe half to keep.
+        if identity is not None:
+            _windows_taskkill_tree(pid, identity)
+        return
+    if not hasattr(os, "killpg"):
         return
     try:
         os.killpg(pgid, signal.SIGKILL)
@@ -10294,6 +10458,7 @@ def _python_exec(
         # Capture the group before any watcher can reap the leader (see
         # _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
+        _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -10351,6 +10516,7 @@ def _python_exec(
     except Exception as e:
         return f"Execution error: {e}"
     finally:
+        _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
@@ -10419,6 +10585,7 @@ def _bash_exec(
         # Capture the group before any watcher can poll/reap the leader (see
         # _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
+        _adopt_tool_pid(proc.pid)
 
         if cancel_event is not None:
             watcher = threading.Thread(
@@ -10450,3 +10617,5 @@ def _bash_exec(
 
     except Exception as e:
         return f"Execution error: {e}"
+    finally:
+        _forget_tool_pid(locals().get("proc"))

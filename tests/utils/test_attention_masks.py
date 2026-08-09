@@ -16,6 +16,7 @@
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
 
 import math
+import weakref
 
 import torch
 
@@ -285,3 +286,202 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
 
 
 """Unit tests for packed-attention mask helpers with sliding-window logic."""
+
+
+def test_run_attention_sdpa_windows_an_unpacked_unmasked_batch(monkeypatch):
+    """No packing, no padding mask: the case that had nothing to hang the window off.
+
+    SDPA's ``is_causal`` is FULL causal -- it has no window -- so with neither the xformers
+    bias nor flash's ``window_size`` in play, a model whose config declares a sliding window
+    attended its entire causal history. That is reachable from a Mistral training step the
+    moment xFormers is disabled and FlashAttention is absent, which is precisely what the
+    kernel probe can now decide.
+    """
+    captured = {}
+
+    def _fake_sdpa(Q, K, V, **kwargs):
+        captured["mask"] = kwargs.get("attn_mask")
+        captured["is_causal"] = kwargs.get("is_causal")
+        return torch.zeros_like(Q)
+
+    monkeypatch.setattr(attention_dispatch, "scaled_dot_product_attention", _fake_sdpa)
+
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA,
+        n_kv_heads = 1,
+        n_groups = 1,
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 6,
+        kv_seq_len = 6,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 3,
+    )
+    Q = torch.zeros(1, 1, 6, 1)
+
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+
+    mask = captured["mask"]
+    assert mask is not None, "a declared window must not fall through to plain is_causal"
+    assert captured["is_causal"] is False
+    assert mask.shape == (1, 1, 6, 6)
+    # Row 5 sees 3, 4, 5 and nothing older; the future stays masked either way.
+    assert [bool(v) for v in mask[0, 0, 5]] == [False, False, False, True, True, True]
+
+
+def test_run_attention_sdpa_leaves_a_short_sequence_alone(monkeypatch):
+    # Shorter than the window: nothing to clamp, and the cheap is_causal path must survive.
+    captured = {}
+    monkeypatch.setattr(
+        attention_dispatch,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **kw: (captured.update(kw), torch.zeros_like(Q))[1],
+    )
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA, n_kv_heads = 1, n_groups = 1
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 8,
+    )
+    Q = torch.zeros(1, 1, 4, 1)
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    assert captured["attn_mask"] is None and captured["is_causal"] is True
+
+
+def test_mistral_hands_the_dispatcher_its_configured_window():
+    """The context Mistral builds omitted `sliding_window` entirely, so even a correct SDPA
+    window path had nothing to act on."""
+    import ast
+    from pathlib import Path
+
+    src = Path(attention_dispatch.__file__).resolve().parents[1] / "models" / "mistral.py"
+    tree = ast.parse(src.read_text(encoding = "utf-8"))
+    contexts = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "AttentionContext"
+    ]
+    assert contexts, "AttentionContext construction not found in mistral.py"
+    for call in contexts:
+        assert "sliding_window" in {kw.arg for kw in call.keywords}
+
+
+def test_a_zero_configured_window_is_full_causal_not_a_blank_mask():
+    """`sliding_window = 0` means "no local attention", the same as absent -- which is how
+    Mistral's own mask builders read it. Passing the 0 through makes the SDPA lower bound
+    `q_pos - (0 - 1)` sit above the causal upper bound, so every position is masked and the
+    layer returns nothing at all."""
+    import ast
+    from pathlib import Path
+
+    src = Path(attention_dispatch.__file__).resolve().parents[1] / "models" / "mistral.py"
+    text = src.read_text(encoding = "utf-8")
+    assert "isinstance(sw_cfg, int) and sw_cfg <= 0" in text, (
+        "a non-positive configured window must be normalised before it reaches window_size "
+        "or the dispatcher"
+    )
+    ast.parse(text)
+
+
+def test_run_attention_sdpa_ignores_a_zero_window(monkeypatch):
+    # Belt and braces at the dispatcher: even handed a zero, it must not build a mask that
+    # hides everything.
+    captured = {}
+    monkeypatch.setattr(
+        attention_dispatch,
+        "scaled_dot_product_attention",
+        lambda Q, K, V, **kw: (captured.update(kw), torch.zeros_like(Q))[1],
+    )
+    config = attention_dispatch.AttentionConfig(
+        backend = attention_dispatch.SDPA, n_kv_heads = 1, n_groups = 1
+    )
+    context = attention_dispatch.AttentionContext(
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = True,
+        seq_info = None,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = 0,
+    )
+    Q = torch.zeros(1, 1, 4, 1)
+    attention_dispatch.run_attention(config = config, context = context, Q = Q, K = Q, V = Q)
+    mask = captured["attn_mask"]
+    assert mask is None or bool(mask.any()), "a zero window must not mask everything"
+
+
+def test_the_window_mask_is_built_once_per_shape(monkeypatch):
+    """Every layer asks for the identical mask, and at 32K that tensor is 1 GiB with two more
+    alive while it is built. Rebuilding it per layer is how this SDPA fallback OOMs a run that
+    xFormers or flash would have carried."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    built = []
+    real_arange = torch.arange
+
+    def _counting_arange(*args, **kwargs):
+        built.append(1)
+        return real_arange(*args, **kwargs)
+
+    monkeypatch.setattr(attention_dispatch.torch, "arange", _counting_arange)
+
+    first = attention_dispatch._windowed_causal_mask(6, 6, 3, torch.device("cpu"))
+    calls_after_first = len(built)
+    second = attention_dispatch._windowed_causal_mask(6, 6, 3, torch.device("cpu"))
+
+    assert second is first, "the same shape and window must not be rebuilt"
+    assert len(built) == calls_after_first, "a cache hit must allocate nothing"
+    assert [bool(v) for v in first[0, 0, 5]] == [False, False, False, True, True, True]
+
+    # A different window is a different mask, not a stale hit.
+    third = attention_dispatch._windowed_causal_mask(6, 6, 2, torch.device("cpu"))
+    assert third is not first
+    assert [bool(v) for v in third[0, 0, 5]] == [False, False, False, False, True, True]
+    # ...and so is a different shape.
+    assert attention_dispatch._windowed_causal_mask(4, 4, 3, torch.device("cpu")) is not third
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
+def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
+    """A shape change must not hold two dense masks at once. Dynamic-length training walks
+    through shapes, and at 32K each mask is 1 GiB on top of the construction temporaries."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    device = torch.device("cpu")
+    first = attention_dispatch._windowed_causal_mask(6, 6, 3, device)
+    live = weakref.ref(first)
+    del first
+
+    cached_during_build = []
+    real_arange = torch.arange
+
+    def _observing_arange(*args, **kwargs):
+        cached_during_build.append(live() is not None)
+        return real_arange(*args, **kwargs)
+
+    monkeypatch.setattr(attention_dispatch.torch, "arange", _observing_arange)
+    attention_dispatch._windowed_causal_mask(8, 8, 3, device)
+
+    assert cached_during_build, "the replacement must actually have been built"
+    assert not any(
+        cached_during_build
+    ), "the previous mask was still alive while its replacement was allocated"
+    attention_dispatch._WINDOW_MASK_CACHE.clear()

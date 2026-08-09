@@ -155,15 +155,84 @@ def test_usable_source_disallowed_path_is_none(tmp_path, monkeypatch):
 
 
 def test_usable_source_allowed_present_path_wins(tmp_path, monkeypatch):
-    # Allowlisted AND present: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
+    # Allowlisted, present AND baked for this scheme: the override is usable and beats the hosted repo, exactly like resolve_prequant_source.
     import os
 
     ckpt = tmp_path / "model.pt"
     ckpt.write_bytes(b"x")
     monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    monkeypatch.setattr(pq, "local_prequant_scheme", lambda _p: "fp8")
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
     src = pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt))
     assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
+
+
+def test_usable_source_rejects_an_override_baked_for_another_scheme(tmp_path, monkeypatch):
+    """An int8 checkpoint must not read as an available fp8 pre-quant.
+
+    resolve_prequant_source hands back a path source for ANY override without inspecting the file,
+    so under `auto` (which picks a scheme the user never named) planning would skip staging the
+    dense transformer, the loader would hit the same metadata.scheme check it runs at load time,
+    refuse the file, and with no dense fallback the pick silently drops to GGUF.
+    """
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"x")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    monkeypatch.setattr(pq, "local_prequant_scheme", lambda _p: "int8")
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
+    # The same file IS usable for the scheme it was actually baked for.
+    src = pq.usable_prequant_source(fam, "int8", path_override = str(ckpt))
+    assert src == PrequantSource(kind = "path", location = str(ckpt), filename = None)
+
+
+def test_an_unreadable_override_is_not_usable(tmp_path, monkeypatch):
+    # A file we cannot parse as a pre-quant checkpoint is "unknown", and the loader would reject it
+    # too, so planning must budget dense rather than assume a shortcut it will not get.
+    import os
+
+    ckpt = tmp_path / "model.pt"
+    ckpt.write_bytes(b"not a checkpoint")
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.local_prequant_scheme(str(ckpt)) is None
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
+
+
+def test_the_local_scheme_cache_survives_a_same_second_swap(tmp_path):
+    """Two checkpoints of one model differ only in scheme, so an atomic swap is same-size.
+
+    The memo key used int(st_mtime), which truncates to seconds: replacing an int8 override with
+    the fp8 bake of the same model inside one second left the key unchanged, so every later probe
+    in that process reported the OLD scheme. Under `auto` that is the exact failure the scheme
+    check exists to stop, only inverted: planning trusts a scheme the file no longer records.
+    """
+    import os
+
+    import torch
+
+    ckpt = tmp_path / "model.pt"
+
+    def _write(scheme, pad):
+        torch.save(
+            {"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": scheme, "pad": "x" * pad}},
+            str(ckpt),
+        )
+
+    _write("int8", 8)
+    stamp = os.stat(str(ckpt)).st_mtime_ns
+    size = os.stat(str(ckpt)).st_size
+    assert pq.local_prequant_scheme(str(ckpt)) == "int8"
+
+    # Same size, and a timestamp inside the same second as the first write.
+    _write("fp8", 9)
+    assert os.stat(str(ckpt)).st_size == size, "the two bakes must be same-size for this to bite"
+    os.utime(str(ckpt), ns = (stamp + 1, stamp + 1))
+    assert int(os.stat(str(ckpt)).st_mtime) == int(stamp / 1e9)
+
+    assert pq.local_prequant_scheme(str(ckpt)) == "fp8"
 
 
 def test_usable_source_repo_unaffected_by_allowlist(monkeypatch):
@@ -1295,3 +1364,36 @@ def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch
 
     assert isinstance(out, _Transformer)  # the prequant loaded instead of being dropped
     assert seen == [None]  # read straight through the root that supplied the checkpoint
+
+
+# ── fp8 activation scale floor ──────────────────────────────────────────────────
+
+
+class _FakeFp8Tensor:
+    """Stands in for a torchao Float8Tensor: only act_quant_kwargs.hp_value_lb is read."""
+
+    def __init__(self, hp_value_lb):
+        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
+
+
+def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
+    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
+    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
+    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
+    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
+    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+    floored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(1e-12)}
+    unfloored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(None)}
+    assert pq._fp8_activation_floor_present(floored, None) is True
+    assert pq._fp8_activation_floor_present(unfloored, None) is False
+    # Zero is not a floor either: it is what an unclamped amax divide produces.
+    assert pq._fp8_activation_floor_present({"w": _FakeFp8Tensor(0.0)}, None) is False
+
+
+def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
+    # A dense tensor carries no act_quant_kwargs, so it is not evidence of a missing floor; the
+    # scheme / granularity checks own that case. Same for a state dict this cannot walk at all:
+    # failing closed here would reject every int8 checkpoint too.
+    assert pq._fp8_activation_floor_present({"w": object()}, None) is True
+    assert pq._fp8_activation_floor_present(None, None) is True
+    assert pq._fp8_activation_floor_present({}, None) is True
