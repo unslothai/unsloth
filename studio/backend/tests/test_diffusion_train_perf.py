@@ -471,7 +471,9 @@ def test_a_no_save_stop_survives_a_child_that_dies_before_reporting_it():
     svc = DiffusionTrainingService()
     svc._proc = _AliveProc()
     svc._stop_queue = _StopQueue()
-    svc._apply_event({"type": "checkpoint_saved", "checkpoint_path": "/o/checkpoint-40", "step": 40})
+    svc._apply_event(
+        {"type": "checkpoint_saved", "checkpoint_path": "/o/checkpoint-40", "step": 40}
+    )
     assert svc.status()["resume_blocked_reason"] is None
 
     assert svc.stop(save = False) is True
