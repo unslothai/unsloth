@@ -3617,7 +3617,9 @@ def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
             seen = []
             for line in transcript:
                 on_log(line)
-                seen.append((backend._gen["step"], backend._gen["total"]))
+                seen.append(
+                    (backend._gen["step"], backend._gen["total"], backend._gen["phase"])
+                )
             calls.append(seen)
             return Path("/tmp/does-not-exist.webm")
 
@@ -3633,11 +3635,12 @@ def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):
 
     seen = calls[-1]
     # Only bars inside the denoise window update progress.
-    assert seen[2] == (0, 4)
-    assert seen[4] == (0, 4)
-    assert seen[5] == (1, 4)
-    assert seen[6] == (2, 4)
-    assert seen[8] == (2, 4)
+    assert seen[2] == (0, 4, "denoise")
+    assert seen[4] == (0, 4, "denoise")
+    assert seen[5] == (1, 4, "denoise")
+    assert seen[6] == (2, 4, "denoise")
+    assert seen[7] == (2, 4, "decode")
+    assert seen[8] == (2, 4, "decode")
 
 
 # ── MiniMax-H3 references (Ref2VA) ───────────────────────────────────────────

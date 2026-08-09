@@ -76,7 +76,7 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;

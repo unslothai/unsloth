@@ -3110,6 +3110,9 @@ class VideoBackend:
                 return
             if denoise_close.search(line):
                 denoising = False
+                # sd.cpp still has to decode both latent streams and write its
+                # intermediate video. Do not leave the UI at a completed denoise bar.
+                self._gen.update(phase = "decode", eta_seconds = None)
                 return
             match = step_bar.search(line) if denoising else None
             if match is None:

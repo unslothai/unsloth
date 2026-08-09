@@ -223,8 +223,9 @@ function clipMeta(video: GalleryVideo): string {
   return `${secs} · ${video.width}×${video.height}`;
 }
 
-// Bar label for an in-flight generation: the phase ("Denoising step X/Y", "Encoding video...") plus an ETA once known.
+// Bar label for an in-flight generation, plus an ETA while denoising.
 function genStepLabel(p: VideoGenerateProgress): string {
+  if (p.phase === "decode") return "Decoding video and audio…";
   if (p.phase === "export") return "Encoding video…";
   // Text encoding and the first-step warmup run before the first scheduler tick, so step 0 means "working, not denoising yet" -- up to a minute at 720p.
   if (p.step === 0) return "Preparing (text encoding + warmup)…";
@@ -2289,7 +2290,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                     title={null}
                     message="Starting…"
                     progressPercent={
-                      genStep && genStep.total > 0 ? (genStep.step / genStep.total) * 100 : null
+                      genStep?.phase === "denoise" && genStep.total > 0
+                        ? (genStep.step / genStep.total) * 100
+                        : null
                     }
                     progressLabel={genStep ? genStepLabel(genStep) : null}
                   />
