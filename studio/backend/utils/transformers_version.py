@@ -2011,7 +2011,6 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
-_OUR_DISTRIBUTIONS = frozenset(("unsloth", "unsloth-zoo", "unsloth-studio"))
 
 
 def _sidecar_damaged_files(venv_dir: str, limit: int = 3) -> list[str]:
@@ -2107,14 +2106,14 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                 or (parts and parts[0] in ("bin", "Scripts"))
             ):
                 continue
-            # Third-party top-level dirs several wheels write into, so one uninstall
-            # deletes another's files. Never applied to what we ship: a missing
-            # __init__.py does not make a directory unimportable (PEP 420).
-            if (
-                len(parts) > 1
-                and parts[0] in _SHARED_NON_RUNTIME_ROOTS
-                and name.replace("_", "-").lower() not in _OUR_DISTRIBUTIONS
-            ):
+            target = root / rel
+            key = os.path.normcase(str(target))
+            # Before the filter: a dropped row still owns the path it claims.
+            owners[key] = owners.get(key, 0) + 1
+            # Top-level dirs several wheels write into, so one uninstall deletes
+            # another's files. Unreliable ownership is a property of the path, so
+            # this covers what we ship too; see _shared_non_runtime in _studio_deps.
+            if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
                 continue
             # The size field is optional and real wheels do leave it blank. Keep the row with an
             # unknown size: existence is still checkable, and dropping it hides a deletion.
@@ -2126,9 +2125,6 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
                     recorded = int(row[2])
                 except ValueError:
                     recorded = None
-            target = root / rel
-            key = os.path.normcase(str(target))
-            owners[key] = owners.get(key, 0) + 1
             entries.append((name, rel, recorded, target, key))
 
     found: list[str] = []
