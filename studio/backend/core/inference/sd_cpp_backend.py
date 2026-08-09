@@ -278,6 +278,13 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
         # A usable binary of the wrong accelerator is still better than none, so an install that
         # cannot deliver the right one (no such asset for this host, no network) keeps it.
         fallback = found if usable else None
+        # An install REPLACES the binaries in the managed tree, so refuse it while a native
+        # process is still executing out of that tree. _accelerator_changed answers this for a
+        # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
+        # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
+        # anything is installed, so a first install is unaffected. The load retries after teardown.
+        if _managed_tree_in_use():
+            return fallback
         try:
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
@@ -318,6 +325,13 @@ def ensure_sd_server_binary(
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
         fallback = found if usable else None
+        # An install REPLACES the binaries in the managed tree, so refuse it while a native
+        # process is still executing out of that tree. _accelerator_changed answers this for a
+        # mismatch, but "no binary found" never reaches it: a legacy serverless install has no
+        # sd-server at all, while its sd-cli may be mid-generation. Nothing can be in use before
+        # anything is installed, so a first install is unaffected. The load retries after teardown.
+        if _managed_tree_in_use():
+            return fallback
         try:
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
@@ -791,6 +805,11 @@ class SdCppDiffusionBackend:
                 if mode == "server":
                     assert server_binary is not None
                     server = SdCppServer(server_binary)
+                    # The object to clear from _pending_server below. ``server`` itself is set to
+                    # None when start() fails and the load falls back to one-shot, and comparing
+                    # THAT against _pending_server left the stopped server published forever --
+                    # which now reads as "the managed tree is busy" for the rest of the process.
+                    started = server
                     # Publish the uncommitted server so unload() / a superseding load can stop it mid-startup instead of waiting out the timeout.
                     with self._lock:
                         self._pending_server = server
@@ -825,7 +844,7 @@ class SdCppDiffusionBackend:
                         mode = "oneshot"
                     finally:
                         with self._lock:
-                            if self._pending_server is server:
+                            if self._pending_server is started:
                                 self._pending_server = None
                 state = _SdState(
                     repo_id = repo_id,

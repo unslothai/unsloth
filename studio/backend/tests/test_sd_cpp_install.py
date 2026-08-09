@@ -1352,3 +1352,42 @@ def test_a_server_still_starting_also_holds_the_tree(tmp_path, monkeypatch):
     starting._pending_server = None
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
     assert [k["accelerator"] for k in installs] == ["cuda"]
+
+
+def test_a_serverless_install_is_not_replaced_under_a_running_cli(tmp_path, monkeypatch):
+    """The gap a mismatch-only guard leaves: on a legacy install with no sd-server,
+    find_sd_server_binary returns None, so _accelerator_changed is never consulted and the install
+    runs unconditionally. The router calls this directly with installs enabled, so a one-shot
+    sd-cli mid-generation would have the tree extracted over it."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cpu")
+    cli = root / "sd-bin" / "sd-cli"
+    cli.write_bytes(b"cpu-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)  # serverless install
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: str(cli))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+
+    def _install(**kwargs):
+        installs.append(kwargs)
+        cli.write_bytes(b"cuda-build")
+        sdmod._write_install_record(root, accelerator = kwargs["accelerator"], repo = "r", tag = "t")
+        return cli
+
+    monkeypatch.setattr(sdmod, "install", _install)
+
+    generating = bk.SdCppDiffusionBackend()
+    generating._active_generate_cancel = threading.Event()  # a one-shot sd-cli is running
+    monkeypatch.setattr(bk, "_sd_cpp_backend", generating)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert bk.ensure_sd_cpp_binary(accelerator = "cuda") == str(cli)
+    assert installs == [], "no extraction over a running sd-cli"
+    assert cli.read_bytes() == b"cpu-build"
+
+    # With nothing running the install goes ahead, so a first install is never blocked.
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    bk.ensure_sd_server_binary(accelerator = "cuda")
+    assert [k["accelerator"] for k in installs] == ["cuda"]
