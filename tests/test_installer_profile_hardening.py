@@ -1634,7 +1634,6 @@ def test_disjoint_wildcard_families_from_two_hosts_both_survive(monkeypatch):
 )
 def test_two_command_patterns_overlap_exactly_when_a_name_matches_both(left, right, overlaps):
     from unsloth_cli.commands import studio as studio_cmd
-
     assert studio_cmd._patterns_can_overlap(left, right) is overlaps
     assert studio_cmd._patterns_can_overlap(right, left) is overlaps
 
