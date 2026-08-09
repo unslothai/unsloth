@@ -1679,6 +1679,12 @@ def _source_checkpoint_bundle(
         # Not the bundle this run resumed: something replaced the slot after the fact.
         if not written or abs(written - float(source_created_at)) > 1e-6:
             return None
+    # Same gate the directory scan applies, for the same reason: this path is pinned back to the
+    # start route verbatim, and read_checkpoint is only a header scan. A source whose required
+    # state or real torch.load has gone since would be advertised as resumable and refused on
+    # the first click.
+    if not _fully_loadable(candidate, manifest):
+        return None
     return (candidate, manifest)
 
 

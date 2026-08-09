@@ -2618,6 +2618,41 @@ def test_a_replaced_source_bundle_is_not_offered_back(run_dir):
     assert legacy["can_resume"] is True
 
 
+def test_a_source_fallback_bundle_is_held_to_the_same_load_gate(run_dir):
+    """The source fallback pins its path exactly as the directory scan does, so it needs the
+    same _fully_loadable gate. On read_checkpoint's header scan alone, a source whose required
+    state had gone advertised a Resume that the start route then refused on the first click."""
+    seeded = _Run(run_dir, save_total_limit = 0)
+    source, error = seeded.save(10)
+    assert error is None and source is not None
+
+    healthy = dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source)
+    assert healthy["can_resume"] is True and healthy["checkpoint_step"] == 10
+
+    # Structurally present, semantically gone: the header still parses and the recorded sizes
+    # still match, but the streams a resume must restore are no longer listed.
+    state = Path(source) / dc.TRAINER_STATE_FILENAME
+    manifest = json.loads(state.read_text(encoding = "utf-8"))
+    manifest["rng"].pop("streams")
+    state.write_text(json.dumps(manifest), encoding = "utf-8")
+    assert dc.read_checkpoint(Path(source)) is not None  # the header scan still accepts it
+
+    # Both fallback routes: the run's own output dir gone, and present but holding nothing of
+    # this run's.
+    for answer in (
+        dc.describe_resume_state(str(run_dir / "nonexistent"), source_checkpoint = source),
+        dc.describe_resume_state(
+            str(run_dir), started_at = time.time() + 60, source_checkpoint = source
+        ),
+    ):
+        assert answer["can_resume"] is False, answer
+        assert answer["checkpoint_path"] is None, answer
+
+    # And the start route agrees, which is what makes advertising it a dead action.
+    with pytest.raises(dc.ResumeError, match = "random-number streams"):
+        dc.preflight_resume(source, identity = seeded.identity, target_steps = 500)
+
+
 def test_a_dit_family_records_the_bf16_it_actually_runs_in(run_dir):
     """The DiT trainer never reads mixed_precision: weight_dtype is bf16 on CUDA. Recording the
     REQUEST put fp16 or "no" in the identity of a run that executed in bf16, and a later bf16
