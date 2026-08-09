@@ -2908,19 +2908,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div
-        className={cn(
-          "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pr-2 pt-[var(--studio-chat-header-padding-top,11px)] md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]",
-          isMobile && "pl-12",
-        )}
-      >
+      {/* grid at every width, not an overlay below md: the absolute mode switch painted over the model selector and the Video link. */}
+      {/* @container, not md:/xl:, because the header is the viewport minus a sidebar the user can drag between 260px and 480px. */}
+      <div className="@container pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div
           className={cn(
             "pointer-events-none flex min-w-0 items-center",
-            !isMobile &&
-              (!pinned && isTauri
+            isMobile
+              ? "pl-12"
+              : !pinned && isTauri
                 ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-                : "pl-[var(--studio-media-header-left-inset,1.5rem)]"),
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
           <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
@@ -2953,38 +2951,40 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-        {/* Create | Train page-mode switch: desktop grid keeps this centered while the side controls shrink in their columns. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center md:static">
-          <PillTabs
-            ariaLabel="Page mode"
-            value={pageMode}
-            onValueChange={(v) => setPageMode(v as "create" | "train")}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11 md:[&>button]:px-3 xl:[&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2 md:justify-self-end">
+        {/* Create | Train page-mode switch, centred on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
+        {/* No padding on the grid, so the equal side tracks centre the pill on the header itself; px-11 makes the pair 277px, so it waits for the room. */}
+        <PillTabs
+          ariaLabel="Page mode"
+          value={pageMode}
+          onValueChange={(v) => setPageMode(v as "create" | "train")}
+          fit={true}
+          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
+          tabs={[
+            {
+              value: "create",
+              label: "Create",
+              icon: (
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+              ),
+            },
+            {
+              value: "train",
+              label: "Train",
+              icon: (
+                <HugeiconsIcon
+                  icon={TestTubeOutlineIcon}
+                  className="size-3.5"
+                />
+              ),
+            },
+          ]}
+        />
+        {/* pr-2 rides the wrapper, not the grid: on the grid it would shift the centred pill by half of it. */}
+        <div className="pointer-events-none flex min-w-0 items-center justify-end pr-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
-          <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          </div>
         </div>
       </div>
       {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
