@@ -67,7 +67,9 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             and isinstance(data.get("items"), dict)
         ):
             return data, True
-        logger.warning("gallery_flags.unreadable: %s has an unrecognised shape", _store_path(directory))
+        logger.warning(
+            "gallery_flags.unreadable: %s has an unrecognised shape", _store_path(directory)
+        )
         return _empty(), False
     except FileNotFoundError:
         return _empty(), True  # no store yet is a legitimate "nothing is flagged"
