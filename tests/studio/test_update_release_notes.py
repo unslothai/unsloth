@@ -534,6 +534,38 @@ def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     assert 60 <= short <= 180
 
 
+def test_every_refusal_records_a_deadline_retry_has_to_wait_out(notes_module):
+    """A secondary rate limit answers 403 or 429 without `X-RateLimit-Remaining:
+    0`, and says how long to wait in `Retry-After` if it says at all. Only the
+    primary limit's path used to record a deadline, so Retry dropped the cached
+    failure and requested straight back into the limit."""
+    import email.message
+    import urllib.error
+
+    def refused(code: int, **headers: str):
+        message = email.message.Message()
+        for name, value in headers.items():
+            message[name] = value
+        return urllib.error.HTTPError("url", code, "refused", message, None)
+
+    ceiling = notes_module.RELEASES_RATE_LIMIT_MAX_SECONDS
+    cases = [
+        # Nothing to go on: the plain back-off, so Retry still has to wait.
+        (refused(429), notes_module.RELEASES_RATE_LIMITED_TTL_SECONDS),
+        # Retry-After wins, being how a secondary limit states its wait.
+        (refused(403, **{"Retry-After": "120"}), 120),
+        (
+            refused(403, **{"Retry-After": "45", "X-RateLimit-Remaining": "0"}),
+            45,
+        ),
+    ]
+    for error, expected in cases:
+        notes_module.reset_release_notes_cache()
+        _, ttl = notes_module._http_error_source(error)
+        assert notes_module._rate_limited_until > time.time(), "no lockout recorded"
+        assert abs(ttl - expected) <= 2 and ttl <= ceiling
+
+
 def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_releases):
     """GitHub answers a conditional request with 304 and no body, which is the
     release already held rather than a failure."""

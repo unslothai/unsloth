@@ -818,17 +818,29 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
     if error.code in (403, 429):
-        ttl = RELEASES_RATE_LIMITED_TTL_SECONDS
-        if error.headers.get("X-RateLimit-Remaining") == "0":
-            reset = _epoch_header(error.headers.get("X-RateLimit-Reset"))
-            if reset is not None:
-                now = time.time()
-                # The deadline itself is bounded, not just the first wait on it:
-                # the next fetch answers from this deadline, so capping only the
-                # TTL left a skewed header parking the popup for as long as it
-                # liked.
-                _rate_limited_until = min(reset, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
-                ttl = max(_rate_limited_until - now, 0.0)
+        now = time.time()
+        # GitHub's order: Retry-After first, which is how a secondary limit says
+        # how long to wait; then the primary limit's reset; then a plain back-off
+        # for a refusal that says neither. Whichever it is, the deadline is
+        # recorded, or Retry drops the cached failure and requests straight into
+        # the limit.
+        after = _epoch_header(error.headers.get("Retry-After"))
+        reset = (
+            _epoch_header(error.headers.get("X-RateLimit-Reset"))
+            if error.headers.get("X-RateLimit-Remaining") == "0"
+            else None
+        )
+        if after is not None:
+            deadline = now + after
+        elif reset is not None:
+            deadline = reset
+        else:
+            deadline = now + RELEASES_RATE_LIMITED_TTL_SECONDS
+        # The deadline itself is bounded, not just the first wait on it: the next
+        # fetch answers from this deadline, so capping only the TTL left a skewed
+        # header parking the popup for as long as it liked.
+        _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
+        ttl = max(_rate_limited_until - now, 0.0)
         return (
             ReleaseSource(
                 release = None,
