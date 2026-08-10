@@ -2812,6 +2812,132 @@ def test_download_plan_still_drops_the_reference_shards_its_artifact_replaces(mo
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
 
 
+def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(monkeypatch):
+    # The load path drops 66 GB from the pull and never re-checks, so the registry's word is not
+    # enough: only an artifact that really resolves on the Hub earns that skip. Same rule the
+    # conditioner already follows through _h3_te_quant_scheme_verified.
+    from core.inference.video import _detect_load_family as _fam
+
+    fam = _fam("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    backend = VideoBackend()
+
+    class _Api:
+        def __init__(self, names):
+            self._names = names
+
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _PlanInfo([_PlanSibling(n, 20) for n in self._names])
+
+    def _use(names):
+        monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api(names))
+
+    # The keyframe artifacts exist, the reference one does not.
+    _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-INT8-ConvRot.pt"])
+    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
+    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "fl2va", None) is True
+
+    # Once the reference artifact is published the skip is earned again.
+    _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-Ref2VA-FP8.pt"])
+    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is True
+
+    # An unreadable repo is a refusal, not a pass: the dense shards stay.
+    class _Boom:
+        def model_info(self, *a, **k):
+            raise RuntimeError("404 gated")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Boom())
+    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
+    # And bf16 never asks in the first place.
+    assert backend._denoiser_prequant_verified(fam, None, "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
+
+
+def test_the_load_path_gates_its_dense_skip_on_the_verified_probe():
+    """``_run_load`` must ask the VERIFIED probe, not the registry-only one.
+
+    This is the flag that removes the dense denoiser from the actual pull, so a registry-only
+    answer stages neither denoiser and leaves the loader's documented bf16 fallback with nothing
+    to open offline.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.video import VideoBackend as _VB
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_VB._run_load)))
+    assigned = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "skip_transformer_weights" for t in n.targets)
+    ]
+    assert assigned, "skip_transformer_weights is no longer assigned in _run_load"
+    called = {
+        n.func.attr
+        for a in assigned
+        for n in ast.walk(a)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    assert "_denoiser_prequant_verified" in called
+    assert "_denoiser_prequant_covered" not in called
+
+
+def test_a_named_dit_view_presents_the_reference_denoiser_as_the_transformer():
+    # The speed and attention helpers enumerate transformer / transformer_2 /
+    # unconditional_transformer only. H3 keeps one denoiser per partition, so a reference load's
+    # DiT is invisible to both without this view.
+    from core.inference.diffusion_attention import _attention_dits
+    from core.inference.diffusion_speed import _denoiser_dits
+    from core.inference.video import _denoiser_view
+
+    ref = object()
+    pipe = types.SimpleNamespace(transformer_ref = ref, vae = "vae")
+
+    assert _denoiser_dits(pipe) == [] and _attention_dits(pipe) == []
+
+    view = _denoiser_view(pipe, "transformer_ref")
+    assert view.transformer is ref
+    assert _denoiser_dits(view) == [ref]
+    assert _attention_dits(view) == [ref]
+    # Everything else reads through, and a helper's reassignment lands on the real partition.
+    assert view.vae == "vae"
+    replacement = object()
+    view.transformer = replacement
+    assert pipe.transformer_ref is replacement
+    assert not hasattr(pipe, "transformer")
+
+    # A keyframe load is handed the pipe itself, so its behaviour is byte-for-byte unchanged.
+    keyframe = types.SimpleNamespace(transformer = ref)
+    assert _denoiser_view(keyframe, "transformer") is keyframe
+
+
+def test_the_h3_loader_optimises_the_partition_it_denoises_with():
+    """``apply_attention_backend`` / ``apply_speed_optims`` must see this workflow's denoiser.
+
+    The pre-quantized reference pin keeps the profile out of the eager downgrade, so handing these
+    the bare pipe leaves the reference DiT native and uncompiled while the resolved record still
+    reports the requested profile.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.video import VideoBackend as _VB
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_VB._load_h3_modular_pipeline)))
+    for helper in ("apply_attention_backend", "apply_speed_optims"):
+        calls = [
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == helper
+        ]
+        assert len(calls) == 1, f"{helper} is called {len(calls)} times"
+        first = calls[0].args[0]
+        assert getattr(first, "id", None) == "speed_view", (
+            f"{helper} is handed {ast.dump(first)}, not the denoiser view"
+        )
+
+
 def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
     # bf16 keeps the dense shards, so there is nothing to replace and no third repo to stage.
     _cuda_bf16_target(monkeypatch)

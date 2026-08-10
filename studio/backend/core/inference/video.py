@@ -669,6 +669,40 @@ class _SecondDiTView:
         setattr(pipe, "transformer_2" if name == "transformer" else name, value)
 
 
+class _NamedDiTView:
+    """``_SecondDiTView`` for an arbitrary attribute: presents ``pipe.<attr>`` as
+    ``pipe.transformer`` to the helpers that hardcode that name, reading everything else through.
+
+    MiniMax-H3 keeps one denoiser per workflow partition, so a reference load's DiT is
+    ``transformer_ref``. ``_denoiser_dits`` / ``_attention_dits`` enumerate only ``transformer``,
+    ``transformer_2`` and ``unconditional_transformer``, so without this the partition that load
+    actually denoises with gets neither the selected attention backend nor the regional compile,
+    while the resolved record still reports the profile that was asked for -- exactly the
+    over-reporting those two helpers' docstrings exist to rule out.
+    """
+
+    def __init__(self, pipe: Any, attr: str) -> None:
+        object.__setattr__(self, "_pipe", pipe)
+        object.__setattr__(self, "_attr", attr)
+
+    @property
+    def transformer(self) -> Any:
+        return getattr(self._pipe, object.__getattribute__(self, "_attr"), None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_pipe"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        pipe = object.__getattribute__(self, "_pipe")
+        attr = object.__getattribute__(self, "_attr")
+        setattr(pipe, attr if name == "transformer" else name, value)
+
+
+def _denoiser_view(pipe: Any, component: str) -> Any:
+    """``pipe`` itself for the usual ``transformer``; a view onto ``component`` otherwise."""
+    return pipe if component == "transformer" else _NamedDiTView(pipe, component)
+
+
 def _views_for(pipe: Any, fam: VideoFamily) -> tuple[Any, ...]:
     """The pipe view(s) to pass through the ``getattr(pipe, "transformer")`` helpers so
     they cover every denoiser: the real pipe (its ``transformer``), plus a
@@ -1099,9 +1133,16 @@ class VideoBackend:
             # An fp8 encoder request loads a hosted pre-cast checkpoint, so neither the estimate nor the pull includes those dense shards.
             te_sources = self._te_prequant_sources(fam, kwargs.get("text_encoder_quant"))
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
-            # DiT shards, so the estimate and the scoped pull below both drop them.
-            skip_transformer_weights = self._denoiser_prequant_covered(
-                fam, kwargs.get("transformer_quant"), base, kwargs.get("h3_task")
+            # DiT shards, so the estimate and the scoped pull below both drop them. VERIFIED, like
+            # the conditioner below and like the plan: this flag both REMOVES 66 GB from the pull
+            # and is never re-checked, so an artifact that does not resolve has to keep the dense
+            # shards rather than strand the load's own bf16 fallback with nothing to open.
+            skip_transformer_weights = self._denoiser_prequant_verified(
+                fam,
+                kwargs.get("transformer_quant"),
+                base,
+                kwargs.get("h3_task"),
+                kwargs.get("hf_token"),
             )
             # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
             # repo's 62 GB dense text_encoder/ shards outright.
@@ -1555,6 +1596,46 @@ class VideoBackend:
             return source if isinstance(source, str) and source else None
         except Exception:  # noqa: BLE001 -- unanswerable keeps the dense shards
             return None
+
+    def _denoiser_prequant_verified(
+        self,
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        h3_task: Optional[str],
+        hf_token: Optional[str],
+    ) -> bool:
+        """``_denoiser_prequant_covered`` plus the Hub check, for the decisions that COMMIT.
+
+        The pure probe answers from the registry, which is right where it must not raise or touch
+        the network. It is NOT enough to drop the dense shards from the pull: a task-specific row
+        gets no filename fallback, so a Ref2VA artifact that is renamed, unpublished or gated
+        resolves to nothing while the registry still says the scheme is covered. Skipping on that
+        word alone stages neither denoiser, and the bf16 fallback the loader documents then has
+        nothing to open offline (or pulls 66 GB inline, outside this load's progress, cancel and
+        disk budget).
+
+        Same rule as ``_h3_te_quant_scheme_verified`` next door, and the same fail-closed
+        direction: unanswerable keeps the dense shards."""
+        if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task):
+            return False
+        try:
+            from huggingface_hub import HfApi
+
+            repo, _files = self._denoiser_prequant_hub_files(
+                fam, transformer_quant, base, HfApi(token = hf_token), h3_task
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
+            return False
+        if repo is None:
+            logger.info(
+                "video.denoiser_prequant: no hosted %s checkpoint resolved for %s %s; keeping its "
+                "dense denoiser shards",
+                transformer_quant,
+                getattr(fam, "name", None),
+                h3_task or getattr(fam, "modular_workflow", None),
+            )
+        return repo is not None
 
     def _h3_te_quant_scheme_verified(
         self,
@@ -3744,9 +3825,15 @@ class VideoBackend:
         self._precommit_globals = (_load_token, backend_flags)
         attention_engaged = None
         speed_optims: tuple = ()
+        # Both helpers reach the denoiser through ``pipe.transformer``, and a reference load's DiT
+        # is ``transformer_ref``. Handed the bare pipe they would enumerate no denoiser at all, so
+        # the partition this run denoises with would keep native attention and stay uncompiled
+        # while the resolved record below still reported the requested profile -- and the pin
+        # above is what removes the eager downgrade that used to hide it.
+        speed_view = _denoiser_view(pipe, denoiser_component)
         try:
             attention_engaged = apply_attention_backend(
-                pipe,
+                speed_view,
                 select_attention_backend(
                     umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
                 ),
@@ -3755,7 +3842,7 @@ class VideoBackend:
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
             applied = apply_speed_optims(
-                pipe,
+                speed_view,
                 types.SimpleNamespace(
                     device = device,
                     dtype = dtype,
