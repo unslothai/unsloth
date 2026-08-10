@@ -1540,13 +1540,17 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
 
-def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(client, monkeypatch):
+def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(
+    client, monkeypatch, dit_train_host
+):
     # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
     # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
     # diffusers.pipelines...") there. Inference absorbs that (the native sd.cpp engine needs no
     # diffusers), but the trainer child is a spawn of THIS interpreter and would hit the same
     # broken import -- after the GPU residents were gone. So training refuses, as a 400 with the
     # underlying reason intact rather than the bare 500 a RuntimeError would have produced.
+    # dit_train_host because the accelerator gate runs first and would answer "needs a GPU" on a
+    # GPU-less runner, so without it this asserts nothing about the import guard on CI.
     import sys
     import types
 
@@ -1572,10 +1576,11 @@ def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(clie
     assert client._fake.started_with is None
 
 
-def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch):
+def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch, dit_train_host):
     # There is no "the child will install it" here: the trainer runs in a spawned process in the
     # SAME environment, so an absent diffusers is absent there too. Refusing before the teardown
-    # is the whole point of this preflight.
+    # is the whole point of this preflight. dit_train_host for the same reason as above: the
+    # accelerator gate is earlier and would swallow this on a GPU-less runner.
     import builtins
     import sys
 
@@ -1706,6 +1711,50 @@ def test_a_dummy_pipeline_export_is_not_treated_as_importable():
     # _backends is diffusers' full requirement list, not a list of failed probes, so the message
     # must not declare a working torch missing or prescribe reinstalling it.
     assert "missing: torch" not in msg and "pip install -U torch" not in msg
+
+
+def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client, monkeypatch):
+    # The video half of the same gate: LTX2Pipeline is a diffusers 0.37 export, and the packaging
+    # deliberately leaves an older diffusers installable on the Python 3.9 hosts this project still
+    # supports. Without the pipeline-class assert in the training preflight the family resolved as
+    # trainable, the start freed the resident GPU workloads, and only the spawned child failed.
+    # LTX-2 lives in the VIDEO registry, so it reaches the gate by a different branch of
+    # resolve_trainable_family than any image family above.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"})
+    assert r.status_code == 400, r.text
+    assert "LTX2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeypatch):
+    # unsloth/LTX-2-FP8 holds pre-cast component archives, not a pipeline: no model_index.json,
+    # no VAE. The name still carries the "ltx-2" token so the family detector claimed it, the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # (a 404 is not an access problem) -- so the start evicted the resident models and only then
+    # failed inside from_pretrained.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "model_index.json" in detail  # says why it cannot be a base
+    assert "Lightricks/LTX-2" in detail  # and names what to train instead
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
 
 
 def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatch):
