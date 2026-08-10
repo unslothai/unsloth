@@ -10,8 +10,14 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 from auth.storage import rotate_preview_link_secret
+
+from routes.provider_credentials import current_credential_write
 
 from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
@@ -131,24 +137,29 @@ class HuggingFaceTokenResponse(BaseModel):
 @router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def get_hugging_face_token(
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
     token = credential_secrets.get_hf_token(current_subject)
     return HuggingFaceTokenResponse(token = token, has_token = token is not None)
 
 
 @router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def update_hugging_face_token(
-    payload: HuggingFaceTokenPayload, current_subject: str = Depends(get_current_subject)
+    payload: HuggingFaceTokenPayload, credential: tuple = Depends(get_current_credential)
 ) -> HuggingFaceTokenResponse:
-    credential_secrets.save_hf_token(current_subject, payload.token)
+    with current_credential_write(credential) as current_subject:
+        credential_secrets.save_hf_token(current_subject, payload.token)
     return HuggingFaceTokenResponse(token = payload.token, has_token = True)
 
 
 @router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def clear_hugging_face_token(
-    current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
 ) -> HuggingFaceTokenResponse:
-    credential_secrets.delete_hf_token(current_subject)
+    with current_credential_write(credential) as current_subject:
+        credential_secrets.delete_hf_token(current_subject)
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 

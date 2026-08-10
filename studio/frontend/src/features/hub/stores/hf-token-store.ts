@@ -14,6 +14,8 @@ async function loadHfTokenApi(): Promise<HfTokenApi> {
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
 
+const HF_TOKEN_SYNC_KEY = "unsloth_hf_token_backend_revision";
+
 let stagedLegacyToken = "";
 
 function canUseStorage(): boolean {
@@ -60,30 +62,70 @@ function removeLegacyToken(): void {
 
 let persistenceRevision = 0;
 let persistenceChain: Promise<void> = Promise.resolve();
+let lastPersistedToken = "";
 
+function announcePersistedTokenChange(): void {
+  if (!canUseStorage()) return;
+  try {
+    window.localStorage.setItem(
+      HF_TOKEN_SYNC_KEY,
+      `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    );
+  } catch {
+    // The current tab is already synchronized; cross-tab sync is best effort.
+  }
+}
+
+function persistenceErrorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "Could not save the Hugging Face token.";
+}
 
 function persistTokenToBackend(token: string): void {
   const revision = ++persistenceRevision;
+  useHfTokenStore.setState({ isPersisting: true, persistenceError: null });
   persistenceChain = persistenceChain
     .catch(() => undefined)
     .then(async () => {
       // Collapse rapid field edits before they reach the network. In-flight
       // writes remain ordered, so an older response can never win last.
       if (revision !== persistenceRevision) return;
-      const { clearSavedHfToken, saveHfToken } = await loadHfTokenApi();
-      if (token) {
-        await saveHfToken(token);
-      } else {
-        await clearSavedHfToken();
+      try {
+        const { clearSavedHfToken, saveHfToken } = await loadHfTokenApi();
+        const response = token
+          ? await saveHfToken(token)
+          : await clearSavedHfToken();
+        const persistedToken = response.token
+          ? normalizeHfToken(response.token)
+          : "";
+        lastPersistedToken = persistedToken;
+        removeLegacyToken();
+        announcePersistedTokenChange();
+        if (revision === persistenceRevision) {
+          useHfTokenStore.setState({
+            token: persistedToken,
+            isPersisting: false,
+            persistenceError: null,
+          });
+        }
+      } catch (error) {
+        if (revision === persistenceRevision) {
+          useHfTokenStore.setState({
+            token: lastPersistedToken,
+            isPersisting: false,
+            persistenceError: persistenceErrorMessage(error),
+          });
+        }
       }
-      if (revision === persistenceRevision) removeLegacyToken();
-    })
-    .catch(() => undefined);
+    });
 }
 
 
 interface HfTokenStore {
   token: string;
+  isPersisting: boolean;
+  persistenceError: string | null;
   setToken: (value: string) => void;
   clearToken: () => void;
 }
@@ -97,6 +139,9 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
   return {
     // Legacy value remains available until authenticated bootstrap reconciles it.
     token: loadLegacyToken(),
+
+    isPersisting: false,
+    persistenceError: null,
     setToken: (value) => {
       persistTokenToBackend(applyNormalizedToken(value));
     },
@@ -119,6 +164,15 @@ export function stageLegacyHfTokenForMigration(value: string): void {
   stagedLegacyToken ||= token;
   if (!useHfTokenStore.getState().token) {
     useHfTokenStore.setState({ token });
+  }
+}
+
+
+/** Discard browser-wide migration input before hydrating a different account. */
+export function discardLegacyHfTokenForMigration(): void {
+  removeLegacyToken();
+  if (!serverCredentialHydrated) {
+    useHfTokenStore.setState({ token: "", persistenceError: null });
   }
 }
 
@@ -154,7 +208,12 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
       },
       applyToken: (token) => {
         assertCurrentSession();
-        useHfTokenStore.setState({ token: normalizeHfToken(token) });
+        lastPersistedToken = normalizeHfToken(token);
+        useHfTokenStore.setState({
+          token: lastPersistedToken,
+          isPersisting: false,
+          persistenceError: null,
+        });
       },
       removeLegacyToken: () => {
         assertCurrentSession();
@@ -173,11 +232,21 @@ function resetHfCredentialSession(): void {
   hydrationPromise = null;
   serverCredentialHydrated = false;
   stagedLegacyToken = "";
-  useHfTokenStore.setState({ token: "" });
+  lastPersistedToken = "";
+  useHfTokenStore.setState({
+    token: "",
+    isPersisting: false,
+    persistenceError: null,
+  });
 }
 
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, resetHfCredentialSession);
+
+  window.addEventListener("storage", (event) => {
+    if (event.key !== HF_TOKEN_SYNC_KEY || !event.newValue) return;
+    void hydrateHfTokenFromBackend().catch(() => undefined);
+  });
 }
 
 export function getHfToken(): string {

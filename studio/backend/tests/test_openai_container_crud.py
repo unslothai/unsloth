@@ -247,7 +247,7 @@ def test_list_route_filters_expired_containers(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    def fake_resolve(_body):
+    def fake_resolve(_body, _subject):
         return _make_client()
 
     monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)

@@ -495,3 +495,14 @@ export function removeExternalProviderApiKey(providerId: string): void {
     // ignore
   }
 }
+
+
+/** Discard browser-wide migration input before hydrating a different account. */
+export function discardAllLegacyExternalProviderApiKeys(): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.removeItem(EXTERNAL_PROVIDER_KEYS_KEY);
+  } catch {
+    // ignore unavailable storage
+  }
+}

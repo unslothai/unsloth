@@ -3,6 +3,8 @@
 
 """SQLite storage for auth data (user credentials + JWT secret)."""
 
+from contextlib import contextmanager
+
 import hashlib
 import hmac
 import ipaddress
@@ -12,7 +14,7 @@ import sqlite3
 import tempfile
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 from utils.paths import auth_db_path, ensure_dir
 
@@ -244,6 +246,26 @@ def _current_secret(conn: sqlite3.Connection, username: str) -> Optional[str]:
 def _current_generation(conn: sqlite3.Connection, username: str) -> Optional[str]:
     secret = _current_secret(conn, username)
     return credential_generation(secret) if secret is not None else None
+
+
+@contextmanager
+def credential_generation_guard(username: str, expect_gen: Optional[str]) -> Iterator[None]:
+    """Hold the auth write lock while a credential-derived write commits elsewhere."""
+    conn = get_connection()
+    try:
+        if expect_gen is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            if _current_generation(conn, username) != expect_gen:
+                raise CredentialRotated(
+                    "The credential this request authenticated with was revoked."
+                )
+        yield
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_connection() -> sqlite3.Connection:

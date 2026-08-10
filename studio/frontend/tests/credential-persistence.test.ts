@@ -22,6 +22,10 @@ const { resolveProviderCredentialEdit } = await import(
   "../src/features/chat/provider-credential-edit.ts"
 );
 
+const { authSubjectFromJwt, legacyCredentialOwnerAction } = await import(
+  "../src/features/credentials/migration-owner.ts"
+);
+
 
 type UiProviderConfig = ReturnType<
   Parameters<typeof runCredentialBootstrap>[0]["getProviders"]
@@ -237,12 +241,24 @@ test("provider migration does not consume local input after a session change", a
   assert.deepEqual(removed, []);
 });
 
+test("legacy migration input is bound to one authenticated subject", () => {
+  assert.equal(legacyCredentialOwnerAction(null, "alice"), "claim");
+  assert.equal(legacyCredentialOwnerAction("alice", "alice"), "keep");
+  assert.equal(legacyCredentialOwnerAction("alice", "bob"), "discard");
+  assert.equal(authSubjectFromJwt("x.eyJzdWIiOiJhbGljZSJ9.y"), "alice");
+  assert.equal(authSubjectFromJwt("not-a-jwt"), null);
+});
+
+
 test("new HF edits never write the token back to localStorage", () => {
   const source = readFileSync(
     new URL("../src/features/hub/stores/hf-token-store.ts", import.meta.url),
     "utf8",
   );
   assert.doesNotMatch(source, /localStorage\.setItem\(HF_TOKEN_KEY/);
+
+  assert.match(source, /persistenceError:/);
+  assert.match(source, /HF_TOKEN_SYNC_KEY/);
 });
 
 test("provider edit state keeps, replaces, and explicitly clears saved keys", () => {
@@ -280,6 +296,6 @@ test("credential gate follows authentication session transitions", () => {
 
   assert.match(rootSource, /AUTH_SESSION_CLEARED_EVENT, reconcile/);
   assert.match(rootSource, /AUTH_SESSION_STORED_EVENT, reconcile/);
-  assert.match(rootSource, /!isAuthFlowRoute \? \(/);
+  assert.match(rootSource, /!isAuthFlowRoute \|\| pathname === "\/onboarding"/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
 });

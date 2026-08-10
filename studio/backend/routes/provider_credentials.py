@@ -5,12 +5,29 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Iterator
+
 import structlog
 from fastapi import HTTPException
+
+
+from auth.storage import CredentialRotated, credential_generation_guard
 
 from storage import credential_secrets
 
 logger = structlog.get_logger(__name__)
+
+
+@contextmanager
+def current_credential_write(credential: tuple[str, str | None]) -> Iterator[str]:
+    """Reject credential-derived writes if a concurrent password reset revoked them."""
+    current_subject, generation = credential
+    try:
+        with credential_generation_guard(current_subject, generation):
+            yield current_subject
+    except CredentialRotated as exc:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
 
 
 def resolve_provider_api_key_or_400(

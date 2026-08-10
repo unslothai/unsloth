@@ -88,7 +88,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
                 display_name = "OpenAI",
                 encrypted_api_key = "first",
             ),
-            current_subject = "alice",
+            credential = ("alice", None),
         )
     )
     assert created.has_api_key is True
@@ -99,7 +99,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(display_name = "Renamed"),
-            current_subject = "alice",
+            credential = ("alice", None),
         )
     )
     assert metadata_only.display_name == "Renamed"
@@ -109,7 +109,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(encrypted_api_key = "second"),
-            current_subject = "alice",
+            credential = ("alice", None),
         )
     )
     assert replaced.has_api_key is True
@@ -119,7 +119,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(clear_api_key = True),
-            current_subject = "alice",
+            credential = ("alice", None),
         )
     )
     assert cleared.has_api_key is False
@@ -127,8 +127,8 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
     credential_secrets.save_provider_api_key("alice", created.id, "sk-before-delete")
 
-    asyncio.run(providers_route.delete_provider_config(created.id, current_subject = "alice"))
-    asyncio.run(providers_route.delete_provider_config(created.id, current_subject = "alice"))
+    asyncio.run(providers_route.delete_provider_config(created.id, credential = ("alice", None)))
+    asyncio.run(providers_route.delete_provider_config(created.id, credential = ("alice", None)))
 
     assert credential_secrets.get_provider_api_key("alice", created.id) is None
     assert providers_db.get_provider(created.id) is None
@@ -183,7 +183,10 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
     credential_secrets.save_hf_token("alice", "hf-after-restart")
     auth_storage._credential_encryption_key_cache = None
     credential_secrets._schema_ready = False
-    assert settings_route.get_hugging_face_token("alice").token == "hf-after-restart"
+    assert (
+        settings_route.get_hugging_face_token("alice", via_api_key = False).token
+        == "hf-after-restart"
+    )
 
     models = asyncio.run(
         providers_route.list_provider_models(
@@ -217,11 +220,11 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
 def test_hugging_face_routes_are_owner_scoped_and_idempotent():
     saved = settings_route.update_hugging_face_token(
         settings_route.HuggingFaceTokenPayload(token = " 'hf_alice' "),
-        current_subject = "alice",
+        credential = ("alice", None),
     )
     assert saved.token == "hf_alice"
-    assert settings_route.get_hugging_face_token("alice").token == "hf_alice"
-    assert settings_route.get_hugging_face_token("bob").has_token is False
+    assert settings_route.get_hugging_face_token("alice", via_api_key = False).token == "hf_alice"
+    assert settings_route.get_hugging_face_token("bob", via_api_key = False).has_token is False
 
-    assert settings_route.clear_hugging_face_token("alice").has_token is False
-    assert settings_route.clear_hugging_face_token("alice").has_token is False
+    assert settings_route.clear_hugging_face_token(("alice", None)).has_token is False
+    assert settings_route.clear_hugging_face_token(("alice", None)).has_token is False

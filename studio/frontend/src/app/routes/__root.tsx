@@ -445,7 +445,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
-      {!isAuthFlowRoute ? (
+      {!isAuthFlowRoute || pathname === "/onboarding" ? (
         <CredentialBootstrapGate>{content}</CredentialBootstrapGate>
       ) : (
         content

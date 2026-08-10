@@ -10125,6 +10125,12 @@ def _resolve_openai_cloud_client(
                 status_code = 400,
                 detail = "OpenAI container management requires a saved OpenAI provider.",
             )
+
+        if not config["is_enabled"]:
+            raise HTTPException(
+                status_code = 400,
+                detail = f"Provider '{config['display_name']}' is disabled.",
+            )
         base_url = config["base_url"]
     if not base_url or "api.openai.com" not in base_url:
         raise HTTPException(
