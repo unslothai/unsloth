@@ -589,6 +589,42 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch):
+    """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
+
+    It ran unconditionally and fires on any folder with a clip in it, above the discovery that
+    was already taught to branch on the family. So every valid MiniMax-H3 request, whose dataset
+    is captioned clips and nothing else, came back 400 "training from clips is not supported
+    yet": the trainer this branch adds, unreachable through its own route.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    consulted: list[str] = []
+
+    def _refusal(data_dir):
+        consulted.append(str(data_dir))
+        return "'clips' holds 2 video clips. Training from clips is not supported yet."
+
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", _refusal)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 200, r.text
+    assert consulted == [], "the clip refusal was consulted for a clip-trained family"
+
+    # Control: an image family with the same dataset is still turned away, and by this refusal.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 400
+    assert "not supported yet" in r.json()["detail"]
+    assert len(consulted) == 1
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}

@@ -2875,12 +2875,18 @@ async def start_diffusion_training(
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it
         # reports the folder as uncaptioned, and mixed it succeeds on the images and trains on
         # that subset without saying so.
+        # For the IMAGE-trained families only. A clip-trained family is the case this refusal
+        # was written to protect against, so leaving it unconditional rejected every valid
+        # MiniMax-H3 request with "training from clips is not supported yet" -- the trainer this
+        # branch adds, unreachable through its own route. discover_training_pairs below already
+        # branches on the family; this is the same question asked one step earlier.
         # In a worker thread like the discovery below it, and for the same reason: the scan stats
         # every file and reads the caption sidecars, which on a large or network-mounted dataset
         # would hold the event loop and stall status/stop alongside it.
-        clip_refusal = await asyncio.to_thread(_clip_dataset_refusal, config["data_dir"])
-        if clip_refusal is not None:
-            raise HTTPException(status_code = 400, detail = clip_refusal)
+        if normalized_cfg.resolved_family not in _dtc.CLIP_TRAINED_FAMILIES:
+            clip_refusal = await asyncio.to_thread(_clip_dataset_refusal, config["data_dir"])
+            if clip_refusal is not None:
+                raise HTTPException(status_code = 400, detail = clip_refusal)
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
             pairs = await asyncio.to_thread(

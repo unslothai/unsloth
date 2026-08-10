@@ -5727,6 +5727,37 @@ def test_h3_records_the_guidance_that_actually_ran(monkeypatch):
     assert calls[-1]["params"].cfg_scale == 1.0
 
 
+def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch):
+    """The normalisation above has to use the FAMILY default, not the identifier-derived one.
+
+    ``default_video_generation_params`` matches on the repo id or path, so a local H3 file under
+    a folder named after another family picks up that family's guidance. Recording it writes back
+    exactly the inaccurate recipe this normalisation exists to prevent, and with a number no H3
+    sampler can have produced.
+    """
+    import dataclasses
+
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    backend._state = dataclasses.replace(backend._state, repo_id = local)
+
+    # Precondition: the identifier really does resolve to a different family's guidance, so the
+    # test cannot pass by that lookup happening to agree with H3.
+    from core.inference.video import default_video_generation_params
+
+    fam = backend._state.family
+    _steps, derived = default_video_generation_params(
+        local, fallback = (fam.default_steps, fam.default_guidance)
+    )
+    assert derived != fam.default_guidance
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+    assert result["guidance"] == fam.default_guidance == 1.0
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
 def test_h3_records_no_negative_prompt_because_neither_engine_takes_one(monkeypatch):
     """The same rule as the guidance above, for the other half of the unconditional branch. A
     negative prompt IS the unconditional branch, so a guidance-distilled family consumes none:

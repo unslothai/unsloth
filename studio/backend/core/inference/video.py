@@ -3829,8 +3829,14 @@ class VideoBackend:
                 # SdCppVideoGenParams has no field for it at all). Left as sent, it reached the
                 # gallery sidecar and the restored recipe claimed conditioning that never touched
                 # a sampler.
+                # fam.default_guidance, NOT the identifier-derived one:
+                # default_video_generation_params matches on the repo id or path, so a local
+                # H3 file whose path happens to contain another family's keyword (say
+                # /models/wan/minimax_h3_fl2va-Q4.gguf) picks up that family's 5.0. Recording
+                # it would write back the inaccurate recipe this normalisation exists to
+                # prevent, and with a number no H3 sampler can ever have seen.
                 if not fam.supports_cfg:
-                    guidance = float(default_guidance)
+                    guidance = float(fam.default_guidance)
                     negative_prompt = None
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
