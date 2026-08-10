@@ -379,26 +379,66 @@ def _snapshot_complete_on_disk(
     return False
 
 
+def _referenced_commits(entry: Path) -> "frozenset[str]":
+    """Commits this repo cache dir still points at.
+
+    HF records the commit a branch or tag resolved to in ``refs/<revision>`` on every
+    snapshot_download whose revision was not already a raw sha, so for the default ``main``
+    the file is always there. It is the one revision marker that survives without a manifest.
+    """
+    commits: set[str] = set()
+    try:
+        refs = list((entry / "refs").rglob("*"))
+    except OSError:
+        return frozenset()
+    for ref in refs:
+        try:
+            if not ref.is_file():
+                continue
+            commit = download_manifest.normalized_commit_hash(ref.read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if commit:
+            commits.add(commit)
+    return frozenset(commits)
+
+
+def _snapshot_is_stale_copy(snapshot: Path, manifest: "Optional[download_manifest.Manifest]") -> bool:
+    """Whether ``snapshot`` names a revision this cache dir has moved off.
+
+    Only asked where there is no symlink to read. HF names a snapshot dir after its commit, so
+    a dir named by neither the manifest's recorded commit nor any live ref is an older
+    revision, and its same-named files are not this download's bytes. Neither marker present
+    leaves the question unanswerable, and unanswerable is not a mismatch.
+    """
+    commit_hash = download_manifest.normalized_commit_hash(getattr(manifest, "commit_hash", None))
+    if commit_hash:
+        return snapshot.name != commit_hash
+    referenced = _referenced_commits(snapshot.parent.parent)
+    return bool(referenced) and snapshot.name not in referenced
+
+
 def _snapshot_resolves_to(
-    manifest: download_manifest.Manifest, snapshot: Path, expected_hashes: "frozenset[str]"
+    manifest: "Optional[download_manifest.Manifest]",
+    snapshot: Path,
+    expected_hashes: "frozenset[str]",
 ) -> bool:
     """Whether every expected file in ``snapshot`` points at one of ``expected_hashes``.
 
     HF names a blob by its hash and the snapshot entry links to it, so the link target settles
     which revision is materialized here. A copy-layout cache (Windows without symlinks) has no
-    target to read, so fall back to the one other name that dates a snapshot: HF names the dir
-    after the commit, and a manifest that recorded one rules out every other revision. With no
-    recorded commit the question stays unanswerable, and unanswerable is not a mismatch.
+    target to read, and neither does a reading with no manifest to name the files, so both fall
+    back to dating the snapshot by revision.
     """
-    commit_hash = download_manifest.normalized_commit_hash(getattr(manifest, "commit_hash", None))
+    if manifest is None:
+        return not _snapshot_is_stale_copy(snapshot, None)
     for expected in getattr(manifest, "expected_files", ()) or ():
         if not download_manifest.expected_path_is_safe(expected.path):
             continue
         entry = snapshot / expected.path
         try:
             if not entry.is_symlink():
-                # Copy layout: no target to compare, so date the snapshot by its dir name.
-                if commit_hash and snapshot.name != commit_hash:
+                if _snapshot_is_stale_copy(snapshot, manifest):
                     return False
                 continue
             target = os.path.basename(os.readlink(entry))
@@ -575,7 +615,6 @@ def compute_snapshot_progress(
                     )
                     for snap in snapshot_dirs.get()
                     if not expected_hashes
-                    or manifest is None
                     or _snapshot_resolves_to(manifest, snap, expected_hashes)
                 ),
                 default = 0,

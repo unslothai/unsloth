@@ -178,10 +178,16 @@ def test_progress_groups_duplicate_process_unique_writers(monkeypatch, tmp_path)
 
 
 def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
-    """A copy-layout snapshot from another commit is not this download's bytes."""
+    """A copy-layout snapshot from another commit is not this download's bytes.
+
+    Written the way production writes it: model, GGUF and scoped manifests all go through
+    ``write_manifest`` without a commit, so ``refs/main`` is the only marker available.
+    """
     commit = "b" * 40
     entry = tmp_path / "models--Org--Model"
     (entry / "blobs").mkdir(parents = True)
+    (entry / "refs").mkdir(parents = True)
+    (entry / "refs" / "main").write_text(commit)
     stale = entry / "snapshots" / ("c" * 40)
     stale.mkdir(parents = True)
     (stale / "model.safetensors").write_bytes(b"x" * 100)
@@ -198,7 +204,6 @@ def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
                 sha256 = _BLOB_HASH,
             ),
         ),
-        commit_hash = commit,
     )
 
     monkeypatch.setattr(
@@ -225,3 +230,77 @@ def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
 
     assert result["completed_bytes"] == 0
     assert result["downloaded_bytes"] == 0
+
+
+def test_progress_ignores_stale_revision_without_a_manifest(monkeypatch, tmp_path):
+    """No manifest is not a licence to count any retained snapshot."""
+    commit = "b" * 40
+    entry = tmp_path / "models--Org--Model"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "refs").mkdir(parents = True)
+    (entry / "refs" / "main").write_text(commit)
+    stale = entry / "snapshots" / ("c" * 40)
+    stale.mkdir(parents = True)
+    (stale / "model.safetensors").write_bytes(b"x" * 100)
+    (entry / "snapshots" / commit).mkdir(parents = True)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        job_key = "model:org/model#@diffusion",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "@diffusion",
+        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["downloaded_bytes"] == 0
+
+
+def test_progress_counts_the_snapshot_the_refs_point_at(monkeypatch, tmp_path):
+    """The revision check must not cost the Windows copy-layout fix it guards."""
+    commit = "b" * 40
+    entry = tmp_path / "models--Org--Model"
+    (entry / "blobs").mkdir(parents = True)
+    (entry / "refs").mkdir(parents = True)
+    (entry / "refs" / "main").write_text(commit)
+    current = entry / "snapshots" / commit
+    current.mkdir(parents = True)
+    (current / "model.safetensors").write_bytes(b"x" * 100)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: None,
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        job_key = "model:org/model#@diffusion",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "@diffusion",
+        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
+    )
+
+    assert result["completed_bytes"] == 100
