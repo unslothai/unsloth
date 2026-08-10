@@ -78,6 +78,12 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
 CHAT_ONLY_REASON: Optional[str] = None
+# What exactly blocked the reason above, when there is something specific to say. Only
+# "mlx_unavailable" sets it today: the gate is all-or-nothing across mlx, mlx-lm and
+# mlx-vlm, so "run `unsloth studio update`" was the whole message even to someone who
+# had just run it. Naming the package that is missing, too old, or refusing to import
+# is the difference between a dead end and a fix. Never shown on its own.
+CHAT_ONLY_DETAIL: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 # Detection has concurrent callers (the warm thread plus any early get_device()).
@@ -126,10 +132,11 @@ def owning_detection_epoch(epoch: Optional[int]):
 
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
+    CHAT_ONLY_DETAIL = None
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -235,6 +242,22 @@ def _has_torch() -> bool:
         return False
 
 
+def _torch_mps_available() -> bool:
+    """True when torch exposes a usable Metal (MPS) device.
+
+    Apple Silicon alone is not enough: a torch built without MPS, or one that fails to import,
+    leaves the pipelines nowhere to run. Never raises; a failed probe reads as no MPS.
+    """
+    if not _has_torch():
+        return False
+    try:
+        import torch
+        mps = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(mps is not None and mps.is_available())
+    except Exception:
+        return False
+
+
 def _has_mlx() -> bool:
     """True if MLX is importable."""
     try:
@@ -244,22 +267,68 @@ def _has_mlx() -> bool:
         return False
 
 
+# What the last gate call measured, so the CPU fallback can name a blocker without
+# running the mlx imports a second time. This module already treats those imports as
+# able to park indefinitely on a broken stack, and that is exactly the host that needs
+# the detail, so a second run there can double detection latency or keep the pass from
+# reaching the repair scheduler. Written and consumed inside one locked detection pass.
+_MLX_BLOCKERS_MEASURED: Optional[list[str]] = None
+
+
 def _has_usable_mlx_stack() -> bool:
     """True only when the FULL Unsloth MLX training/export stack is usable
     (mlx + mlx-lm + mlx-vlm at the minimum versions unsloth-zoo requires), not
     just a bare ``import mlx.core``. A backtracked/old mlx-vlm still imports but
     breaks VLM Train/Export, so the training gate must match the self-heal's own
-    criterion (utils.mlx_repair.mlx_stack_available) -- otherwise detect_hardware
-    would enable Train/Export on exactly the inadequate stack the MLX self-heal
-    is trying to repair, leaving the user with greyed-in-but-broken buttons."""
+    criterion (utils.mlx_repair) -- otherwise detect_hardware would enable
+    Train/Export on exactly the inadequate stack the MLX self-heal is trying to
+    repair, leaving the user with greyed-in-but-broken buttons.
+
+    Asked as "no blockers" rather than through mlx_stack_available(), which is the
+    same question: both run the version checks before the imports, in the same order,
+    and stop at the first failure. Reading the list is what lets the answer be
+    explained without measuring it again."""
+    global _MLX_BLOCKERS_MEASURED
+    _MLX_BLOCKERS_MEASURED = None
     try:
-        from utils.mlx_repair import mlx_stack_available
-        return mlx_stack_available()
+        from utils.mlx_repair import mlx_stack_blockers
+        blockers = mlx_stack_blockers()
     except Exception as exc:
         # mlx_repair should always import; if it somehow cannot, fall back to the
         # bare import check rather than forcing a working host into chat-only.
         logger.debug("MLX stack availability check failed, using bare import: %s", exc)
         return _has_mlx()
+    _MLX_BLOCKERS_MEASURED = blockers
+    return not blockers
+
+
+def _mlx_stack_detail() -> Optional[str]:
+    """One line naming what the MLX gate is unhappy about, or None if it cannot tell.
+
+    Never raises and never re-runs the gate's own verdict: this only describes a
+    verdict already reached, so a failure here costs a sentence, not Train.
+
+    Takes what the gate measured when there is any. Measuring again is the fallback
+    for a caller that reached here without one, e.g. a test driving this alone.
+    """
+    global _MLX_BLOCKERS_MEASURED
+    blockers = _MLX_BLOCKERS_MEASURED
+    # Consumed, not kept: a list left behind by an earlier pass describes a stack that
+    # has since been re-measured, and the whole point of the detail is that it belongs
+    # to the verdict beside it.
+    _MLX_BLOCKERS_MEASURED = None
+    if blockers is None:
+        try:
+            from utils.mlx_repair import mlx_stack_blockers
+            blockers = mlx_stack_blockers()
+        except Exception as exc:
+            logger.debug("MLX blocker detail unavailable: %s", exc)
+            return None
+    if not blockers:
+        # The gate said no and the detail says yes, which means the stack changed
+        # under us. Saying nothing beats naming a blocker that is no longer there.
+        return None
+    return "; ".join(blockers[:3])
 
 
 def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
@@ -267,10 +336,11 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
 
     Detection gets its answer before utils.mlx_repair gets its turn, so an Apple Silicon
     host whose MLX stack is missing or unreadable settles chat-only first and flips only
-    once the background reinstall lands. Published as final, that greys Train and Video
-    behind a "run `unsloth studio update`" tooltip the repair makes wrong a minute later,
-    and the rows then enable themselves on the frontend's recovery poll -- the reported
-    "greyed out, then they come out". Callers report it as still-detecting instead.
+    once the background reinstall lands. Published as final, that greys Train behind a
+    "run `unsloth studio update`" tooltip the repair makes wrong a minute later, and the row
+    then enables itself on the frontend's recovery poll -- the reported "greyed out, then
+    they come out". Callers report it as still-detecting instead. Video is unaffected either
+    way: it runs on Metal without MLX and reads its own capability verdict.
 
     The "mlx_unavailable" check is also what lets mlx_repair_in_flight() be cheap: that
     reason means this pass has just measured the stack as unusable, so the self-heal only
@@ -343,7 +413,7 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, DETECTION_GENERATION
     with _DETECT_LOCK:
         # A forced pass mutates the globals partway through; leaving the event set lets
         # /api/health serve that as settled, so the sidebar MLX poll caches reason=None,
@@ -352,7 +422,7 @@ def detect_hardware() -> DeviceType:
         # Snapshot the whole verdict, not just the event: a raise mid-pass leaves a
         # half-written answer the autorepair path swallows, and losing "mlx_unavailable"
         # stops the sidebar poll for good.
-        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
+        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM)
         # Owning epoch first, current only as a fallback. The MLX self-heal calls this
         # after a pip install that can outlast the lifespan; reading current would adopt
         # the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips
@@ -374,7 +444,7 @@ def detect_hardware() -> DeviceType:
                 # cleared, and the next lifespan would treat that as measured.
                 _discard_detection_locked()
                 raise
-            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM = published
             # Restore rather than leave it clear: start_background_detection() declines
             # once DEVICE is set, so an unset event keeps health provisional forever.
             if was_complete:
@@ -402,7 +472,7 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     Thread.start(), since the thread can be scheduled after a shutdown retired it and
     reading it here would bind the pass to the retirement it must lose to. Direct callers
     pass nothing and own the current epoch."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, DETECTION_GENERATION
     with _DETECT_LOCK:
         if epoch is None:
             # A nested read inside an owning scope belongs to that pass, not to whatever
@@ -429,6 +499,8 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
                 DEVICE = DeviceType.CPU
                 CHAT_ONLY = True
                 CHAT_ONLY_REASON = "detection_failed"
+                # The pass may have got as far as recording one for a different reason.
+                CHAT_ONLY_DETAIL = None
             # Inside the branch: the orchestrator rebuilds its curated defaults whenever this
             # counter moves, so bumping on the cached path caused needless rebuilds. Forced
             # detect_hardware() bumps it too.
@@ -450,9 +522,12 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
 
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
+    global _MLX_BLOCKERS_MEASURED
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
+    CHAT_ONLY_DETAIL = None
+    _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
     # Probe torch once per pass: a failed probe is expensive and a second can disagree.
@@ -555,10 +630,12 @@ def _detect_hardware_locked() -> DeviceType:
         # too old, or broken. This is usually an environment problem recoverable
         # with `unsloth studio update`.
         CHAT_ONLY_REASON = "mlx_unavailable"
+        CHAT_ONLY_DETAIL = _mlx_stack_detail()
         logger.warning(
             "Apple Silicon detected but the MLX stack is incomplete or too old; "
-            "Train/Export disabled (chat-only). Run `unsloth studio update` to "
-            "restore MLX training."
+            "Train/Export disabled (chat-only)%s Run `unsloth studio update` to "
+            "restore MLX training.",
+            f" ({CHAT_ONLY_DETAIL})." if CHAT_ONLY_DETAIL else ".",
         )
     elif TORCH_IMPORT_ERROR is not None:
         # torch installed but broken, so this host was never measured. "no_gpu" would lie.
@@ -634,10 +711,10 @@ def export_capability() -> dict:
 def video_capability() -> dict:
     """Whether video generation can run here, with a torch-aware reason when it cannot.
 
-    Video runs through the diffusers pipelines in core/inference/video.py, which have no Apple
-    path: no MLX backend, and the families ship no MPS-tested route, so macOS is reported as
-    unsupported rather than left to fail at load. Supported iff ``get_device() in {CUDA, XPU}``.
-    Safe to call without torch.
+    Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device. The pipelines in
+    core/inference/video.py are device-neutral -- they resolve the device through the shared
+    diffusion device target, whose capability flags already decline the CUDA-only options -- so
+    Metal needs no branches of its own. Safe to call without torch.
 
     Returns {video_supported, video_unsupported_reason, video_unsupported_message}.
     """
@@ -655,14 +732,43 @@ def video_capability() -> dict:
             "Hardware detection failed on this host, so video generation is disabled. The server "
             "log records the underlying error; restart Unsloth Studio to retry detection."
         )
-    elif platform.system() == "Darwin" or get_device() == DeviceType.MLX:
-        # Every Mac, not just Apple Silicon. An Intel Mac detects as plain CPU, so an
-        # is_apple_silicon() test drops it into the branches below and tells the user to
-        # install PyTorch or add a GPU. Neither enables video here: the pipelines have no
-        # supported macOS path at all, so the honest answer is the same on both Macs.
+    elif is_apple_silicon() or get_device() == DeviceType.MLX:
         # The MLX arm covers an Apple host whose platform probe somehow disagrees.
+        if _torch_mps_available():
+            return {
+                "video_supported": True,
+                "video_unsupported_reason": None,
+                "video_unsupported_message": None,
+            }
+        if TORCH_IMPORT_ERROR is not None:
+            # Installed but broken reads as no torch below, and detect_hardware() records
+            # mlx_unavailable for this host, so neither the branch above nor the one below sees
+            # it -- and the host would be told to install the PyTorch it already has.
+            reason = "detection_failed"
+            message = (
+                "PyTorch is installed but fails to import on this host, so the video pipelines "
+                "cannot start. The server log records the error; reinstall PyTorch to fix it."
+            )
+        elif not _has_torch():
+            reason = "pytorch_not_installed"
+            message = (
+                "PyTorch is not installed. Video generation on Apple Silicon requires PyTorch "
+                "with Metal (MPS) support. Install PyTorch to enable video generation."
+            )
+        else:
+            reason = "mps_unavailable"
+            message = (
+                "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
+                "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
+            )
+    elif platform.system() == "Darwin":
+        # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU
+        # enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
-        message = "Video generation on macOS is coming soon."
+        message = (
+            "Video generation requires Apple Silicon. This Intel Mac has no Metal (MPS) device "
+            "for the video pipelines to run on."
+        )
     elif not _has_torch():
         reason = "pytorch_not_installed"
         message = (
@@ -712,8 +818,28 @@ def clear_gpu_cache():
         except Exception as e:
             logger.debug("Failed to clear XPU cache: %s", e)
     elif device == DeviceType.MLX:
-        # MLX manages memory automatically; gc.collect() above is enough.
-        pass
+        _clear_mps_cache()
+    elif is_apple_silicon():
+        # An Apple Silicon host whose MLX stack is unavailable reports CPU, but diffusion and
+        # video still run on Metal (see diffusion_device._mps_or_cpu_target), so the MPS
+        # allocator needs the same teardown the MLX branch gets.
+        _clear_mps_cache()
+
+
+def _clear_mps_cache() -> None:
+    """Return torch's MPS reservations to the shared pool.
+
+    MLX manages its own memory, but Apple Silicon also runs torch MPS (diffusion/video), whose
+    caching allocator keeps freed buffers reserved. Those bytes read as used system memory, so
+    skipping this leaves the next load budgeting against a pool that looks smaller than it is.
+    """
+    try:
+        import torch
+        empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    except Exception as e:
+        logger.debug("Failed to clear MPS cache: %s", e)
 
 
 def get_gpu_memory_info() -> Dict[str, Any]:

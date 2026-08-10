@@ -2443,7 +2443,9 @@ class DiffusionLoadRequest(BaseModel):
         "CUDA cc>=8.9), fp8_dynamic (torchao compute fp8 on the tensor cores, ~2x + faster, "
         "cc>=8.9), int8 (torchao compute int8 with per-family keep-bf16 layers; falls back to "
         "fp8 where no schedule exists; cc>=8.0), or nvfp4 (~4x smaller, Blackwell sm_100+). A "
-        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode.",
+        "memory-vs-quality tradeoff (shifts fine detail), not free; pairs well with balanced mode. "
+        "Fails CLOSED when NOTHING could be cast (409, or a load-progress error); an int8 request "
+        "downgraded to fp8 loads and is reported through the status resolved record instead.",
     )
     transformer_quant: Optional[Literal["auto", "none", "off", "int8", "fp8", "nvfp4", "mxfp8"]] = (
         Field(
@@ -2454,7 +2456,11 @@ class DiffusionLoadRequest(BaseModel):
             "low-precision tensor cores (data-center fp8, consumer/Ampere int8), "
             "falling back to the GGUF when the device, VRAM or disk cannot take "
             "it. none/off pins running the GGUF as-is; an explicit scheme forces "
-            "that scheme. Dense path needs CUDA + bf16.",
+            "that scheme. Dense path needs CUDA + bf16. An EXPLICIT scheme fails "
+            "CLOSED: where it cannot be honored the load is refused (409, or an "
+            "error phase on load-progress for the footprint-dependent declines) "
+            "rather than silently running the GGUF at another precision. Only "
+            "auto falls back.",
         )
     )
     transformer_quant_fast_accum: Optional[bool] = Field(
@@ -2814,6 +2820,19 @@ class GalleryImage(BaseModel):
         description = "Transformer quantisation scheme actually engaged on the dense fast path "
         "(int8/fp8/nvfp4/mxfp8), or null when the GGUF ran as-is",
     )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quantisation actually engaged (fp8/fp8_dynamic/int8/nvfp4), "
+        "or null when the dense bf16 encoder ran. Absent on records written before this existed.",
+    )
+    memory_mode: Optional[str] = Field(
+        None, description = "Memory mode the load ran under: auto | fast | balanced | low_vram"
+    )
+    offload_policy: Optional[str] = Field(
+        None,
+        description = "Offload policy actually engaged: none | group | model | sequential. Part of "
+        "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
     baked_loras: list[str] = Field(
         default_factory = list,
         description = "Adapter ids baked into the transformer AT LOAD TIME (before quantize + "
@@ -2887,12 +2906,30 @@ class DiffusionResolvedControl(BaseModel):
     control is off, or ``true``/``false`` for cpu_offload), so it is typed ``Any``.
     ``source`` is "auto" when this backend decided it or "explicit" when the caller did;
     ``reason`` is the short human-readable why the frontend shows as a tooltip.
+
+    ``requested`` and ``status`` carry the OTHER half: what was asked for and whether it was
+    honored. Without them a declined request was indistinguishable from an honored one -- the
+    engaged value was reported truthfully, but the ask it replaced was gone, so the UI kept
+    advertising a precision that never engaged.
     """
 
     value: Any = Field(
         None, description = "The engaged value: a string, a boolean (cpu_offload), or null."
     )
+    requested: Any = Field(
+        None,
+        description = "What the caller asked for, verbatim (a string, a boolean for cpu_offload), "
+        "or null when they left this control to the backend. Compare with ``value`` to see "
+        "whether the request survived.",
+    )
     source: str = Field(..., description = '"auto" (backend decided) or "explicit" (caller set it)')
+    status: str = Field(
+        "applied",
+        description = 'Whether the request was honored: "applied" (it was, or there was no '
+        'request), "fell_back" (an explicit request was declined and something else engaged) or '
+        '"unsupported" (an explicit request cannot run on this host / model at all). Defaulted '
+        "so a client reading an older backend's payload still parses.",
+    )
     reason: str = Field("", description = "Short human-readable reason for the resolved value.")
 
 
@@ -2906,9 +2943,17 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
         "never opens (tens of GB on a FLUX repo).",
     )
-    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    bytes: int = Field(
+        0, description = "Declared size of the files still missing from cache, 0 when unknown"
+    )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
+    )
+    checkpoint: bool = Field(
+        False,
+        description = "This entry holds the SELECTED model rather than a companion repo. The "
+        "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
+        "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
 
 
@@ -2917,7 +2962,25 @@ class DiffusionDownloadPlanResponse(BaseModel):
     same file scope the loader would. Empty entries mean nothing to download (local path)."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
-    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    total_bytes: int = Field(
+        0, description = "Sum of the remaining download entries, 0 when ready or unknown"
+    )
+    required_bytes: int = Field(
+        0,
+        description = "Full declared footprint of every file the load requires, including cached files",
+    )
+    checkpoint_bytes: int = Field(
+        0, description = "Declared size of the selected checkpoint within required_bytes"
+    )
+    incompatible_reason: Optional[str] = Field(
+        None,
+        description = "Why this pick cannot load as selected (today: a FLUX.2 GGUF paired with a "
+        "different-size base), so the picker can refuse at selection time instead of after a "
+        "multi-GB download. Reported rather than raised: the images page falls back to "
+        "/images/load on any plan failure, which would start that very download. Null means "
+        "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
+        "unreadable header, an unmapped base or an offline host.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
@@ -2932,9 +2995,12 @@ class DiffusionStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    gguf_variant: Optional[str] = Field(
+        None, description = "Selected GGUF quantisation variant (for example Q8_0)"
+    )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
-        None, description = "Resolved offload policy: none | group | model | sequential"
+        None, description = "Resolved offload policy: none | group | model | streaming | sequential"
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")
@@ -3170,7 +3236,9 @@ class VideoLoadRequest(BaseModel):
             "backend's transformer_quant field.",
         )
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
         description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
         "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "
@@ -3178,7 +3246,18 @@ class VideoLoadRequest(BaseModel):
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
+        "sm_100+). null/auto leaves the choice to the backend, which keeps the encoder dense on "
+        "every family except MiniMax-H3, where it takes the hosted quantized conditioner; "
+        "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
+        "to ask for it. Mirrors the image backend's field.",
+    )
+
+    h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(
+        None,
+        description = "Which MiniMax-H3 denoiser partition to bring up: fl2va (text-to-video "
+        "and first/last-frame video, the default) or ref2va (omni-reference video). They are "
+        "separate ~62 GB partitions, so a load serves one of them. Ignored for a GGUF pick, "
+        "whose filename already names the partition; rejected if it contradicts that filename.",
     )
 
     @field_validator("attention_backend", mode = "before")
@@ -3186,6 +3265,23 @@ class VideoLoadRequest(BaseModel):
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class VideoReferenceVideo(BaseModel):
+    """One reference video, with the soundtrack MiniMax-H3 conditions on alongside it."""
+
+    video: str = Field(
+        ...,
+        max_length = 96 * 1024 * 1024,
+        description = "Base64/data-URL video file, 2 to 15 seconds. Resampled onto the model's "
+        "24 fps and onto the canvas its own aspect ratio resolves to.",
+    )
+    audio: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL soundtrack for THIS video. Omitted takes the track "
+        "embedded in the file, if it has one; sent explicitly it replaces it.",
+    )
 
 
 class VideoGenerateRequest(BaseModel):
@@ -3197,7 +3293,7 @@ class VideoGenerateRequest(BaseModel):
     )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds stay a COARSE outer
     # guard only -- they are family-agnostic, and a request that clears them can still be one no checkpoint can render. The
-    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + 1 lattice), which the generate
+    # enforced rule is the LOADED family's own (its resolution presets and k * frame_step + frame_offset lattice), which the
     # route checks with validate_video_request_shape and rejects with a 422 naming the supported shapes. Nothing tighter
     # belongs here: with no model loaded there is no family to judge against, and that path must keep snapping as before.
     width: Optional[int] = Field(
@@ -3216,7 +3312,7 @@ class VideoGenerateRequest(BaseModel):
         None,
         ge = 1,
         le = MAX_VIDEO_NUM_FRAMES,
-        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + 1)",
+        description = "Number of frames; must lie on the family's temporal lattice (k * frame_step + frame_offset)",
     )
     fps: Optional[int] = Field(
         None, ge = 1, le = 120, description = "Playback frame rate (default per family)"
@@ -3240,6 +3336,112 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
+    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
+    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    first_frame: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
+        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
+        "family that takes no keyframes.",
+    )
+    last_frame: Optional[str] = Field(
+        None,
+        max_length = 32 * 1024 * 1024,
+        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
+        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
+        "follows the first and is centre cover-cropped onto the canvas.",
+    )
+
+    # Separate lists preserve the model's image, video, then audio packing order.
+    reference_images: Optional[list[str]] = Field(
+        None,
+        max_length = 9,
+        description = "Subject / style / scene reference images (base64/data-URL), at most 9. "
+        "The prompt refers to them as <Picture 1>, <Picture 2>, ... in this order.",
+    )
+    reference_videos: Optional[list[VideoReferenceVideo]] = Field(
+        None,
+        max_length = 3,
+        description = "Motion / camera reference videos, at most 3. The prompt refers to them "
+        "as <Video 1>, <Video 2>, ... in this order.",
+    )
+    reference_audios: Optional[list[str]] = Field(
+        None,
+        max_length = 3,
+        description = "Standalone reference audio (base64/data-URL), at most 3, for voice or "
+        "score. The prompt refers to them as <Audio 1>, <Audio 2>, ... in this order. Audio "
+        "cannot be the only kind of reference a request carries.",
+    )
+    flow_shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Sigma shift of the video schedule (MiniMax-H3 ships 12.0). Higher spends "
+        "more of the schedule at high noise, which reads as more motion and less detail. null "
+        "keeps the released value.",
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Sigma shift of the audio schedule (MiniMax-H3 ships 3.0). Needs the "
+        "Diffusers engine: stable-diffusion.cpp derives the audio schedule against a hardcoded "
+        "3.0, so it has no flag to map this onto. null keeps the released value.",
+    )
+    reference_image_size: Optional[Literal["match", "max"]] = Field(
+        None,
+        description = "How reference images are sized: match (default) scales each down to the "
+        "generation's pixel area; max uses the reference pipeline's 2048px short edge for "
+        "stronger identity fidelity, several times slower. max needs the Diffusers engine -- "
+        "stable-diffusion.cpp rescales every reference to the generation area regardless.",
+    )
+
+    @field_validator("reference_images", "reference_audios")
+    @classmethod
+    def _bounded_reference_media(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        # Bound each item like first_frame, so a list cannot buffer what one field may not.
+        if value is not None:
+            for item in value:
+                if len(item) > 32 * 1024 * 1024:
+                    raise ValueError("each reference must be at most 32 MiB (base64)")
+        return value
+
+    @model_validator(mode = "after")
+    def _references_fit_the_models_budget(self) -> "VideoGenerateRequest":
+        images = self.reference_images or []
+        videos = self.reference_videos or []
+        audios = self.reference_audios or []
+        total = len(images) + len(videos) + len(audios)
+        if total > 12:
+            raise ValueError(f"MiniMax-H3 takes at most 12 references in total, got {total}")
+        # Standalone audio must accompany an image or video reference.
+        if audios and not images and not videos:
+            raise ValueError(
+                "reference audio needs at least one reference image or video to go with"
+            )
+        if (images or videos or audios) and (self.first_frame or self.last_frame):
+            raise ValueError(
+                "keyframes and references cannot be combined: MiniMax-H3 runs them against "
+                "different denoiser partitions"
+            )
+        return self
+
+    @model_validator(mode = "after")
+    def _keyframe_canvas_needs_both_axes(self) -> "VideoGenerateRequest":
+        # Omit both axes for "match source", or provide both for an explicit canvas.
+        # KEYFRAME requests only. There a half-specified canvas is silently discarded:
+        # _resolve_keyframes matches the source aspect whenever either axis is missing, so the
+        # axis that was sent never reaches the render and the API would accept one recipe and
+        # draw another. Without a keyframe the backend deliberately resolves the missing axis
+        # from the family's default preset -- validate_video_request_shape and generate() both
+        # document and implement that -- so applying the rule to every request would reject
+        # half-specified LTX, Wan, Hunyuan and prompt-only H3 calls that have always been valid.
+        if not (self.first_frame or self.last_frame):
+            return self
+        if (self.width is None) != (self.height is None):
+            raise ValueError("width and height must be sent together, or both omitted")
+        return self
 
 
 class GalleryVideo(BaseModel):
@@ -3259,9 +3461,47 @@ class GalleryVideo(BaseModel):
     guidance_2: Optional[float] = Field(
         None, description = "Second-expert guidance scale (dual-expert families), if sent"
     )
+    flow_shift: Optional[float] = Field(
+        None, description = "Video-schedule sigma shift used, for families that expose it"
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None, description = "Audio-schedule sigma shift used, for families that expose it"
+    )
     seed: int = Field(..., description = "Seed used")
     has_audio: bool = Field(False, description = "Whether the MP4 carries an audio track")
+    conditioning: Optional[str] = Field(
+        None,
+        description = "How the clip was conditioned, in MiniMax-H3's own task names: t2va "
+        "(prompt only), i2va (first frame), l2va (last frame) or fl2va (both). Absent on "
+        "clips saved before keyframes existed.",
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
+    # The load-time BUILD, mirroring GalleryImage: the repo id alone does not say which checkpoint
+    # ran or at what precision, so a clip could not be told apart from one rendered at another. All
+    # optional, so sidecars written before this existed still list.
+    model_kind: Optional[str] = Field(
+        None, description = "How the model was loaded: gguf, single_file or pipeline"
+    )
+    gguf_filename: Optional[str] = Field(
+        None,
+        description = "The single-file checkpoint the load committed, for a gguf/single_file load",
+    )
+    transformer_quant: Optional[str] = Field(
+        None,
+        description = "Dense DiT quantisation actually engaged (int8/fp8/nvfp4/mxfp8), or null "
+        "when the DiT(s) ran at their loaded bf16 precision",
+    )
+    text_encoder_quant: Optional[str] = Field(
+        None,
+        description = "Text-encoder quantisation actually engaged (fp8/fp8_dynamic/int8/nvfp4), "
+        "or null when the dense bf16 encoder ran",
+    )
+    memory_mode: Optional[str] = Field(
+        None, description = "Memory mode the load ran under: auto | fast | balanced | low_vram"
+    )
+    offload_policy: Optional[str] = Field(
+        None, description = "Offload policy actually engaged: none | group | model | sequential"
+    )
     created_at: str = Field(..., description = "Creation time (ISO 8601 timestamp)")
 
 
@@ -3333,12 +3573,38 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
-    frame_step: int = Field(
-        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+    frame_step: int = Field(..., description = "Temporal lattice stride")
+    frame_offset: int = Field(
+        1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
+    )
+    duration_presets: list[float] = Field(
+        default_factory = list, description = "Clip durations in seconds the UI offers"
     )
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
         default_factory = list, description = "(width, height) presets the UI offers, default first"
+    )
+    canvas_short_edge: Optional[int] = Field(
+        None,
+        description = "Short edge a source-derived canvas aims for, or null when the family "
+        "has no keyframe canvas rule. With canvas_max_pixels and resolution_multiple this is "
+        "the whole rule: short edge, then cap the area, then round both axes.",
+    )
+    canvas_max_pixels: Optional[int] = Field(
+        None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
+    )
+    flow_shift: Optional[float] = Field(
+        None,
+        description = "Released video-schedule sigma shift, or null when the family does not "
+        "expose the control",
+    )
+    audio_flow_shift: Optional[float] = Field(
+        None, description = "Released audio-schedule sigma shift, or null (see flow_shift)"
+    )
+    supports_audio_flow_shift: bool = Field(
+        False,
+        description = "Whether the ACTIVE engine can honour audio_flow_shift; false on "
+        "stable-diffusion.cpp, which pins the audio schedule at its released value",
     )
 
 
@@ -3353,6 +3619,10 @@ class VideoStatusResponse(BaseModel):
     dtype: Optional[str] = Field(None, description = "Compute dtype")
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
+    )
+    engine: Optional[str] = Field(None, description = "Active video engine: diffusers | sd_cpp")
+    gguf_variant: Optional[str] = Field(
+        None, description = "Selected GGUF quantisation variant (for example Q8_0)"
     )
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
@@ -3383,6 +3653,25 @@ class VideoStatusResponse(BaseModel):
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    supports_keyframes: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
+        "(gates the image-to-video controls)",
+    )
+    supports_references: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes reference images / videos / audio "
+        "(gates the reference-to-video controls). Never true at the same time as "
+        "supports_keyframes: MiniMax-H3 serves the two from different denoiser partitions.",
+    )
+    h3_task: Optional[str] = Field(
+        None,
+        description = "The MiniMax-H3 denoiser partition that is up: fl2va | ref2va, or null "
+        "for any other family",
+    )
+    supports_cfg: bool = Field(
+        True, description = "Whether guidance and negative prompts apply to this family"
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"

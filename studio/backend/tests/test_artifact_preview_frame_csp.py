@@ -44,3 +44,81 @@ def test_the_sandbox_holds_in_both_variants():
         assert "base-uri 'none';" in csp
         assert "form-action 'none';" in csp
         assert "frame-ancestors 'self'" in csp
+
+
+def test_the_shell_reports_blocked_resources():
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert '"unsloth:artifact-blocked"' in shell
+    # document.close() drops listeners bound before it, so binding earlier
+    # reports nothing and the banner never appears.
+    write, listen = (
+        shell.index("document.close();"),
+        shell.index('document.addEventListener("securitypolicyviolation"'),
+    )
+    assert write < listen
+
+
+def test_blocked_reports_carry_the_load_they_came_from():
+    # event.source survives the swap navigation, so without the stamp a report
+    # from the outgoing canvas reads as the incoming one's and prompts a grant
+    # for a canvas that never hit the CSP. Read once at load, not per report,
+    # so a rewritten document cannot forge a different one.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert 'get("v")' in shell
+    assert "v: loadVersion," in shell
+    read, report = (
+        shell.index("const loadVersion"),
+        shell.index("const reportBlocked"),
+    )
+    assert read < report
+
+
+def _directives(csp: str) -> dict:
+    out = {}
+    for part in csp.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        name, _, value = part.partition(" ")
+        out[name] = value.strip()
+    return out
+
+
+def test_the_shell_reports_which_directive_was_violated():
+    # Without it the banner cannot tell a blocked CDN script from an object-src
+    # violation, and offers a grant that cannot fix the latter.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert "effectiveDirective: event.effectiveDirective" in shell
+
+
+def test_the_grant_widens_everything_but_the_locked_directives():
+    # Pins GRANT_CANNOT_FIX in html-frame.tsx: lock a fourth directive down in
+    # both policies and this fails, rather than the banner silently starting to
+    # prompt for something the grant cannot fix.
+    strict = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_STRICT_CSP)
+    network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
+    unchanged = {
+        name for name, value in strict.items() if name in network and network[name] == value
+    }
+    # frame-ancestors and sandbox are not resource loads, so they never report.
+    assert unchanged == {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
+    for locked in ("object-src", "base-uri", "form-action"):
+        assert network[locked] == "'none'"
+
+
+def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
+    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx. A non-HTTP(S) violation
+    # reports a bare scheme, so the banner may only offer the grant where the
+    # permissive policy actually allows that scheme for that directive. Verified
+    # in Chromium: a data: Worker reports worker-src/data under both policies.
+    network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
+    # Locked or not a resource load, so they never reach the scheme check.
+    skip = {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
+    gaps = {
+        name: scheme
+        for name, value in network.items()
+        if name not in skip
+        for scheme in ("data:", "blob:")
+        if scheme not in value.split()
+    }
+    assert gaps == {"worker-src": "data:"}

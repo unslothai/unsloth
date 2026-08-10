@@ -41,6 +41,9 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
 ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
 IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+
+DIFFUSION_TRAIN_PANEL = FRONTEND / "features/images/train/diffusion-train-panel.tsx"
+MEDIA_PAGE_LINK = FRONTEND / "components/media-page-link.tsx"
 VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 VIDEO_API = FRONTEND / "features/video/api.ts"
 RAG_API = FRONTEND / "features/rag/api/rag-api.ts"
@@ -403,6 +406,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
+
+
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
     section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
     dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
@@ -723,6 +736,41 @@ def test_media_pages_clear_the_custom_titlebar():
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
+def test_image_page_structural_panes_share_the_container_breakpoint():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
+    section = source.split("Settings column + preview canvas", 1)[1]
+
+    assert "@container" in shell
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
+    assert "@[50rem]:w-[408px]" in section
+    assert "md:flex-row" not in section
+    assert "gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto" in section
+    assert "p-6 px-10 @[50rem]:pt-[60px]" in section
+    assert "border-t border-foreground/10 px-10 py-3" in section
+
+
+def test_image_train_rail_matches_create_and_header():
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
+
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
+    assert "pl-10 @[50rem]:w-[408px]" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "@container hover-scrollbar" in layout
+    assert "@[50rem]:pt-[42px]" in layout
+    assert "md:w-[416px]" not in layout
+
+
+def test_compact_media_link_keeps_accessible_name_and_truncation():
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    button = source.split("<button", 1)[1].split("</button>", 1)[0]
+
+    assert "aria-label={label}" in button
+    assert 'cn("min-w-0 truncate", labelClassName)' in button
+    assert "arrowClassName" in button
+
+
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
@@ -734,17 +782,43 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
         assert len(groups) >= 2, (page.name, groups)
         for group in groups:
             assert "pointer-events-auto" in group, (page.name, group)
+
+
+def test_images_header_tracks_preview_and_preserves_titlebar_controls():
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+    header = opening + after.split("{/* Train mode", 1)[0]
+
+    assert "const { isMobile, pinned } = useSidebar();" in source
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    assert "@[50rem]:grid-cols-[408px_minmax(0,1fr)]" in opening
+    assert "@[50rem]:border-r" in header
+    assert "isMobile" in header and "pl-12" in header
+    assert "!pinned && isTauri" in header
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
+    assert 'className="!h-[34px] max-w-full overflow-hidden"' in header
+    assert "contents @[50rem]:grid" in header
+    assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
+    assert "@[50rem]:col-start-2" in header
+    assert "@[50rem]:col-start-3" in header
+    assert 'labelClassName="hidden @[50rem]:inline"' in header
+    assert 'arrowClassName="hidden @[50rem]:block"' in header
+    assert "absolute" not in header.split("<PillTabs", 1)[0]
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

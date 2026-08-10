@@ -68,6 +68,11 @@ class _FakeCtx:
 
 
 @pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """Every test here is about the route or the config, not about the runner's diffusers."""
+
+
+@pytest.fixture(autouse = True)
 def _isolated_runs_dir(monkeypatch, tmp_path):
     """Terminal service events persist a run record; point the runs dir at tmp so tests
     never write into a real studio home. Yields the dir for the history tests."""
@@ -123,6 +128,50 @@ def _stoppable_target(*, event_queue, stop_queue, config):
 def _crashing_target(*, event_queue, stop_queue, config):
     event_queue.put({"type": "model_load_started"})
     # Exits without a terminal event, so the pump must mark it as an error.
+
+
+def test_default_target_activates_native_tls_before_diffusion_trainer(monkeypatch):
+    """TLS activation runs inside the scrub wrapper, and before diffusers imports."""
+    import os
+    import sys
+    import types
+    import core.training.diffusion_training_service as service
+    import utils.native_path_leases as leases
+
+    calls = []
+    monkeypatch.setenv(leases.LEASE_SECRET_ENV, "secret")
+
+    def _activate():
+        calls.append("native_tls")
+        assert leases.LEASE_SECRET_ENV not in os.environ
+
+    monkeypatch.setattr("utils.native_tls.activate_native_tls", _activate)
+
+    trainer = types.ModuleType("core.training.diffusion_lora_trainer")
+    trainer.run_diffusion_training_process = lambda **kwargs: calls.append("trainer")
+    monkeypatch.setitem(sys.modules, "core.training.diffusion_lora_trainer", trainer)
+
+    def _run_without_native_path_secret(target, **kwargs):
+        calls.append("native_path_secret")
+        assert target is service._run_diffusion_child
+        assert kwargs == {
+            "event_queue": "events",
+            "stop_queue": "stop",
+            "config": {"base_model": "example/model"},
+        }
+        os.environ.pop(leases.LEASE_SECRET_ENV, None)  # what the real wrapper does first
+        return target(**kwargs)
+
+    monkeypatch.setattr(
+        "utils.native_path_leases.run_without_native_path_secret",
+        _run_without_native_path_secret,
+    )
+
+    service._default_target(
+        event_queue = "events", stop_queue = "stop", config = {"base_model": "example/model"}
+    )
+
+    assert calls == ["native_path_secret", "native_tls", "trainer"]
 
 
 _CFG = {"base_model": "b", "data_dir": "d", "output_dir": "/tmp/out", "train_steps": 2}
@@ -201,6 +250,46 @@ def test_apply_event_transitions():
     assert svc.status()["in_model_load"] is False
     svc._apply_event({"type": "error", "message": "boom"})
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
+
+
+def test_the_joint_losses_reach_status_and_history():
+    """MiniMax-H3 trains video and audio against one objective, and the combined loss can hold
+    steady while one half degrades. The trainer emits ``video_loss`` / ``audio_loss`` per step
+    for exactly that, so the service has to carry them: an emission the queue drops is a
+    diagnostic that silently does not exist.
+
+    Also pinned here: they stay index-aligned with ``steps``. A family that reports only the
+    combined loss contributes nulls rather than short arrays, so the two curves can be drawn
+    against the same x axis as the loss."""
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {
+            "type": "progress",
+            "step": 1,
+            "total_steps": 2,
+            "loss": 0.5,
+            "video_loss": 0.4,
+            "audio_loss": 0.1,
+        }
+    )
+    st = svc.status()
+    assert st["video_loss"] == 0.4 and st["audio_loss"] == 0.1
+    assert st["metric_video_loss"] == [0.4] and st["metric_audio_loss"] == [0.1]
+
+    # A step that reports only the combined loss keeps the series aligned rather than short.
+    svc._apply_event({"type": "progress", "step": 2, "total_steps": 2, "loss": 0.4})
+    st = svc.status()
+    assert st["metric_steps"] == [1, 2]
+    assert len(st["metric_video_loss"]) == len(st["metric_steps"])
+    assert len(st["metric_audio_loss"]) == len(st["metric_steps"])
+
+    # And a single-modality family reports neither, so the whole series is null and the chart
+    # can tell "not a joint run" from "a joint run whose audio loss was zero".
+    solo = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    solo._apply_event({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.5})
+    st = solo.status()
+    assert st["video_loss"] is None and st["audio_loss"] is None
+    assert st["metric_video_loss"] == [None] and st["metric_audio_loss"] == [None]
 
 
 def test_progress_nulls_non_finite_floats_for_strict_json():
@@ -540,6 +629,236 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch):
+    """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
+
+    It ran unconditionally and fires on any folder with a clip in it, above the discovery that
+    was already taught to branch on the family. So every valid MiniMax-H3 request, whose dataset
+    is captioned clips and nothing else, came back 400 "training from clips is not supported
+    yet": the trainer this branch adds, unreachable through its own route.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    consulted: list[str] = []
+
+    def _refusal(data_dir):
+        consulted.append(str(data_dir))
+        return "'clips' holds 2 video clips. Training from clips is not supported yet."
+
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", _refusal)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 200, r.text
+    assert consulted == [], "the clip refusal was consulted for a clip-trained family"
+
+    # Control: an image family with the same dataset is still turned away, and by this refusal.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 400
+    assert "not supported yet" in r.json()["detail"]
+    assert len(consulted) == 1
+
+
+def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch):
+    """Exempting a clip family from the clip refusal must not exempt it from the mixed case.
+
+    discover_clip_caption_pairs enumerates video extensions only, so a still in a clip folder
+    is dropped from the run while /diffusion/info and the picker both count it as a training
+    item: the same silent partial dataset the clip refusal exists to prevent, in the other
+    direction.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    monkeypatch.setattr(
+        tr,
+        "_image_dataset_refusal",
+        lambda data_dir: "'d' holds 3 still images alongside its clips.",
+    )
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", lambda data_dir: None)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 400
+    assert "alongside its clips" in r.json()["detail"]
+
+    # And an image family never sees that one: its stills are exactly what it trains on.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize(
+    ("hf_token", "authorization"),
+    [(None, None), ("  hf_test  ", "Bearer hf_test")],
+)
+def test_route_start_preflights_the_normalized_fetch_mirror(
+    client, monkeypatch, dit_train_host, healthy_diffusers, hf_token, authorization
+):
+    import urllib.error
+    import urllib.request
+
+    from core.inference import diffusion_families
+
+    source = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    monkeypatch.setattr(
+        diffusion_families,
+        "prefer_ungated_mirror",
+        lambda base, token = None: mirror if base.lower() == source.lower() else base,
+    )
+    requests = []
+
+    def _fake_urlopen(req, timeout = None):
+        requests.append(req)
+        if source in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+        assert mirror in req.full_url
+        return object()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": source, "hf_token": hf_token},
+    )
+
+    assert r.status_code == 200, r.text
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") == authorization
+    # The fetch-only mirror must not replace the canonical id persisted with the run.
+    assert client._fake.started_with["base_model"] == source
+
+
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
+    monkeypatch, no_mirror_env
+):
+    """Cache preference must not strand a token-less run on a GATED vendor repo.
+
+    The credentials this run lacks are the credentials the fetch needs, so the cached snapshot
+    is unusable however complete it looks. prefer_ungated_mirror's probe counts ANY cached
+    weight as a hit, so one leftover shard from an interrupted or previously authorized download
+    kept the vendor id, and the start route's HEAD then refused the request outright: the exact
+    case the mirrors exist for became the one that could not train.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    mirror = "unsloth/FLUX.1-dev"
+    # The vendor repo looks cached, which is what made the old code keep it.
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    # The documented pin still wins, on this path as everywhere else.
+    expected = source if no_mirror_env else mirror
+    assert _cfg(None).fetch_base_model == expected
+    assert _cfg("   ").fetch_base_model == expected
+    # WITH a token the vendor repo is genuinely usable, so the cache preference stands.
+    assert _cfg("hf_realtoken").fetch_base_model == source
+    # And the canonical id is untouched either way: only the fetch moves.
+    assert _cfg(None).base_model == source
+
+
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env):
+    """The override is for gates, not for mirrors in general.
+
+    Most of the mirror table is ungated: those exist to keep the fetch inside unsloth/*, and the
+    upstream answers anonymously. Overriding the cache preference there would throw away a
+    complete local snapshot and re-pull gigabytes, or fail outright with no network. Klein base-4B
+    is the one that matters most here, since it is a default trainable base AND mirrored.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.2-klein-base-4B"
+    assert diffusion_families.mirror_repo(source), "precondition: this base is mirrored"
+    assert not diffusion_families.upstream_is_gated(source), "precondition: and it is ungated"
+    # Cached, so the cache-aware answer is the vendor repo. It must survive.
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    assert _cfg(None).fetch_base_model == source
+    assert _cfg("   ").fetch_base_model == source
+    assert _cfg("hf_realtoken").fetch_base_model == source
+
+
+def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, tmp_path):
+    """The preflight has to make the same exception the mirror override does.
+
+    A relative clone named like the vendor repo has one slash and no leading marker, so the
+    remote/local split by string shape alone sent it to a token-less HEAD of the gated repo and
+    turned the preserved local path into a 400 the run could not clear.
+    """
+    import urllib.request
+
+    from routes.training import _preflight_gated_base
+
+    local = "black-forest-labs/FLUX.1-dev"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents = True)
+
+    def _explode(*a, **k):
+        pytest.fail("a local clone must never be probed over the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+
+    _preflight_gated_base(local, None)
+
+
+def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch, tmp_path):
+    """A directory on disk is not a Hub id, even when it is spelled like a gated one.
+
+    The loaders resolve a relative `black-forest-labs/FLUX.1-dev` directory locally, and
+    prefer_ungated_mirror carves that out deliberately. The token-less gated override has to
+    make the same exception: rewriting a local clone to the mirror sends the fetch to the Hub
+    past the weights the user already has, so the run trains on a different repo or fails
+    outright with no network.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    assert diffusion_families.upstream_is_gated(source), "precondition: this base is gated"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / source).mkdir(parents = True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    cfg = DiffusionLoraConfig(
+        base_model = source, data_dir = "d", output_dir = "o", hf_token = None
+    ).normalized()
+
+    assert cfg.fetch_base_model == source
+    assert cfg.base_model == source
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
@@ -750,6 +1069,39 @@ def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeyp
     r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "my-photos"})
     assert r.status_code == 200, r.text
     assert client._fake.started_with["data_dir"] == str(img_ds)
+
+
+def test_route_start_refuses_a_dataset_holding_clips(client, monkeypatch, tmp_path):
+    """No trainer reads clips. This fixture stubs discovery to SUCCEED, which is exactly the
+    mixed-folder case: without the route's own check the run starts and trains on the still
+    images alone while the picker counted the clips as trainable items."""
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    folder = ds_root / "mixed-set"
+    folder.mkdir(parents = True)
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.mp4").write_bytes(b"x")
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "mixed-set"})
+    assert r.status_code == 400, r.text
+    assert "1 video clip" in r.json()["detail"]
+    assert client._fake.started_with is None
+
+
+def test_route_start_still_accepts_an_image_only_dataset(client, monkeypatch, tmp_path):
+    """The twin of the above: the clip check must not stand in the way of a normal folder."""
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    folder = ds_root / "photo-set"
+    folder.mkdir(parents = True)
+    (folder / "a.png").write_bytes(b"x")
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "photo-set"})
+    assert r.status_code == 200, r.text
 
 
 def test_route_start_blocked_by_active_llm_training(client, monkeypatch):
@@ -1286,6 +1638,9 @@ def test_keepwarm_tracks_image_video_generation_paths():
     assert not _is_inference_path("/api/inference/images/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate-progress")
     assert not _is_inference_path("/api/inference/video/generate/cancel")
+    # The images cancel route STOPS a generation, so tracking it as an inference request would
+    # keep the model pinned past the run it just cancelled. endswith matching already excludes it.
+    assert not _is_inference_path("/api/inference/images/generate/cancel")
 
 
 def test_import_example_partial_failure_leaves_no_partial_dataset(
@@ -1362,6 +1717,346 @@ def test_route_start_refuses_non_sdxl_base_without_freeing_gpu(client, monkeypat
     assert r.status_code == 400
     assert "SDXL" in r.json()["detail"]
     assert freed == []
+    assert client._fake.started_with is None
+
+
+# ── the pipeline-class gate in the training preflight ─────────────────────────
+# The image families' pipeline classes arrived in different diffusers releases, and the packaging
+# deliberately leaves an older diffusers installable: diffusers dropped Python 3.9 in 0.37 and this
+# project still supports 3.9, so the pin is ``diffusers>=0.39.0 ; python_version >= '3.10'`` plus an
+# unconstrained ``diffusers`` below that. The newest release a 3.9 host can resolve is 0.36.0, and
+# an already-present older one satisfies the unconstrained pin outright. Upstream first exports:
+#   ZImagePipeline 0.36.0, Flux2Pipeline 0.36.0, Flux2KleinPipeline 0.37.0, Krea2Pipeline 0.39.0.
+_PIPELINE_TOO_NEW_FOR_0_36 = (
+    ("krea/Krea-2-Raw", "Krea2Pipeline"),
+    ("black-forest-labs/FLUX.2-klein-4B", "Flux2KleinPipeline"),
+)
+_PIPELINE_TOO_NEW_FOR_0_35 = _PIPELINE_TOO_NEW_FOR_0_36 + (
+    ("Tongyi-MAI/Z-Image-Turbo", "ZImagePipeline"),
+    ("black-forest-labs/FLUX.2-dev", "Flux2Pipeline"),
+)
+
+
+def _fake_diffusers(version, *classes):
+    """A stand-in ``diffusers`` carrying exactly ``classes``, so the guard sees the attribute
+    surface of that release rather than whatever is installed on the runner."""
+    import types
+
+    mod = types.ModuleType("diffusers")
+    mod.__version__ = version
+    for c in classes:
+        setattr(mod, c, object)
+    return mod
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_35)
+def test_route_start_refuses_a_family_the_install_has_no_pipeline_for(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The hole this closes: the family resolved as trainable, /diffusion/start reserved the
+    # training slot and freed the resident GPU workloads, and only the spawned child failed, on its
+    # own ``from diffusers import <Pipeline>``. Losing a loaded model and THEN failing is the worst
+    # ordering available, so this asserts the ORDERING, not merely that an error was raised:
+    # nothing freed, and the slot never even reserved.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    # 0.35.2: the last release before any of these four classes existed.
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.35.2"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert pipeline_class in detail  # names the class that is missing
+    assert "0.35.2" in detail  # and what is actually installed
+    assert freed == []  # nothing was torn down
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+@pytest.mark.parametrize("base_model,pipeline_class", _PIPELINE_TOO_NEW_FOR_0_36)
+def test_route_start_refuses_a_too_new_pipeline_on_the_newest_py39_diffusers(
+    client, monkeypatch, base_model, pipeline_class
+):
+    # The realistic case rather than the worst one: 0.36.0 is the newest diffusers a supported
+    # Python 3.9 host can resolve, and it already carries ZImagePipeline and Flux2Pipeline. Krea 2
+    # and FLUX.2-klein still cannot run there, and no `pip install -U diffusers` fixes it without
+    # also upgrading Python.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        _fake_diffusers("0.36.0", "ZImagePipeline", "Flux2Pipeline", "StableDiffusionXLPipeline"),
+    )
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": base_model})
+    assert r.status_code == 400, r.text
+    assert pipeline_class in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_missing_pipeline_named_by_model_family_too(client, monkeypatch):
+    # resolve_trainable_family has two branches that produce a family, and the explicit
+    # model_family override is the one a name-based test cannot reach: it skips detection entirely.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "my-org/some-private-mirror", "model_family": "krea-2"},
+    )
+    assert r.status_code == 400, r.text
+    assert "Krea2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
+    client, monkeypatch, dit_train_host
+):
+    # The gate must not refuse a family the environment can actually run, or it would break every
+    # up-to-date install. Same request as above, one attribute different.
+    import sys
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = None: object())
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.39.0", "Krea2Pipeline"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
+
+
+def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(
+    client, monkeypatch, dit_train_host
+):
+    # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
+    # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
+    # diffusers.pipelines...") there. Inference absorbs that (the native sd.cpp engine needs no
+    # diffusers), but the trainer child is a spawn of THIS interpreter and would hit the same
+    # broken import -- after the GPU residents were gone. So training refuses, as a 400 with the
+    # underlying reason intact rather than the bare 500 a RuntimeError would have produced.
+    # dit_train_host because the accelerator gate runs first and would answer "needs a GPU" on a
+    # GPU-less runner, so without it this asserts nothing about the import guard on CI.
+    import sys
+    import types
+
+    import routes.training as tr
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.39.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "Krea2Pipeline" in detail
+    assert "Failed to import diffusers.pipelines" in detail  # the real reason, not a guess
+    assert freed == []
+    assert client._fake.calls == []
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch, dit_train_host):
+    # There is no "the child will install it" here: the trainer runs in a spawned process in the
+    # SAME environment, so an absent diffusers is absent there too. Refusing before the teardown
+    # is the whole point of this preflight. dit_train_host for the same reason as above: the
+    # accelerator gate is earlier and would swallow this on a GPU-less runner.
+    import builtins
+    import sys
+
+    import routes.training as tr
+
+    real_import = builtins.__import__
+
+    def _no_diffusers(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "krea/Krea-2-Raw"})
+    assert r.status_code == 400, r.text
+    assert "No module named 'diffusers'" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []
+
+
+def test_inference_keeps_absorbing_an_unimportable_diffusers(monkeypatch):
+    # The other half of the strict split, asserted where it lives: the default stays silent, or a
+    # CPU/Apple host serving GGUF picks through the native sd.cpp engine could not load anything.
+    import builtins
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    real_import = builtins.__import__
+
+    def _no_diffusers(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError("No module named 'diffusers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_diffusers)
+    assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
+
+
+@pytest.mark.parametrize(
+    "pipeline_class,minimum,needs_py310",
+    [
+        ("ZImagePipeline", "0.36.0", False),
+        ("Flux2Pipeline", "0.36.0", False),
+        ("Flux2KleinPipeline", "0.37.0", True),
+        ("LTX2Pipeline", "0.37.0", True),
+        ("Krea2Pipeline", "0.39.0", True),
+        # Older than the 0.35 baseline but still listed: the packaging leaves an UNCONSTRAINED
+        # diffusers installable below Python 3.10, so an ancient one already present satisfies the
+        # pin, and quoting the 0.39 floor at a family that has shipped since 0.30 is the same wrong
+        # remedy this fixes.
+        ("QwenImagePipeline", "0.35.0", False),
+        ("FluxPipeline", "0.30.0", False),
+    ],
+)
+def test_the_refusal_names_the_release_that_family_actually_needs(
+    pipeline_class, minimum, needs_py310
+):
+    # Quoting the 0.39 floor at every family sent a Python 3.9 host to upgrade its interpreter for
+    # Z-Image, when `pip install -U diffusers` (0.36.0 there) was the whole fix. First-export
+    # releases are read off src/diffusers/__init__.py at the upstream tags; 0.37.0 is where
+    # diffusers' requires-python went ">= 3.10.0" on PyPI.
+    from core.inference.diffusion_families import (
+        _too_old_message,
+        pipeline_class_requirement,
+    )
+
+    assert pipeline_class_requirement(pipeline_class) == (minimum, needs_py310)
+    message = _too_old_message(pipeline_class, "some-family", "0.29.0")
+    assert f"diffusers >= {minimum}" in message
+    assert "0.29.0" in message  # what is actually installed
+    assert ("Python >= 3.10" in message) is needs_py310
+
+
+def test_an_unlisted_pipeline_names_no_version_it_cannot_stand_behind():
+    # StableDiffusionXLPipeline has shipped since before 0.29, so there is no release in play that
+    # lacks it. Falling back to the 0.39 packaging floor would tell a supported Python 3.9 host to
+    # upgrade its interpreter for a class every diffusers it can install already has, so an
+    # unlisted class gets no version and no Python claim at all.
+    from core.inference.diffusion_families import (
+        _too_old_message,
+        pipeline_class_requirement,
+    )
+
+    assert pipeline_class_requirement("StableDiffusionXLPipeline") == (None, False)
+    message = _too_old_message("StableDiffusionXLPipeline", "sdxl", "0.29.0")
+    assert "a newer diffusers" in message and "0.29.0" in message
+    assert "0.39" not in message and "3.10" not in message
+
+
+def test_a_dummy_pipeline_export_is_not_treated_as_importable():
+    # With a required backend absent, diffusers still exports every pipeline NAME as a
+    # DummyObject-metaclassed placeholder whose from_pretrained raises ImportError on first call.
+    # hasattr answers True for it, so the strict gate has to look past the name or the trainer
+    # child hits that ImportError after the GPU residents are gone.
+    import sys
+    import types
+
+    import pytest
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    dummy = types.new_class("Krea2Pipeline")
+    dummy.__module__ = "diffusers.utils.dummy_torch_and_transformers_objects"
+    dummy._backends = ["torch", "transformers"]
+
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.39.0"
+    stub.Krea2Pipeline = dummy
+    real = sys.modules.get("diffusers")
+    sys.modules["diffusers"] = stub
+    try:
+        # The default is unchanged: inference has always left an unusable install to the loader.
+        assert assert_pipeline_class_available("Krea2Pipeline", "krea-2") is None
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2", strict = True)
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    msg = str(excinfo.value)
+    assert "placeholder" in msg
+    assert "requires: torch, transformers" in msg  # what the class needs, not a diagnosis
+    # _backends is diffusers' full requirement list, not a list of failed probes, so the message
+    # must not declare a working torch missing or prescribe reinstalling it.
+    assert "missing: torch" not in msg and "pip install -U torch" not in msg
+
+
+def test_route_start_refuses_ltx2_without_the_pipeline_before_freeing_gpu(client, monkeypatch):
+    # The video half of the same gate: LTX2Pipeline is a diffusers 0.37 export, and the packaging
+    # deliberately leaves an older diffusers installable on the Python 3.9 hosts this project still
+    # supports. Without the pipeline-class assert in the training preflight the family resolved as
+    # trainable, the start freed the resident GPU workloads, and only the spawned child failed.
+    # LTX-2 lives in the VIDEO registry, so it reaches the gate by a different branch of
+    # resolve_trainable_family than any image family above.
+    import sys
+
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers("0.36.0"))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "Lightricks/LTX-2"})
+    assert r.status_code == 400, r.text
+    assert "LTX2Pipeline" in r.json()["detail"]
+    assert freed == []
+    assert client._fake.calls == []  # the slot was never even reserved
+    assert client._fake.started_with is None
+
+
+def test_route_start_refuses_a_component_repo_before_freeing_gpu(client, monkeypatch):
+    # unsloth/LTX-2-FP8 holds pre-cast component archives, not a pipeline: no model_index.json,
+    # no VAE. The name still carries the "ltx-2" token so the family detector claimed it, the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # (a 404 is not an access problem) -- so the start evicted the resident models and only then
+    # failed inside from_pretrained.
+    import routes.training as tr
+
+    freed = []
+    monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "base_model": "unsloth/LTX-2-FP8"})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "model_index.json" in detail  # says why it cannot be a base
+    assert "Lightricks/LTX-2" in detail  # and names what to train instead
+    assert freed == []
+    assert client._fake.calls == []
     assert client._fake.started_with is None
 
 

@@ -2277,6 +2277,25 @@ def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("render_html", {}) is False
 
 
+def test_web_search_gated_only_when_it_fetches_a_url():
+    # Searching stays always-safe; a ``url`` fetches that named host, so it asks in auto too.
+    for gate in (is_potentially_unsafe_tool_call, is_high_risk_tool_call):
+        assert gate("web_search", {"query": "hi"}) is False
+        assert gate("web_search", {}) is False
+        assert gate("web_search", {"url": ""}) is False
+        assert gate("web_search", {"url": None}) is False
+        assert gate("web_search", {"url": "   "}) is False
+        assert gate("web_search", {"url": "https://example.com/page"}) is True
+        assert gate("web_search", {"query": "hi", "url": "https://example.com"}) is True
+
+
+def test_web_search_name_only_gate_is_unchanged():
+    # Runs before arguments exist (provisional card, stream requirement), so a query-only
+    # search must not start prompting.
+    from core.inference.tools import is_always_safe_tool
+    assert is_always_safe_tool("web_search") is True
+
+
 def test_render_html_gated_only_when_networked():
     # A static canvas auto-runs; one whose HTML/JS reaches the network asks.
     def rh(code):
@@ -2934,10 +2953,23 @@ def test_confirm_gate_needs_stream():
 
     safe = ["web_search", "search_knowledge_base"]
     # auto + a safe-only selection never prompts -> no stream needed.
-    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["search_knowledge_base"])
+        )
+        is False
+    )
+    # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
+    # that prompt, else the request is admitted then blocks out the decision timeout.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
-        is False
+        is True
+    )
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search", "search_knowledge_base"])
+        )
+        is True
     )
     # render_html can prompt when its canvas reaches the network, so a selection
     # that includes it needs a stream to deliver that prompt.

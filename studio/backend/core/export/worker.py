@@ -27,6 +27,11 @@ from typing import Any
 
 logger = get_logger(__name__)
 
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
 # parent's resp_queue (and on to the export-dialog SSE stream). Closed by default
@@ -536,9 +541,16 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
 
+    # This worker's stdout is forwarded to the export dialog once the log gate opens,
+    # and the Hub upload bar is the only live byte progress a long push_to_hub has, so
+    # it keeps its progress bars even though the server turned its own off.
+    from loggers.config import allow_progress_bars
+
+    allow_progress_bars()
     LogConfig.setup_logging(
         service_name = "unsloth-studio-export-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
+        quiet_progress_bars = False,
     )
 
     checkpoint_path = config["checkpoint_path"]

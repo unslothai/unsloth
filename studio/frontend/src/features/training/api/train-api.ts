@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { createScopedSingleFlightRequest } from "../lib/single-flight-request";
+import { createScopedSingleFlightRequest } from "@/lib/single-flight-request";
 import {
   type ParsedTrainingProgressEvent,
   consumeTrainingProgressStream,

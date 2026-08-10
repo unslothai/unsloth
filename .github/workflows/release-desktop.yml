@@ -27,7 +27,7 @@ on:
         type: string
         required: false
       draft:
-        description: 'Create as draft; publishing it later advances desktop-latest without rebuilding'
+        description: 'Build and validate only; nothing is uploaded to the v... release and GitHub latest is left untouched'
         type: boolean
         default: true
 
@@ -99,20 +99,17 @@ jobs:
       app_version: ${{ steps.prepare.outputs.app_version }}
       asset_version: ${{ steps.prepare.outputs.asset_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
-      prerelease: ${{ steps.prepare.outputs.prerelease }}
-      pypi_version: ${{ steps.prepare.outputs.pypi_version }}
+      pypi_version: ${{ steps.backend.outputs.pypi_version }}
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
+      # Before the checkout: for a malformed studio_version, actions/checkout would
+      # fail on the ref with a generic error and none of the corrections below
+      # would ever be printed.
       - name: Validate release versions
         id: prepare
         shell: bash
         env:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
-          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
         run: |
           python3 <<'PY'
           import os
@@ -148,8 +145,34 @@ jobs:
 
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
-          desktop_release_tag = f'desktop-v{app_version}'
-          prerelease = 'true' if '-' in app_version.split('+', 1)[0] else 'false'
+          desktop_release_tag = studio_version
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'studio_version={studio_version}', file=output)
+              print(f'app_version={app_version}', file=output)
+              print(f'asset_version={asset_version}', file=output)
+              print(f'desktop_release_tag={desktop_release_tag}', file=output)
+
+          PY
+
+      # studio_version names an existing tag, so the backend pin and the stamp
+      # check have to come from that tag, not a dispatch ref that has moved on.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.prepare.outputs.studio_version }}
+          persist-credentials: false
+
+      - name: Resolve the backend pin from the release tag
+        id: backend
+        shell: bash
+        env:
+          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
+        run: |
+          python3 <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
 
           def parse_backend_version(version):
               match = re.fullmatch(
@@ -208,12 +231,8 @@ jobs:
               )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              print(f'studio_version={studio_version}', file=output)
-              print(f'app_version={app_version}', file=output)
-              print(f'asset_version={asset_version}', file=output)
-              print(f'desktop_release_tag={desktop_release_tag}', file=output)
-              print(f'prerelease={prerelease}', file=output)
               print(f'pypi_version={pypi_version}', file=output)
+
           PY
 
       # Fail before building and notarizing a version publish-release will reject.
@@ -223,36 +242,61 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
+          ASSET_VERSION: ${{ steps.prepare.outputs.asset_version }}
         run: |
           set -euo pipefail
-          print_retry_hint() {
-            echo "To retry a failed publish of this version:" >&2
-            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
-            echo "  If release creation failed after reserving only the tag, delete the orphan tag: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
-          }
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
+          # v{version} is tagged and published when main is tagged, before this runs,
+          # so the tag existing is normal. What must be absent is the desktop asset set.
+          if ! response="$(gh api --include "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" 2>&1)"; then
             if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
+              echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+              echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
+              exit 1
             fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            echo "Could not read release ${DESKTOP_RELEASE_TAG}; refusing to publish." >&2
             printf '%s\n' "$response" >&2
             exit 1
-          }
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}"; then
-            echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            print_retry_hint
-            exit 1
           fi
-          # A read token cannot see drafts, so publish-release repeats this check.
-          if resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
-            echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            print_retry_hint
-            exit 1
-          fi
+          gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
+          # A carried-forward manifest for an older version is expected here (see
+          # publish-desktop-updater.yml), so read it rather than judge by name alone.
+          mkdir -p "$RUNNER_TEMP/target-manifest"
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
+            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
+          python3 <<'PY'
+          import json, os, pathlib, sys
+
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release.json').read_text())
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
+          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if str(asset.get('name', '')).startswith(prefix)
+          )
+          manifest_path = runner / 'target-manifest' / 'latest.json'
+          if manifest_path.is_file():
+              try:
+                  version = json.loads(manifest_path.read_text()).get('version')
+              except json.JSONDecodeError:
+                  version = None
+              # Only this version's own manifest is a clash; anything else is the
+              # pointer being carried forward and is overwritten on upload.
+              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
+                  clashing.append('latest.json')
+
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: Verify PyPI package and Unsloth stamp
         shell: bash
@@ -311,7 +355,9 @@ jobs:
                   sys.exit(f'Could not download {filename} from PyPI ({last_error})')
           PY
 
-          if [ -f scripts/stamp_studio_release.py ]; then
+          if [ "$GITHUB_REPOSITORY" = "wasimysaid/unsloth" ]; then
+            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Studio release stamp check."
+          elif [ -f scripts/stamp_studio_release.py ]; then
             mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
             if [ "${#dists[@]}" -eq 0 ]; then
               echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$PYPI_VERSION" >&2
@@ -323,7 +369,7 @@ jobs:
             exit 1
           fi
 
-      - name: Guard public updater channel version
+      - name: Guard GitHub latest release version
         if: ${{ !inputs.draft }}
         shell: bash
         env:
@@ -332,12 +378,17 @@ jobs:
           APP_VERSION: ${{ steps.prepare.outputs.app_version }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-current"
-          if ! gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" --clobber 2>/dev/null; then
-            echo "No existing desktop-latest latest.json found; allowing first channel publish."
-            exit 0
+          current_file="$RUNNER_TEMP/current-latest-release.json"
+          error_file="$RUNNER_TEMP/current-latest-release.err"
+          if ! gh api "repos/${GH_REPO}/releases/latest" > "$current_file" 2> "$error_file"; then
+            if grep -Fq '(HTTP 404)' "$error_file"; then
+              echo "No existing normal GitHub release found; allowing first latest release."
+              exit 0
+            fi
+            cat "$error_file" >&2
+            exit 1
           fi
-          python3 <<'PY'
+          python3 - "$current_file" <<'PY'
           import json
           import os
           import pathlib
@@ -353,47 +404,24 @@ jobs:
                   value,
               )
               if not match:
-                  sys.exit(f'desktop-latest latest.json has invalid version: {value}')
+                  sys.exit(f'GitHub latest release is not a desktop SemVer tag: {value}')
               major, minor, patch, prerelease = match.groups()
               return (int(major), int(minor), int(patch), prerelease)
 
-          def numeric_tail(identifier: str) -> tuple[str, int] | None:
-              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
-              if not match:
-                  return None
-              return (match.group(1).lower(), int(match.group(2)))
-
           def compare_identifier(left: str, right: str) -> int:
-              left_num = left.isdigit()
-              right_num = right.isdigit()
-              if left_num and right_num:
+              if left.isdigit() and right.isdigit():
                   return (int(left) > int(right)) - (int(left) < int(right))
-              if left_num:
+              if left.isdigit():
                   return -1
-              if right_num:
+              if right.isdigit():
                   return 1
-
-              left_tail = numeric_tail(left)
-              right_tail = numeric_tail(right)
-              if left_tail and right_tail and left_tail[0] == right_tail[0]:
-                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
-
+              left_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', left)
+              right_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', right)
+              if left_tail and right_tail and left_tail.group(1).lower() == right_tail.group(1).lower():
+                  return (int(left_tail.group(2)) > int(right_tail.group(2))) - (
+                      int(left_tail.group(2)) < int(right_tail.group(2))
+                  )
               return (left > right) - (left < right)
-
-          def compare_prerelease(left: str | None, right: str | None) -> int:
-              if left == right:
-                  return 0
-              if left is None:
-                  return 1
-              if right is None:
-                  return -1
-              left_parts = left.split('.')
-              right_parts = right.split('.')
-              for left_part, right_part in zip(left_parts, right_parts):
-                  order = compare_identifier(left_part, right_part)
-                  if order:
-                      return order
-              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
 
           def compare(left: str, right: str) -> int:
               left_major, left_minor, left_patch, left_pre = parse(left)
@@ -402,23 +430,34 @@ jobs:
               right_core = (right_major, right_minor, right_patch)
               if left_core != right_core:
                   return (left_core > right_core) - (left_core < right_core)
-              return compare_prerelease(left_pre, right_pre)
-
-          current_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-current', 'latest.json')
-          current = json.loads(current_path.read_text()).get('version')
-          next_version = os.environ['APP_VERSION']
-          if not isinstance(current, str):
-              sys.exit('desktop-latest latest.json has missing version')
-          if compare(next_version, current) < 0:
-              sys.exit(
-                  f'Refusing to publish {next_version}; desktop-latest currently points at newer version {current}.'
+              if left_pre == right_pre:
+                  return 0
+              if left_pre is None:
+                  return 1
+              if right_pre is None:
+                  return -1
+              for left_part, right_part in zip(left_pre.split('.'), right_pre.split('.')):
+                  order = compare_identifier(left_part, right_part)
+                  if order:
+                      return order
+              return (len(left_pre.split('.')) > len(right_pre.split('.'))) - (
+                  len(left_pre.split('.')) < len(right_pre.split('.'))
               )
+
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          current_tag = current.get('tag_name')
+          if not isinstance(current_tag, str):
+              sys.exit('GitHub latest release is missing tag_name')
+          next_version = os.environ['APP_VERSION']
+          if compare(next_version, current_tag) < 0:
+              sys.exit(f'Refusing to publish {next_version}; GitHub latest is newer: {current_tag}.')
           PY
 
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
       matrix:
         include:
           - platform: macos-latest
@@ -449,7 +488,6 @@ jobs:
       ASSET_VERSION: ${{ needs.prepare-version.outputs.asset_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-      DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
       # Compiled in by preflight/version.rs. Without it the app only knows the
       # floor, so a shared venv left by the CLI installer is never upgraded again.
       UNSLOTH_DESKTOP_BACKEND_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
@@ -466,8 +504,12 @@ jobs:
         with:
           egress-policy: audit
 
+      # The tag, not the dispatch ref: the release is published before this runs and
+      # main keeps moving, so building the dispatch ref would attach unrelated source
+      # to the release and record a SHA that is not the tag's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ needs.prepare-version.outputs.desktop_release_tag }}
           persist-credentials: false
 
       # ── Linux dependencies ──
@@ -508,7 +550,7 @@ jobs:
           node <<'JS'
           const { readFileSync } = require('node:fs');
 
-          const expected = 'https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json';
+          const expected = 'https://github.com/unslothai/unsloth/releases/latest/download/latest.json';
           const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
           const endpoints = config.plugins?.updater?.endpoints;
           if (!Array.isArray(endpoints) || endpoints.length !== 1) {
@@ -517,8 +559,8 @@ jobs:
           if (endpoints[0] !== expected) {
             throw new Error('Desktop updater endpoint must be ' + expected + ', got ' + endpoints[0]);
           }
-          if (endpoints.some((endpoint) => endpoint.includes('/releases/latest/'))) {
-            throw new Error('Desktop updater endpoint must not use repo-wide /releases/latest/');
+          if (!endpoints[0].includes('/releases/latest/download/latest.json')) {
+            throw new Error('Desktop updater endpoint must use repo-wide /releases/latest/ discovery');
           }
 
           const targets = config.bundle?.targets;
@@ -701,6 +743,10 @@ jobs:
         uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           workspaces: 'studio/src-tauri -> target'
+
+          # Windows release builds can spend many minutes uploading the target cache
+          # after signed artifacts are ready, which blocks the publisher for no release benefit.
+          save-if: ${{ matrix.platform != 'windows-latest' }}
 
       # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials
@@ -898,11 +944,24 @@ jobs:
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
             "$appimage"
           signature="${appimage}.sig"
-          npx --prefix studio tauri signer sign "$appimage" > "$signature"
-          if [[ ! -s "$signature" ]]; then
-            echo "Tauri signer did not create a nonempty signature: $signature" >&2
-            exit 1
-          fi
+          # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
+          npx --prefix studio tauri signer sign "$appimage"
+          python3 - "$signature" <<'PY'
+          import base64
+          import binascii
+          import pathlib
+          import sys
+
+          signature_path = pathlib.Path(sys.argv[1])
+          signature_value = signature_path.read_text(encoding='utf-8').strip()
+          try:
+              decoded = base64.b64decode(signature_value, validate=True)
+          except (binascii.Error, ValueError):
+              sys.exit('Tauri signer did not create a base64 minisign signature')
+          if not decoded.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded:
+              sys.exit('Tauri signer did not create a minisign signature payload')
+          signature_path.write_text(signature_value + '\n', encoding='utf-8')
+          PY
           python3 - <<'PY'
           import json
           import os
@@ -949,9 +1008,8 @@ jobs:
         if: matrix.platform == 'macos-latest'
         shell: bash
         # `--timeout` below caps the polling, but not the upload that precedes
-        # it. Without a step-level backstop a stuck Notary service would hold
-        # `max-parallel: 1` for the whole job budget and discard the Linux and
-        # Windows builds with it, so cap it tighter than the job here.
+        # it. Without a step-level backstop a stuck Notary service would burn
+        # the whole job budget, so cap it tighter than the job here.
         timeout-minutes: 45
         env:
           ARTIFACT_PATHS: ${{ steps.build_macos.outputs.artifactPaths }}
@@ -1455,15 +1513,22 @@ jobs:
           retention-days: 1
 
   # Only this job gets write access; builds hand off signed files via artifacts.
-  # Draft runs do not advance the public desktop-latest channel.
+  # Draft runs stop after uploading immutable assets; publishing the reviewed draft
+  # is validated by publish-desktop-updater.yml without rebuilding.
   publish-release:
     name: Publish desktop release
-    needs: [prepare-version, build]
+    # Only prepare-version, so this starts alongside the build matrix and
+    # queues for its runner during the build instead of after it. "Wait for the
+    # build matrix" below restores the gate `needs: build` gave away. The cost
+    # is one runner slot held for the length of the run.
+    needs: [prepare-version]
     runs-on: ubuntu-latest
-    # Artifact download plus release upload; observed 17-40s.
-    timeout-minutes: 20
+    # Waits out the build (legs cap at 60) then downloads and uploads; the
+    # publish steps themselves are 17-40s.
+    timeout-minutes: 90
     permissions:
       contents: write  # create the versioned Release and replace updater-channel metadata
+      actions: read    # the waiter reads this run's job list
     env:
       GH_REPO: ${{ github.repository }}
       APP_VERSION: ${{ needs.prepare-version.outputs.app_version }}
@@ -1471,7 +1536,6 @@ jobs:
       PYPI_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
-      DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
 
     steps:
       - name: Harden runner (audit)
@@ -1479,17 +1543,83 @@ jobs:
         with:
           egress-policy: audit
 
-      # This job publishes artifacts built elsewhere, so it historically needed no
-      # source tree. The VirusTotal step runs a repo script, so it does now. Sparse:
-      # a full checkout of this repo to fetch one file would be wasteful, and a
-      # missing script would be swallowed by that step's continue-on-error and
-      # publish the release with no scan at all.
-      - name: Check out the scan script
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-          sparse-checkout: scripts/virustotal_scan.py
-          sparse-checkout-cone-mode: false
+      # Replaces the `needs: build` gate dropped above, and must be at least as
+      # strict: publishing a partial release is far worse than publishing late.
+      - name: Wait for the build matrix
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # The three matrix legs, by their `name:` (Build <matrix.label>).
+          LEGS=('Build macOS (Apple Silicon)' 'Build Linux (x64)' 'Build Windows (x64)')
+          POLL=30
+          DEADLINE=$(( $(date +%s) + 75 * 60 ))
+          # Matrix job records appear with the run, so a leg still missing well
+          # after the start is a real problem, not a slow API.
+          STARTUP_DEADLINE=$(( $(date +%s) + 15 * 60 ))
+          API_FAILS=0
+
+          while :; do
+            if ! JOBS="$(gh api --paginate \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
+                  --jq '.jobs[] | [.name, .status, (.conclusion // "none")] | @tsv' 2>/dev/null)"; then
+              # A blip in the jobs API must not throw away a finished build.
+              API_FAILS=$(( API_FAILS + 1 ))
+              if [ "$API_FAILS" -ge 10 ]; then
+                echo "ERROR: jobs API failed 10 times running; cannot confirm the build matrix finished" >&2
+                exit 1
+              fi
+              echo "jobs API call failed (${API_FAILS}/10); retrying in ${POLL}s"
+              sleep "$POLL"
+              continue
+            fi
+            API_FAILS=0
+
+            MISSING=""
+            PENDING=0
+            BAD=""
+            for leg in "${LEGS[@]}"; do
+              ROW="$(printf '%s\n' "$JOBS" | awk -F'\t' -v n="$leg" '$1 == n {print; exit}')"
+              if [ -z "$ROW" ]; then
+                MISSING="${MISSING} '${leg}'"
+                continue
+              fi
+              STATUS="$(printf '%s' "$ROW" | cut -f2)"
+              CONCL="$(printf '%s' "$ROW" | cut -f3)"
+              if [ "$STATUS" != "completed" ]; then
+                PENDING=$(( PENDING + 1 ))
+              elif [ "$CONCL" != "success" ]; then
+                BAD="${BAD}${leg} (${CONCL}); "
+              fi
+            done
+
+            # Fail on the first finished leg that did not succeed rather than
+            # holding a runner to reach the same answer later.
+            if [ -n "$BAD" ]; then
+              echo "ERROR: refusing to publish, these build jobs did not succeed: ${BAD}" >&2
+              exit 1
+            fi
+            if [ -n "$MISSING" ]; then
+              if [ "$(date +%s)" -gt "$STARTUP_DEADLINE" ]; then
+                echo "ERROR: no job record for:${MISSING}; refusing to publish without confirming they ran" >&2
+                exit 1
+              fi
+              echo "waiting for job records to appear for:${MISSING}"
+              sleep "$POLL"
+              continue
+            fi
+            if [ "$PENDING" -eq 0 ]; then
+              echo "all ${#LEGS[@]} build legs finished and succeeded"
+              break
+            fi
+            if [ "$(date +%s)" -gt "$DEADLINE" ]; then
+              echo "ERROR: timed out waiting for the build matrix; ${PENDING} leg(s) still running" >&2
+              exit 1
+            fi
+            echo "${PENDING} of ${#LEGS[@]} build legs still running; polling again in ${POLL}s"
+            sleep "$POLL"
+          done
 
       - name: Download signed release assets
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -1541,108 +1671,64 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
-            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
-            fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
-            printf '%s\n' "$response" >&2
-            exit 1
-          }
-          print_retry_hint() {
-            echo "Release a new studio_version, or recover the failed publish before retrying:" >&2
-            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
-            echo "  If only a tag exists, delete it: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
-          }
-
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
           printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
-          releases_file="$RUNNER_TEMP/desktop-releases.json"
-          # Both release REST endpoints omit drafts. `gh release list` uses the
-          # draft-aware GraphQL path and fails nonzero on API/auth errors.
-          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
-            echo "Could not list releases, including drafts; refusing to publish." >&2
+          # The v{version} release already exists; re-checked here because the
+          # read-scoped prepare-version token cannot see drafts.
+          if ! gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" \
+            > "$RUNNER_TEMP/target-release-publish.json" 2>/dev/null; then
+            echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+            echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
             exit 1
           fi
-          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
-          import json
-          import pathlib
-          import sys
+          # A carried-forward manifest for an older version is expected here (see
+          # publish-desktop-updater.yml), so read it rather than judge by name alone.
+          mkdir -p "$RUNNER_TEMP/target-manifest"
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
+            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
+          python3 <<'PY'
+          import json, os, pathlib, sys
 
-          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          if not isinstance(releases, list):
-              sys.exit('Unexpected response while listing desktop releases')
-          matches = [
-              release
-              for release in releases
-              if isinstance(release, dict) and release.get('tagName') == sys.argv[2]
-          ]
-          if len(matches) > 1:
-              sys.exit(f'Found duplicate releases for {sys.argv[2]}')
-          print('exists' if matches else 'absent')
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release-publish.json').read_text())
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
+          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if str(asset.get('name', '')).startswith(prefix)
+          )
+          manifest_path = runner / 'target-manifest' / 'latest.json'
+          if manifest_path.is_file():
+              try:
+                  version = json.loads(manifest_path.read_text()).get('version')
+              except json.JSONDecodeError:
+                  version = None
+              # Only this version's own manifest is a clash; anything else is the
+              # pointer being carried forward and is overwritten on upload.
+              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
+                  clashing.append('latest.json')
+
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              sys.exit(1)
           PY
-          )"
 
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
-            || [ "$release_state" = "exists" ]; then
-            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
-            print_retry_hint
-            exit 1
-          fi
-          echo "create=true" >> "$GITHUB_OUTPUT"
-
-      # ── Advisory multi-engine scan of the bundles we are about to publish ──
-      # Defender (build job) is one vendor and gates only Windows. VirusTotal
-      # aggregates ~70 engines across all four bundles, which is how a false
-      # positive from some other vendor gets noticed here rather than in a user
-      # bug report. Advisory on purpose: installers routinely trip one or two
-      # obscure heuristics, so a hard gate here would block releases on noise.
-      # Defender stays the authoritative fail-closed check.
-      #
-      # The step never fails the job: a missing secret, a VirusTotal outage or a
-      # quota exhaustion must not be able to block a release.
-      - name: VirusTotal pre-flight scan
-        continue-on-error: true
-        # Free-tier keys allow 4 requests/minute, and the script paces itself to
-        # match, so four bundles of lookup + upload + polling can take a while.
-        timeout-minutes: 30
-        env:
-          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          # continue-on-error means a silent failure here would publish an unscanned
-          # release with only a terse "no summary" note, so name the cause loudly.
-          if [ ! -f scripts/virustotal_scan.py ]; then
-            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
-            exit 1
-          fi
-          python3 scripts/virustotal_scan.py \
-            "$RUNNER_TEMP/desktop-release-assets" \
-            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
-
-      - name: Publish VirusTotal summary
-        if: always()
-        run: |
-          set -euo pipefail
-          summary="$RUNNER_TEMP/virustotal-summary.md"
-          if [ -f "$summary" ]; then
-            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '### VirusTotal pre-flight scan' >> "$GITHUB_STEP_SUMMARY"
-            echo '' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Generate versioned updater metadata and provenance
+      - name: Generate versioned updater metadata
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
+          import base64
+          import binascii
           import datetime
           import json
           import os
@@ -1665,10 +1751,17 @@ jobs:
               bundle_path = asset_dir / bundle_name
               if not bundle_path.is_file():
                   sys.exit(f'Missing updater bundle for {signature_path.name}: {bundle_name}')
+              signature_value = signature_path.read_text(encoding='utf-8').strip()
+              try:
+                  decoded_signature = base64.b64decode(signature_value, validate=True)
+              except (binascii.Error, ValueError):
+                  sys.exit(f'Invalid base64 updater signature: {signature_path.name}')
+              if not decoded_signature.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded_signature:
+                  sys.exit(f'Invalid minisign updater signature: {signature_path.name}')
               encoded_tag = urllib.parse.quote(os.environ['DESKTOP_RELEASE_TAG'], safe='')
               encoded_name = urllib.parse.quote(bundle_name, safe='')
               return {
-                  'signature': signature_path.read_text(),
+                  'signature': signature_value,
                   'url': (
                       f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/'
                       f'{encoded_tag}/{encoded_name}'
@@ -1698,95 +1791,11 @@ jobs:
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
 
-          # Keep provenance out of the notes displayed in the updater popup.
-          body_file="$RUNNER_TEMP/desktop-release-body.md"
-          {
-            cat "$RUNNER_TEMP/desktop-release-notes.md"
-            printf '\n### Build provenance\n\n'
-            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
-            printf 'Asset SHA-256:\n\n```\n'
-            (
-              cd "$RUNNER_TEMP/desktop-release-assets"
-              for asset in *; do
-                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
-              done
-            )
-            (
-              cd "$RUNNER_TEMP"
-              sha256sum -- latest.json
-            )
-            printf '```\n'
-          } > "$body_file"
-          cat "$body_file"
-
-      # Deferred until immediately before upload so public releases are not left
-      # empty during the VirusTotal scan. Repeat the absence checks here to close
-      # the race introduced by that scan before atomically reserving the tag.
-      - name: Create versioned release
-        if: steps.versioned_release_state.outputs.create == 'true'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_DRAFT: ${{ inputs.draft }}
-        run: |
-          set -euo pipefail
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
-            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
-            fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
-            printf '%s\n' "$response" >&2
-            exit 1
-          }
-
-          releases_file="$RUNNER_TEMP/desktop-releases-before-create.json"
-          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
-            echo "Could not list releases, including drafts; refusing to publish." >&2
-            exit 1
-          fi
-          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          if not isinstance(releases, list):
-              sys.exit('Unexpected response while listing desktop releases')
-          print('exists' if any(
-              isinstance(release, dict) and release.get('tagName') == sys.argv[2]
-              for release in releases
-          ) else 'absent')
-          PY
-          )"
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
-            || [ "$release_state" = "exists" ]; then
-            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag appeared during the pre-flight scan." >&2
-            exit 1
-          fi
-
-          # Reserve the tag at this source commit before creating the release.
-          gh api --method POST "repos/${GH_REPO}/git/refs" \
-            -f "ref=refs/tags/${DESKTOP_RELEASE_TAG}" \
-            -f "sha=${GITHUB_SHA}"
-
-          release_flags=(
-            --title "Unsloth ${STUDIO_VERSION}"
-            --notes-file "$RUNNER_TEMP/desktop-release-body.md"
-            --verify-tag
-          )
-          if [ "$RELEASE_DRAFT" = "true" ]; then
-            release_flags+=(--draft)
-          fi
-          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
-            release_flags+=(--prerelease)
-          fi
-          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
-
+      # The release body is the maintainer's changelog and this workflow never
+      # rewrites it. The target release is already public, so a validation-only
+      # run must not upload to it.
       - name: Publish versioned release assets
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1800,12 +1809,15 @@ jobs:
           gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
 
       - name: Publish versioned updater metadata
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
+          # --clobber only for latest.json: it may already hold an older version's
+          # pointer. The bundles above are still uploaded without it.
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -1867,7 +1879,7 @@ jobs:
               'linux-x86_64': False,
               'windows-x86_64': False,
           }
-          expected_prefix = f'https://github.com/unslothai/unsloth/releases/download/{release_tag}/'
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
           forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
 
           for platform, entry in platforms.items():
@@ -1892,152 +1904,175 @@ jobs:
               sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
           PY
 
-      - name: Ensure desktop updater channel release
+      - name: Promote normal release to GitHub latest
         if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          channel_json="$RUNNER_TEMP/desktop-latest-release.json"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json" 2>/dev/null; then
-            gh release create desktop-latest \
-              --title "Unsloth Desktop updater channel" \
-              --notes "Machine-managed desktop updater channel; latest.json is replaced by release-desktop.yml." \
-              --prerelease \
-              --latest=false \
-              --target "$GITHUB_SHA"
-            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json"
-          fi
-
-          python3 <<'PY'
+          release_json="$RUNNER_TEMP/source-release.json"
+          release_id="$(python3 - "$release_json" <<'PY'
           import json
-          import os
           import pathlib
           import sys
 
-          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
-          if channel.get('draft'):
-              sys.exit('desktop-latest release is draft; refusing to publish updater channel')
-          if channel.get('immutable'):
-              sys.exit('desktop-latest release is immutable; cannot replace latest.json')
-          if not channel.get('prerelease'):
-              sys.exit('desktop-latest release must be a prerelease so it cannot compete with repo-wide latest')
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if release.get('draft'):
+              sys.exit('Refusing to promote a draft release')
+          if release.get('prerelease'):
+              sys.exit('Desktop releases must be normal GitHub releases, not prereleases')
+          release_id = release.get('id')
+          if not isinstance(release_id, int):
+              sys.exit('Published desktop release is missing its GitHub release id')
+          print(release_id)
           PY
+          )"
 
-      - name: Prevent updater channel downgrade
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/desktop-current"
-          if ! gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" --clobber 2>/dev/null; then
-            echo "No existing desktop-latest latest.json found; allowing first channel publish."
-            exit 0
-          fi
-          python3 <<'PY'
+          # The prepare-version downgrade check ran before a build that can take an
+          # hour, so re-read GitHub latest here: promoting past a newer release would
+          # hand every client an older manifest.
+          # Fail closed: a transient lookup failure must not read as "no newer
+          # release". Only a genuine 404 means the repository has no latest yet.
+          latest_before="$RUNNER_TEMP/latest-before-promote.json"
+          latest_error="$RUNNER_TEMP/latest-before-promote.err"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$latest_before" 2> "$latest_error"; then
+            python3 - "$latest_before" <<'PY'
           import json
           import os
           import pathlib
           import re
           import sys
 
-          def parse(value: str):
-              value = value.removeprefix('v')
-              match = re.fullmatch(
-                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
-                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
-                  r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?',
-                  value,
-              )
-              if not match:
-                  sys.exit(f'desktop-latest latest.json has invalid version: {value}')
-              major, minor, patch, prerelease = match.groups()
-              return (int(major), int(minor), int(patch), prerelease)
+          semver = re.compile(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$')
 
-          def numeric_tail(identifier: str) -> tuple[str, int] | None:
-              match = re.fullmatch(r'([A-Za-z-]+)(\d+)', identifier)
+          def identifier(value):
+              # beta10 must sort above beta2, so a trailing number compares as one.
+              if value.isdigit():
+                  return (0, '', int(value))
+              tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', value)
+              if tail:
+                  return (1, tail.group(1).lower(), int(tail.group(2)))
+              return (1, value, -1)
+
+          def key(tag):
+              match = semver.fullmatch(tag or '')
               if not match:
                   return None
-              return (match.group(1).lower(), int(match.group(2)))
-
-          def compare_identifier(left: str, right: str) -> int:
-              left_num = left.isdigit()
-              right_num = right.isdigit()
-              if left_num and right_num:
-                  return (int(left) > int(right)) - (int(left) < int(right))
-              if left_num:
-                  return -1
-              if right_num:
-                  return 1
-
-              left_tail = numeric_tail(left)
-              right_tail = numeric_tail(right)
-              if left_tail and right_tail and left_tail[0] == right_tail[0]:
-                  return (left_tail[1] > right_tail[1]) - (left_tail[1] < right_tail[1])
-
-              return (left > right) - (left < right)
-
-          def compare_prerelease(left: str | None, right: str | None) -> int:
-              if left == right:
-                  return 0
-              if left is None:
-                  return 1
-              if right is None:
-                  return -1
-              left_parts = left.split('.')
-              right_parts = right.split('.')
-              for left_part, right_part in zip(left_parts, right_parts):
-                  order = compare_identifier(left_part, right_part)
-                  if order:
-                      return order
-              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
-
-          def compare(left: str, right: str) -> int:
-              left_major, left_minor, left_patch, left_pre = parse(left)
-              right_major, right_minor, right_patch, right_pre = parse(right)
-              left_core = (left_major, left_minor, left_patch)
-              right_core = (right_major, right_minor, right_patch)
-              if left_core != right_core:
-                  return (left_core > right_core) - (left_core < right_core)
-              return compare_prerelease(left_pre, right_pre)
-
-          current_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-current', 'latest.json')
-          next_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
-          current = json.loads(current_path.read_text()).get('version')
-          next_version = json.loads(next_path.read_text()).get('version')
-          if not isinstance(current, str) or not isinstance(next_version, str):
-              sys.exit('Could not compare desktop-latest channel versions')
-          if compare(next_version, current) < 0:
-              sys.exit(
-                  f'Refusing to move desktop-latest from {current} to older version {next_version}.'
+              major, minor, patch, pre = match.groups()
+              # A prerelease sorts below the same release without one.
+              return (
+                  int(major), int(minor), int(patch), 0 if pre else 1,
+                  [identifier(part) for part in pre.split('.')] if pre else [],
               )
-          PY
 
-      - name: Publish desktop updater channel metadata
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The channel pointer is intentionally mutable.
-          gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/desktop-latest-release.json"
-          python3 <<'PY'
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('tag_name')
+          candidate = os.environ['DESKTOP_RELEASE_TAG']
+          current_key, candidate_key = key(current), key(candidate)
+          if current_key and candidate_key and current_key > candidate_key:
+              sys.exit(f'Refusing to promote {candidate}: GitHub latest advanced to {current}.')
+          PY
+          elif grep -Fq '(HTTP 404)' "$latest_error"; then
+            echo "No GitHub latest release yet; nothing to downgrade."
+          else
+            echo "Could not read GitHub latest; refusing to promote." >&2
+            cat "$latest_error" >&2
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -f make_latest=true > "$RUNNER_TEMP/promoted-release.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-release.json"
+          python3 - "$RUNNER_TEMP/latest-release.json" <<'PY'
           import json
           import os
           import pathlib
           import sys
 
-          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
-          assets = [asset for asset in channel.get('assets', []) if asset.get('name') == 'latest.json']
-          if len(assets) != 1:
-              sys.exit(f'Expected exactly one desktop-latest latest.json asset, found {len(assets)}')
-          expected_url = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/desktop-latest/latest.json'
-          actual_url = assets[0].get('browser_download_url')
-          if actual_url != expected_url:
-              sys.exit(f'desktop-latest latest.json URL mismatch: expected {expected_url}, got {actual_url}')
+          latest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          expected = os.environ['DESKTOP_RELEASE_TAG']
+          if latest.get('tag_name') != expected:
+              sys.exit(f'GitHub latest release is {latest.get("tag_name")}, expected {expected}')
+          if latest.get('draft') or latest.get('prerelease'):
+              sys.exit(f'GitHub latest release {expected} is not a normal published release')
+          names = {asset.get('name') for asset in latest.get('assets', [])}
+          if 'latest.json' not in names:
+              sys.exit(f'GitHub latest release {expected} is missing latest.json')
           PY
+
+
+  # ── Advisory multi-engine scan of the bundles just uploaded ──
+  # Defender (build job) is one vendor and gates only Windows. VirusTotal
+  # aggregates ~70 engines across all four bundles, which is how a false
+  # positive from some other vendor gets noticed here rather than in a user bug
+  # report. Advisory on purpose: installers routinely trip one or two obscure
+  # heuristics, so a hard gate would block releases on noise. Defender stays the
+  # authoritative fail-closed check.
+  #
+  # Its own job, after publish-release, because the scan is rate-limit bound and
+  # not parallelisable: the free tier allows 4 requests/minute per key, so the
+  # four bundles share one budget however they are scheduled. Inside the publish
+  # job it was ~9 minutes of the ~9.5 the job took, delaying every release by its
+  # full length while being unable to block one.
+  virustotal-scan:
+    # Not "post-publish": `inputs.draft` defaults to true and the release is
+    # created with `--draft` on that input, so the ordinary run has uploaded the
+    # assets to a draft. The name has to read true for both dispatches.
+    name: VirusTotal release asset scan
+    needs: [publish-release]
+    runs-on: ubuntu-latest
+    # A missing secret, a VirusTotal outage or quota exhaustion must not fail
+    # the release whose assets are already uploaded.
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      # Sparse: a full checkout to fetch one file would be wasteful.
+      - name: Check out the scan script
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/virustotal_scan.py
+          sparse-checkout-cone-mode: false
+
+      - name: Download published assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: desktop-release-*
+          path: ${{ runner.temp }}/desktop-release-assets
+          merge-multiple: true
+
+      - name: VirusTotal scan
+        env:
+          VT_API_KEY: ${{ secrets.VIRUS_TOTAL_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Name the cause loudly: a silent failure here leaves the release
+          # scanned by nothing but a terse "no summary" note.
+          if [ ! -f scripts/virustotal_scan.py ]; then
+            echo "::error::scripts/virustotal_scan.py is missing; the checkout step in this job must provide it"
+            exit 1
+          fi
+          python3 scripts/virustotal_scan.py \
+            "$RUNNER_TEMP/desktop-release-assets" \
+            --output-markdown "$RUNNER_TEMP/virustotal-summary.md"
+
+      - name: Publish VirusTotal summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/virustotal-summary.md"
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            # Must stay byte-identical to SUMMARY_HEADING in
+            # scripts/virustotal_scan.py, or a run that produced no summary shows
+            # a second, unrelated section. A test ties the two together.
+            echo '### VirusTotal release asset scan' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo 'The scan step produced no summary.' >> "$GITHUB_STEP_SUMMARY"
+          fi

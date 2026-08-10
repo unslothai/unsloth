@@ -207,6 +207,33 @@ test("a bf16 video load falls back to the pipeline dtype", () => {
   assert.equal(video.detail, "wan · BF16 · cuda");
 });
 
+test("a GGUF video row names its selected quant instead of its compute dtype", () => {
+  const [video] = describeVideoStatus({
+    loaded: true,
+    repo_id: "unsloth/Wan2.2-T2V-A14B-GGUF",
+    family: "wan",
+    model_kind: "gguf",
+    gguf_variant: "Q4_K_M",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(video.detail, "wan · GGUF · Q4_K_M · cuda");
+});
+
+test("a lowercase quant filename still reads as an upper-case quant", () => {
+  // Hub repos ship q8_0 filenames, and every other quant label in the UI is upper-cased.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_variant: "q8_0",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image · GGUF · Q8_0 · cuda");
+});
+
 test("a GGUF image load does not print GGUF twice", () => {
   const [image] = describeDiffusionStatus({
     loaded: true,
@@ -217,6 +244,53 @@ test("a GGUF image load does not print GGUF twice", () => {
     device: "cuda",
   } as never);
   assert.equal(image.detail, "flux · GGUF · cuda");
+});
+
+test("a GGUF image row names the quant that was picked, not the compute dtype", () => {
+  // The reported bug: the picker chip said "GGUF \u00b7 Q8_0" and the row beside it said "BF16",
+  // because `dtype` is the pipeline COMPUTE dtype and reads bf16 for every CUDA load. The
+  // quant is what distinguishes the file that was downloaded and opened.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_variant: "Q8_0",
+    transformer_quant: null,
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image \u00b7 GGUF \u00b7 Q8_0 \u00b7 cuda");
+});
+
+test("a native GGUF image row names its selected quant without model_kind", () => {
+  // The sd.cpp engine reports dtype "gguf" and no model_kind, so the GGUF chip and the quant
+  // both have to survive on that field alone.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    gguf_variant: "Q8_0",
+    dtype: "gguf",
+    device: "cpu",
+  } as never);
+  assert.equal(image.detail, "z-image \u00b7 GGUF \u00b7 Q8_0 \u00b7 cpu");
+});
+
+test("a GGUF pick the dense fast path replaced names that build instead", () => {
+  // The fast path denoises with a torchao build of the base transformer and never opens the
+  // .gguf, so the row must neither call it GGUF nor print a quant no tensor carries.
+  const [image] = describeDiffusionStatus({
+    loaded: true,
+    repo_id: "unsloth/Z-Image-Turbo-GGUF",
+    family: "z-image",
+    model_kind: "gguf",
+    gguf_variant: "Q8_0",
+    transformer_quant: "fp8",
+    dtype: "bfloat16",
+    device: "cuda",
+  } as never);
+  assert.equal(image.detail, "z-image \u00b7 FP8 \u00b7 cuda");
 });
 
 // Gemma 3n and friends take audio in but answer as chat. Every backend sets

@@ -424,7 +424,9 @@ def test_list_cached_gguf_load_id_breaks_mtime_ties_like_variant_discovery(
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [legacy], raising = False)
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [legacy], raising = False
+    )
 
     rows = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))["cached"]
 
@@ -692,7 +694,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -752,7 +754,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -809,7 +811,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -1155,7 +1157,7 @@ def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_pat
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -1189,7 +1191,7 @@ def test_vision_is_not_invented_for_a_copy_that_ships_no_projector(monkeypatch, 
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda: [active, legacy])
+    monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active, legacy])
 
     row = {
         c["repo_id"]: c
@@ -2618,6 +2620,22 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
+    # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
+    # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
+    # On Device list and offered to chat instead. Both bundle repo ids must resolve to Video.
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    for repo in (H3_GGUF_REPO, "leejet/MiniMax-H3-GGUF"):
+        assert (
+            models_route._arch_to_task(None, (repo, "minimax_h3_fl2va-Q4_K_M.gguf"))
+            == models_route._VIDEO_GEN_TASK
+        )
+    # No hint is still unknown, and an unrelated repo is untouched.
+    assert models_route._arch_to_task(None) is None
+    assert models_route._arch_to_task(None, ("unsloth/Qwen3-GGUF", "q.gguf")) is None
+
+
 def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
     # Z-Image's DiT is a Lumina2 derivative, so both Z-Image GGUF repos declare general.architecture = "lumina2". Reading
     # the arch alone tagged the whole line unsupported and hid it, even though validate_load_request loads it happily.
@@ -2827,7 +2845,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None: {
+        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },
@@ -3230,13 +3248,14 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
 
 def test_pipeline_class_guard_fires_before_any_download():
-    # The 0.39-only families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
+    # The newer families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
     # the older diffusers packaging still allows on Python 3.9. Validation refuses first, naming the version and the fix.
+    # 0.35.2 is the last release before ZImagePipeline existed, and it is still installable on 3.9.
     import pytest
 
     from core.inference.diffusion_families import assert_pipeline_class_available
 
-    stub = types.SimpleNamespace(__version__ = "0.37.0")
+    stub = types.SimpleNamespace(__version__ = "0.35.2")
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
@@ -3250,8 +3269,25 @@ def test_pipeline_class_guard_fires_before_any_download():
             del sys.modules["diffusers"]
     msg = str(excinfo.value)
     assert "z-image" in msg and "ZImagePipeline" in msg
-    assert "0.39" in msg and "0.37.0" in msg
-    assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
+    # The release that family actually needs (0.36.0), not the blanket packaging floor, and what is installed.
+    assert "0.36.0" in msg and "0.35.2" in msg
+    # And NOT a Python upgrade: 0.36.0 still declares requires-python >= 3.8, so `pip install -U
+    # diffusers` alone fixes this on a 3.9 host. Sending it to 3.10 would be the wrong remedy.
+    assert "3.10" not in msg
+
+    # Krea 2 is the other side: its class only exists from 0.39.0, which needs 3.10 -- so the
+    # Python floor belongs in THAT message.
+    sys.modules["diffusers"] = stub
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2")
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    krea = str(excinfo.value)
+    assert "0.39.0" in krea and "3.10" in krea
 
 
 def test_pipeline_class_guard_passes_every_shipped_family():
@@ -3286,6 +3322,29 @@ def test_pipeline_class_guard_is_silent_when_diffusers_is_absent(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _blocked)
+    assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
+
+
+def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monkeypatch):
+    # Same contract as the absent-diffusers case, for the install that is PRESENT but only
+    # partially usable. diffusers' top level is a lazy module, so the attribute probe is what
+    # actually imports the pipeline's submodule, and when that submodule's own dependencies are
+    # unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines..."). hasattr
+    # absorbs AttributeError only, so the RuntimeError escaped this guard exactly the way a
+    # missing diffusers used to: not the ValueError the routes map to 400, so a bare 500 with the
+    # message lost -- and, now that the training preflight calls this too, a refusal that arrives
+    # as a 500 instead of the actionable 400. There is no version to judge here either.
+    import types
+
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.40.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
     assert assert_pipeline_class_available("ZImagePipeline", "z-image") is None
 
 
@@ -3514,7 +3573,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3557,7 +3616,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3596,7 +3655,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: root if root is not None else active,
+        lambda create = False, root = None, **kw: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory
@@ -3963,7 +4022,8 @@ def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
             source = "test",
         ),
     )
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: list(roots))
+    # **kw so the stub keeps matching the real signature, which now takes scan_errors.
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **kw: list(roots))
 
 
 def _unreachable_hub(monkeypatch) -> None:
@@ -4307,3 +4367,21 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         )
     )
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
+
+
+def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
+    """H3's GGUFs carry no metadata keys at all (kv_count 0), so ``general.architecture`` is
+    absent and the NAME is the only evidence there is. Keying only on the two bundle repo ids
+    meant a denoiser copied into a custom local directory returned a null task and was dropped
+    from the Video On Device picker, even though the loader validates exactly these prefixes.
+    """
+    for name in (
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "minimax_h3_ref2va-Q8_0.gguf",
+        "/home/me/models/h3/minimax_h3_fl2va-Q4_K_M.gguf",
+    ):
+        assert models_route._arch_to_task(None, (name,)) == models_route._VIDEO_GEN_TASK, name
+
+    # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
+    for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
+        assert models_route._arch_to_task(None, (name,)) is None, name

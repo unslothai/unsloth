@@ -342,3 +342,26 @@ def test_local_task_ignores_family_token_in_parent_path(tmp_path):
     _touch(d2 / "model.safetensors")
     m2 = _local(d2, id = str(d2), display_name = "z-image-turbo")
     assert models_route._local_is_diffusers(m2) is True
+
+
+def test_a_modular_pipeline_root_counts_as_a_pipeline_index(tmp_path):
+    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json``, which is the pair the video loader accepts. Recognising only the
+    conventional index hid such a root from the picker and let the publisher walk descend into it
+    and offer its components as separate, unusable models. The hub scanner
+    (``local_inventory._is_diffusers_pipeline_dir``) makes the same test and has its own case."""
+    from routes.models import _local_pipeline_index
+
+    modular = tmp_path / "modular"
+    (modular / "transformer").mkdir(parents = True)
+    (modular / "modular_model_index.json").write_text("{}")
+    assert _local_pipeline_index(modular) is True
+
+    conventional = tmp_path / "conventional"
+    conventional.mkdir()
+    (conventional / "model_index.json").write_text("{}")
+    assert _local_pipeline_index(conventional) is True
+
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    assert _local_pipeline_index(neither) is False

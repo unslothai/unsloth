@@ -34,18 +34,24 @@ import {
   downloadChatExport,
   exportFineTuneJsonl,
   importConversationsFromFile,
+  offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
+import {
+  LinkedFoldersManager,
+  listKnowledgeBases,
+  useRagAvailabilityStore,
+} from "@/features/rag";
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
-import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -104,6 +110,10 @@ export function DataTab() {
   // the Train tab would upload it and then strand the user; gate the action
   // the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
+    s.availabilityUnknown(),
+  );
   const storedFineTuneAction = useSettingsPanelPrefsStore(
     (s) => s.fineTuneAction,
   );
@@ -132,6 +142,31 @@ export function DataTab() {
       cancelled = true;
     };
   }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+
+  useEffect(() => {
+    if (!ragAvailabilityUnknown) return;
+    let cancelled = false;
+    let retryTimer: number | undefined;
+    let retryDelayMs = 1_000;
+
+    const probeAvailability = async () => {
+      try {
+        await listKnowledgeBases();
+      } catch {
+        if (cancelled) return;
+        retryTimer = window.setTimeout(() => {
+          retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+          void probeAvailability();
+        }, retryDelayMs);
+      }
+    };
+
+    void probeAvailability();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
+  }, [ragAvailabilityUnknown]);
 
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
@@ -318,6 +353,8 @@ export function DataTab() {
     try {
       const result = await clearAllChats();
       const clearedCount = result.deletedThreadIds.length;
+      // Clear-all has no switch, so the same offer the sidebar makes.
+      offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
       if (!hasFailedStore && result.failedThreadIds.length === 0) {
@@ -704,6 +741,11 @@ export function DataTab() {
             {t("settings.data.manageAction")}
           </Button>
         </SettingsRow>
+        {!ragAvailabilityUnknown && !ragUnavailable ? (
+          <div className="py-3">
+            <LinkedFoldersManager />
+          </div>
+        ) : null}
       </SettingsSection>
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>

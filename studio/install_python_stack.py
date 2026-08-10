@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import importlib.util
+import json
 import os
 import platform
 import re
@@ -326,6 +327,24 @@ def _probe_installed_torch_version() -> str | None:
         return None
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
     return lines[-1] if lines else None
+
+
+def _installed_distribution_version(name: str) -> str | None:
+    """Return installed distribution metadata without importing the package."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version(name)
+    except (PackageNotFoundError, ValueError):
+        return None
+
+
+def _exact_distribution_spec_is_installed(spec: str) -> bool:
+    """Whether a simple ``name==version`` pin already matches this venv."""
+    match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s]+)", spec)
+    if match is None:
+        return False
+    installed = _installed_distribution_version(match.group(1))
+    return installed is not None and installed == match.group(2)
 
 
 def _installed_torch_is_windows_rocm() -> bool:
@@ -3816,6 +3835,48 @@ def _has_working_git() -> bool:
         return False
 
 
+_MLX_HEALTH_PROBE = (
+    "import json, sys;"
+    "sys.path.insert(0, sys.argv[1]);"
+    "from utils.mlx_repair import mlx_stack_blockers;"
+    "print(json.dumps(mlx_stack_blockers()))"
+)
+
+
+def _report_mlx_stack_health() -> None:
+    """Name what would keep Train off on this Apple Silicon host, if anything.
+
+    Advisory only: the install has already succeeded, chat still works, and the
+    background self-heal gets another go at startup. It just must not be silent,
+    which is the whole of the reported "Train is blacked out after an update".
+
+    Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
+    installed one of those can abort rather than raise.
+    """
+    backend = str(SCRIPT_DIR / "backend")
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _MLX_HEALTH_PROBE, backend],
+            capture_output = True,
+            text = True,
+            timeout = 180,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        blockers = json.loads(probe.stdout.strip() or "null")
+    except Exception as exc:  # noqa: BLE001 - advisory, never fail the install
+        _step("mlx", f"could not verify the MLX stack ({exc})", _dim)
+        return
+    if blockers is None:
+        _step("mlx", "could not verify the MLX stack", _dim)
+        return
+    if not blockers:
+        _step("mlx", "training stack ready")
+        return
+    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    for blocker in blockers:
+        _step("", blocker, _cyan)
+
+
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     _STEP = 0
@@ -3831,7 +3892,8 @@ def install_python_stack() -> int:
     package_name = os.environ.get("STUDIO_PACKAGE_NAME", "unsloth")
     # --local overlays a local repo checkout after updating deps.
     local_repo = os.environ.get("STUDIO_LOCAL_REPO", "")
-    base_total = 11 if IS_WINDOWS else 12  # +1 for the anyio repair check (step 8b)
+    # +1 for the anyio repair check (step 8b), +1 for the diffusers pin (step 11b, every platform)
+    base_total = 12 if IS_WINDOWS else 13
     if IS_MACOS:
         base_total -= 1  # triton step is skipped on macOS
     if not IS_MACOS and not NO_TORCH:
@@ -4122,10 +4184,9 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 4. Overrides (torchao) -- force-reinstall to a version matching the venv's
-    #    torch so its C++ extensions load (see _select_torchao_spec). Skipped when
-    #    torch is unavailable (Intel Mac GGUF-only) and on Windows ROCm (no working
-    #    build; see below).
+    # 4. Install the torch-matched torchao override. Reinstall only when the pin
+    #    changes, since Windows can remove shared files during replacement.
+    #    Skip when torch is unavailable or Windows ROCm has no working build.
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     elif _rocm_windows_torch_installed or _installed_torch_is_windows_rocm():
@@ -4139,10 +4200,12 @@ def install_python_stack() -> int:
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
         _note(f"torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
+        _torchao_args = ["--no-cache-dir"]
+        if not _exact_distribution_spec_is_installed(_torchao_spec):
+            _torchao_args.insert(0, "--force-reinstall")
         pip_install(
             "Installing dependency overrides",
-            "--force-reinstall",
-            "--no-cache-dir",
+            *_torchao_args,
             _torchao_spec,
         )
 
@@ -4236,6 +4299,22 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
+    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: install.sh installs
+    #      unsloth itself and then runs this script with SKIP_STUDIO_BASE=1, so the whole
+    #      base-packages step is skipped and anything pinned there reaches `unsloth studio
+    #      update` but never a fresh install -- where unsloth's own metadata has already
+    #      pulled a diffusers RELEASE from PyPI, and Studio then refuses to load MiniMax-H3.
+    #      This step is outside every skip_base / NO_TORCH branch, and it runs after every
+    #      other requirements file, so nothing left can re-resolve diffusers behind it.
+    #      constrain stays on: constraints.txt says nothing about diffusers, and a future
+    #      entry there should win rather than be silently bypassed here.
+    _progress("diffusers pin")
+    pip_install(
+        "Installing the pinned Diffusers revision",
+        "--no-cache-dir",
+        req = REQ_ROOT / "diffusers-pin.txt",
+    )
+
     # 12. Patch metadata for single-env compatibility
     _progress("finalizing")
     run(
@@ -4279,6 +4358,21 @@ def install_python_stack() -> int:
             file = sys.stderr,
         )
         return 1
+
+    # 16. Apple Silicon: say so when the MLX stack this install just laid down is not
+    # one Train can use. The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and
+    # a resolver backtrack (or an mlx-vlm built against a different transformers) leaves
+    # packages present but unusable. Without this the install reports success and the app
+    # silently comes up chat-only, telling the user to run the update that has just
+    # finished.
+    #
+    # AFTER the manifest, not before it. The probe is advisory and out of process, and on
+    # the host it exists for the imports are the ones that hang, so it can hold its full
+    # timeout; run ahead of the manifest, a kill during that wait leaves every dependency
+    # step done and no record of it, and verify-install, the desktop preflight and the
+    # setup fast path all then call a complete install incomplete.
+    if IS_MAC_ARM and not NO_TORCH:
+        _report_mlx_stack_health()
 
     _step(_LABEL, "installed")
     return 0

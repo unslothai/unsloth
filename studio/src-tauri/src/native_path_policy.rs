@@ -23,6 +23,8 @@ pub struct ClassifiedPath {
     pub display_label: String,
     pub size_bytes: Option<u64>,
     pub modified_ms: Option<u64>,
+    pub device_id: String,
+    pub file_id: String,
 }
 
 pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String> {
@@ -51,21 +53,27 @@ pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
+/// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
+pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &["wav", "mp3", "m4a", "ogg", "oga", "flac"];
+
+fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
+    ATTACHMENT_EXTS
+        .iter()
+        .chain(IMAGE_ATTACHMENT_EXTS.iter())
+        .chain(AUDIO_ATTACHMENT_EXTS.iter())
+}
+
 pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
     let classified = classify_existing_path(path)?;
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported = ATTACHMENT_EXTS
-        .iter()
-        .chain(IMAGE_ATTACHMENT_EXTS.iter())
+    let supported = accepted_attachment_exts()
         .any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
-            ATTACHMENT_EXTS
-                .iter()
-                .chain(IMAGE_ATTACHMENT_EXTS.iter())
+            accepted_attachment_exts()
                 .map(|ext| format!(".{ext}"))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -74,6 +82,20 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     Ok(ClassifiedPath {
         path_kind: NativePathKind::Attachment,
         allowed_operations: vec![NativePathOperation::Attach, NativePathOperation::Reveal],
+        ..classified
+    })
+}
+
+pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be linked as document sources.".to_string());
+    }
+    reject_document_folder_root(&classified.canonical_path)?;
+    reject_sensitive_document_folder(&classified.canonical_path)?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::DocumentFolder,
+        allowed_operations: vec![NativePathOperation::LinkDocuments],
         ..classified
     })
 }
@@ -146,6 +168,73 @@ pub fn refresh_path_fingerprint(
     Ok((path_type, size_bytes, modified_ms))
 }
 
+#[cfg(unix)]
+fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::metadata(path).map_err(|e| format!("Path is no longer available: {e}"))?;
+    Ok((
+        format!("{:x}", metadata.dev()),
+        format!("{:x}", metadata.ino()),
+    ))
+}
+
+#[cfg(windows)]
+fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
+    use std::mem::zeroed;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
+    };
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| format!("Path is no longer available: {e}"))?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    let ok = unsafe {
+        GetFileInformationByHandle(file.as_raw_handle() as _, std::ptr::addr_of_mut!(info))
+    };
+    if ok == 0 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err("Path is no longer available.".to_string());
+    }
+    let legacy_device_id = info.dwVolumeSerialNumber as u64;
+    let legacy_file_id = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
+    let mut identity: FILE_ID_INFO = unsafe { zeroed() };
+    let extended_ok = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileIdInfo,
+            std::ptr::addr_of_mut!(identity).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    };
+    if extended_ok != 0 {
+        let file_id = u128::from_le_bytes(identity.FileId.Identifier);
+        if identity.VolumeSerialNumber == legacy_device_id && file_id == legacy_file_id as u128 {
+            return Ok((
+                format!("{legacy_device_id:x}"),
+                format!("{legacy_file_id:x}"),
+            ));
+        }
+        // Python <=3.11 exposes the legacy pair; Python >=3.12 exposes FILE_ID_INFO.
+        return Ok((
+            format!("{legacy_device_id:x}:{:x}", identity.VolumeSerialNumber),
+            format!("{legacy_file_id:x}:{file_id:x}"),
+        ));
+    }
+    Ok((
+        format!("{legacy_device_id:x}"),
+        format!("{legacy_file_id:x}"),
+    ))
+}
+
 pub fn reveal_target(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.to_path_buf()
@@ -198,6 +287,7 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         return Err("Symlink paths are not supported for native intake.".to_string());
     }
     let (path_type, size_bytes, modified_ms) = refresh_path_fingerprint(&canonical_path)?;
+    let (device_id, file_id) = stable_path_identity(&canonical_path)?;
     let display_label = sanitize_display_label(
         canonical_path
             .file_name()
@@ -213,6 +303,8 @@ fn classify_existing_path(path: &Path) -> Result<ClassifiedPath, String> {
         display_label,
         size_bytes,
         modified_ms,
+        device_id,
+        file_id,
     })
 }
 
@@ -262,6 +354,156 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn reject_document_folder_root(path: &Path) -> Result<(), String> {
+    if path.parent().is_none() {
+        Err("A filesystem root cannot be linked as a document folder.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
+    let has_sensitive_segment = path.components().any(|component| {
+        matches!(
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .as_str(),
+            ".1password"
+                | ".aws"
+                | ".azure"
+                | ".bitwarden"
+                | ".config"
+                | ".docker"
+                | ".gcloud"
+                | ".gnupg"
+                | ".huggingface"
+                | ".kaggle"
+                | ".kube"
+                | ".local"
+                | ".modelscope"
+                | ".mozilla"
+                | ".ngc"
+                | ".password-store"
+                | ".pki"
+                | ".ssh"
+                | ".thunderbird"
+                | "1password"
+                | "bitwarden"
+                | "keychains"
+                | "keyrings"
+                | "mozilla"
+                | "thunderbird"
+        )
+    });
+    if has_sensitive_segment {
+        return Err(
+            "Sensitive system or application folders cannot be linked as document sources."
+                .to_string(),
+        );
+    }
+
+    let mut sensitive_roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        if same_native_path(path, &home) {
+            return Err(
+                "The entire home folder cannot be linked as a document source.".to_string(),
+            );
+        }
+        for relative in [".unsloth"] {
+            sensitive_roots.push(home.join(relative));
+        }
+    }
+    if let Some(config) = dirs::config_dir() {
+        sensitive_roots.push(config);
+    }
+    if let Some(data) = dirs::data_local_dir() {
+        sensitive_roots.push(data);
+    }
+
+    #[cfg(unix)]
+    sensitive_roots.extend(
+        [
+            "/boot", "/etc", "/root", "/run", "/usr", "/var/lib", "/var/run",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(target_os = "macos")]
+    sensitive_roots.extend(
+        ["/Library", "/System", "/private"]
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    #[cfg(windows)]
+    for variable in ["WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Some(value) = std::env::var_os(variable) {
+            sensitive_roots.push(PathBuf::from(value));
+        }
+    }
+
+    if sensitive_roots.iter().any(|sensitive| {
+        same_path_or_descendant(path, sensitive)
+            && !(is_linux_removable_media_path(path)
+                && same_native_path(sensitive, Path::new("/run")))
+    }) {
+        Err(
+            "Sensitive system or application folders cannot be linked as document sources."
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_linux_removable_media_path(path: &Path) -> bool {
+    let media_root = Path::new("/run/media");
+    path != media_root && path.starts_with(media_root)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_linux_removable_media_path(_path: &Path) -> bool {
+    false
+}
+
+fn same_native_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        return left
+            .to_string_lossy()
+            .replace('/', "\\")
+            .eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"));
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn same_path_or_descendant(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let root = root
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        return path == root
+            || path
+                .strip_prefix(&root)
+                .is_some_and(|rest| rest.starts_with('\\'));
+    }
+    #[cfg(not(windows))]
+    {
+        path == root || path.starts_with(root)
+    }
 }
 
 fn reject_network_or_device_path(path: &Path) -> Result<(), String> {
@@ -379,6 +621,88 @@ mod tests {
         fs::write(&path, b"MZ").unwrap();
         assert!(classify_native_attachment_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    // The composer takes audio uploads, so a dropped one has to classify too.
+    #[test]
+    fn audio_attachments_are_accepted() {
+        for ext in AUDIO_ATTACHMENT_EXTS {
+            let path = temp_path("clip").with_extension(ext);
+            fs::write(&path, b"ID3").unwrap();
+            let classified = classify_native_attachment_path(&path)
+                .unwrap_or_else(|error| panic!(".{ext} was rejected: {error}"));
+            assert_eq!(classified.path_kind, NativePathKind::Attachment);
+            assert!(classified
+                .allowed_operations
+                .contains(&NativePathOperation::Attach));
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn document_folder_is_directory_with_link_only_capability() {
+        let path = temp_path("documents");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_document_folder(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::DocumentFolder);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::LinkDocuments]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn document_folder_rejects_files_and_filesystem_root() {
+        let file = temp_path("documents-file");
+        fs::write(&file, b"not a folder").unwrap();
+        assert!(classify_native_document_folder(&file).is_err());
+        assert!(classify_native_document_folder(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err());
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn document_folder_policy_allows_normal_home_subfolders_but_not_credentials() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert!(reject_sensitive_document_folder(&home.join("Documents")).is_ok());
+        assert!(reject_sensitive_document_folder(&home.join(".ssh")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join(".huggingface")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join("work").join(".local")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join("work").join("keyrings")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn document_folder_policy_allows_linux_removable_media_under_run() {
+        assert!(
+            reject_sensitive_document_folder(Path::new("/run/media/user/USB/Documents")).is_ok()
+        );
+        assert!(reject_sensitive_document_folder(Path::new("/run/media")).is_err());
+        assert!(reject_sensitive_document_folder(Path::new("/run/secrets")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unc_is_rejected_but_mapped_drive_spelling_is_allowed() {
+        assert!(reject_network_or_device_path(Path::new(r"\\server\share\documents")).is_err());
+        assert!(reject_network_or_device_path(Path::new(r"Z:\documents")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_folder_rejects_symlinks_and_sensitive_directories() {
+        use std::os::unix::fs::symlink;
+
+        let target = temp_path("documents-target");
+        let link = temp_path("documents-link");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+        assert!(classify_native_document_folder(&link).is_err());
+        assert!(classify_native_document_folder(Path::new("/etc")).is_err());
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir(target);
     }
 
     #[test]
