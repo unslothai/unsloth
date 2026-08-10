@@ -86,8 +86,6 @@ def _encode_with_soundfile(self, value) -> dict:
         return {"bytes": buf.getvalue(), "path": value.get("path")}
     if isinstance(value, dict) and ("bytes" in value or "path" in value):
         return {"bytes": value.get("bytes"), "path": value.get("path")}
-    if isinstance(value, (str, bytes, bytearray)):
-        return _ORIGINAL_ENCODE(self, value)
     return _ORIGINAL_ENCODE(self, value)
 
 
