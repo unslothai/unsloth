@@ -13699,29 +13699,47 @@ async def serve_sandbox_file(
     Accepts auth via an Authorization header or a query token. Studio uses an
     authenticated fetch and object URL; query auth remains for older clients.
     """
-    from fastapi.responses import FileResponse
-
     # ── Authentication (header or query param) ──────────────────
     await _authenticate_header_or_query(request, token)
 
     # ── Filename sanitization + path containment ────────────────
+    import stat as _stat
+
     from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
 
     # In a worker like the listing: resolving the sandbox touches the
-    # filesystem, and the stat below is on the same path.
-    def _resolve() -> "tuple[str, bool]":
+    # filesystem, and so does the open below.
+    def _open_checked() -> "tuple[int, int]":
         _dir, path = _contained_sandbox_path(session or session_id, filename)
         if not os.path.isfile(path):
             # As in the listing: the legacy move can rename the tree out from
             # under a path resolved a moment ago, and the file is at the new one.
             _dir, path = _contained_sandbox_path(session or session_id, filename)
-        return path, os.path.isfile(path)
+        try:
+            # O_NOFOLLOW: tool code runs in this directory and can put a link
+            # here between the check and the open.
+            handle = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        try:
+            info = os.fstat(handle)
+            # The descriptor is what gets read, so it is what the containment
+            # check has to be about: resolved again, and the same file, or a
+            # parent swapped for a link would be served from outside the root.
+            _dir, again = _contained_sandbox_path(session or session_id, filename)
+            checked = os.stat(again)
+            if not _stat.S_ISREG(info.st_mode) or (checked.st_dev, checked.st_ino) != (
+                info.st_dev, info.st_ino
+            ):
+                raise HTTPException(status_code = 404, detail = "Not found")
+        except BaseException:
+            os.close(handle)
+            raise
+        return handle, info.st_size
 
-    file_path, is_file = await run_in_threadpool(_resolve)
-    if not is_file:
-        raise HTTPException(status_code = 404, detail = "Not found")
+    handle, size = await run_in_threadpool(_open_checked)
 
     ext = os.path.splitext(safe_filename)[1].lower()
     media_type = _SANDBOX_MEDIA_TYPES.get(ext)
@@ -13738,11 +13756,17 @@ async def serve_sandbox_file(
             f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
         )
 
-    return FileResponse(
-        path = file_path,
-        media_type = media_type,
-        headers = headers,
-    )
+    headers["Content-Length"] = str(size)
+
+    def _read():
+        with os.fdopen(handle, "rb") as opened:
+            while True:
+                chunk = opened.read(64 * 1024)
+                if not chunk:
+                    return
+                yield chunk
+
+    return StreamingResponse(_read(), media_type = media_type, headers = headers)
 
 
 # =====================================================================

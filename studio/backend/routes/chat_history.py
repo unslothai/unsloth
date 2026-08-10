@@ -436,6 +436,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 
     def _remove() -> "tuple[int, list[str]]":
         from core.inference.tools import (
+            record_kept_sandbox,
             remove_session_sandbox,
             sandbox_removal_deferred,
             session_sandbox_has_files,
@@ -454,6 +455,10 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
                 if session_sandbox_has_files(thread_id):
                     kept.append(thread_id)
+                    # The user asked for these files and the chat is gone, so
+                    # nothing comes back to that folder: written down, and the
+                    # collection below takes it once the last fork goes too.
+                    record_kept_sandbox(thread_id)
                 continue
             if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
@@ -713,6 +718,10 @@ async def delete_project(
         # A chat forked out of the project still shows cards for the shared
         # workspace, and the fork is not one of the ids deleted here.
         referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
+        # The row went first, so another client can create a project with this
+        # id in the window. It resolves to the same default path, and a tool
+        # call of its own may be writing in there right now.
+        recreated = await run_in_threadpool(get_chat_project, project_id) is not None
         if not delete_files:
             # The files stay, so the only job here is making them reachable: the
             # row that held a custom path is gone, and a fork's cards still name
@@ -723,6 +732,11 @@ async def delete_project(
                 project["sandboxPath"],
                 False,
                 project.get("rootPath"),
+            )
+        elif recreated:
+            logger.warning(
+                "Kept project workspace %s: a project was created with that id",
+                project_id,
             )
         elif not idle:
             # Still running after the wait. Removing a live tool call's working
@@ -737,7 +751,7 @@ async def delete_project(
                 "Kept project workspace %s: a surviving chat still shows its files",
                 project_id,
             )
-        if delete_files and idle and not referenced:
+        if delete_files and idle and not referenced and not recreated:
             # Written down first: the delete can decline an unexpected path or
             # stop at a locked file, and the row that knew where this workspace
             # lives has already gone. The record is the only way back to it.
@@ -755,10 +769,11 @@ async def delete_project(
                 project["sandboxPath"],
                 project.get("rootPath"),
             )
-        elif delete_files:
+        elif delete_files and not recreated:
             # Written down so it can be resolved and later collected: the row
             # that knew where it lives is gone. The root as well, since the
-            # deferred delete has to remove what the immediate one would.
+            # deferred delete has to remove what the immediate one would. Not
+            # for a recreated project: its own row knows where its files are.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,

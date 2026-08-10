@@ -4184,8 +4184,8 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
-    assert "if delete_files and idle and not referenced:" in route
-    assert route.index("if delete_files and idle and not referenced:") < route.index(
+    assert "if delete_files and idle and not referenced and not recreated:" in route
+    assert route.index("if delete_files and idle and not referenced and not recreated:") < route.index(
         "run_in_threadpool(delete_project_workspace, project)"
     )
     # And a wait that ran out queues the finish rather than dropping it.
@@ -4229,10 +4229,12 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
 
     _forget_sandbox_state(tools)
     project_id = "proj55555"
-    workspace = tmp_path / "kept-workspace"
-    workspace.mkdir()
+    workspace = tmp_path / "Notes-proj5555"
+    (workspace / "sandbox").mkdir(parents = True)
     (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
-    tools.record_orphaned_project(project_id, str(workspace), True)
+    tools.record_orphaned_project(
+        project_id, str(workspace / "sandbox"), True, str(workspace),
+    )
 
     # While a fork still shows it, the collection leaves it alone.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: True)
@@ -4333,11 +4335,11 @@ def test_only_a_pending_record_is_ever_collected(tmp_path, monkeypatch):
     _forget_sandbox_state(tools)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
-    keep, go = tmp_path / "keep-me", tmp_path / "delete-me"
-    keep.mkdir()
-    go.mkdir()
-    tools.record_orphaned_project("projkeep1", str(keep), False)
-    tools.record_orphaned_project("projgone1", str(go), True)
+    keep, go = tmp_path / "Keep-projkeep", tmp_path / "Go-projgone"
+    (keep / "sandbox").mkdir(parents = True)
+    (go / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project("projkeep1", str(keep / "sandbox"), False, str(keep))
+    tools.record_orphaned_project("projgone1", str(go / "sandbox"), True, str(go))
 
     tools.collect_orphaned_project_workspaces()
 
@@ -4357,10 +4359,12 @@ def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypat
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
     project_id = "projbusy1"
-    workspace = tmp_path / "busy-workspace"
-    workspace.mkdir()
+    workspace = tmp_path / "Busy-projbusy"
+    (workspace / "sandbox").mkdir(parents = True)
     (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
-    tools.record_orphaned_project(project_id, str(workspace), True)
+    tools.record_orphaned_project(
+        project_id, str(workspace / "sandbox"), True, str(workspace),
+    )
 
     with tools._session_in_flight(tools.project_session_id(project_id)):
         # Still running: the collection must leave it alone ...
@@ -4389,10 +4393,12 @@ def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatc
     _forget_sandbox_state(tools)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
-    workspace = tmp_path / "promised-workspace"
-    workspace.mkdir()
+    workspace = tmp_path / "Promised-projplai"
+    (workspace / "sandbox").mkdir(parents = True)
     (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
-    tools.record_orphaned_project("projplain", str(workspace), True)
+    tools.record_orphaned_project(
+        "projplain", str(workspace / "sandbox"), True, str(workspace),
+    )
 
     # The plain path, no switch.
     asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([], False))
@@ -4456,7 +4462,7 @@ def test_the_orphan_records_live_under_the_studio_home(tmp_path, monkeypatch):
     readonly_parent.chmod(0o500)
     try:
         tools.record_orphaned_project("projro123", str(workspace), True)
-        assert [name for name, _p, _r, _d in tools.list_orphaned_projects()] == ["projro123"]
+        assert [name for name, *_rest in tools.list_orphaned_projects()] == ["projro123"]
     finally:
         readonly_parent.chmod(0o700)
 
@@ -4529,18 +4535,20 @@ def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
     _forget_sandbox_state(tools)
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
 
-    workspace = tmp_path / "stuck-workspace"
-    workspace.mkdir()
+    workspace = tmp_path / "Stuck-projstuc"
+    (workspace / "sandbox").mkdir(parents = True)
     (workspace / "locked.bin").write_bytes(b"x")
-    tools.record_orphaned_project("projstuck", str(workspace), True)
+    tools.record_orphaned_project(
+        "projstuck", str(workspace / "sandbox"), True, str(workspace),
+    )
 
-    monkeypatch.setattr(tools.shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(studio_db.shutil, "rmtree", lambda *a, **k: None)
     tools.collect_orphaned_project_workspaces()
 
     assert workspace.is_dir()
-    assert [name for name, _p, _r, pending in tools.list_orphaned_projects() if pending] == [
-        "projstuck"
-    ], "the record was forgotten with the workspace still there"
+    assert [
+        name for name, _p, _r, pending, _c in tools.list_orphaned_projects() if pending
+    ] == ["projstuck"], "the record was forgotten with the workspace still there"
 
     monkeypatch.undo()
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
@@ -4627,7 +4635,13 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
 
     records = tools.list_orphaned_projects()
     assert records == [
-        (project_id, str((workspace / "sandbox").resolve()), str(workspace.resolve()), True)
+        (
+            project_id,
+            str((workspace / "sandbox").resolve()),
+            str(workspace.resolve()),
+            True,
+            False,
+        )
     ], records
 
     # And the next collection finishes the job the user asked for.
@@ -4982,6 +4996,211 @@ def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch)
         inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
     )
     assert [f["name"] for f in result["files"]] == ["report.csv"], result
+
+
+def test_a_record_never_deletes_what_the_helper_refused(tmp_path, monkeypatch):
+    """A record is a file on disk: a stale or edited one naming an unrelated
+    directory must not turn into an rmtree of it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj16180"
+    innocent = tmp_path / "Documents"
+    innocent.mkdir()
+    (innocent / "thesis.tex").write_text("x", encoding = "utf-8")
+    tools.record_orphaned_project(project_id, str(innocent), True, str(innocent))
+
+    refused = []
+    real_delete = studio_db.delete_project_workspace
+    monkeypatch.setattr(
+        studio_db, "delete_project_workspace",
+        lambda project: refused.append(project) or real_delete({"id": "x", "rootPath": None}),
+    )
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    tools.collect_orphaned_project_workspaces()
+
+    assert refused, "the validated helper was not consulted"
+    assert (innocent / "thesis.tex").is_file(), "a refused delete was done anyway"
+
+
+def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch):
+    """The source's delete asked for its files and kept them for the fork, and
+    nothing else ever comes back to that folder."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    source, fork = "chat-source-1", "chat-fork-1"
+    workdir = Path(tools.get_sandbox_workdir(source))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda tid: None)
+    # The fork still shows the source's cards, so its files are kept.
+    monkeypatch.setattr(
+        studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: s == source,
+    )
+    _removed, kept = asyncio.new_event_loop().run_until_complete(
+        chat_history._remove_sandboxes([source], True)
+    )
+    assert kept == [source]
+    assert (workdir / "report.csv").is_file()
+
+    # Now the fork is deleted too, and nothing references the source any more.
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    asyncio.new_event_loop().run_until_complete(
+        chat_history._remove_sandboxes([fork], True)
+    )
+    assert not workdir.exists(), "the source's files were orphaned for good"
+
+
+def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, monkeypatch):
+    """An API client picks its own thread ids, and one shaped like the
+    synthetic project session would run in that project's workspace."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "Notes-proj7777"
+    (workspace / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(
+        studio_db, "ensure_chat_project_workspace",
+        lambda pid: {"id": pid, "rootPath": str(workspace),
+                     "sandboxPath": str(workspace / "sandbox")},
+    )
+    session = tools.project_session_id("proj7777")
+    assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
+
+    # The same id, but a chat of the user's is stored under it.
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert workdir != (workspace / "sandbox").resolve(), "the chat took the project workspace"
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+
+
+def test_a_long_project_id_still_reaches_its_workspace(tmp_path, monkeypatch):
+    """`project-` plus the id can be longer than a directory name may be, and
+    the workspace comes from the row, not from the id."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "p" * 60
+    workspace = tmp_path / "Long-pppppppp"
+    (workspace / "sandbox").mkdir(parents = True)
+    monkeypatch.setattr(
+        studio_db, "ensure_chat_project_workspace",
+        lambda pid: {"id": pid, "rootPath": str(workspace),
+                     "sandboxPath": str(workspace / "sandbox")},
+    )
+    session = tools.project_session_id(project_id)
+    assert not tools._usable_session_id(session), "the prefixed id fits after all"
+    assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
+
+
+def test_a_project_recreated_under_the_same_id_keeps_its_workspace(tmp_path, monkeypatch):
+    """The row goes first, so another client can create a project with that id
+    before the files are removed, and its own tool call may be writing there."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj24242"
+    workspace = tmp_path / "Notes-proj2424"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
+    assert tools.list_orphaned_projects() == [], "a live project was recorded as orphaned"
+
+
+def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
+    """Tool code runs in that directory: between the containment check and the
+    open it can put a link there, and the response would follow it."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("passwords", encoding = "utf-8")
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+    )
+
+    loop = asyncio.new_event_loop()
+    response = loop.run_until_complete(
+        inference.serve_sandbox_file(
+            "thread-1", "report.csv", request = None, token = None, session = None,
+        )
+    )
+    # The swap happens after the check, before anything is read.
+    (sandbox / "report.csv").unlink()
+    (sandbox / "report.csv").symlink_to(secret)
+
+    body = b""
+
+    async def drain():
+        nonlocal body
+        async for chunk in response.body_iterator:
+            body += chunk
+
+    loop.run_until_complete(drain())
+    assert body == b"a,b\n", f"the response followed the link: {body!r}"
+
+
+def test_a_download_refuses_a_file_swapped_for_a_link(tmp_path, monkeypatch):
+    """The same swap, made before the open rather than after it."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from fastapi import HTTPException
+    from routes import inference
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("passwords", encoding = "utf-8")
+    (sandbox / "report.csv").symlink_to(secret)
+
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.new_event_loop().run_until_complete(
+            inference.serve_sandbox_file(
+                "thread-1", "report.csv", request = None, token = None, session = None,
+            )
+        )
+    assert raised.value.status_code in (403, 404)
 
 
 if __name__ == "__main__":
