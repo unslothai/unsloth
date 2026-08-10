@@ -1335,7 +1335,7 @@ function GgufVariantExpander({
       isLocalPath ? [] : (displayVariants ?? []).map((variant) => variant.filename),
     [isLocalPath, displayVariants],
   );
-  const { bytes: companionBytes, asked: companionBytesAsked } =
+  const { sizes: companionBytes, blocked: companionBytesBlocked } =
     useCompanionBytes(repoId, companionQueryFilenames);
   const showsCompanionBytes = useMemo(
     () => [...companionBytes.values()].some((bytes) => bytes > 0),
@@ -1427,7 +1427,7 @@ function GgufVariantExpander({
         // `downloaded` covers the checkpoint only, so it says nothing about the companions: a
         // GGUF fetched from the Hub page has them missing, and loadOrStage skips the plan for an
         // already-downloaded pick and fetches them inline.
-        const awaitingSize = companionBytesAsked && !companionBytes.has(v.filename);
+        const awaitingSize = companionBytesBlocked.has(v.filename);
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (

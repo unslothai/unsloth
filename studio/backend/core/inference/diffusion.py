@@ -2125,7 +2125,16 @@ class DiffusionBackend:
         ``_estimate_download_bytes`` recorded would never hit."""
         try:
             from huggingface_hub import HfApi
-            return getattr(HfApi().model_info(repo_id, token = hf_token), "sha", None) or None
+
+            from .plan_metadata import plan_model_info
+            return (
+                getattr(
+                    plan_model_info(HfApi(), repo_id, files_metadata = False, token = hf_token),
+                    "sha",
+                    None,
+                )
+                or None
+            )
         except Exception:  # noqa: BLE001 — no sha means no skip, never a failed plan
             return None
 
@@ -5226,7 +5235,12 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
         return None
     try:
         from huggingface_hub import HfApi
-        meta = HfApi().model_info(repo_id, token = hf_token).cardData or {}
+
+        from .plan_metadata import plan_model_info
+        meta = (
+            plan_model_info(HfApi(), repo_id, files_metadata = False, token = hf_token).cardData
+            or {}
+        )
     except Exception:  # noqa: BLE001 — best-effort; fall back to the family default
         return None
     base = meta.get("base_model")

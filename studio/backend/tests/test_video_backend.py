@@ -3155,6 +3155,7 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
         filename,
         token,
         cancel_event = None,
+        reuse_other_cache_root = False,
     ):
         raise OSError("404")
 
@@ -3163,7 +3164,9 @@ def test_fetch_te_prequant_only_reports_what_it_downloaded(monkeypatch):
 
     monkeypatch.setattr(
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
-        lambda repo, filename, token, cancel_event = None: "/tmp/precast.pt",
+        lambda repo, filename, token, cancel_event = None, reuse_other_cache_root = False: (
+            "/tmp/precast.pt"
+        ),
     )
     assert backend._fetch_te_prequant({"text_encoder": source}, None) == ("text_encoder",)
     # A local path override is the injection's business (allowlist), and nothing is fetched for it.

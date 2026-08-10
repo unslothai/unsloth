@@ -1789,6 +1789,7 @@ class VideoBackend:
                     source.filename,
                     hf_token,
                     cancel_event = cancel,
+                    reuse_other_cache_root = True,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
                 if cancel.is_set():
@@ -1847,7 +1848,10 @@ class VideoBackend:
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
-                    hf_hub_download_with_xet_fallback(base, name, hf_token, cancel_event = cancel)
+                    hf_hub_download_with_xet_fallback(
+                        base, name, hf_token, cancel_event = cancel,
+                        reuse_other_cache_root = True,
+                    )
                 )
                 if name == "model_index.json":
                     snapshot_root = local.parent
@@ -2856,7 +2860,11 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+        return Path(
+            hf_hub_download_with_xet_fallback(
+                repo_id, gguf_filename or "", hf_token, reuse_other_cache_root = True
+            )
+        )
 
     # ── generation ───────────────────────────────────────────────────────────
 

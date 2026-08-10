@@ -115,9 +115,7 @@ test("a row cannot be picked before its size is known", () => {
   // Until the batch lands there is no companion figure, so the row would show the GGUF-only size
   // and still be clickable: picking there stages the full plan, which is the original bug.
   assert.ok(
-    pickers.includes(
-      "const awaitingSize = companionBytesAsked && !companionBytes.has(v.filename);",
-    ),
+    pickers.includes("const awaitingSize = companionBytesBlocked.has(v.filename);"),
     "a row waits on its OWN answer, not on the batch and not on v.downloaded",
   );
   assert.ok(
@@ -131,6 +129,49 @@ test("a row cannot be picked before its size is known", () => {
   assert.ok(
     /awaitingSize\s*\?\s*"…"/.test(pickers),
     "and must not present the checkpoint-only number as the total",
+  );
+});
+
+test("a repo larger than the request cap is still sizable", () => {
+  // The route rejects a payload over MAX_COMPANION_SIZE_QUERIES outright, and browse lists show
+  // every quant, so one oversized request would 422 and leave every row of the repo disabled.
+  const companionBytes = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/components/model-selector/companion-bytes.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.ok(companionBytes.includes("const MAX_FILENAMES_PER_REQUEST = 96;"));
+  assert.ok(
+    companionBytes.includes("i += MAX_FILENAMES_PER_REQUEST"),
+    "filenames must be chunked to the server's limit",
+  );
+});
+
+test("a request that failed outright leaves its rows usable", () => {
+  // Disabling a row is for "asked and got no size". A failed request answered nothing, so the row
+  // falls back to what it showed before any of this rather than becoming unpickable.
+  const companionBytes = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/components/model-selector/companion-bytes.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.ok(
+    /\.catch\(\(\) => \{\s*for \(const name of chunk\) blocked\.delete\(name\);/.test(
+      companionBytes,
+    ),
+    "a failed chunk must release its own rows",
+  );
+  assert.ok(
+    pickers.includes("const awaitingSize = companionBytesBlocked.has(v.filename);"),
+    "and the row must gate on that set",
   );
 });
 
