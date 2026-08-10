@@ -7291,7 +7291,6 @@ def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | Non
     """
     if root:
         from storage.studio_db import delete_project_workspace
-
         delete_project_workspace({"id": project_id, "rootPath": root})
         if not os.path.exists(root):
             return
