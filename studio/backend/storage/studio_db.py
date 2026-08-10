@@ -921,7 +921,7 @@ def get_connection() -> sqlite3.Connection:
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout=_BUSY_TIMEOUT_SECONDS)
+    conn = sqlite3.connect(str(db_path), timeout = _BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1919,9 +1919,7 @@ def clear_chat_history_with_active_research_runs(
             row["id"] for row in conn.execute("SELECT id FROM chat_threads").fetchall()
         )
         # the caller's ids are fenced too, but only rows that existed here were actually deleted
-        _tombstone_chat_threads(
-            conn, sorted(set(additional_thread_ids) | set(deleted_thread_ids))
-        )
+        _tombstone_chat_threads(conn, sorted(set(additional_thread_ids) | set(deleted_thread_ids)))
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
