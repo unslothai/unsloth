@@ -27,11 +27,10 @@ import pytest
 pytest.importorskip("trl")
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def patched():
     import unsloth  # noqa: F401
     import trl.trainer.sft_config as config_module
-
     return config_module.SFTConfig
 
 
@@ -257,9 +256,7 @@ print("UNSLOTH_PROBE " + json.dumps(result))
 def pristine_probe(tmp_path_factory):
     environment = dict(os.environ)
     # Keep the generated module out of the shared cache directory.
-    environment["UNSLOTH_COMPILE_LOCATION"] = str(
-        tmp_path_factory.mktemp("compiled_cache")
-    )
+    environment["UNSLOTH_COMPILE_LOCATION"] = str(tmp_path_factory.mktemp("compiled_cache"))
     finished = subprocess.run(
         [sys.executable, "-c", _PRISTINE_PROBE],
         capture_output = True,
@@ -267,16 +264,13 @@ def pristine_probe(tmp_path_factory):
         timeout = 1800,
         env = environment,
     )
-    marker = [
-        line for line in finished.stdout.splitlines()
-        if line.startswith("UNSLOTH_PROBE ")
-    ]
+    marker = [line for line in finished.stdout.splitlines() if line.startswith("UNSLOTH_PROBE ")]
     if not marker:
         pytest.skip(
             "could not run the trl-before-unsloth probe:\n"
             f"{finished.stdout[-2000:]}\n{finished.stderr[-2000:]}"
         )
-    payload = json.loads(marker[-1][len("UNSLOTH_PROBE "):])
+    payload = json.loads(marker[-1][len("UNSLOTH_PROBE ") :])
     if not payload.get("captured_pristine"):
         pytest.skip("trl was already patched before the probe captured the class")
     if not payload.get("rebound"):
