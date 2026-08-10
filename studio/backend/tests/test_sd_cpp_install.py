@@ -2133,7 +2133,7 @@ def _owned_tree_holding(tmp_path, rel: str) -> Path:
     return old
 
 
-def test_a_same_path_upgrade_is_a_replacement_from_the_extract_on(tmp_path, monkeypatch):
+def test_an_upgrade_is_a_replacement_from_the_extract_on(tmp_path, monkeypatch):
     """The boundary has to open at the EXTRACT, not at the sweep. Extraction merges and zipfile
     rewrites each member in place, so an archive that lands its executables where the previous
     bundle's are has already destroyed them by the time the cudart fetch runs -- and the new
@@ -2153,16 +2153,36 @@ def test_a_same_path_upgrade_is_a_replacement_from_the_extract_on(tmp_path, monk
     assert "cudart 404" in str(exc.value)
 
 
-def test_a_different_layout_upgrade_stays_an_ordinary_failure_before_the_sweep(
-    tmp_path, monkeypatch
-):
-    """And it must not open any earlier than that. This bundle writes somewhere else, so the
-    previous sd-cli is untouched and the pre-install fallback still runs it -- "this accelerator is
-    unavailable" is the true answer, and memoising it is what stops every later load re-downloading
-    the same failing bundle."""
+def test_a_different_layout_upgrade_is_a_replacement_too(tmp_path, monkeypatch):
+    """Same path is not the only way to mix two bundles. This archive writes to build/bin while
+    the previous copy sits in a versioned subdirectory, so the old one survives the extract -- and
+    loses anyway, because _layout_candidates puts build/bin first. The next lookup therefore
+    resolves a copy that has had neither the sweep, nor _make_executable, nor the cudart DLLs, and
+    calling the failure ordinary memoises the accelerator and suppresses the retry that repairs
+    it."""
     zb = _zip_with_sd_cli()
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
-    old = _owned_tree_holding(tmp_path, "sd-bin/sd-cli")
+    old = _owned_tree_holding(tmp_path, "sd-master-old/bin/sd-cli")
+    monkeypatch.setattr(
+        sdmod,
+        "_maybe_fetch_windows_cudart",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cudart 404")),
+    )
+    with pytest.raises(sdmod.SupersededBinaryError) as exc:
+        install(install_dir = tmp_path)
+    assert "part way through a replacement" in str(exc.value)
+    # Both copies are on disk now, which is exactly why this is not an ordinary failure.
+    assert old.read_bytes() == b"the previous build"
+    assert (tmp_path / "build" / "bin" / "sd-cli").is_file()
+
+
+def test_a_first_install_failing_before_the_sweep_is_an_ordinary_failure(tmp_path, monkeypatch):
+    """The other side of it: an empty target has nothing for the new copy to compete with, so no
+    lookup can resolve a half-finished binary and "this accelerator is unavailable" is the true
+    answer. Memoising it is what stops every later load re-downloading the same failing bundle."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    (tmp_path / ".unsloth-studio-owned").touch()
     monkeypatch.setattr(
         sdmod,
         "_maybe_fetch_windows_cudart",
@@ -2171,7 +2191,7 @@ def test_a_different_layout_upgrade_stays_an_ordinary_failure_before_the_sweep(
     with pytest.raises(RuntimeError) as exc:
         install(install_dir = tmp_path)
     assert not isinstance(exc.value, sdmod.SupersededBinaryError)
-    assert old.read_bytes() == b"the previous build"
+    assert "cudart 404" in str(exc.value)
 
 
 def _server_load_backend(tmp_path, monkeypatch, root, server, on_fetch):

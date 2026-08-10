@@ -385,6 +385,18 @@ def _archive_binary_paths(zf: zipfile.ZipFile, target: Path) -> set[Path]:
     return out
 
 
+def _tree_has_binaries(root: Path) -> bool:
+    """True when ``root`` already holds an sd-cli / sd-server from an earlier bundle.
+
+    Asked BEFORE extraction, because that is the only moment the answer is about the previous
+    bundle alone."""
+    for name in _binary_names():
+        for found in root.rglob(name):
+            if found.is_file():
+                return True
+    return False
+
+
 def _discard_superseded_binaries(root: Path, supplied: set[Path]) -> None:
     """Remove managed sd-cli / sd-server copies this bundle did NOT write.
 
@@ -644,16 +656,18 @@ def install(
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
-            # The boundary opens HERE, not at the sweep, whenever this bundle lands its
-            # executables on the paths the previous one used. Extraction merges and zipfile
-            # rewrites each member in place, so from the first write the old sd-cli is gone:
-            # an interrupted extract leaves it truncated, and the Windows cudart fetch below
-            # can still fail once the new sd-cli.exe -- which cannot start without those DLLs
-            # -- has already taken its place. Called an ordinary failure, either one makes
-            # ensure_* memoise the accelerator and hand back a path it has just broken.
-            # A bundle that writes elsewhere leaves the old copies untouched, so that really is
-            # "this accelerator is unavailable" and the pre-install fallback still runs.
-            replacing = any(p.exists() for p in supplied)
+            # The boundary opens HERE, not at the sweep, whenever an existing bundle is about
+            # to gain a SECOND copy of a binary. Same path is the obvious case: zipfile rewrites
+            # each member in place, so an interrupted extract leaves the old sd-cli truncated.
+            # A different layout is the same problem one step removed, because the new copy WINS
+            # the next lookup -- _layout_candidates prefers build/bin, then the newest
+            # subdirectory by mtime -- while still having had neither the sweep, nor
+            # _make_executable, nor (on a Windows CUDA upgrade) the cudart DLLs the fetch below
+            # can still fail to get. Either way, calling that an ordinary failure makes ensure_*
+            # memoise the accelerator and serve the half-finished copy for the rest of the
+            # process. A first install has nothing to compete with, so it stays ordinary and the
+            # accelerator really is the thing that was unavailable.
+            replacing = bool(supplied) and _tree_has_binaries(target)
             _safe_extractall(zf, target)
         # Nothing is swept until this bundle is known to have supplied the one binary the install
         # cannot do without. A malformed archive is caught below either way, but only AFTER the
