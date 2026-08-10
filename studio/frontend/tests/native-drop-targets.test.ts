@@ -124,6 +124,20 @@ test("a Windows drop position is divided by the scale factor", () => {
   });
 });
 
+// Windows text scaling or page zoom lifts devicePixelRatio above the monitor
+// scale, and elementFromPoint wants CSS pixels, not logical window ones.
+test("a Windows drop position follows webview zoom above the monitor scale", () => {
+  globalThis.window.devicePixelRatio = 3;
+  try {
+    assert.deepEqual(pointSeenFor("Mozilla/5.0 (Windows NT 10.0; Win64)"), {
+      x: 40,
+      y: 80 / 3,
+    });
+  } finally {
+    globalThis.window.devicePixelRatio = 2;
+  }
+});
+
 // The chat-wide handler has to ask before acting, or a drop aimed at a dialog's
 // own zone lands as a chat attachment behind it.
 test("the chat drop handler defers to a registered target", async () => {
