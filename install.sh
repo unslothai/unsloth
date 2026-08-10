@@ -2516,7 +2516,16 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         # wheels since 2.2.2, so an x86_64 venv makes the torch install
         # unresolvable. The arm64 guard below is kept as a backstop for
         # migrated / pre-existing venvs.
+        #
+        # only-managed: uv otherwise walks PATH and *executes* each interpreter it
+        # finds to read its version, before downloading the build asked for here.
+        # On a Mac with no Command Line Tools, /usr/bin/python3 is Apple's
+        # xcode_select tool shim (byte-identical to /usr/bin/git and /usr/bin/clang),
+        # so that probe pops the "command line developer tools" dialog naming
+        # python3 -- for tools this install never needs. The request is already a
+        # managed build, so this only stops the search, it changes nothing chosen.
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python-preference only-managed \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
     else
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
@@ -2574,6 +2583,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
         _discard_venv_for_recreate "$VENV_DIR"
         run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
+            --python-preference only-managed \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
@@ -2590,6 +2600,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
         run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python-preference only-managed \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
