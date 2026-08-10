@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Delete02Icon,
   Edit03Icon,
@@ -9,6 +8,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronLeftIcon, UploadIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -42,8 +42,13 @@ import {
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import { RAG_UPLOAD_ACCEPT, type KnowledgeBase } from "../types/rag";
+import {
+  type KnowledgeBase,
+  RAG_UPLOAD_ACCEPT,
+  isLinkedFolderManaged,
+} from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import { LinkedFoldersManager } from "./linked-folders-manager";
 import { useRagDocuments } from "./use-rag-documents";
 
 type View =
@@ -173,9 +178,7 @@ export function KnowledgeBaseDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {view.kind === "documents"
-              ? view.kb.name
-              : "Knowledge bases"}
+            {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
           </DialogTitle>
           <DialogDescription>
             {view.kind === "documents"
@@ -332,15 +335,13 @@ function KnowledgeBaseDocuments({
   kb: KnowledgeBase;
   onBack: () => void;
 }) {
-  const lister = useCallback(
-    () => listKnowledgeBaseDocuments(kb.id),
-    [kb.id],
-  );
-  const { documents, loading, uploading, upload, remove } = useRagDocuments(
-    { type: "kb", kbId: kb.id },
-    lister,
-  );
+  const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
+  const { documents, loading, uploading, refresh, upload, remove } =
+    useRagDocuments({ type: "kb", kbId: kb.id }, lister);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleLinkedSourcesChanged = useCallback(() => {
+    void refresh({ quiet: true });
+  }, [refresh]);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -360,7 +361,7 @@ function KnowledgeBaseDocuments({
         <input
           ref={fileInputRef}
           type="file"
-          multiple
+          multiple={true}
           accept={RAG_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
@@ -387,7 +388,7 @@ function KnowledgeBaseDocuments({
               progress={doc.progress}
               error={doc.error}
               onRemove={
-                doc.id.startsWith("pending_")
+                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                   ? undefined
                   : () => void remove(doc.id)
               }
@@ -395,6 +396,13 @@ function KnowledgeBaseDocuments({
           ))}
         </div>
       )}
+      <div className="border-t pt-3">
+        <LinkedFoldersManager
+          scope={{ type: "knowledge_base", id: kb.id }}
+          compact={true}
+          onSourcesChanged={handleLinkedSourcesChanged}
+        />
+      </div>
     </div>
   );
 }
