@@ -8105,14 +8105,23 @@ class LlamaCppBackend:
         hf_repo: str,
         *,
         cache_dir: Optional[str] = None,
+        near_path: Optional[str] = None,
     ) -> Optional[str]:
         """The preferred already-cached DFlash sidecar for a repo, Q8_0 first
-        (dflash_preference_key), so an offline reuse picks the same file the
-        online download would have fetched."""
+        (dflash_repo_preference_key), so an offline reuse picks the same file
+        the online download would have fetched.
+
+        ``near_path`` is the weight this sidecar would draft for. A repo hosting
+        more than one family ships more than one sidecar, and precision alone
+        would hand model B the sidecar named after model A, so the candidates
+        are ranked against the weight actually being loaded (same rule as
+        detect_dflash_file). Without it the ordering is precision only, as
+        before.
+        """
         try:
             from utils.models.model_config import (
                 _iter_hf_cache_snapshots,
-                dflash_preference_key,
+                dflash_repo_preference_key,
             )
 
             snapshots = (
@@ -8120,14 +8129,22 @@ class LlamaCppBackend:
                 if cache_dir is None
                 else _iter_hf_cache_snapshots(hf_repo, cache_dir)
             )
-            candidates: list[Path] = []
+            weight_name = Path(near_path).name if near_path else None
+            ranked: list[tuple[tuple[int, int, int, str], Path]] = []
             for snap in snapshots:
-                candidates.extend(
-                    snap / name
-                    for name in _gguf_snapshot_files(snap)
+                names = _gguf_snapshot_files(snap)
+                # Every non-sidecar GGUF in the snapshot is a weight some sidecar
+                # could be naming; that is what tells a neighbour's sidecar apart
+                # from one naming no family at all.
+                others = [
+                    Path(name).name for name in names if not _is_dflash_drafter_path(name)
+                ]
+                ranked.extend(
+                    (dflash_repo_preference_key(name, weight_name, others), snap / name)
+                    for name in names
                     if _is_dflash_drafter_path(name)
                 )
-            for candidate in sorted(candidates, key = lambda p: dflash_preference_key(p.name)):
+            for _, candidate in sorted(ranked, key = lambda entry: entry[0]):
                 if candidate.is_file():
                     return str(candidate)
         except Exception as exc:
@@ -8153,11 +8170,26 @@ class LlamaCppBackend:
         engage.
         """
 
+        weight_name = Path(near_path).name if near_path else None
+
         def _pick_dflash(candidates: list[str]) -> Optional[str]:
-            from utils.models.model_config import dflash_preference_key
+            # Ranked against the weight being loaded, not by precision alone: a
+            # repo hosting two families ships a sidecar per family, and
+            # dflash-model-A-Q8_0.gguf beats the generic dflash-kquant.gguf on
+            # precision, so model B would download and launch model A's drafter.
+            # The rest of the listing supplies the neighbouring weights that make
+            # a foreign sidecar recognisable (a sidecar naming no family at all
+            # stays eligible, which is what the published one does).
+            from utils.models.model_config import dflash_repo_preference_key
+
+            others = [
+                Path(name).name
+                for name in candidates
+                if name.lower().endswith(".gguf") and not _is_dflash_drafter_path(name)
+            ]
             files = sorted(
                 (name for name in candidates if _is_dflash_drafter_path(name)),
-                key = dflash_preference_key,
+                key = lambda name: dflash_repo_preference_key(name, weight_name, others),
             )
             return files[0] if files else None
 
@@ -8166,6 +8198,7 @@ class LlamaCppBackend:
             cached = self._cached_repo_dflash_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+                near_path = near_path,
             )
         try:
             if not self.probe_server_capabilities(binary).get("supports_dflash"):

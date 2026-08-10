@@ -30,7 +30,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, List, Tuple, Union
+from typing import Callable, Iterable, List, Tuple, Union
 import hashlib
 import json
 import threading
@@ -1776,6 +1776,61 @@ def dflash_preference_key(name: str) -> tuple[int, str]:
     return dflash_precision_rank(name), Path(name).name.lower()
 
 
+def _drafter_names_other_weight(
+    candidate_name: str,
+    weight_name: Optional[str],
+    other_weight_names: Iterable[str],
+    *,
+    kind: str = "dflash",
+) -> bool:
+    """Whether a sidecar names a DIFFERENT weight sitting beside it.
+
+    A sidecar that names no family at all (the published ``dflash-kquant.gguf``,
+    whose stem is a precision token) has to stay eligible, so "does it name a
+    family" cannot be answered from the sidecar name alone. It is answered
+    against the weights actually present instead: only a stem that pairs with
+    some OTHER weight in the same repo/folder is evidence the sidecar belongs to
+    that neighbour rather than to the weight being loaded.
+    """
+    if weight_name is None:
+        return False
+    if _drafter_matches_weight(candidate_name, weight_name, kind = kind):
+        return False
+    return any(
+        _drafter_matches_weight(candidate_name, other, kind = kind)
+        for other in other_weight_names
+    )
+
+
+def dflash_repo_preference_key(
+    name: str,
+    weight_name: Optional[str] = None,
+    other_weight_names: Iterable[str] = (),
+) -> tuple[int, int, int, str]:
+    """Order DFlash sidecars in a repo listing / cache snapshot against the
+    weight actually being loaded.
+
+    dflash_preference_key ranks by precision and name alone, which is all a
+    single-model repo needs. A repo hosting more than one family also has to be
+    told which weight each sidecar belongs to, or ``dflash-model-A-Q8_0.gguf``
+    outranks the generic ``dflash-kquant.gguf`` on precision and model B is
+    launched with model A's drafter. Same rule the local scan applies in
+    detect_dflash_file, kept in one place so the download, the snapshot reuse
+    and the offline cache all pick the same file.
+
+    Three buckets: a sidecar naming this weight's family (most specific stem
+    first, as detect_mtp_file does), then one naming no weight present here,
+    then one naming a neighbour. The last is demoted rather than dropped, so a
+    repo whose only sidecar looks foreign still gets a fallback and today's
+    single-sidecar behaviour is unchanged.
+    """
+    precision, sort_name = dflash_preference_key(name)
+    if weight_name is not None and _drafter_matches_weight(name, weight_name, kind = "dflash"):
+        return 0, _drafter_stem_rank(name, kind = "dflash"), precision, sort_name
+    foreign = _drafter_names_other_weight(name, weight_name, other_weight_names)
+    return 2 if foreign else 1, 0, precision, sort_name
+
+
 def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,
@@ -2160,16 +2215,15 @@ def detect_dflash_file(
     # foreign one to the top: loading model B beside dflash-model-A-Q8_0.gguf
     # and dflash-kquant.gguf launched model A's drafter for model B. Both carry
     # a real dflash header, so the architecture check behind the ranking cannot
-    # catch it. Deciding against the weights actually present keeps the
-    # published unpaired sidecar eligible (its stem, "kquant", names no file
-    # here) without hardcoding which stems are precision tokens.
+    # catch it. _drafter_names_other_weight decides against the weights actually
+    # present, which keeps the published unpaired sidecar eligible (its stem,
+    # "kquant", names no file here) without hardcoding which stems are precision
+    # tokens. Shared with the remote paths through dflash_repo_preference_key,
+    # so a download and a local scan agree on which sidecar belongs here.
     if weight_name is not None and other_weights:
         kept: list[Path] = []
         for candidate in candidates:
-            if not _drafter_matches_weight(candidate.name, weight_name, kind = "dflash") and any(
-                _drafter_matches_weight(candidate.name, other, kind = "dflash")
-                for other in other_weights
-            ):
+            if _drafter_names_other_weight(candidate.name, weight_name, other_weights):
                 logger.info(
                     "detect_dflash_file: dropped %s (names another weight in this folder)",
                     candidate.name,

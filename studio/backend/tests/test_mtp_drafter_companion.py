@@ -2065,6 +2065,169 @@ def test_a_cached_dflash_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     assert b._cached_repo_dflash_drafter("org/repo") == str(snap / "dflash-kquant.gguf")
 
 
+# ── Remote sidecars pair with the selected weight ────────────────────
+#
+# detect_dflash_file already refuses a sidecar named after a NEIGHBOURING
+# weight, so a multi-family folder cannot attach a foreign drafter locally. The
+# download and the offline cache reuse ranked by precision and name alone, so
+# dflash-model-A-Q8_0.gguf beat the generic dflash-kquant.gguf and model B was
+# launched with model A's drafter. All three paths now share
+# dflash_repo_preference_key.
+
+_MULTI_FAMILY_LISTING = [
+    "model-A-Q4_K_M.gguf",
+    "model-B-Q4_K_M.gguf",
+    "dflash-model-A-Q8_0.gguf",
+    "dflash-kquant.gguf",
+]
+
+
+def _dflash_download_pick(monkeypatch, *, listing, near_path):
+    """The sidecar _download_dflash's picker chooses out of a repo listing."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    picked = {}
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+        outcome = None,
+    ):
+        picked["name"] = pick(listing)
+        return None
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    b._download_dflash(
+        hf_repo = "org/repo",
+        near_path = near_path,
+        binary = "/fake/llama-server",
+    )
+    return picked.get("name")
+
+
+def test_download_dflash_skips_a_sidecar_named_after_another_weight(monkeypatch):
+    """Model B must get the generic sidecar, not the higher-precision one that
+    names model A."""
+    assert (
+        _dflash_download_pick(
+            monkeypatch,
+            listing = _MULTI_FAMILY_LISTING,
+            near_path = "/cache/snap/model-B-Q4_K_M.gguf",
+        )
+        == "dflash-kquant.gguf"
+    )
+
+
+def test_download_dflash_takes_the_sidecar_naming_this_weight(monkeypatch):
+    """The other direction: model A's own sidecar still wins over the generic
+    one, as it does in detect_dflash_file."""
+    assert (
+        _dflash_download_pick(
+            monkeypatch,
+            listing = _MULTI_FAMILY_LISTING,
+            near_path = "/cache/snap/model-A-Q4_K_M.gguf",
+        )
+        == "dflash-model-A-Q8_0.gguf"
+    )
+
+
+@pytest.mark.parametrize("sidecar", ["dflash-kquant.gguf", "dflash-bf16.gguf"])
+def test_download_dflash_keeps_the_single_published_sidecar(monkeypatch, sidecar):
+    """The shipped unsloth/Muse-Glimmer-30B-GGUF layout. Its sidecar's stem is a
+    precision token, not a family, so nothing may treat "names no weight here"
+    as a rejection."""
+    assert (
+        _dflash_download_pick(
+            monkeypatch,
+            listing = [
+                "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+                "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+                sidecar,
+            ],
+            near_path = "/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        )
+        == sidecar
+    )
+
+
+def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypatch):
+    """The offline reuse must reach the same file the download would have
+    fetched, or a reload swaps drafters as soon as the cache is warm."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    for name in _MULTI_FAMILY_LISTING:
+        (snap / name).write_bytes(b"x")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    for weight, expected in (
+        ("model-B-Q4_K_M.gguf", "dflash-kquant.gguf"),
+        ("model-A-Q4_K_M.gguf", "dflash-model-A-Q8_0.gguf"),
+    ):
+        assert b._cached_repo_dflash_drafter(
+            "org/repo", near_path = str(snap / weight)
+        ) == str(snap / expected)
+    # No weight in hand: precision order, exactly as before.
+    assert b._cached_repo_dflash_drafter("org/repo") == str(snap / "dflash-model-A-Q8_0.gguf")
+
+
+def test_cached_dflash_lookup_keeps_the_single_published_sidecar(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    for name in ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "dflash-kquant.gguf"):
+        (snap / name).write_bytes(b"x")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    assert b._cached_repo_dflash_drafter(
+        "org/repo", near_path = str(snap / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf")
+    ) == str(snap / "dflash-kquant.gguf")
+
+
+def test_local_and_remote_dflash_pairing_agree(tmp_path):
+    """One rule, three call sites: the local scan, the download picker and the
+    cache lookup all go through dflash_repo_preference_key /
+    _drafter_names_other_weight."""
+    from utils.models.model_config import dflash_repo_preference_key
+
+    others = ["model-A-Q4_K_M.gguf", "model-B-Q4_K_M.gguf"]
+    ranked = sorted(
+        ("dflash-model-A-Q8_0.gguf", "dflash-kquant.gguf"),
+        key = lambda name: dflash_repo_preference_key(name, "model-B-Q4_K_M.gguf", others),
+    )
+    assert ranked[0] == "dflash-kquant.gguf"
+
+    for name in _MULTI_FAMILY_LISTING:
+        _write_gguf(tmp_path / name, "dflash" if name.startswith("dflash-") else "llama")
+    assert detect_dflash_file(str(tmp_path / "model-B-Q4_K_M.gguf")) == str(
+        (tmp_path / "dflash-kquant.gguf").resolve()
+    )
+
+
 # ── Reclaim: deliberately unchanged ──────────────────────────────────
 
 
