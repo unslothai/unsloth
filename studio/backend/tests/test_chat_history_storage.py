@@ -711,3 +711,236 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         id_factory = id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2
+
+
+def _research_thread(
+    tmp_path,
+    monkeypatch,
+    *,
+    extra_ancestors: int = 1,
+):
+    """A thread shaped `a0 -> ... -> prompt -> report`, with the pair claimed by a research run.
+
+    Returns the ancestor ids in order. `prompt` and `report` are the server-managed pair.
+    """
+    from storage import research_runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+
+    ancestors = [f"a{index}" for index in range(extra_ancestors)]
+    chain = [*ancestors, "prompt", "report"]
+    messages = []
+    for position, message_id in enumerate(chain):
+        messages.append(
+            {
+                "id": message_id,
+                "threadId": "src",
+                "parentId": chain[position - 1] if position else None,
+                "role": "assistant" if message_id == "report" else "user",
+                "content": [{"type": "text", "text": message_id}],
+                "metadata": (
+                    {"researchRunId": "run-1", "serverManaged": True}
+                    if message_id == "report"
+                    else None
+                ),
+                "createdAt": position + 1,
+            }
+        )
+    studio_db.sync_chat_messages("src", messages)
+    research_runs_db.create_run(
+        run_id = "run-1",
+        owner_subject = "owner",
+        thread_id = "src",
+        user_message_id = "prompt",
+        assistant_message_id = "report",
+        config = {},
+        created_at = 1,
+    )
+    # create_run may rewrite the pair, so the baseline has to be what the server now holds.
+    return ancestors, studio_db.list_chat_messages("src")
+
+
+def _without(messages: list[dict], *drop: str) -> list[dict]:
+    return [dict(m) for m in messages if m["id"] not in drop]
+
+
+def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
+    # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
+    # and the guard must read that as the repair it is rather than an edit.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert [m["id"] for m in synced] == ["prompt", "report"]
+    assert synced[0]["parentId"] is None
+
+
+def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
+    payload = _without(messages, "a1", "a2")
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = "a0"
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):
+    # The bulk sync keeps the server copy instead of rejecting the batch, so the protection is
+    # that the claim is dropped: the reseat is walked from the stored chain, and a client cannot
+    # use a pruned parent as cover for pointing a protected message anywhere it likes.
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 3)
+    payload = _without(messages, "a1", "a2")
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = "report"
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_with_nothing_pruned_leaves_the_stored_parent_alone(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = [dict(m) for m in messages]
+    next(m for m in payload if m["id"] == "prompt")["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    # Nothing was deleted, so there is no repair to make and the claim is simply dropped.
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_relink_is_ignored_when_pruning_is_off(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = False)
+
+    # With pruning off the omitted ancestor survives, so the stored parent still resolves.
+    assert {m["id"] for m in synced} >= {"a0", "prompt"}
+    assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("content", [{"type": "text", "text": "edited"}]),
+        ("role", "assistant"),
+        ("metadata", {"tampered": True}),
+        ("createdAt", 999),
+    ],
+)
+def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, value):
+    # Structure is repaired, content is not adopted: the reseat must not become a hole through
+    # which a drifted autosave rewrites the protected row.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    stored = next(m for m in messages if m["id"] == "prompt")
+    payload = _without(messages, "a0")
+    payload[0]["parentId"] = None
+    payload[0][field] = value
+
+    synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
+
+    prompt = next(m for m in synced if m["id"] == "prompt")
+    # The deleted ancestor was the root, so the repair is a reseat to the root.
+    assert prompt["parentId"] is None
+    # .get on both sides: an absent key is how a None metadata comes back, and the point is
+    # that the client's value is not there either way.
+    assert prompt.get(field) == stored.get(field)
+    assert prompt.get(field) != value
+
+
+def test_deleting_a_protected_message_itself_is_still_refused(tmp_path, monkeypatch):
+    # Update permission is not delete permission. Omitting a protected message no longer 409s
+    # the batch, but it must not delete it either.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+
+    for dropped in ("prompt", "report"):
+        synced = studio_db.sync_chat_messages(
+            "src", _without(messages, dropped), prune_missing = True
+        )
+        assert dropped in {m["id"] for m in synced}
+
+
+def test_a_research_prompt_already_at_the_root_is_unaffected(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 0)
+
+    synced = studio_db.sync_chat_messages("src", messages, prune_missing = True)
+
+    assert [m["id"] for m in synced] == ["prompt", "report"]
+
+
+def test_an_unrelated_sibling_can_still_be_deleted(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    sibling = {
+        "id": "sibling",
+        "threadId": "src",
+        "parentId": "a0",
+        "role": "user",
+        "content": [{"type": "text", "text": "sibling"}],
+        "createdAt": 9,
+    }
+    studio_db.sync_chat_messages("src", [*messages, sibling])
+
+    synced = studio_db.sync_chat_messages("src", messages, prune_missing = True)
+
+    assert "sibling" not in {m["id"] for m in synced}
+
+
+def test_a_plain_message_whose_parent_is_pruned_is_never_guarded(tmp_path, monkeypatch):
+    # Only protected ids reach the guard at all; an ordinary relink must stay untouched by any of
+    # this, including when its own parent is the pruned node.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    plain_parent = {
+        "id": "plain-parent",
+        "threadId": "src",
+        "parentId": "report",
+        "role": "user",
+        "content": [{"type": "text", "text": "plain-parent"}],
+        "createdAt": 8,
+    }
+    plain_child = {
+        "id": "plain-child",
+        "threadId": "src",
+        "parentId": "plain-parent",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "plain-child"}],
+        "createdAt": 9,
+    }
+    studio_db.sync_chat_messages("src", [*messages, plain_parent, plain_child])
+
+    relinked = {**plain_child, "parentId": "report"}
+    synced = studio_db.sync_chat_messages("src", [*messages, relinked], prune_missing = True)
+
+    assert next(m for m in synced if m["id"] == "plain-child")["parentId"] == "report"
+
+
+def test_a_corrupt_self_link_resolves_to_the_root_rather_than_itself(tmp_path, monkeypatch):
+    # A thread can only reach this shape by storing a cycle among its own unprotected rows, but
+    # the walk must still hand back a link the tree can hold rather than a message's own id.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    cyclic = [dict(m) for m in messages]
+    next(m for m in cyclic if m["id"] == "a0")["parentId"] = "prompt"
+    studio_db.sync_chat_messages("src", cyclic)
+
+    conn = studio_db.get_connection()
+    try:
+        assert studio_db._surviving_parent_id(conn, "src", "prompt", {"a0"}) is None
+    finally:
+        conn.close()
+
+
+def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
+    # parent_id is nullable, so '' is only reachable through a direct writer, but the helper and
+    # the caller's `or None` normalization must agree about it either way.
+    _, messages = _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE chat_messages SET parent_id = '' WHERE id = 'a0'")
+        conn.commit()
+        assert studio_db._surviving_parent_id(conn, "src", "a0", set()) is None
+    finally:
+        conn.close()

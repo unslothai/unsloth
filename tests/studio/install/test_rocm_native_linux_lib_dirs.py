@@ -124,7 +124,12 @@ def _call(
     tmp_path factory branches on it, so a session-wide patch breaks the fixture on
     a Windows test host."""
     with patch.object(sys, "platform", platform):
-        with patch("os.path.exists", _fake_exists(present)):
+        # isdir too: the llvm probe requires a directory, so a fake host that only
+        # answers exists() would report every nested llvm dir as missing.
+        with (
+            patch("os.path.exists", _fake_exists(present)),
+            patch("os.path.isdir", _fake_exists(present)),
+        ):
             return _norm(impl(str(bundle)))
 
 
@@ -259,6 +264,78 @@ class TestNativeLinuxRootResolution:
         present = {"/dev/kfd", "/opt/rocm/lib64/libhsa-runtime64.so"}
         for where, impl in _impls().items():
             assert self._run(impl, bundle_dir, present) == ["/opt/rocm/lib64"], where
+
+    def test_nested_llvm_runtime_follows_system_rocm_lib(self, bundle_dir):
+        """#7446: libamd_comgr depends on ROCm's versioned LLVM runtime, which is
+        installed below lib/llvm/lib rather than directly in lib."""
+        present = {
+            "/dev/kfd",
+            "/opt/rocm/lib/libhsa-runtime64.so",
+            "/opt/rocm/lib/llvm/lib",
+        }
+        for where, impl in _impls().items():
+            assert self._run(impl, bundle_dir, present) == [
+                "/opt/rocm/lib",
+                "/opt/rocm/lib/llvm/lib",
+            ], where
+
+    def test_lib64_host_still_finds_llvm_under_lib(self, bundle_dir):
+        """ROCm puts LLVM under <root>/lib/llvm even where HSA lives in lib64, so
+        deriving the llvm dir from the HSA dir alone would miss it and leave
+        libamd_comgr binding to the bundle's libLLVM."""
+        present = {
+            "/dev/kfd",
+            "/opt/rocm/lib64/libhsa-runtime64.so",
+            "/opt/rocm/lib/llvm/lib",
+        }
+        for where, impl in _impls().items():
+            assert self._run(impl, bundle_dir, present) == [
+                "/opt/rocm/lib64",
+                "/opt/rocm/lib/llvm/lib",
+            ], where
+
+    def test_lib64_host_prefers_its_own_llvm_dir_when_both_exist(self, bundle_dir):
+        present = {
+            "/dev/kfd",
+            "/opt/rocm/lib64/libhsa-runtime64.so",
+            "/opt/rocm/lib64/llvm/lib",
+            "/opt/rocm/lib/llvm/lib",
+        }
+        for where, impl in _impls().items():
+            assert self._run(impl, bundle_dir, present) == [
+                "/opt/rocm/lib64",
+                "/opt/rocm/lib64/llvm/lib",
+                "/opt/rocm/lib/llvm/lib",
+            ], where
+
+    def test_llvm_path_that_is_a_file_is_not_prepended(self, tmp_path, bundle_dir):
+        """Real filesystem: the serve-time caller joins these straight into
+        LD_LIBRARY_PATH without an is-dir filter, so a non-directory must not
+        reach it."""
+        root = tmp_path / "rocm"
+        (root / "lib").mkdir(parents = True)
+        (root / "lib" / "libhsa-runtime64.so").write_text("")
+        (root / "lib" / "llvm").mkdir()
+        (root / "lib" / "llvm" / "lib").write_text("not a directory")
+        real_exists = os.path.exists
+        # Pin both device nodes: a WSL test host really has /dev/dxg, which would
+        # take the WSL early-return and make this pass for the wrong reason.
+        pinned = {"/dev/kfd": True, "/dev/dxg": False}
+
+        def _exists(p):
+            return pinned.get(str(p), None) if str(p) in pinned else real_exists(p)
+
+        # A test host may itself have a real /opt/rocm (the default candidate), so
+        # assert on the bogus entry rather than on the whole list.
+        for where, impl in _impls().items():
+            with (
+                patch.object(sys, "platform", "linux"),
+                patch.dict(os.environ, {"ROCM_PATH": str(root)}, clear = True),
+                patch("os.path.exists", _exists),
+            ):
+                out = impl(str(bundle_dir))
+            assert str(root / "lib") in out, where
+            assert str(root / "lib" / "llvm" / "lib") not in out, where
 
     def test_lib_precedes_lib64_when_both_exist(self, bundle_dir):
         present = {

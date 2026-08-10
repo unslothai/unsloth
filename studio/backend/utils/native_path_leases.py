@@ -24,7 +24,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
 _MAX_NATIVE_PATH_REDACTIONS = 100
@@ -45,6 +45,35 @@ _SCRUB_SAVED_SECRET: str | None = None
 
 class NativePathLeaseError(ValueError):
     """Raised when a native path grant is missing, invalid, or unsafe."""
+
+
+def native_gguf_companion_parent_allowed(
+    companion_path: str | Path,
+    gguf_path: str | Path,
+    *,
+    allowed_subdirs: Collection[str] = (),
+    mtp_search_root: str | Path | None = None,
+) -> bool:
+    """Check whether a GGUF companion is in an allowed directory.
+
+    ``allowed_subdirs`` names the companion directories (``mtp``, ``dspark``)
+    this caller may reach into, beside the weight's own. A collection rather
+    than one flag per kind: each caller admits exactly the kind it is
+    resolving, so an MTP load never accepts a sidecar out of ``dspark/``.
+    """
+    companion_parent = Path(companion_path).resolve(strict = True).parent
+    gguf_parent = Path(gguf_path).resolve(strict = True).parent
+    if companion_parent == gguf_parent:
+        return True
+    permitted = {name.casefold() for name in allowed_subdirs}
+    if companion_parent.name.casefold() not in permitted:
+        return False
+    allowed_roots = {gguf_parent}
+    if mtp_search_root is not None:
+        search_root = Path(mtp_search_root).resolve(strict = True)
+        if search_root in {gguf_parent, gguf_parent.parent}:
+            allowed_roots.add(search_root)
+    return companion_parent.parent in allowed_roots
 
 
 @dataclass(frozen = True)

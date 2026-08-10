@@ -19,6 +19,10 @@ def _bare_orchestrator():
     """An orchestrator without the real __init__ subprocess/network."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
     o._gen_lock = threading.Lock()
+    o._send_order_lock = threading.Lock()
+    o._active_cancel_lock = threading.Lock()
+    o._active_cancel_events = []
+    o._executing_cancel_events = []
     o._cancel_event = threading.Event()  # stands in for the mp.Event
     o._drain_event = threading.Event()  # stands in for the unload-drain mp.Event
     o._proc = object()  # truthy so _ensure_subprocess_alive reports alive
@@ -344,17 +348,15 @@ def test_worker_drain_skip_emits_cancelled_gen_done_when_draining():
 
 
 def test_worker_generate_branches_check_drain_before_clearing_cancel():
-    # Both worker command loops (MLX fast-path + GPU) must consult the drain skip
-    # before clearing cancel_event and running, so a queued generate can't clear an
-    # unload-initiated cancel and run the outgoing model to completion. Each loop
-    # checks the drain twice -- once before the clear and once after -- so a
-    # drain+cancel pair that lands in the window between them is still caught.
+    # Guarded branches check the drain skip before clearing cancel_event and
+    # again after, so a queued command can't erase an unload's cancel. Three
+    # today: MLX generate + generate_audio_input, and GPU generate.
     import inspect
 
     from core.inference import worker
 
     src = inspect.getsource(worker.run_inference_process)
-    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 4
+    assert src.count("_drain_skip_generate(cmd, resp_queue, drain_event)") == 6
 
 
 def test_worker_generate_rechecks_drain_after_clearing_cancel():
@@ -775,6 +777,7 @@ def test_dispatched_bails_when_unload_flips_before_mailbox_registration(monkeypa
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(o, "_start_dispatcher", lambda: None)
@@ -817,6 +820,7 @@ def test_dispatched_bails_when_model_swapped_before_mailbox_registration(monkeyp
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -846,6 +850,7 @@ def test_dispatched_bails_when_dispatcher_stopped_before_mailbox_registration(mo
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -872,6 +877,7 @@ def test_dispatched_happy_path_registers_and_sends(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1338,6 +1344,7 @@ def test_dispatched_bail_stops_orphan_dispatcher_it_started(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = None  # none running -> this call starts it
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1382,6 +1389,7 @@ def test_dispatched_bail_keeps_dispatcher_with_other_active_mailbox(monkeypatch)
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = None
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1419,6 +1427,7 @@ def test_dispatched_bail_keeps_preexisting_dispatcher(monkeypatch):
     o = _bare_orchestrator()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._unload_pending = False
     o._dispatcher_thread = _AliveDispatcher()  # already running
     monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
@@ -1545,6 +1554,7 @@ def test_concurrent_start_dispatcher_spawns_exactly_one():
     o._resp_queue = _queue.Queue()  # real queue so the dispatcher loop blocks and stays alive
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._dispatcher_thread = None
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
@@ -1660,6 +1670,7 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     o._resp_queue = _queue.Queue()  # a spawned dispatcher would block-read here and stay alive
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._request_cancel_events = {}
     o._dispatcher_stop = threading.Event()
     o._dispatcher_lifecycle_lock = threading.Lock()
     o._unload_pending = False
@@ -1713,3 +1724,310 @@ def test_queued_start_behind_unload_stop_spawns_no_dispatcher():
     assert o._dispatcher_thread is None, "the stop cleared it and the queued start spawned nothing"
     live = [t for t in threading.enumerate() if t.name == "inference-dispatcher" and t.is_alive()]
     assert live == [], "no fresh dispatcher may be left to consume the unloaded reply"
+
+
+def _dispatch(o, resps):
+    """Run the dispatcher over a fixed response list and stop it."""
+    import queue as _queue
+
+    o._resp_queue = _queue.Queue()
+    for r in resps:
+        o._resp_queue.put(r)
+    o._dispatcher_stop = threading.Event()
+    t = threading.Thread(target = o._dispatcher_loop, daemon = True)
+    t.start()
+    deadline = time.monotonic() + 5.0
+    while not o._resp_queue.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    o._dispatcher_stop.set()
+    t.join(timeout = 5.0)
+
+
+def test_worker_ownership_follows_the_worker_not_the_consumer():
+    # The subprocess runs one generation at a time and can start B while A's consumer has yet to
+    # drain its mailbox. A must stop owning the worker the moment its gen_done is routed, else
+    # a late Stop for A cancels B.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    _dispatch(o, [{"type": "token", "request_id": "a", "token": "hi"}])
+    assert o._owns_worker(a_cancel), "the request the worker is answering owns it"
+    assert not o._owns_worker(b_cancel), "a queued request does not"
+
+    # A finishes. B has been sent but has not answered yet (it is prefilling), so the gap
+    # between the two is the window a late Stop for A used to fire into.
+    _dispatch(o, [{"type": "gen_done", "request_id": "a"}])
+    assert not o._owns_worker(a_cancel), "a finished request stops owning the worker"
+    assert o._owns_worker(b_cancel), "the next queued request is the one prefilling"
+
+    # Worker moves on to B, still before A's consumer reads anything.
+    _dispatch(o, [{"type": "token", "request_id": "b", "token": "yo"}])
+    assert not o._owns_worker(a_cancel), "a finished request must not cancel its successor"
+    assert o._owns_worker(b_cancel), "the worker moved on to B, so B owns it"
+
+    # A's own stream unwinding afterwards must not disturb B.
+    o._release_worker(a_cancel)
+    assert o._owns_worker(b_cancel)
+
+
+def test_status_responses_do_not_transfer_worker_ownership():
+    # Status lines are not an answer to any request; the dispatcher drops them before routing.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    _dispatch(o, [{"type": "status", "request_id": "b", "message": "loading"}])
+    # Nothing has answered, so the oldest claim is still the one prefilling.
+    assert o._owns_worker(a_cancel)
+    assert not o._owns_worker(b_cancel)
+
+
+def test_only_the_latest_responder_executes():
+    # The subprocess runs one generation at a time, so answering B means it has left A.
+    # _generate_inner promotes from its own consumer and can share the worker with a
+    # dispatched request, so the two must not both count as executing.
+    o = _bare_orchestrator()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+
+    o._mark_worker_started(a_cancel)
+    assert o._owns_worker(a_cancel)
+    o._mark_worker_started(b_cancel)
+    assert o._owns_worker(b_cancel), "the latest responder is the one executing"
+    assert not o._owns_worker(a_cancel), "and it is the only one"
+    # Idempotent: more of B's own tokens must not disturb it.
+    o._mark_worker_started(b_cancel)
+    assert o._owns_worker(b_cancel)
+
+
+def test_a_stale_mailbox_read_does_not_cancel_the_running_generation():
+    # A dispatched consumer can still be draining tokens after the dispatcher retired its request
+    # and started the next one. Stopping it then must tear down only its own stream: signalling
+    # the shared worker event would end its successor.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    a_cancel, b_cancel = threading.Event(), threading.Event()
+    o._mailboxes = {"a": _queue.Queue(), "b": _queue.Queue()}
+    o._request_cancel_events = {"a": a_cancel, "b": b_cancel}
+    o._claim_worker(a_cancel)
+    o._claim_worker(b_cancel)
+    # Worker finished A and moved on to B.
+    _dispatch(
+        o,
+        [
+            {"type": "gen_done", "request_id": "a"},
+            {"type": "token", "request_id": "b", "token": "yo"},
+        ],
+    )
+    assert o._owns_worker(b_cancel) and not o._owns_worker(a_cancel)
+
+    # A's consumer now reads a token buffered before that, with A stopped.
+    a_cancel.set()
+    stale = [{"type": "token", "request_id": "a", "text": "late"}]
+    drained = []
+    list(
+        o._consume_token_stream(
+            lambda timeout: stale.pop(0) if stale else None,
+            lambda: drained.append(True),
+            crash_context = "generation",
+            cancel_event = a_cancel,
+            mark_started = False,
+        )
+    )
+    assert drained, "the stopped stream still tears itself down"
+    assert not o._cancel_event.is_set(), "a retired request must not signal the shared worker event"
+
+    # The generation that does own the worker still can.
+    b_cancel.set()
+    stale_b = [{"type": "token", "request_id": "b", "text": "live"}]
+    list(
+        o._consume_token_stream(
+            lambda timeout: stale_b.pop(0) if stale_b else None,
+            lambda: None,
+            crash_context = "generation",
+            cancel_event = b_cancel,
+            mark_started = False,
+        )
+    )
+    assert o._cancel_event.is_set(), "the running generation's own Stop must reach the worker"
+
+
+def test_a_dispatcher_started_mid_stream_still_reaches_the_direct_reader():
+    # A compare request can start the dispatcher while an ordinary chat is streaming. The
+    # dispatcher then owns resp_queue, and without a mailbox for the direct reader it dropped
+    # that chat's tokens and its gen_done as unaddressed, hanging it.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
+
+    read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        _dispatch(
+            o,
+            [
+                {"type": "token", "request_id": "direct-1", "text": "hi"},
+                {"type": "gen_done", "request_id": "direct-1"},
+            ],
+        )
+        assert read_one(timeout = 0.1) == {
+            "type": "token",
+            "request_id": "direct-1",
+            "text": "hi",
+        }, "the dispatcher must route to the direct reader, not drop"
+        assert read_one(timeout = 0.1)["type"] == "gen_done"
+    finally:
+        release()
+    assert o._direct_mailboxes == {}, "the mailbox is dropped when the stream ends"
+
+
+def test_the_direct_reader_hands_back_a_compare_response_it_took():
+    # The mirror race: this reader is already blocked on resp_queue when a compare request's
+    # dispatcher starts, so it can take that request's response first. Consuming it would
+    # corrupt this chat and hang the compare pane.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    compare_box: _queue.Queue = _queue.Queue()
+    o._mailboxes = {"compare-1": compare_box}
+    o._direct_mailboxes = {}
+    o._request_cancel_events = {}
+    o._resp_queue = _queue.Queue()
+    o._dispatcher_thread = None  # no dispatcher yet: this reader owns the queue
+
+    read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        o._resp_queue.put({"type": "token", "request_id": "compare-1", "text": "theirs"})
+        o._resp_queue.put({"type": "token", "request_id": "direct-1", "text": "mine"})
+        assert read_one(timeout = 0.1) is None, "a foreign response is not ours to yield"
+        assert compare_box.get_nowait()["text"] == "theirs", "it goes to its own mailbox"
+        assert read_one(timeout = 0.1)["text"] == "mine"
+    finally:
+        release()
+
+
+def test_a_direct_mailbox_is_not_mistaken_for_compare_activity():
+    # _mailboxes means "compare requests are in flight" to the unload and distributed paths,
+    # so an ordinary chat's mailbox must live somewhere else.
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    o._mailboxes = {}
+    o._direct_mailboxes = {}
+    _read_one, _drain, release = o._direct_reader("direct-1")
+    try:
+        assert o._mailboxes == {}
+        assert "direct-1" in o._direct_mailboxes
+    finally:
+        release()
+
+
+def test_replacing_the_subprocess_clears_worker_scoped_state():
+    # Ownership is keyed only by cancel-event identity, so a consumer still blocked on its
+    # mailbox when the worker was replaced stayed recorded as the executor. A generation on
+    # the fresh worker then failed _owns_worker and could not be stopped.
+    import queue as _queue
+
+    o = _bare_orchestrator()
+    o._mailbox_lock = threading.Lock()
+    dead = threading.Event()
+    o._mailboxes = {"compare-1": _queue.Queue()}
+    o._direct_mailboxes = {"direct-1": _queue.Queue()}
+    o._request_cancel_events = {"compare-1": dead}
+    o._claim_worker(dead)
+    o._mark_worker_started(dead)
+    assert o._owns_worker(dead)
+
+    o._reset_worker_scoped_state()
+
+    assert o._mailboxes == {} and o._direct_mailboxes == {}
+    assert o._request_cancel_events == {}
+    assert o._active_cancel_events == [] and o._executing_cancel_events == []
+    # A generation on the fresh worker owns it rather than being refused by a ghost.
+    fresh = threading.Event()
+    o._claim_worker(fresh)
+    assert o._owns_worker(fresh), "the dead worker's request must not outrank a live one"
+
+
+def test_audio_input_claims_the_worker_before_sending():
+    # Unclaimed, a compare request queued behind an audio-input generation looked like the
+    # oldest owner, so stopping that queued request signalled the worker and killed this.
+    import ast
+    import pathlib
+
+    src = pathlib.Path(orch_mod.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_generate_audio_input_inner"
+    )
+    body = ast.get_source_segment(src, fn) or ""
+    claim = body.find("self._claim_worker(cancel_event)")
+    send = body.find("self._send_cmd(cmd)")
+    assert claim != -1, "_generate_audio_input_inner must claim the worker"
+    assert send != -1
+    assert claim < send, "the claim has to happen before the command is enqueued"
+    assert "with self._send_order_lock:" in body, "claim and send must be one critical section"
+    assert "self._release_worker(cancel_event)" in body
+
+
+def test_generation_stopped_while_queued_is_never_sent(monkeypatch):
+    # Two chats on the serialized backend: the second blocks on _gen_lock, and Stop sets its
+    # event while it waits. Sending anyway occupied the worker with a run the user ended --
+    # the cancel is only checked on a token, so a long prefill (or a generation that reaches
+    # gen_done without one) still held up its siblings.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(o, "_wait_dispatcher_idle", lambda *a, **k: None)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
+    )
+    stopped = threading.Event()
+    stopped.set()
+
+    out = list(
+        o._generate_inner(messages = [{"role": "user", "content": "hi"}], cancel_event = stopped)
+    )
+
+    assert out == [], "a stopped request yields nothing rather than an error banner"
+    assert o._active_cancel_events == [], "it must not claim the worker either"
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()
+
+
+def test_audio_input_stopped_while_queued_is_never_sent(monkeypatch):
+    # Same lock, same hole.
+    o = _bare_orchestrator()
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(
+        o, "_send_cmd", lambda cmd: pytest.fail("must not send a generation already stopped")
+    )
+    stopped = threading.Event()
+    stopped.set()
+
+    out = list(o._generate_audio_input_inner(audio_array = [0.0, 0.1], cancel_event = stopped))
+
+    assert out == []
+    assert o._active_cancel_events == []
+    assert o._gen_lock.acquire(blocking = False)
+    o._gen_lock.release()

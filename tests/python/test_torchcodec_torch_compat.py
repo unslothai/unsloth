@@ -11,11 +11,20 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 IMPORT_FIXES_PATH = REPO_ROOT / "unsloth" / "import_fixes.py"
 EXTRAS_NO_DEPS_TXT = REPO_ROOT / "studio" / "backend" / "requirements" / "extras-no-deps.txt"
+
+
+def _tomllib():
+    if sys.version_info >= (3, 11):
+        import tomllib
+        return tomllib
+    return pytest.importorskip("tomli")
 
 
 def _load_import_fixes_module():
@@ -364,3 +373,39 @@ def test_select_torchcodec_spec_matches_compat_matrix():
             f"torch {torch_minor}: installer admits {sorted(admitted)}, "
             f"matrix allows {sorted(allowed)}"
         )
+def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
+    """torchcodec publishes no sdist and no wheel for Linux aarch64, Windows ARM64 or
+    Intel Mac, so an ungated pin makes pip fail the whole install on those hosts instead
+    of just skipping audio -- and the cu*/rocm*/intel torch 2.10 extras pull it in.
+    The marker must match PLATFORM_LACKS_TORCHCODEC_WHEEL in install_python_stack.py.
+    """
+    markers = pytest.importorskip("packaging.markers")
+    tomllib = _tomllib()
+    extras = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    audio = {n: d for n, d in extras.items() if n.startswith("audio-torch")}
+    assert audio, "expected audio-torch* extras"
+
+    supported = [
+        {"sys_platform": "linux", "platform_machine": "x86_64"},
+        {"sys_platform": "win32", "platform_machine": "AMD64"},
+        {"sys_platform": "darwin", "platform_machine": "arm64"},
+    ]
+    unsupported = [
+        {"sys_platform": "linux", "platform_machine": "aarch64"},
+        {"sys_platform": "win32", "platform_machine": "ARM64"},
+        {"sys_platform": "darwin", "platform_machine": "x86_64"},
+    ]
+    for name, deps in audio.items():
+        for dep in deps:
+            _, _, marker_text = dep.partition(";")
+            assert marker_text.strip(), f"{name}: {dep!r} has no marker"
+            marker = markers.Marker(marker_text.strip())
+            env = {"python_version": "3.12"}
+            for case in supported:
+                assert marker.evaluate({**env, **case}), f"{name} must install on {case}"
+            for case in unsupported:
+                assert not marker.evaluate(
+                    {**env, **case}
+                ), f"{name} has no wheel for {case} and must not be resolved there"

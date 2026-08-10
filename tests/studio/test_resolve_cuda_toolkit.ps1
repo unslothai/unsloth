@@ -31,6 +31,16 @@ $mismatchFn = $ast.FindAll({ param($n)
 if ($mismatchFn.Count -ne 1) { throw "expected exactly one Write-CudaDriverToolkitMismatch, found $($mismatchFn.Count)" }
 $mismatchText = $mismatchFn[0].Extent.Text
 
+# -RequireOrExit leaves through Exit-SetupFailure, so the child needs the real
+# one. Without it the call was an ignored command-not-found under
+# ErrorActionPreference=Continue, the child fell through and exited 0, and the
+# two "exits non-zero" checks failed on every run while CI stayed green.
+$exitFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Exit-SetupFailure"
+}, $true)
+if ($exitFn.Count -ne 1) { throw "expected exactly one Exit-SetupFailure, found $($exitFn.Count)" }
+$exitText = $exitFn[0].Extent.Text
+
 # --- Spoof executables for driver/toolkit compatibility scenarios ---
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("rct_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
@@ -62,6 +72,7 @@ function Run-Case {
 `$NvccCompatibleFake = '$nvccCompatibleFake'
 function substep { param(`$m, `$c) Write-Host "  `$m" }
 function step    { param(`$l, `$v, `$c) Write-Host "[`$l] `$v" }
+function Write-StudioLine { param([string]`$Message, [string]`$ForegroundColor) Write-Host `$Message }
 function Add-ToUserPath { param(`$Directory, `$Position) `$true }
 function Refresh-Environment { }
 function Get-CudaComputeCapability { '120' }
@@ -83,6 +94,8 @@ function Find-Nvcc {
 `$HasNvidiaSmi  = `$true
 `$script:CudaToolkitReady = `$false
 `$script:NvccPath = `$null; `$script:CudaToolkitRoot = `$null; `$script:CudaArch = `$null
+
+$exitText
 
 $mismatchText
 

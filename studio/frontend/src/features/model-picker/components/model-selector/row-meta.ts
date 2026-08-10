@@ -33,6 +33,12 @@ export function splitRepoLabel(label: string): {
   return { owner: label.slice(0, slash), name: label.slice(slash + 1) };
 }
 
+/** Our own repos. Rows drop the "unsloth/" prefix, since nearly every model
+ *  listed is ours; the full repo id stays in the row tooltip. */
+export function isUnslothOwner(owner: string | null | undefined): boolean {
+  return owner?.toLowerCase() === "unsloth";
+}
+
 export type MetaToken =
   | { kind: "format"; label: string; tone: FormatTone }
   | { kind: "size"; label: string }

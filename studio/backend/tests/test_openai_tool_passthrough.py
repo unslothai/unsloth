@@ -1191,6 +1191,41 @@ class TestBuildPassthroughPayloadToolChoice:
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
 
+    def test_llama_incompatible_tool_constraints_are_omitted(self):
+        args = self._args()
+        schema = args["openai_tools"][0]["function"]["parameters"]
+        schema["properties"] = {
+            "declarationKey": {"type": "string", "pattern": r"\S"},
+            "exactKey": {"type": "string", "pattern": r"^[A-Z]+$"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string", "pattern": "token"},
+                        {"type": "string", "pattern": "^fixed$"},
+                    ],
+                    "default": {"pattern": "annotation data"},
+                },
+            },
+            "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "boundedScript": {"type": "string", "maxLength": 2000},
+        }
+
+        body = _build_passthrough_payload(**args)
+        forwarded = body["tools"][0]["function"]["parameters"]["properties"]
+
+        assert forwarded["declarationKey"] == {"type": "string"}
+        assert forwarded["exactKey"]["pattern"] == r"^[A-Z]+$"
+        nested = forwarded["nested"]["items"]
+        assert nested["anyOf"][0] == {"type": "string"}
+        assert nested["anyOf"][1]["pattern"] == "^fixed$"
+        assert nested["default"] == {"pattern": "annotation data"}
+        assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
+        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
+        assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
+        assert schema["properties"]["largeScript"]["maxLength"] == 65536
+
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
         args["stream"] = True
@@ -2288,7 +2323,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -2477,7 +2512,7 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -4580,6 +4615,9 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             class FailingAsyncClient:
                 async def __aenter__(self):
                     return self
@@ -4587,14 +4625,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def __aexit__(self, *_args):
                     return False
 
+                async def aclose(self):
+                    return None
+
                 async def post(self, *_args, **_kwargs):
                     raise httpx.ConnectError("llama down")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FailingAsyncClient(),
             )
             monkeypatch.setattr(
@@ -4632,9 +4674,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4652,7 +4700,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4683,9 +4733,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False, "max_tokens": 0}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4703,7 +4759,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4741,6 +4799,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4845,12 +4904,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"input": ["alpha", "beta"], "model": "embed"}
 
+                async def is_disconnected(self):
+                    return False
+
             class FakeAsyncClient:
                 async def __aenter__(self):
                     return self
 
                 async def __aexit__(self, *_args):
                     return False
+
+                async def aclose(self):
+                    return None
 
                 async def post(self, *_args, **_kwargs):
                     assert monitor.active_count() == 1
@@ -4864,9 +4929,10 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeAsyncClient(),
             )
             monkeypatch.setattr(
@@ -5102,10 +5168,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 assert cancel_id in inf_mod._CANCEL_REGISTRY
 
                 blocker.release()
+                # The lease is announced before handover, so drain that marker first.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
                 pending = asyncio.create_task(iterator.__anext__())
                 for _ in range(100):
                     if "body" in body_holder:
@@ -5209,10 +5280,15 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
 
                 blocker.release()
-                first = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
+                # The lease is announced before handover, so the payload is the next chunk.
+                assert (
+                    await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
+                    == ": admission-done\n\n"
+                )
+                first = await asyncio.wait_for(iterator.__anext__(), timeout = 1.0)
                 assert "hello" in first
 
                 pending = asyncio.create_task(iterator.__anext__())
@@ -5388,7 +5464,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1
@@ -6337,7 +6413,7 @@ class TestApiMonitorSafetensorsUsage:
                     }
                     yield "safe reply"
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6408,7 +6484,7 @@ class TestApiMonitorSafetensorsUsage:
                     cancel_event.set()
                     yield {"type": "content", "text": "ignored"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6469,7 +6545,7 @@ class TestApiMonitorSafetensorsUsage:
                 def generate_chat_completion_with_tools(self, **_kwargs):
                     yield {"type": "content", "text": "unused"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     nonlocal reset_called
                     reset_called = True
 
@@ -6481,6 +6557,10 @@ class TestApiMonitorSafetensorsUsage:
                 # Only the generation hop should cancel; resolution runs before the row opens.
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
+                # Resolving what is already serving is pre-row work too, offloaded for the
+                # same reason: _loaded_satisfies reaches the singleton, whose build detects.
+                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                    return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6927,7 +7007,7 @@ class TestResponsesChatTemplateKwargs:
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
-                assert chunk == ": keep-alive\n\n"
+                assert chunk == ": admission-wait\n\n"
                 snapshot = queue.snapshot()
                 assert snapshot.active == 1
                 assert snapshot.queued == 1

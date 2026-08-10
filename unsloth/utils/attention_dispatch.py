@@ -31,6 +31,8 @@ from ..utils.packing import (
     build_xformers_block_causal_mask,
 )
 
+flash_attn_func = None
+flash_attn_varlen_func = None
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None
@@ -173,6 +175,33 @@ def resolve_prefix_seg_info(kwargs, past_key_value, attention_mask):
     return seg
 
 
+# One dense window mask per (device, shape, window), reused across layers. Every layer of a
+# Mistral-style model asks for the identical mask, and at 32K that tensor is 1 GiB with two more
+# alive while it is built, so rebuilding it 32 times is how this SDPA fallback OOMs a run that
+# xFormers or flash would have carried. Same single-entry-per-device shape as _SDPA_MASK_CACHE.
+_WINDOW_MASK_CACHE: dict = {}
+
+
+def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -> Tensor:
+    """Causal band mask of shape (1, 1, q_len, k_len). Read-only: callers must not mutate it."""
+    params = (q_len, k_len, sliding_window)
+    entry = _WINDOW_MASK_CACHE.get(device)
+    if entry is not None and entry["params"] == params:
+        return entry["mask"]
+    # Drop the outgoing mask first. It is dead either way, and holding it while the replacement
+    # and its temporaries are allocated would make a shape change peak a whole mask higher.
+    _WINDOW_MASK_CACHE.pop(device, None)
+    entry = None
+    q_pos = torch.arange(k_len - q_len, k_len, device = device)
+    k_pos = torch.arange(k_len, device = device)
+    mask = (
+        (k_pos[None, :] <= q_pos[:, None])
+        & (k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1)))
+    )[None, None, :, :]
+    _WINDOW_MASK_CACHE[device] = {"params": params, "mask": mask}
+    return mask
+
+
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
@@ -232,6 +261,11 @@ def run_attention(
     kv_seq_len = context.kv_seq_len
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
+    # A non-positive window means "no local attention", not "a window of nothing": a config
+    # spelling it 0 would otherwise put the mask's lower bound above its causal upper bound
+    # and hide every position from every other.
+    if sliding_window is not None and sliding_window <= 0:
+        sliding_window = None
 
     # DoRA promotes q/k/v_proj outputs to fp32, which FlashAttention rejects (and so does
     # the xformers flash-2 op on sm_100+, see _XFORMERS_FP32_UNSUPPORTED), so downcast any
@@ -390,6 +424,15 @@ def run_attention(
                 if local_mask.dtype == torch.bool:
                     no_allowed = ~local_mask.any(dim = -1, keepdim = True)  # (bsz,1,q_len,1)
                     local_mask = local_mask | no_allowed
+
+            if local_mask is None and sliding_window is not None and k_len_local > sliding_window:
+                # SDPA's is_causal is FULL causal; it has no window. With no padding mask to
+                # hang the window off, a model whose config declares one attended its whole
+                # history whenever neither the xformers bias nor flash's window_size was the
+                # thing running.
+                local_mask = _windowed_causal_mask(
+                    q_len_local, k_len_local, sliding_window, Q.device
+                )
 
             is_causal_local = local_mask is None and q_len_local == k_len_local
 

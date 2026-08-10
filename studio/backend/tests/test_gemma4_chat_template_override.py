@@ -299,7 +299,7 @@ def test_already_in_target_state_consistent_with_bundled_override():
     ``chat_template_override`` still matches (no spurious reload), while a raw
     ``None`` would not.
     """
-    LlamaCppBackend = _import_backend()
+    LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:
         def terminate(self): ...
@@ -334,12 +334,16 @@ def test_already_in_target_state_consistent_with_bundled_override():
         is_vision = False,
     )
     # Effective (resolved bundled) override -> already loaded, no reload.
-    assert backend._already_in_target_state(chat_template_override = BUNDLED, **common) is True
+    assert backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = BUNDLED, **common)
+    )
     # Raw None (unresolved) -> false match, would force a needless reload.
-    assert backend._already_in_target_state(chat_template_override = None, **common) is False
+    assert not backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = None, **common)
+    )
 
 
 def _import_backend():
     with _stub_modules_ctx():
-        from core.inference.llama_cpp import LlamaCppBackend
-    return LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    return LlamaCppBackend, GgufLoadIntent

@@ -19,7 +19,7 @@ from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
     disable_openai_auto_switch_for_request,
-    load_model,
+    load_model_gated,
     openai_chat_completions,
 )
 from state.tool_policy import tools_force_disabled
@@ -165,7 +165,10 @@ async def _serve_chat(
     await _preview_lock.acquire()
     keep_locked = False
     try:
-        await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
+        # The gated coroutine, not the /load route: the route's padding returns a
+        # StreamingResponse while the checkpoint is still loading, so the chat below
+        # would run against the previous model (or none).
+        await load_model_gated(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
         # Beats a process-wide `--enable-tools` (enable_tools=False alone wouldn't).
         with tools_force_disabled():
             response = await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)

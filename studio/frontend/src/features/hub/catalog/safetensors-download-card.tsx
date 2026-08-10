@@ -326,6 +326,7 @@ export function SafetensorsDownloadCard({
             loading={isLoadingThisModel || downloadAction.starting}
             isPartial={downloadAction.isPartial}
             partialTransport={downloadAction.partialTransport}
+            stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
             disabled={downloadAction.disabled}
             onClick={downloadAction.onClick}

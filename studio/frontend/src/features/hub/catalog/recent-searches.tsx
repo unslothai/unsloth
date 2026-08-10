@@ -14,11 +14,13 @@ export function RecentSearches({
   onSelect,
   onRemove,
   onClear,
+  top,
 }: {
   searches: string[];
   onSelect: (query: string) => void;
   onRemove: (query: string) => void;
   onClear: () => void;
+  top?: number;
 }) {
   if (searches.length === 0) {
     return null;
@@ -26,6 +28,7 @@ export function RecentSearches({
   return (
     <div
       className="hub-recent-panel menu-soft-surface absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-[16px] p-1.5"
+      style={top === undefined ? undefined : { top }}
       aria-label="Recent searches"
       onMouseDown={(event) => event.preventDefault()}
     >

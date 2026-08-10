@@ -238,6 +238,19 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     return f"Calling: {tool_name}"
 
 
+def awaiting_approval_status(tool_name: str) -> str:
+    """Status text for a call parked on the approval prompt.
+
+    It has not started, so reporting "Running ..." with a climbing timer reads
+    as a hang.
+    """
+    if tool_name == "python":
+        return "Waiting for approval: Python"
+    if tool_name == "terminal":
+        return "Waiting for approval: command"
+    return f"Waiting for approval: {tool_name}"
+
+
 def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 

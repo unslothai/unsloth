@@ -79,14 +79,54 @@ def main(
     if (
         _sys.platform == "win32"
     ):  # this block catches unsloth running inside of System32 or any subdirs, this WILL cause errors if not prevented.
-        _cwd = _os.path.normcase(_os.path.normpath(_os.getcwd()))
-        _system32 = _os.path.normcase(
-            _os.path.normpath(_os.path.join(_os.environ.get("WINDIR", r"C:\Windows"), "System32"))
-        )
-        if _cwd == _system32 or _cwd.startswith(_system32 + _os.sep):
+        _windir = _os.environ.get("WINDIR", r"C:\Windows")
+        # SysWOW64 too: a 32-bit elevated shell opens there, same unwritable folder.
+        _system_dirs = [
+            _os.path.normcase(_os.path.normpath(_os.path.join(_windir, _name)))
+            for _name in ("System32", "SysWOW64")
+        ]
+        _cwd_raw = _os.getcwd()
+        _cwd = _os.path.normcase(_os.path.normpath(_cwd_raw))
+        if any(_cwd == _dir or _cwd.startswith(_dir + _os.sep) for _dir in _system_dirs):
+            # Users land here via "Run as administrator", so name the folder and hand back
+            # a runnable fix. SYSTEM's USERPROFILE is under System32 and would send them
+            # straight back, so take the first home outside the Windows tree, or none.
+            _windir_norm = _os.path.normcase(_os.path.normpath(_windir))
+            _home = None
+            for _candidate in (
+                _os.environ.get("USERPROFILE"),
+                _os.environ.get("PUBLIC"),
+                _os.path.expanduser("~"),
+            ):
+                _norm = _os.path.normcase(_os.path.normpath(_candidate)) if _candidate else ""
+                if _norm and _norm != _windir_norm and not _norm.startswith(_windir_norm + _os.sep):
+                    _home = _candidate
+                    break
+            if _home:
+                # Quote it, or C:\Users\Jane Doe reaches Set-Location as two arguments.
+                # PowerShell single quotes are verbatim ('' escapes an apostrophe); cmd
+                # needs double quotes once extensions are off. " is not legal in a path.
+                _home_ps = "'" + _home.replace("'", "''") + "'"
+                _home_cmd = '"' + _home + '"'
+                _cd_lines = (
+                    f"    cd {_home_ps}          (PowerShell)\n"
+                    f"    cd /d {_home_cmd}       (cmd.exe)\n"
+                )
+            else:
+                _cd_lines = f"    (any folder outside {_windir})\n"
+            _argv = " ".join((f'"{_arg}"' if " " in _arg else _arg) for _arg in _sys.argv[1:])
+            _retry = ("unsloth " + _argv).rstrip()
             typer.secho(
-                "Refusing to run Unsloth inside System32 as it will lead to Errors.\n"
-                "cd to a normal working directory and try again.",
+                f"Unsloth cannot run from {_cwd_raw}\n"
+                "\n"
+                "That is a Windows system folder. Unsloth writes caches, configs and model\n"
+                "downloads into the current working directory, and Windows blocks that here.\n"
+                "Opening a terminal with 'Run as administrator' starts you in a folder like\n"
+                "this one, which is how most people end up here.\n"
+                "\n"
+                "Change to a normal folder and run the command again:\n"
+                f"{_cd_lines}"
+                f"    {_retry}",
                 fg = "red",
                 err = True,
             )

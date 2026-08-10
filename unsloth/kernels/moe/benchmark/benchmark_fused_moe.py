@@ -1,3 +1,7 @@
+# setup_model/run_benchmark below annotate with PEP 604 unions, which evaluate at
+# def time and are a TypeError on the 3.9 floor pyproject declares.
+from __future__ import annotations
+
 import argparse
 import time
 from contextlib import nullcontext

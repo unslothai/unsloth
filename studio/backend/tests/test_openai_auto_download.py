@@ -684,13 +684,22 @@ class _Req:
         self.headers = headers or {}
 
 
-def _hook(model, request, enabled):
+def _hook(
+    model,
+    request,
+    enabled,
+    current_subject = None,
+):
     import utils.openai_auto_switch_settings as s
 
     original = s.get_openai_auto_download_enabled
     s.get_openai_auto_download_enabled = lambda: enabled
     try:
-        return asyncio.run(inference_route._maybe_auto_download_model(model, request))
+        return asyncio.run(
+            inference_route._maybe_auto_download_model(
+                model, request, current_subject = current_subject
+            )
+        )
     finally:
         s.get_openai_auto_download_enabled = original
 
@@ -726,11 +735,96 @@ def test_hook_uses_the_anthropic_envelope_on_messages(hub):
 
 def test_hook_swallows_unexpected_failures(hub, monkeypatch):
     # A broken download path must not turn a servable request into a 500.
-    async def _boom(model, hf_token = None):
+    async def _boom(
+        model,
+        hf_token = None,
+        **kwargs,
+    ):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(auto_dl, "maybe_auto_download", _boom)
     assert _hook("unsloth/x-GGUF", _Req(), enabled = True) is None
+
+
+def _download_rows():
+    from core.inference.api_monitor import api_monitor
+    return [e for e in api_monitor.snapshot() if e["event"] == "download"]
+
+
+def test_a_ui_session_download_is_not_marked_as_api_traffic(hub):
+    """The monitor overlay auto-opens on via_api_key, which exists to separate
+    "someone is serving other clients" from "someone is using Unsloth". Studio's
+    own chat hits these same /v1 endpoints with a session JWT, so hardcoding the
+    flag on the download row popped the panel open mid-chat."""
+    from fastapi import HTTPException
+    from core.inference.api_monitor import api_monitor
+
+    api_monitor.clear()
+    with pytest.raises(HTTPException):
+        # No Authorization header: the UI's session-JWT path.
+        _hook("unsloth/x-GGUF", _Req(), enabled = True, current_subject = "unsloth")
+    rows = _download_rows()
+    assert rows and all(row["via_api_key"] is False for row in rows)
+
+
+def test_an_api_key_download_keeps_the_attribution_and_names_its_caller(hub):
+    """The row is shared, so it needs the subject as well: without one the
+    attribution is reported to every logged-in browser instead of the caller."""
+    from fastapi import HTTPException
+    from auth.authentication import API_KEY_PREFIX
+    from core.inference.api_monitor import api_monitor
+
+    api_monitor.clear()
+    with pytest.raises(HTTPException):
+        _hook(
+            "unsloth/x-GGUF",
+            _Req(headers = {"authorization": f"Bearer {API_KEY_PREFIX}abc123"}),
+            enabled = True,
+            current_subject = "unsloth",
+        )
+    rows = _download_rows()
+    assert rows and all(row["via_api_key"] is True for row in rows)
+    # Still shared: another subject sees the row, just not the attribution.
+    others = [e for e in api_monitor.snapshot(subject = "someone-else") if e["event"] == "download"]
+    assert len(others) == len(rows)
+    assert all(row["via_api_key"] is False for row in others)
+
+
+def test_an_api_key_caller_waiting_on_someone_elses_download_gets_a_row(hub):
+    """A download started by Studio's own chat is attributed to the session, so an
+    API-key client that asks for the same repo while it runs is refused before the
+    handler's own api_monitor.start. Without a row of its own that call is invisible:
+    the only row is the session's via_api_key=False download, so the overlay stays
+    shut and the monitor presents API traffic as Studio's own."""
+    from fastapi import HTTPException
+    from auth.authentication import API_KEY_PREFIX
+    from core.inference.api_monitor import api_monitor
+
+    api_monitor.clear()
+    with pytest.raises(HTTPException):
+        # Studio's chat (session JWT) starts the download and takes the slot.
+        _hook("unsloth/x-GGUF", _Req(), enabled = True, current_subject = "unsloth")
+    seeded = {row["id"] for row in api_monitor.snapshot(subject = "unsloth")}
+
+    with pytest.raises(HTTPException) as excinfo:
+        # The adopted-download branch: same repo, an sk-unsloth key this time.
+        _hook(
+            "unsloth/x-GGUF",
+            _Req(headers = {"authorization": f"Bearer {API_KEY_PREFIX}abc123"}),
+            enabled = True,
+            current_subject = "unsloth",
+        )
+    assert excinfo.value.status_code == 503
+
+    fresh = [e for e in api_monitor.snapshot(subject = "unsloth") if e["id"] not in seeded]
+    # New (so the overlay counts it as unseen traffic) and attributed to this caller.
+    assert [e for e in fresh if e["via_api_key"]], "the refused API-key call left no row"
+    row = next(e for e in fresh if e["via_api_key"])
+    assert row["endpoint"] == "/v1/chat/completions"
+    assert row["status"] == "error"
+    # Shared rows aside, another subject must not inherit the attribution.
+    others = [e for e in api_monitor.snapshot(subject = "someone-else") if e["id"] == row["id"]]
+    assert others == []
 
 
 def test_hook_prefers_the_hub_header_token(hub):

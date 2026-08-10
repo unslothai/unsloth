@@ -74,6 +74,10 @@ class _Request:
 class _FakeNonStreamingClient:
     def __init__(self):
         self.urls = []
+        self.closed = False
+
+    async def aclose(self):
+        self.closed = True
 
     async def post(self, url, **_kwargs):
         self.urls.append(url)
@@ -189,7 +193,7 @@ def test_retry_url_tolerates_a_backend_without_respawn_hooks():
 
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend()
 
     response = asyncio.run(_run_non_streaming(backend))
@@ -201,7 +205,7 @@ def test_non_streaming_retries_against_the_new_port(monkeypatch):
 
 def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(respawn_ok = False)
 
     with pytest.raises(httpx.ConnectError):
@@ -212,7 +216,7 @@ def test_non_streaming_raises_when_the_server_stays_dead(monkeypatch):
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
     client = _FakeNonStreamingClient()
-    monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: client)
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
     backend = _Backend(mtp_handled = True)
 
     with pytest.raises(httpx.ConnectError):

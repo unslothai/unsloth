@@ -863,36 +863,6 @@ def set_report_progress(
         conn.close()
 
 
-def update_step(
-    run_id: str,
-    position: int,
-    status: str,
-    result: Any = None,
-) -> None:
-    conn = get_connection()
-    try:
-        now = now_ms()
-        conn.execute(
-            "UPDATE research_plan_steps SET status=?, result_json=?, "
-            "started_at=CASE WHEN ?='running' THEN COALESCE(started_at, ?) ELSE started_at END, "
-            "completed_at=CASE WHEN ? IN ('completed','failed') THEN ? ELSE completed_at END "
-            "WHERE run_id=? AND position=?",
-            (
-                status,
-                json.dumps(result, ensure_ascii = False) if result is not None else None,
-                status,
-                now,
-                status,
-                now,
-                run_id,
-                position,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def reset_execution_steps(run_id: str, worker_id: str | None = None) -> bool:
     conn = get_connection()
     try:

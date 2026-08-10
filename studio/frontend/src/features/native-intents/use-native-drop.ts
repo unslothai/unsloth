@@ -1,54 +1,148 @@
 import { isTauri } from "@/lib/api-base";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
-import { registerNativeModelPath } from "./api";
+import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
+import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
 
 export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
+  | { status: "attach"; count: number; kind: "docs" | "images" | "mixed" }
   | { status: "invalid" };
 
 interface NativeModelDropOptions {
   enabled?: boolean;
+  attachmentScope?: string;
+  // Where a drop on this window belongs, for reporting a failure back to it.
+  attachmentTargetKey?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
+  onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
-function ggufPaths(paths: string[]): string[] {
-  return paths.filter((path) => path.toLowerCase().endsWith(".gguf"));
+function canAttachDocs(options: NativeModelDropOptions): boolean {
+  return options.nativePathLeasesSupported && Boolean(options.onAttach);
 }
 
-function canAutoLoadPaths(paths: string[], options: NativeModelDropOptions): boolean {
+function canAttachImages(options: NativeModelDropOptions): boolean {
+  return Boolean(options.onAttachImages);
+}
+
+function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   return (
-    paths.length === 1 &&
-    ggufPaths(paths).length === 1 &&
     options.nativePathLeasesSupported &&
     !options.isModelLoading &&
     Boolean(options.onAutoLoad)
   );
 }
 
+function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number {
+  if (dropped.kind === "docs" || dropped.kind === "images") {
+    return dropped.paths.length;
+  }
+  if (dropped.kind === "attach") {
+    return dropped.docs.length + dropped.images.length;
+  }
+  return 0;
+}
+
 function dropStateForPaths(
   paths: string[],
   options: NativeModelDropOptions,
 ): NativeModelDropState {
-  if (paths.length === 0) {
-    return { status: "idle" };
+  const dropped = classifyDropPaths(paths);
+  if (dropped.kind === "none") return { status: "idle" };
+  if (dropped.kind === "docs") {
+    return canAttachDocs(options)
+      ? { status: "attach", count: dropped.paths.length, kind: "docs" }
+      : { status: "invalid" };
   }
-  const ggufs = ggufPaths(paths);
-  if (paths.length !== 1 || ggufs.length !== 1) {
-    return { status: "invalid" };
+  if (dropped.kind === "images") {
+    return canAttachImages(options)
+      ? { status: "attach", count: dropped.paths.length, kind: "images" }
+      : { status: "invalid" };
   }
-  if (!canAutoLoadPaths(paths, options)) {
+  if (dropped.kind === "attach") {
+    const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
+    const imagesSupported =
+      dropped.images.length === 0 || canAttachImages(options);
+    return docsSupported && imagesSupported
+      ? { status: "attach", count: attachmentCount(dropped), kind: "mixed" }
+      : { status: "invalid" };
+  }
+  if (dropped.kind === "unsupported") return { status: "invalid" };
+  if (!canAutoLoadModel(options)) {
     return { status: "valid", action: "chip" };
   }
   return {
     status: "valid",
     action: options.hasActiveModel ? "replace" : "load",
+  };
+}
+
+interface RegisteredDrop {
+  docs: NativeIntent[];
+  images: NativeIntent[];
+  docsFailed: number;
+  imagesFailed: number;
+  error?: Error;
+}
+
+// Per path, not all-or-nothing: one bad file in a batch used to discard every
+// sibling that had already registered, leaving their leases to expire unused.
+async function registerEach(paths: string[]) {
+  const settled = await Promise.allSettled(
+    paths.map(registerNativeAttachmentPath),
+  );
+  const intents = settled.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const rejection = settled.find((result) => result.status === "rejected");
+  return {
+    intents,
+    failed: settled.length - intents.length,
+    error:
+      rejection && rejection.status === "rejected"
+        ? rejection.reason instanceof Error
+          ? rejection.reason
+          : new Error(String(rejection.reason))
+        : undefined,
+  };
+}
+
+async function registerDroppedAttachments(
+  dropped: Extract<
+    ReturnType<typeof classifyDropPaths>,
+    { kind: "docs" | "images" | "attach" }
+  >,
+): Promise<RegisteredDrop> {
+  const docPaths =
+    dropped.kind === "docs"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.docs
+        : [];
+  const imagePaths =
+    dropped.kind === "images"
+      ? dropped.paths
+      : dropped.kind === "attach"
+        ? dropped.images
+        : [];
+  const [docs, images] = await Promise.all([
+    registerEach(docPaths),
+    registerEach(imagePaths),
+  ]);
+  return {
+    docs: docs.intents,
+    images: images.intents,
+    docsFailed: docs.failed,
+    imagesFailed: images.failed,
+    error: docs.error ?? images.error,
   };
 }
 
@@ -80,22 +174,82 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         }
         if (event.payload.type !== "drop") return;
         setDropState({ status: "idle" });
-        const ggufs = ggufPaths(event.payload.paths);
-        if (event.payload.paths.length !== 1 || ggufs.length !== 1) {
-          if (event.payload.paths.length > 0) {
-            toast.error(
-              ggufs.length === 0
-                ? "Only .gguf model files can be dropped here."
-                : "Drop a single .gguf model file.",
-            );
+        const dropped = classifyDropPaths(event.payload.paths);
+        if (dropped.kind === "none") return;
+        if (dropped.kind === "unsupported") {
+          toast.error(SUPPORTED_DROP_HINT);
+          return;
+        }
+        if (
+          dropped.kind === "docs" ||
+          dropped.kind === "images" ||
+          dropped.kind === "attach"
+        ) {
+          const needsDocs =
+            dropped.kind === "docs" ||
+            (dropped.kind === "attach" && dropped.docs.length > 0);
+          const needsImages =
+            dropped.kind === "images" ||
+            (dropped.kind === "attach" && dropped.images.length > 0);
+          if (needsDocs && !canAttachDocs(currentOptions)) {
+            toast.error("Attaching files needs the desktop backend", {
+              description: "Retry once Studio has finished starting up.",
+            });
+            return;
+          }
+          if (needsImages && !canAttachImages(currentOptions)) {
+            toast.error("Attaching images is unavailable right now", {
+              description: "Retry once this chat is ready for attachments.",
+            });
+            return;
+          }
+          // Hold the send gate across registration too. Between the drop and the
+          // intents reaching the queue there is nothing for the composer to see,
+          // so an Enter in that window would send the text without the image.
+          const store = useNativeIntentStore.getState();
+          if (needsImages) store.beginImageDropRegistration();
+          try {
+            const registered = await registerDroppedAttachments(dropped);
+            const latestOptions = optionsRef.current;
+            // Both callbacks only enqueue against a target key, so a drop that
+            // outlived this listener still reaches the chat it landed on.
+            const attachOptions =
+              !disposed &&
+              latestOptions.attachmentScope === currentOptions.attachmentScope
+                ? latestOptions
+                : currentOptions;
+            if (registered.docs.length > 0) {
+              await attachOptions.onAttach?.(registered.docs);
+            }
+            if (registered.images.length > 0) {
+              await attachOptions.onAttachImages?.(registered.images);
+            }
+            const failureKey = attachOptions.attachmentTargetKey;
+            if (registered.imagesFailed > 0 && failureKey) {
+              store.failImageDropRegistration(failureKey);
+            }
+            if (registered.docsFailed + registered.imagesFailed > 0) {
+              toast.error("Could not attach dropped files", {
+                description: registered.error?.message ?? "Some files were skipped.",
+              });
+            }
+          } catch (error) {
+            const failureKey = currentOptions.attachmentTargetKey;
+            if (needsImages && failureKey) {
+              store.failImageDropRegistration(failureKey);
+            }
+            toast.error("Could not attach dropped files", {
+              description: error instanceof Error ? error.message : String(error),
+            });
+          } finally {
+            if (needsImages) store.endImageDropRegistration();
           }
           return;
         }
-        const ggufPath = ggufs[0];
         try {
-          const intent = await registerNativeModelPath(ggufPath);
+          const intent = await registerNativeModelPath(dropped.path);
           if (disposed) return;
-          if (!canAutoLoadPaths(event.payload.paths, currentOptions)) {
+          if (!canAutoLoadModel(currentOptions)) {
             addIntent(intent);
             return;
           }

@@ -12,9 +12,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, importlib.util, platform
+import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+# Transformers 4.x imports TensorFlow / Flax merely because they are installed
+# (`processing_utils` -> `image_transforms`), breaking Unsloth, which uses neither.
+# It reads these variables once at its own import, so this has to land first. An
+# explicit opt-in still wins; 5.x dropped both backends and ignores all of this.
+if "transformers" not in sys.modules:
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    # Overwrite, not `setdefault`: unset means `AUTO`, i.e. "enable if installed".
+    # An imported backend is in use though, so opting it out breaks a `from_tf` load.
+    for _var, _modules, _opt_ins in (
+        ("USE_TF", ("tensorflow",), ("USE_TF", "FORCE_TF_AVAILABLE")),
+        ("USE_FLAX", ("flax", "jax"), ("USE_FLAX",)),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        os.environ[_var] = "0"
+    del _TRUE, _var, _modules, _opt_ins
+else:
+    # Transformers derives `_tf_available` / `_flax_available` from `find_spec` alone,
+    # so clearing the cached flags keeps `image_transforms` off a broken backend.
+    # `"transformers" in sys.modules` does not mean it finished importing (Python
+    # publishes the module before its body runs), so write the variables too: inert
+    # once read, decisive in that window, unconditional since waiting deadlocks.
+    _TRUE = {"1", "ON", "YES", "TRUE"}  # Transformers' ENV_VARS_TRUE_VALUES
+    _import_utils = sys.modules.get("transformers.utils.import_utils")
+    for _var, _flag, _const, _modules, _opt_ins, _cached in (
+        (
+            "USE_TF",
+            "_tf_available",
+            "USE_TF",
+            ("tensorflow",),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+            ("USE_TF", "FORCE_TF_AVAILABLE"),
+        ),
+        (
+            "USE_FLAX",
+            "_flax_available",
+            "USE_JAX",
+            ("flax", "jax"),
+            ("USE_FLAX",),
+            ("USE_JAX",),
+        ),
+    ):
+        if any(_m in sys.modules for _m in _modules):
+            continue
+        if any(os.environ.get(_v, "").upper() in _TRUE for _v in _opt_ins):
+            continue
+        # An opt-in can be consumed and then restored, so read the snapshot
+        # Transformers used. Env `USE_FLAX` lands in the constant `USE_JAX`.
+        if any(str(getattr(_import_utils, _v, "")).upper() in _TRUE for _v in _cached):
+            continue
+        os.environ[_var] = "0"
+        try:
+            # `import_utils` copies the env into `USE_TF` / `USE_JAX` (lines 102-104)
+            # and derives the flags at 264 / 355, so mid-body only the constant works.
+            if hasattr(_import_utils, _const):
+                setattr(_import_utils, _const, "0")
+            # Absent on 5.x, and a module proxy can refuse the write.
+            if getattr(_import_utils, _flag, False):
+                setattr(_import_utils, _flag, False)
+        except (AttributeError, TypeError):
+            pass
+    del _TRUE, _import_utils, _var, _flag, _const, _modules, _opt_ins, _cached
 
 # Relax Metal's context-store timeout before MLX modules can initialize Metal.
 # Keep an explicit user value authoritative.
@@ -81,6 +146,30 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # _gpu_init does this on the GPU path; the MLX path never reaches it, so
+    # torchao 0.18 + torch < 2.10 dies on `ScalingType`. No-op otherwise.
+    try:
+        from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
+        _fix_torchao()
+        del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old
+        # torchao.dtypes.nf4tensor path.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
+    try:
+        # Same reason: this branch imports transformers itself further down, so a
+        # --no-deps floor miss surfaces here with the same wrong remedy.
+        from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
+        _check_tf_deps()
+        del _check_tf_deps
+    except Exception:
+        pass
     try:
         import unsloth_zoo
     except ImportError as _e:
@@ -592,9 +681,7 @@ if _IS_MLX:
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):
@@ -1314,7 +1401,15 @@ if _IS_MLX:
 
     def train_on_responses_only(*args, **kwargs):
         """Mask non-response tokens through the shared zoo dataset helper."""
-        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+        # Prefer the chat_templates export, which bounds the zoo's dataset.map()
+        # worker count (issue #2693). It is None on a torch-free host; fall back
+        # so the zoo raises its own ImportError, not "NoneType is not callable".
+        from .chat_templates import train_on_responses_only as _train_on_responses_only
+
+        if _train_on_responses_only is None:
+            from unsloth_zoo.dataset_utils import (
+                train_on_responses_only as _train_on_responses_only,
+            )
         return _train_on_responses_only(*args, **kwargs)
 
     def _safe_mlx_trl_star_exports(_trl):

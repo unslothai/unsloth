@@ -163,7 +163,7 @@ impl PhaseLogWriter {
 
     fn header(&self) -> String {
         let mut lines = vec![
-            "# Unsloth Studio diagnostics phase log".to_string(),
+            "# Unsloth diagnostics phase log".to_string(),
             format!("diag_schema={SCHEMA_VERSION}"),
             format!("flow={}", self.flow),
             format!("segment_index={}", self.segment_index),
@@ -298,8 +298,7 @@ pub(crate) fn ensure_logs_dir_at(dir: &Path) -> std::io::Result<()> {
         .map(|metadata| metadata.file_type().is_symlink())
         .unwrap_or(false)
     {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             "refusing diagnostics logs dir symlink",
         ));
     }

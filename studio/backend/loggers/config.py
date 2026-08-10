@@ -42,8 +42,12 @@ class LogConfig:
         log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
         log_level = getattr(logging, log_level_name, logging.INFO)
 
-        if sys.platform == "win32":
-            for stream in (sys.stdout, sys.stderr):
+        # Non-ASCII on a non-UTF-8 stream raises UnicodeEncodeError (Windows,
+        # LANG=C), so key off the stream, not the platform.
+        for stream in (sys.stdout, sys.stderr):
+            if getattr(stream, "encoding", "") and not str(stream.encoding).lower().replace(
+                "-", ""
+            ).startswith("utf8"):
                 if hasattr(stream, "reconfigure"):
                     try:
                         stream.reconfigure(encoding = "utf-8", errors = "replace")

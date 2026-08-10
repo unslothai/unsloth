@@ -823,8 +823,73 @@ NEWER_LLAMA_TAG = "b10079-mix-fb3d4ca"
         ("b10070", "b10069", False),  # tag without -mix-, no shared key
     ],
 )
-def test_llama_runtime_pairs_keys_on_ggml_commit(installed, required, pairs):
+def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs):
+    # No tree ids either side, so the legacy suffix comparison applies.
     assert M.llama_runtime_pairs(installed, required) is pairs
+
+
+# Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
+SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
+SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
+TREE_A = "8f3c6e197debb027f500df9f76e710e137f9fe68"
+TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
+
+
+@pytest.mark.parametrize(
+    "installed,required,installed_tree,required_tree,pairs",
+    [
+        # The bug this fixes: a shared suffix is not a shared ggml.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
+        # Different suffixes, same ggml: ABI-identical.
+        ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
+        # A missing tree either side falls back to the suffix, so installs
+        # predating ggml_tree are not stranded.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
+        # An exact tag pairs before trees are consulted.
+        (SUFFIX_SHARED_A, SUFFIX_SHARED_A, TREE_A, TREE_B, True),
+    ],
+)
+def test_llama_runtime_pairs_prefers_ggml_tree(
+    installed, required, installed_tree, required_tree, pairs
+):
+    assert (
+        M.llama_runtime_pairs(
+            installed,
+            required,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = required_tree,
+        )
+        is pairs
+    )
+
+
+def test_installed_llama_ggml_tree_reads_marker(tmp_path):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+        json.dumps({"release_tag": SLIM_LLAMA_TAG, "ggml_tree": TREE_A})
+    )
+    assert M.llama.installed_llama_ggml_tree(root) == TREE_A
+
+
+@pytest.mark.parametrize(
+    "prepare",
+    [
+        lambda root: None,  # no marker: installs predating ggml_tree
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("{}"),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
+            json.dumps({"ggml_tree": ""})
+        ),
+        lambda root: (root / "UNSLOTH_PREBUILT_INFO.json").write_text("not json"),
+    ],
+)
+def test_installed_llama_ggml_tree_absent_is_none(tmp_path, prepare):
+    root = tmp_path / "llama.cpp"
+    root.mkdir()
+    prepare(root)
+    assert M.llama.installed_llama_ggml_tree(root) is None
 
 
 def test_slim_pairs_across_llama_build_bump_with_same_ggml(tmp_path, monkeypatch):
@@ -921,6 +986,36 @@ def test_link_ggml_runtime_wires_windows_libomp(tmp_path):
     linked = M.link_ggml_runtime(bin_dir, whisper_bin)
     assert linked == ["ggml-base.dll", "ggml-cpu.dll", "ggml.dll", "libomp140.aarch64.dll"]
     assert not (whisper_bin / "llama.dll").exists()
+
+
+def test_link_ggml_runtime_wires_linux_libomp(tmp_path):
+    # llama's clang-built linux-arm64 libggml-base.so NEEDS libomp.so.5, bundled
+    # and never on the host: without it whisper-server fails to load.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    for name in ("libggml.so.0", "libggml-base.so.0", "libggml-cpu-armv8.0_1.so", "libomp.so.5"):
+        (bin_dir / name).write_bytes(b"x")
+    (bin_dir / "libllama.so").write_bytes(b"x")  # never wired
+    whisper_bin = tmp_path / "whisper_bin"
+    linked = M.link_ggml_runtime(bin_dir, whisper_bin)
+    assert linked == [
+        "libggml-base.so.0",
+        "libggml-cpu-armv8.0_1.so",
+        "libggml.so.0",
+        "libomp.so.5",
+    ]
+    assert (whisper_bin / "libomp.so.5").is_file()
+    assert not (whisper_bin / "libllama.so").exists()
+
+
+def test_link_ggml_runtime_linux_libomp_alone_is_not_a_pairing(tmp_path):
+    # Same fail-closed rule as the Windows case: OpenMP without ggml is not a
+    # usable llama runtime.
+    bin_dir = tmp_path / "llama_bin"
+    bin_dir.mkdir()
+    (bin_dir / "libomp.so.5").write_bytes(b"x")
+    with pytest.raises(PrebuiltFallback):
+        M.link_ggml_runtime(bin_dir, tmp_path / "whisper_bin")
 
 
 def test_rocm_runtime_wires_complete_windows_dll_overlay(tmp_path):

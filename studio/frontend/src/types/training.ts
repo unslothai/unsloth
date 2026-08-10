@@ -4,6 +4,12 @@
 export type ModelType = "vision" | "audio" | "embeddings" | "text";
 export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
 
+export function isTrainingMethod(value: unknown): value is TrainingMethod {
+  return (
+    value === "qlora" || value === "lora" || value === "full" || value === "cpt"
+  );
+}
+
 export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora" || method === "cpt";
 }

@@ -132,33 +132,42 @@ def test_usage_examples_has_no_duplicate_auto_switch_control():
     assert "<ModelAutoSwitchSection />" in tab
 
 
-API_MONITOR_TSX = SETTINGS / "components/api-monitor-console.tsx"
+# The monitor moved onto its own page; Settings keeps configuration and links across.
+API_MONITOR_TSX = REPO / "studio/frontend/src/features/api-monitor/api-monitor-page.tsx"
+# Their own module: the overlay mounts from __root.tsx, so importing from the page
+# pulled it into the eager bundle.
+API_MONITOR_LIFECYCLE_TS = REPO / "studio/frontend/src/features/api-monitor/lifecycle.ts"
+MONITOR_LINK_TSX = SETTINGS / "components/monitor-link.tsx"
 
 
-def test_api_monitor_pages_five_at_a_time():
-    # The backend retains 50 terminal entries; the console used to dump them all at once.
+def test_api_monitor_history_does_not_reorder_under_the_reader():
+    # The backend moves an entry to the front as it finishes, so the page pauses the poll
+    # to hold the whole list still while a payload is read.
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "const PAGE_SIZE = 5;" in src
-    assert "ordered.slice(" in src
-    # Paging back must freeze the id order, or live traffic reorders history under it.
-    assert "frozenIds" in src
-    assert "setFrozenIds((prev) => prev ?? entries.map((entry) => entry.id))" in src
+    assert "paused" in src
+    assert "setPaused" in src
+    # Filters and search are what keep 50 rows usable without paging.
+    assert "filterEntries(" in src
+    assert "STATUS_FILTERS" in src
 
 
 def test_api_monitor_renders_lifecycle_rows():
     src = API_MONITOR_TSX.read_text(encoding = "utf-8")
-    assert "function LifecycleEntry(" in src
-    assert 'entry.kind === "lifecycle"' in src
+    labels = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
+    assert "export function isLifecycleEntry(" in labels
+    assert 'entry.kind === "lifecycle"' in labels
     for label in ("Loading model", "Model loaded", "Model unloaded"):
-        assert label in src
-    # Lifecycle rows have no prompt/reply to fetch.
-    assert "isLifecycle(entry) || !expandedIds.has(entry.id)" in src
+        assert label in labels
+    # A lifecycle row has no prompt or reply, so it is not selectable for detail.
+    assert "if (isLifecycleEntry(entry)) {" in src
+    assert 'from "./lifecycle"' in src
 
 
-def test_auto_switch_section_sits_above_the_monitor():
+def test_auto_switch_section_sits_above_the_usage_examples():
     tab = API_KEYS_TAB_TSX.read_text(encoding = "utf-8")
-    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<ApiMonitorConsole />")
-    assert tab.index("<ApiMonitorConsole />") < tab.index("<UsageExamples")
+    # Configuration still comes ahead of the examples that depend on it.
+    assert tab.index("<MonitorLink />") < tab.index("<ModelAutoSwitchSection />")
+    assert tab.index("<ModelAutoSwitchSection />") < tab.index("<UsageExamples")
 
 
 AUTO_SWITCH_TSX = SETTINGS / "components/model-auto-switch-section.tsx"
@@ -166,7 +175,7 @@ EN_TS = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
 
 def test_api_monitor_renders_download_rows():
-    src = API_MONITOR_TSX.read_text(encoding = "utf-8")
+    src = API_MONITOR_LIFECYCLE_TS.read_text(encoding = "utf-8")
     assert 'entry.event === "download"' in src
     for label in ("Downloading model", "Model downloaded", "Model download failed"):
         assert label in src
@@ -181,6 +190,12 @@ def test_monitor_can_unload_the_loaded_model():
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
     assert "resolveInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
+
+
+def test_settings_still_reaches_the_monitor():
+    # The console is gone, so Settings must still have a way through to it.
+    link = MONITOR_LINK_TSX.read_text(encoding = "utf-8")
+    assert 'to: "/api-monitor"' in link
 
 
 def test_auto_download_toggle_is_gated_on_auto_switch():

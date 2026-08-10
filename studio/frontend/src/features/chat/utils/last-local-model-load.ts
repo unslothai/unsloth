@@ -3,6 +3,13 @@
 
 export type LastLocalModelKind = "gguf" | "model";
 
+const PATH_LIKE_ID_RE = /^(?:[/~]|[A-Za-z]:[\\/]|\\\\)/;
+
+/** A filesystem target rather than a Hub repo id. */
+function isPathLikeId(id: string): boolean {
+  return PATH_LIKE_ID_RE.test(id);
+}
+
 export type LastLocalModelLoad = {
   id: string;
   kind: LastLocalModelKind;
@@ -39,8 +46,10 @@ export function readLastLocalModelLoad(): LastLocalModelLoad | null {
     ) {
       return null;
     }
+    // A quant-less cached repo names no file; a local .gguf path is the file.
     if (
       parsed.kind === "gguf" &&
+      !isPathLikeId(parsed.id) &&
       (typeof parsed.ggufVariant !== "string" || !parsed.ggufVariant.trim())
     ) {
       return null;
@@ -67,7 +76,7 @@ export function recordLastLocalModelLoad(input: {
     return;
   }
   const ggufVariant = input.ggufVariant?.trim() || null;
-  if (input.kind === "gguf" && !ggufVariant) {
+  if (input.kind === "gguf" && !ggufVariant && !isPathLikeId(id)) {
     return;
   }
   try {

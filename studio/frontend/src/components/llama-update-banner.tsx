@@ -134,7 +134,7 @@ export function LlamaUpdateBanner({
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-          : "pointer-events-auto w-full",
+          : "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px]",
       )}
       data-testid="llama-update-banner"
     >

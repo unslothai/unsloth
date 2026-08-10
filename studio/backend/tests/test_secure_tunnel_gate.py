@@ -62,6 +62,29 @@ def test_cloudflare_gate(cloudflare, host, secure, api_only, is_colab, expected)
     )
 
 
+@pytest.mark.parametrize(
+    "inherited,cloudflare,secure,expected",
+    [
+        ("unset", False, False, "unset"),
+        ("disabled", False, False, "disabled"),
+        (None, False, False, "disabled"),
+        (None, None, False, "unset"),
+        (None, None, True, "enabled"),
+    ],
+)
+def test_cloudflare_intent_preserves_compatibility_provenance(
+    monkeypatch, inherited, cloudflare, secure, expected
+):
+    import run
+
+    if inherited is None:
+        monkeypatch.delenv(run._CLOUDFLARE_INTENT_ENV, raising = False)
+    else:
+        monkeypatch.setenv(run._CLOUDFLARE_INTENT_ENV, inherited)
+    assert run._consume_cloudflare_intent(cloudflare, secure) == expected
+    assert run._CLOUDFLARE_INTENT_ENV not in run.os.environ
+
+
 def test_run_server_accepts_secure_kwarg():
     import inspect
 
@@ -69,6 +92,27 @@ def test_run_server_accepts_secure_kwarg():
 
     assert "secure" in inspect.signature(run.run_server).parameters
     assert inspect.signature(run.run_server).parameters["secure"].default is False
+
+
+def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
+    from types import SimpleNamespace
+
+    import run
+
+    sock = SimpleNamespace(getsockname = lambda: ("127.0.0.1", 43123))
+    server = SimpleNamespace(servers = [SimpleNamespace(sockets = [sock])])
+    assert run._final_bound_port(server, 0) == 43123
+    assert run._final_bound_port(server, 8888) == 8888
+    source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    resolved = source.index("port = _final_bound_port(_server, port)")
+    assert all(
+        resolved < source.index(consumer, resolved)
+        for consumer in (
+            "app.state.remote_access_port",
+            "TAURI_PORT={port}",
+            "start_studio_tunnel(port",
+        )
+    )
 
 
 def test_arg_parser_secure_polarity_and_not_secure_alias():
@@ -202,11 +246,46 @@ def test_cors_origins_for_mode(api_only, secure, expected):
         assert origins == expected
 
 
+def test_api_only_cors_tracks_published_public_url():
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from main import RemoteAccessCORSMiddleware
+
+    state = SimpleNamespace(cloudflare_url = None)
+    middleware = RemoteAccessCORSMiddleware(
+        lambda *_: None,
+        remote_access_state = state,
+        allow_origins = ["tauri://localhost"],
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+    )
+    request = Headers(
+        {
+            "origin": "https://browser-client.example",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "authorization,content-type",
+        }
+    )
+    assert middleware.preflight_response(request).status_code == 400
+    state.cloudflare_url = "https://public.trycloudflare.com"
+    response = middleware.preflight_response(request)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://browser-client.example"
+    state.cloudflare_url = None
+    assert middleware.preflight_response(request).status_code == 400
+
+
 def test_run_server_exports_secure_env_for_cors():
     # run_server must export UNSLOTH_SECURE before importing main so the CORS
     # profile can tell remote secure serving from local Tauri use.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
+    assert "set_studio_tunnel_runtime_callback(set_remote_connector_active)" in src
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "RemoteAccessCORSMiddleware,\n    remote_access_state = app.state" in main_src
 
 
 def test_run_server_emit_tauri_port_defaults_on():
@@ -225,3 +304,38 @@ def test_tauri_port_print_is_gated_in_source():
     # The TAURI_PORT line must depend on emit_tauri_port, not api_only alone.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert "if api_only and emit_tauri_port:" in src
+
+
+def test_cors_preflight_cache_window_is_short():
+    # is_allowed_origin closes the instant the tunnel URL clears, but a preflight
+    # the browser already cached does not. Measured in WebKit: with Starlette's
+    # 600s default a state-changing request still reached the server after Stop.
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from main import RemoteAccessCORSMiddleware
+
+    middleware = RemoteAccessCORSMiddleware(
+        lambda *_: None,
+        remote_access_state = SimpleNamespace(cloudflare_url = "https://x.trycloudflare.com"),
+        allow_origins = ["tauri://localhost"],
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+        max_age = 60,
+    )
+    response = middleware.preflight_response(
+        Headers(
+            {
+                "origin": "https://browser-client.example",
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "authorization",
+            }
+        )
+    )
+    assert response.status_code == 200
+    assert int(response.headers["access-control-max-age"]) <= 60
+
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "max_age = 60" in main_src, "the mounted middleware must pin max_age"

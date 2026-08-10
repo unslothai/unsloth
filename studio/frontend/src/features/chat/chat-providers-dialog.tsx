@@ -1454,7 +1454,7 @@ export function ChatProvidersSettings({
       </div>
 
       <section className="flex max-w-[760px] flex-col gap-2">
-        <div className="overflow-hidden rounded-[10px] border border-border/70 bg-muted/[0.12]">
+        <div className="overflow-hidden rounded-[14px] border border-border/70 bg-muted/[0.12]">
           <button
             type="button"
             onClick={openAddProvider}

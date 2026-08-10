@@ -9,7 +9,33 @@ import sys
 from typing import Any
 from unittest import mock
 
+import pytest
+
 from core.training import worker
+
+# The runtime install is Linux-only, so elsewhere these return before any status.
+linux_only = pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "the runtime flash-attn install is gated to Linux",
+)
+
+# causal-conv1d and flash-linear-attention are NOT Linux-gated: both installers bail out
+# on `sys.platform == "win32"` alone (no prebuilt wheel for Windows) and run everywhere
+# else, macOS included. linux_only here would skip cases that legitimately pass off Linux.
+not_on_windows = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = (
+        "mirrors the sys.platform == 'win32' bail-out in "
+        "_ensure_flash_linear_attention_unconditional and "
+        "_ensure_causal_conv1d_fast_path"
+    ),
+)
+
+
+@pytest.fixture(autouse = True)
+def _clear_offline_environment(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
 def _missing_flash_attn_import():
@@ -55,6 +81,7 @@ def test_should_try_runtime_flash_attn_install_threshold_and_skip(monkeypatch):
     assert worker._should_try_runtime_flash_attn_install(32768) is False
 
 
+@linux_only
 def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     statuses: list[str] = []
 
@@ -82,6 +109,7 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
     assert statuses == ["Installing flash-attn for faster training..."]
 
 
+@linux_only
 def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     calls: list[list[str]] = []
     statuses: list[str] = []
@@ -113,12 +141,7 @@ def test_runtime_flash_attn_falls_back_to_pypi(monkeypatch):
     )
     monkeypatch.setattr(worker, "install_wheel", mock.Mock())
 
-    def fake_run(
-        cmd,
-        stdout = None,
-        stderr = None,
-        text = None,
-    ):
+    def fake_run(cmd, **kwargs):
         calls.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "")
 
@@ -139,6 +162,57 @@ def test_runtime_flash_attn_skip_env_avoids_all_install_work(monkeypatch):
     worker._sp.run.assert_not_called()
 
 
+@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_wheel_first_install_skips_all_install_work_offline(monkeypatch, offline_variable):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv(offline_variable, "1")
+    monkeypatch.setattr(builtins, "__import__", _missing_module_import("missing_fast_path"))
+    probe = mock.Mock()
+    url_probe = mock.Mock()
+    wheel_install = mock.Mock()
+    process_run = mock.Mock()
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", probe)
+    monkeypatch.setattr(worker, "url_exists", url_probe)
+    monkeypatch.setattr(worker, "install_wheel", wheel_install)
+    monkeypatch.setattr(worker._sp, "run", process_run)
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "missing_fast_path",
+        display_name = "missing-fast-path",
+        pypi_name = "missing-fast-path",
+        pypi_version = "1.0.0",
+        filename_prefix = "missing_fast_path",
+        release_tag = "v1.0.0",
+        release_base_url = "https://example.invalid/releases",
+    )
+
+    assert installed is False
+    probe.assert_not_called()
+    url_probe.assert_not_called()
+    wheel_install.assert_not_called()
+    process_run.assert_not_called()
+
+
+def test_wheel_first_install_uses_existing_package_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "true")
+    probe = mock.Mock()
+    monkeypatch.setattr(worker, "probe_torch_wheel_env", probe)
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "sys",
+        display_name = "sys",
+        pypi_name = "sys",
+        pypi_version = "1.0.0",
+    )
+
+    assert installed is True
+    probe.assert_not_called()
+
+
+@not_on_windows
 def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -160,6 +234,7 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
     )
 
 
+@not_on_windows
 def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
@@ -225,6 +300,7 @@ def _pin_fla_model_types(monkeypatch):
     )
 
 
+@not_on_windows
 def test_flash_linear_attention_installs_pinned_pair_for_qwen3_5(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
@@ -260,6 +336,39 @@ def test_flash_linear_attention_skips_for_unrelated_models(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
+def test_flash_linear_attention_skips_install_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "_flash_linear_attention_importable", lambda: False)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+
+    installed = worker._ensure_flash_linear_attention_unconditional(event_queue = [])
+
+    assert installed is False
+    run_mock.assert_not_called()
+
+
+@not_on_windows
+def test_flash_linear_attention_uses_current_install_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(worker, "_installed_torch_version_tuple", lambda: (2, 9))
+    monkeypatch.setattr(worker, "_flash_linear_attention_importable", lambda: True)
+    monkeypatch.setattr(
+        worker,
+        "_flash_linear_attention_current",
+        lambda already_importable = None: True,
+    )
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker._sp, "run", run_mock)
+
+    installed = worker._ensure_flash_linear_attention_unconditional(event_queue = [])
+
+    assert installed is True
+    run_mock.assert_not_called()
+
+
 def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
     # Nemotron-H / Falcon-H1 / Granite-H / LFM2 take the mamba_ssm path,
     # never FLA's gated_delta_rule kernels.
@@ -277,6 +386,7 @@ def test_flash_linear_attention_skips_for_ssm_only_models(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_matches_full_qwen3_family(monkeypatch):
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     run_mock = mock.Mock(return_value = mock.Mock(returncode = 0, stdout = ""))
@@ -331,6 +441,7 @@ def test_flash_linear_attention_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@not_on_windows
 def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
@@ -349,6 +460,7 @@ def test_flash_linear_attention_skipped_below_torch_2_7(monkeypatch):
     assert any("torch>=" in s for s in statuses)
 
 
+@not_on_windows
 def test_flash_linear_attention_install_includes_einops(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._FLA_SKIP_ENV, raising = False)
@@ -375,6 +487,7 @@ def test_flash_linear_attention_install_includes_einops(monkeypatch):
     assert f"fla-core=={worker._FLA_CORE_PACKAGE_VERSION}" in args
 
 
+@not_on_windows
 def test_flash_linear_attention_logs_post_install_import_failure(monkeypatch):
     """pip exits 0 but `import fla.modules` still fails (missing transitive)."""
     _pin_fla_model_types(monkeypatch)
@@ -421,6 +534,7 @@ def test_tilelang_backend_skipped_on_unsupported_linux_arch(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_pins_only_binary(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -462,6 +576,65 @@ def _force_missing_tilelang_imports(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
+def test_tilelang_backend_skips_install_offline(monkeypatch):
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "yes")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: None)
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: False)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_uses_current_install_offline(monkeypatch):
+    monkeypatch.setenv("TRANSFORMERS_OFFLINE", "yes")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.9")
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: True)
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is True
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_disables_broken_runtime_offline(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.delenv("FLA_TILELANG", raising = False)
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.11")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    assert worker.os.environ["FLA_TILELANG"] == "0"
+    run_mock.assert_not_called()
+
+
+def test_tilelang_backend_preserves_offline_user_override(monkeypatch):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setenv("FLA_TILELANG", "1")
+    monkeypatch.setattr(worker, "_tilelang_platform_supported", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.10")
+    run_mock = mock.Mock()
+    monkeypatch.setattr(worker, "_run_pip", run_mock)
+
+    installed = worker._ensure_tilelang_backend_unconditional(event_queue = [])
+
+    assert installed is False
+    assert worker.os.environ["FLA_TILELANG"] == "1"
+    run_mock.assert_not_called()
+
+
+@linux_only
 def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -486,6 +659,7 @@ def test_tilelang_backend_installs_pinned_pair_for_qwen3_5(monkeypatch):
     assert any("Installing TileLang" in s for s in statuses)
 
 
+@linux_only
 def test_tilelang_backend_reinstalls_when_tvm_ffi_is_broken(monkeypatch):
     """Repair path issues TWO pip calls:
 
@@ -555,6 +729,7 @@ def test_tilelang_backend_skipped_on_windows(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_timeout(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -609,6 +784,7 @@ def test_tilelang_backend_skipped_via_env(monkeypatch):
     run_mock.assert_not_called()
 
 
+@linux_only
 def test_tilelang_backend_swallows_install_failure(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     monkeypatch.delenv(worker._TILELANG_SKIP_ENV, raising = False)
@@ -673,6 +849,29 @@ def _patch_iu_gates(monkeypatch, fla_gate, conv_gate):
     monkeypatch.setattr(_iu, "is_causal_conv1d_available", conv_gate)
 
 
+def test_hook_leaves_causal_gate_unchanged_for_unrelated_model(monkeypatch):
+    fla_gate = _make_fake_gate(initial_return = True)
+    conv_gate = _make_fake_gate(initial_return = False)
+    _patch_iu_gates(monkeypatch, fla_gate, conv_gate)
+    conv_install = mock.Mock(return_value = True)
+    monkeypatch.setattr(worker, "_install_package_wheel_first", conv_install)
+    monkeypatch.setattr(worker, "_tilelang_importable", lambda: True)
+    monkeypatch.setattr(worker, "_installed_tvm_ffi_version", lambda: "0.1.9")
+    monkeypatch.delenv(worker._FAST_PATH_HOOKS_SKIP_ENV, raising = False)
+
+    worker._install_fast_path_hooks(
+        event_queue = _FakeQueue(),
+        model_name = "unsloth/Llama-3.2-1B-Instruct",
+    )
+
+    from transformers.utils import import_utils as _iu
+
+    assert _iu.is_causal_conv1d_available is conv_gate
+    assert _iu.is_causal_conv1d_available() is False
+    conv_install.assert_not_called()
+
+
+@not_on_windows
 def test_hook_installs_when_gate_returns_false(monkeypatch):
     _pin_fla_model_types(monkeypatch)
     fla_gate = _make_fake_gate(initial_return = False)
@@ -976,6 +1175,7 @@ def test_hook_does_install_tilelang_for_qwen35(monkeypatch):
     tile_install.assert_called_once()
 
 
+@linux_only
 def test_tilelang_repair_does_not_touch_torch_cuda_stack(monkeypatch):
     """Finding #2: the broken-tvm-ffi repair must use --no-deps on the
     forced step so --force-reinstall doesn't cascade through
@@ -1119,6 +1319,7 @@ def test_hook_runs_tilelang_repair_when_fla_already_true(monkeypatch):
     tile_install.assert_called_once()
 
 
+@not_on_windows
 def test_fla_installer_force_reinstalls_when_older_version_present(monkeypatch):
     """Finding #8: an older `flash-linear-attention` that is importable
     but below the pin must force a reinstall (not no-op).
@@ -1153,12 +1354,13 @@ def test_run_training_process_eagerly_installs_causal_conv1d_in_normal_mode():
     import inspect
 
     src = inspect.getsource(worker.run_training_process)
-    # Orchestration block.
-    assert "_ensure_causal_conv1d_fast_path(event_queue, model_name)" in src
-    assert "_install_fast_path_hooks(event_queue, model_name)" in src
+    # Orchestration block. Match the call, not its formatting, so wrapping the args over
+    # several lines or adding a keyword does not break this.
+    assert "_ensure_causal_conv1d_fast_path(" in src
+    assert "_install_fast_path_hooks(" in src
     # Eager causal_conv1d call must come BEFORE the hook-mode if/else, not
     # nested inside the `if _FAST_PATH_HOOKS_SKIP_ENV` branch.
-    eager_pos = src.find("_ensure_causal_conv1d_fast_path(event_queue, model_name)")
+    eager_pos = src.find("_ensure_causal_conv1d_fast_path(")
     skip_check_pos = src.find('os.getenv(_FAST_PATH_HOOKS_SKIP_ENV) == "1"')
     assert eager_pos < skip_check_pos, (
         "_ensure_causal_conv1d_fast_path must be called BEFORE the hook-mode "
@@ -1583,15 +1785,10 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
     )
     _make_hip_install_env(monkeypatch, gcc_dir = "/usr/lib/gcc/x86_64-linux-gnu/13")
 
-    captured: dict[str, str] | None = {"_called": "no"}
+    captured: dict[str, str] = {}
 
     def fake_run(cmd, **kwargs):
-        env = kwargs.get("env")
-        if env is not None:
-            captured.clear()
-            captured.update(env)
-        else:
-            captured["_called"] = "yes_no_env"
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1607,14 +1804,11 @@ def test_install_respects_user_gcc_install_dir(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # subprocess.run invoked without env override (user already set
-    # HIPCC_COMPILE_FLAGS_APPEND with --gcc-install-dir, so we left the
-    # env alone — the existing value is inherited).
-    assert captured == {"_called": "yes_no_env"}
+    assert captured["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/opt/custom/gcc-13"
 
 
 def test_install_does_not_inject_env_on_cuda(monkeypatch):
-    """CUDA path (no hip_version in env) → no env override at all."""
+    """CUDA path (no hip_version in env) → no HIP flag injected."""
     monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
     monkeypatch.setattr(builtins, "__import__", _missing_module_import("causal_conv1d"))
     monkeypatch.setattr(
@@ -1641,7 +1835,7 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
     captured: dict[str, Any] = {}
 
     def fake_run(cmd, **kwargs):
-        captured["env_in_kwargs"] = "env" in kwargs
+        captured.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(worker._sp, "run", fake_run)
@@ -1657,5 +1851,5 @@ def test_install_does_not_inject_env_on_cuda(monkeypatch):
         release_base_url = "https://example.com",
     )
 
-    # CUDA branch never sets the env, never invokes the gcc helper.
-    assert captured.get("env_in_kwargs") is False
+    # env is always passed (to force UTF-8), but never the HIP flag.
+    assert "HIPCC_COMPILE_FLAGS_APPEND" not in captured

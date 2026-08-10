@@ -61,6 +61,7 @@ export {
   fetchInventorySource,
   useDeviceInventorySources,
   useDeviceInventoryStore,
+  useTokenScopedInventoryRequestOptions,
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,
@@ -70,7 +71,10 @@ export {
   type HubInventoryKind,
   type HubInventory,
 } from "./use-hub-inventory";
-export { useGgufVariantsCacheVersion } from "./use-gguf-variants-cache-version";
+export {
+  useGgufVariantsCacheVersion,
+  useGgufVariantsCacheVersions,
+} from "./use-gguf-variants-cache-version";
 export type {
   CachedInventoryRow,
   InventoryHint,

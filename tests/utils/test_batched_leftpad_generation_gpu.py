@@ -4,7 +4,7 @@ Greedy generation in a left-padded batch must match solo batch-size-1
 generation for the first PREFIX_TOKENS tokens (the bug makes padded rows
 diverge into garbage immediately; a full-length match would be flaky due to
 benign batch-numerics tie-flips deep in the sequence) and must not be
-gibberish. Skipped without CUDA. Run: `python -m pytest
+gibberish. Skipped without a GPU. Run: `python -m pytest
 tests/utils/test_batched_leftpad_generation_gpu.py -v`.
 """
 
@@ -12,8 +12,19 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+device = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-pytestmark = pytest.mark.skipif(not cuda_available, reason = "requires a CUDA GPU")
+# Non-strict rather than CUDA-only: keeps the XPU divergence visible, and goes
+# green by itself once XPU generation is fixed.
+pytestmark = [
+    pytest.mark.skipif(not (cuda_available or xpu_available), reason = "requires a CUDA or XPU GPU"),
+    pytest.mark.xfail(
+        xpu_available and not cuda_available,
+        reason = "batched left-padded generation diverges on XPU",
+        strict = False,
+    ),
+]
 
 MODEL_NAME = "unsloth/Qwen2.5-0.5B-Instruct"
 MAX_NEW_TOKENS = 32
@@ -53,7 +64,7 @@ def _chat(tokenizer, prompt):
 
 def _generate(model, tokenizer, texts):
     inputs = tokenizer(texts, return_tensors = "pt", padding = True, add_special_tokens = False).to(
-        "cuda"
+        device
     )
     with torch.inference_mode():
         out = model.generate(

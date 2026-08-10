@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 import types
 from pathlib import Path
@@ -145,6 +146,11 @@ def test_inference_exposes_gguf_runtime_options():
     extra = _option(inference, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
 
+    spec_type = _option(inference, "speculative_type")
+    assert "--speculative-type" in (getattr(spec_type, "param_decls", None) or [])
+    draft_n = _option(inference, "spec_draft_n_max")
+    assert "--spec-draft-n-max" in (getattr(draft_n, "param_decls", None) or [])
+
 
 def test_mlx_distributed_info_reads_launch_env(monkeypatch, tmp_path):
     _clear_mlx_distributed_env(monkeypatch)
@@ -204,6 +210,11 @@ def test_chat_command_is_registered_with_options():
 
     extra = _option(chatmod.chat, "llama_extra_args")
     assert "--llama-extra-arg" in (getattr(extra, "param_decls", None) or [])
+
+    spec_type = _option(chatmod.chat, "speculative_type")
+    assert "--speculative-type" in (getattr(spec_type, "param_decls", None) or [])
+    draft_n = _option(chatmod.chat, "spec_draft_n_max")
+    assert "--spec-draft-n-max" in (getattr(draft_n, "param_decls", None) or [])
 
 
 class _FakeBackend:
@@ -435,13 +446,29 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+class _FakeLoadResponse:
+    """A /api/inference/load reply that records whether its body was drained.
+
+    Closing a padded body at the headers resumes before the load finishes and discards
+    a late failure, so the fake must distinguish read() from close().
+    """
+
+    def __init__(self, body: bytes = b'{"status": "loaded"}') -> None:
+        self._body = body
+        self.reads = 0
+        self.closed = False
+
+    def read(self) -> bytes:
+        self.reads += 1
+        return self._body
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
-
-    class _OK:
-        def close(self):
-            pass
 
     def fake_request(
         method,
@@ -450,7 +477,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         timeout = None,
     ):
         requests.append((method, path, payload, timeout))
-        return _OK()
+        return _FakeLoadResponse()
 
     monkeypatch.setattr(backend, "_request", fake_request)
 
@@ -460,6 +487,8 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         max_seq_length = 8192,
         load_in_4bit = False,
         tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
         llama_extra_args = ["--top-k", "20"],
     )
 
@@ -473,6 +502,8 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
                 "max_seq_length": 8192,
                 "load_in_4bit": False,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
             None,
@@ -484,16 +515,12 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
 
-    class _OK:
-        def close(self):
-            pass
-
     monkeypatch.setattr(
         backend,
         "_request",
         lambda method, path, payload = None, timeout = None: (
             requests.append((method, path, payload, timeout)),
-            _OK(),
+            _FakeLoadResponse(),
         )[1],
     )
 
@@ -508,17 +535,187 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     assert requests[0][2]["tensor_parallel"] is False
 
 
-def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
+# ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
+
+
+def test_http_backend_load_drains_the_padded_body(monkeypatch):
+    """Closing at the headers would start generating while the model is still loading."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    # What a padded slow load looks like on the wire: spaces, then the payload.
+    response = _FakeLoadResponse(b'   {"status": "loaded"}')
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+    )
+
+    assert response.reads == 1, "the padded body must be drained, not closed at the headers"
+    assert response.closed
+
+
+def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
+    """A failure found after the 200 committed rides in the body; a 200 is not success."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(
+        json.dumps(
+            {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+        ).encode()
+    )
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    # Same exit code as an early HTTP failure: ensure_loaded's except block is reused.
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "507" in err and "CUDA out of memory" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        (b"", "an empty body"),
+        (b"   ", "pad bytes only"),
+        (b'  {"status": "loa', "a payload cut in half"),
+        (b"null", "a literal null"),
+        (b"{}", "an empty object"),
+    ],
+)
+def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, body, what):
+    """A proxy that gives up mid-pad leaves a 200 the padded route never finished.
+
+    Measured: one byte at t=90s then silence is killed ~125s later and the client sees
+    a 200 with an EMPTY body. Accepting it reports an unfinished load as done.
+    """
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(body)
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    assert excinfo.value.exit_code == 1, what
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "did not report completion" in err
+    # Still drained, so the load is not abandoned at the headers.
+    assert response.reads == 1 and response.closed
+
+
+def test_padded_body_helper_passes_a_real_payload_through():
+    from unsloth_cli._inference import require_completed_padded_body
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert require_completed_padded_body("http://x/api/inference/load", body) is body
+    assert require_completed_padded_body("http://x", {"status": "unloaded"}) == {
+        "status": "unloaded"
+    }
+
+
+def test_padded_body_helper_names_the_route_and_the_recovery():
+    from unsloth_cli._inference import require_completed_padded_body
+    url = "http://x/api/inference/load"
+    for body in (None, {}, [], "", 0, "loaded"):
+        with pytest.raises(RuntimeError) as excinfo:
+            require_completed_padded_body(url, body)
+        message = str(excinfo.value)
+        assert message.startswith(f"{url} did not report completion")
+        assert "Check the model's status" in message
+
+
+def test_deferred_error_helper_passes_a_normal_body_through():
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert raise_for_deferred_error("http://x/api/inference/load", body) is body
+    # Not a dict, and a look-alike that is not the documented shape, both pass.
+    assert raise_for_deferred_error("http://x", [1, 2]) == [1, 2]
+    assert raise_for_deferred_error("http://x", {"_deferred_error": None}) == {
+        "_deferred_error": None
+    }
+
+
+def test_deferred_error_helper_reads_like_a_real_error_response():
+    """Callers recover the detail with exc.read(), exactly as for a real 5xx."""
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error(
+            "http://x/api/inference/load",
+            {"_deferred_error": {"status_code": 500, "detail": "llama-server died"}},
+        )
+    exc = excinfo.value
+    assert exc.code == 500
+    assert json.loads(exc.read().decode()) == {"detail": "llama-server died"}
+    assert "llama-server died" in str(exc)
+
+
+def test_deferred_error_helper_defaults_a_missing_status():
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error("http://x", {"_deferred_error": {}})
+    assert excinfo.value.code == 500
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    [
+        (
+            {"gguf_hf_repo": "org/model-GGUF"},
+            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
+        ),
+        (
+            {
+                "gguf_hf_repo": None,
+                "gguf_file": "/models/model.gguf",
+                "gguf_mmproj_file": "/models/mmproj.gguf",
+                "gguf_mtp_file": "/models/mtp.gguf",
+                "gguf_dspark_file": "/models/dspark-model.gguf",
+            },
+            {
+                "gguf_path": "/models/model.gguf",
+                "mmproj_path": "/models/mmproj.gguf",
+                "mtp_draft_path": "/models/mtp.gguf",
+                "dspark_draft_path": "/models/dspark-model.gguf",
+            },
+        ),
+    ],
+    ids = ("hugging-face", "local"),
+)
+def test_load_gguf_backend_forwards_source_and_runtime_options(
+    monkeypatch, source, expected_source
+):
     import unsloth_cli._inference as inference
 
     calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
+        def load_model(self, intent):
+            calls.append(intent)
             return True
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -547,7 +744,7 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
         gguf_variant = "Q4_K_M",
         identifier = "org/model-GGUF",
         is_vision = False,
-        gguf_hf_repo = "org/model-GGUF",
+        **source,
     )
 
     backend = inference._load_gguf_backend(
@@ -555,20 +752,23 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
         hf_token = "hf_x",
         max_seq_length = 8192,
         tensor_parallel = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
         llama_extra_args = ["--top-k", "20"],
     )
 
     assert isinstance(backend, ChatBackend)
-    assert calls == [
+    assert [vars(intent) for intent in calls] == [
         {
-            "hf_repo": "org/model-GGUF",
-            "hf_token": "hf_x",
             "hf_variant": "Q4_K_M",
             "model_identifier": "org/model-GGUF",
             "is_vision": False,
             "n_ctx": 8192,
+            "speculative_type": "dspark",
+            "spec_draft_n_max": 3,
             "tensor_parallel": True,
             "extra_args": ["--top-k", "20"],
+            **expected_source,
         }
     ]
 
@@ -577,6 +777,7 @@ def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
     import unsloth_cli._inference as inference
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = object
     fake_llama_cpp.LlamaCppBackend = object
     fake_args = types.ModuleType("core.inference.llama_server_args")
 
@@ -619,11 +820,12 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
     fallback_calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
-            return kwargs["tensor_parallel"] is False
+        def load_model(self, intent):
+            calls.append(intent)
+            return intent.tensor_parallel is False
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -668,8 +870,8 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
 
     assert isinstance(backend, ChatBackend)
     assert fallback_calls == [(True, [], "org/model-GGUF")]
-    assert [call["tensor_parallel"] for call in calls] == [True, False]
-    assert calls[1]["extra_args"] == ["--split-mode", "layer"]
+    assert [intent.tensor_parallel for intent in calls] == [True, False]
+    assert calls[1].extra_args == ["--split-mode", "layer"]
 
 
 def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
@@ -734,6 +936,10 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
         [
             "fake-model",
             "--tensor-parallel",
+            "--speculative-type",
+            "dspark",
+            "--spec-draft-n-max",
+            "3",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -750,6 +956,8 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 4096,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )
@@ -782,6 +990,10 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             "fake-model",
             "hello",
             "--tensor-parallel",
+            "--speculative-type",
+            "dspark",
+            "--spec-draft-n-max",
+            "3",
             "--llama-extra-arg=--top-k",
             "--llama-extra-arg",
             "20",
@@ -797,6 +1009,8 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
                 "max_seq_length": 2048,
                 "load_in_4bit": True,
                 "tensor_parallel": True,
+                "speculative_type": "dspark",
+                "spec_draft_n_max": 3,
                 "llama_extra_args": ["--top-k", "20"],
             },
         )

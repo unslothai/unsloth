@@ -68,3 +68,18 @@ def test_backend_chat_preset_accepts_load_config():
     routes = _read("studio/backend/routes/chat_history.py")
     assert "class ChatPresetLoadConfig" in routes
     assert "loadConfig: Optional[ChatPresetLoadConfig]" in routes
+
+
+def test_preset_load_config_carries_parallel_slots():
+    # Captured, clamped on read, applied, and accepted by the extra="forbid"
+    # backend model (a missing backend field would 422 every settings sync).
+    source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
+    assert '| "nParallel"' in source
+    assert "nParallel: snapshot.nParallel ?? null" in source
+    assert "nParallel: config.nParallel ?? null" in source
+    assert "N_PARALLEL_MAX, Math.round(partial.nParallel)" in source
+    routes = _read("studio/backend/routes/chat_history.py")
+    assert (
+        "nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)"
+        in routes
+    )

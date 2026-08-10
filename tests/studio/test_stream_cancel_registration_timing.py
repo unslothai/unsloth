@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib.util
 import json
 import threading
 import time
@@ -256,6 +257,20 @@ _WANTED = {
 }
 
 
+def _load_active_generations():
+    """The real registry `_TrackedCancel` records runs in.
+
+    Loaded straight off disk rather than imported, so the extracted class runs
+    against the genuine module without pulling in the whole route package (and
+    without putting studio/backend on sys.path for the rest of the session).
+    """
+    path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
+    spec = importlib.util.spec_from_file_location("studio_active_generations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_registry_module():
     chunks = []
     for n in _TREE.body:
@@ -274,7 +289,7 @@ def _load_registry_module():
             and n.target.id in _WANTED
         ):
             chunks.append(seg)
-    mod = {}
+    mod = {"active_generations": _load_active_generations()}
     exec("import threading, time\n" + "\n\n".join(chunks), mod)
     return mod
 
@@ -674,16 +689,18 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
             found_cancel_handler = (
                 "cancel_event.set()" in body_src
-                and "backend.reset_generation_state()" in body_src
+                and "backend.reset_generation_state(cancel_event)" in body_src
                 and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
             )
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
-            found_finally_cleanup = (
+            # Accumulate: an existence claim, and the cleanup sits in a nested try whose
+            # own finally only unregisters the swap-gate entry.
+            found_finally_cleanup = found_finally_cleanup or (
                 "not completed" in final_src
                 and "not cancel_event.is_set()" in final_src
                 and "cancel_event.set()" in final_src
-                and "backend.reset_generation_state()" in final_src
+                and "backend.reset_generation_state(cancel_event)" in final_src
                 and _awaits_to_thread_gen_close(sub)
             )
 
@@ -731,11 +748,11 @@ def test_stream_chunks_cancel_branch_resets_backend_state():
         ):
             continue
         body_src = "\n".join(ast.unparse(s) for s in sub.body)
-        if "backend.reset_generation_state()" in body_src:
+        if "backend.reset_generation_state(cancel_event)" in body_src:
             return
     raise AssertionError(
         "stream_chunks `if cancel_event.is_set():` branch must call "
-        "backend.reset_generation_state() -- matches the existing "
+        "backend.reset_generation_state(cancel_event) -- matches the existing "
         "request.is_disconnected() / CancelledError cleanup paths and "
         "prevents KV-cache drift after cancel-via-POST"
     )

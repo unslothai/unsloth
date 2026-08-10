@@ -8,13 +8,15 @@ from typing import Optional
 import typer
 
 from unsloth_cli._inference import ensure_studio_backend_path
+from unsloth_cli._studio_deps import studio_backend_imports
 from unsloth_cli.config import Config, load_config
 from unsloth_cli.options import add_options_from_config
 
 
 def _should_use_mlx_backend_for_cli() -> bool:
     ensure_studio_backend_path()
-    from studio.backend.core.training.training import should_use_mlx_training_backend
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.training import should_use_mlx_training_backend
     return should_use_mlx_training_backend()
 
 
@@ -33,12 +35,14 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
         _activate_mlx_transformers(model_name, hf_token)
         # MLX is torch-free: use the lightweight adapter, not trainer.py (imports torch/unsloth/trl at load).
         ensure_studio_backend_path()
-        from studio.backend.core.training.training import create_mlx_trainer_adapter
+        with studio_backend_imports("unsloth train"):
+            from studio.backend.core.training.training import create_mlx_trainer_adapter
 
         return create_mlx_trainer_adapter()
 
     ensure_studio_backend_path()
-    from studio.backend.core.training.trainer import UnslothTrainer
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.trainer import UnslothTrainer
 
     return UnslothTrainer()
 

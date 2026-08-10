@@ -571,8 +571,25 @@ echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
 # Extract the real guard block from install.sh so we exercise the shipped logic
 # (comment header down to its column-0 closing fi).
 _GUARD_FILE=$(mktemp)
-awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
-    "$INSTALL_SH" > "$_GUARD_FILE"
+# The guard calls _python_is_skipped and _discard_venv_for_recreate, so the skip
+# list, its reader, and the replacement helpers have to come along or the version
+# check silently never fires and the recreate loses the venv it was handed.
+{
+    printf 'substep() { :; }\n'
+    sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
+    sed -n '/^_python_skip_applies()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
+    awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+        "$INSTALL_SH"
+} > "$_GUARD_FILE"
+for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate; do
+    grep -q "^$_needed()" "$_GUARD_FILE" || {
+        echo "  FAIL: could not extract $_needed from install.sh"
+        FAIL=$((FAIL + 1))
+    }
+done
 
 if [ ! -s "$_GUARD_FILE" ]; then
     echo "  FAIL: could not extract Apple Silicon venv guard from install.sh"
@@ -585,6 +602,12 @@ else
     _RUNNER=$(mktemp)
     cat > "$_RUNNER" << 'RUNNER_EOF'
 GUARD="$1"; VENV_DIR="$2"
+# _discard_venv_for_recreate moves the venv aside under $STUDIO_HOME rather than
+# removing it, and only when no replacement is already in flight.
+STUDIO_HOME=$(dirname "$VENV_DIR")
+_VENV_ROLLBACK_DIR=""
+_VENV_ROLLBACK_TARGET="$VENV_DIR"
+_VENV_ROLLBACK_ACTIVE=false
 make_python() {  # dir machine version
     mkdir -p "$1/bin"
     printf '#!/usr/bin/env bash\necho "%s %s"\n' "$2" "$3" > "$1/bin/python"
