@@ -1075,6 +1075,7 @@ def _discard_document(document_id: str) -> None:
 def _install_mapping(
     folder: dict, rel: str, metadata: dict, document_id: str, content_hash: str
 ) -> None:
+    replaced: list[str] = []
     conn = rag_db.get_connection()
     try:
         old_rows = conn.execute(
@@ -1104,14 +1105,18 @@ def _install_mapping(
         )
         for old in old_rows:
             if old["document_id"] != document_id:
-                _remove_retired_snapshot(old["stored_path"])
                 store.delete_document(conn, old["document_id"], commit = False)
+                replaced.append(old["stored_path"])
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+    # Only after the commit: a rollback here restores a live searchable document,
+    # unlike the delete paths where the surviving row is the retry queue.
+    for stored_path in replaced:
+        _remove_snapshot(stored_path)
 
 
 def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_hash: str) -> None:

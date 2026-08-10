@@ -112,6 +112,57 @@ def test_startup_preserves_foreign_leased_work_until_its_lease_expires(rag_home)
 
 
 @requires_sqlite_vec
+def test_failed_replacement_commit_keeps_the_prior_snapshot_readable(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A rollback restores the old document, so its source must still be on disk."""
+    source, folder = _folder(rag_home)
+    path = source / "notes.txt"
+    path.write_text("first searchable text", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    before = _mapping(folder)
+    with _connection() as conn:
+        stored_path = store.get_document(conn, before["document_id"])["stored_path"]
+
+    path.write_text("second searchable text", encoding = "utf-8")
+    with _connection() as conn:
+        replacement = store.create_document(
+            conn, scope = folder["scope"], filename = "notes.txt", sha256 = "second"
+        )
+    stat = path.stat()
+    metadata = {
+        "path": str(path),
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "device": stat.st_dev,
+        "inode": stat.st_ino,
+    }
+
+    class _CommitFails:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        def commit(self):
+            raise sqlite3.OperationalError("database is locked")
+
+    real_connection = folder_sync.rag_db.get_connection
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            folder_sync.rag_db, "get_connection", lambda: _CommitFails(real_connection())
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            folder_sync._install_mapping(folder, "notes.txt", metadata, replacement, "second")
+
+    assert _mapping(folder)["document_id"] == before["document_id"]
+    assert os.path.isfile(stored_path)
+    with _connection() as conn:
+        assert store.search_lexical(conn, folder["scope"], "first", 5)
+
+
+@requires_sqlite_vec
 def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_home):
     """The survivor's own startup pass ran before the other backend crashed."""
     from core.rag import ingestion, job_leases
