@@ -1588,6 +1588,55 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # model A's own 1 GiB sidecar is merely the one tried FIRST.
         self.assertEqual(total, 4 * 1024**3)
 
+    def test_remote_dflash_sizing_totals_every_shard_of_a_split_sidecar(self):
+        """A split sidecar is picked as its first shard, and the download then
+        fetches every sibling; llama-server keeps the whole set resident. Sizing
+        one shard budgeted a two-shard 2 GiB sidecar at 1 GiB and let it lose the
+        comparison to a smaller single-file candidate, which is the direction that
+        admits a load and then exhausts VRAM beside a running training job."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00002-of-00002.gguf", size = 1024**3),
+            # Bigger than either shard, smaller than the set they form.
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3 // 2),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        # The set totals 2 GiB and is the largest thing the fallback can land on.
+        self.assertEqual(total, 2 * 1024**3)
+
+    def test_remote_dflash_sizing_charges_a_split_set_once(self):
+        """The other half: every shard is a listed dflash- name, so a rule that
+        totalled the candidates rather than taking the safe maximum across shard
+        SETS would double-charge this repo and 409 a load that fits."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00001-of-00002.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-split-00002-of-00002.gguf", size = 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 2 * 1024**3)
+
     def test_remote_dflash_sizing_ignores_a_nested_dflash_named_weight(self):
         """The picker is root level only, so a quants/dflash-*.gguf is an ordinary
         weight there and can never be fetched as the drafter. Charging it made the

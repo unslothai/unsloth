@@ -2983,3 +2983,48 @@ def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeyp
     assert b._download_companion_gguf(
         hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
     ) == str(first)
+
+
+def test_cached_dflash_lookup_skips_an_incomplete_split_set(tmp_path, monkeypatch):
+    """The fourth way a shard can reach --model-draft: _download_dflash's offline
+    fallback hands this lookup's answer back as the drafter with no fetch left to
+    complete the set, so a lone shard reads as a valid header and llama-server
+    then cannot open the siblings it resolves from that directory. The load drops
+    speculation silently."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    weight = _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
+    first = _write_gguf(snap / "dflash-kquant-00001-of-00002.gguf", "dflash")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    assert b._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) is None
+
+    _write_gguf(snap / "dflash-kquant-00002-of-00002.gguf", "dflash")
+    assert b._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(first)
+
+
+def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(
+    tmp_path, monkeypatch
+):
+    """Skipped, not fatal, exactly as the header check is: the half set merely
+    ranks first, and the snapshot still holds a sidecar that can be launched."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    weight = _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
+    # Q8_0 outranks BF16, so the incomplete set is the candidate tried first.
+    _write_gguf(snap / "dflash-kquant-Q8_0-00001-of-00002.gguf", "dflash")
+    whole = _write_gguf(snap / "dflash-kquant-BF16.gguf", "dflash")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    assert LlamaCppBackend()._cached_repo_dflash_drafter(
+        "org/repo", near_path = str(weight)
+    ) == str(whole)

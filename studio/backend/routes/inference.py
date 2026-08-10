@@ -5340,6 +5340,7 @@ def _remote_gguf_companion_bytes(
     """
     try:
         from core.inference.llama_cpp import (
+            _gguf_extra_shards,
             _is_dspark_drafter_path,
             _is_root_dflash_drafter_path,
         )
@@ -5350,7 +5351,7 @@ def _remote_gguf_companion_bytes(
         total = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
-        dflash_sizes: list[int] = []
+        dflash_sizes: dict[str, int] = {}
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
@@ -5370,7 +5371,7 @@ def _remote_gguf_companion_bytes(
             # dflash-*.gguf is an ordinary weight there and never a candidate, so
             # counting it here would price a file the load cannot fetch.
             if include_dflash and _is_root_dflash_drafter_path(name):
-                dflash_sizes.append(size)
+                dflash_sizes[name] = size
         # Same preference order the download uses, so the budget sizes the file
         # the launch will actually fetch. DSpark has no post-fetch rejection, so
         # the best-ranked candidate is the one that lands.
@@ -5387,7 +5388,19 @@ def _remote_gguf_companion_bytes(
         # one. Headers are unreadable from a listing, so the ranking cannot
         # narrow that down here, and over-estimating is the established safe
         # direction for a guard protecting a running training job.
-        dflash_bytes = max(dflash_sizes, default = 0)
+        # Each entry summed is a whole shard SET, not one file: a split sidecar
+        # is picked as its first shard and _download_companion_gguf then fetches
+        # every sibling, all of which llama-server keeps resident. Sizing one
+        # shard would halve a two-shard sidecar, and under-estimating is the
+        # direction that waves a load through and then exhausts VRAM.
+        dflash_bytes = max(
+            (
+                size
+                + sum(dflash_sizes.get(shard, 0) for shard in _gguf_extra_shards(dflash_sizes, name))
+                for name, size in dflash_sizes.items()
+            ),
+            default = 0,
+        )
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_candidates:

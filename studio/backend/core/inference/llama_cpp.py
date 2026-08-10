@@ -8190,6 +8190,7 @@ class LlamaCppBackend:
         """
         try:
             from utils.models.model_config import (
+                _drafter_split_is_complete,
                 _iter_hf_cache_snapshots,
                 dflash_repo_preference_key,
                 is_dflash_architecture,
@@ -8229,6 +8230,19 @@ class LlamaCppBackend:
                 if not is_dflash_architecture(str(candidate)):
                     logger.info(
                         "Ignoring cached DFlash candidate %s: general.architecture is not dflash",
+                        candidate,
+                    )
+                    continue
+                # Same whole-set rule _companion_snapshot_sibling applies, for the
+                # same reason: llama-server resolves the sibling shards from this
+                # one's directory, and what this lookup returns is handed straight
+                # back as the drafter with no fetch left to complete it. Half a
+                # set reads as a valid header and then cannot be opened, so the
+                # load quietly drops speculation. Skipped rather than fatal, since
+                # another snapshot may hold the complete copy.
+                if not _drafter_split_is_complete(candidate):
+                    logger.info(
+                        "Ignoring cached DFlash candidate %s: split shard set is incomplete",
                         candidate,
                     )
                     continue
