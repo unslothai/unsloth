@@ -3190,6 +3190,92 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
     assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
 
+def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch, tmp_path):
+    """--list-devices SPAWNS the managed sd-cli, so it needs the same claim the run takes.
+
+    Unclaimed, an install started by another in-process load sees no reader and extracts over the
+    executing binary: on Windows that fails on the locked file, on Linux it can leave the
+    replacement half-written. The later claimed recheck compares answers; it cannot undo damage
+    this first probe already allowed.
+    """
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: str(managed),
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    held: list = []
+
+    def _watching_probe(binary):
+        held.append(sd_cpp_backend._tree_readers)
+        # An install decided at this instant must stand down rather than replace what is running.
+        with sd_cpp_backend._tree_claimed_for_install() as claimed:
+            held.append(claimed)
+        return True
+
+    # video.py imports this inside the load function, so the name must be replaced at its source
+    # module; patching the video module misses it entirely and the test would pass vacuously.
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_lists_accelerator_device", _watching_probe)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    # First two entries are the load-time probe; the claimed recheck later in the load adds its
+    # own pair, so assert on the opening ones rather than the whole list.
+    assert held[:2] == [1, False], f"probe ran unclaimed: {held}"
+    assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
+
+
 def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):
     """The second load on a Linux CUDA host. The first one installed the CPU prebuilt (upstream
     publishes no Linux CUDA asset for the pinned tag), and from then on ensure_sd_cpp_binary finds
@@ -3262,6 +3348,112 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
     assert backend._state.offload_policy == "none"
     # Reaching "cpu" is what lets the existing release_if drop the claim on this path too.
     assert gpu_arbiter.current_owner() is None
+
+
+def _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, *, swap_on_fallback):
+    """An H3 native load on a CUDA target whose first probe drops it to the CPU build.
+
+    The binary is a MANAGED one, i.e. one an install may replace at the same path.
+    ``swap_on_fallback`` makes that install land the moment the fallback's ensure returns, which
+    is the window the second probe used to be sampled in."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"the cpu build the fallback asked for")
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+
+    swapped: list = []
+
+    def _ensure(*, allow_install, accelerator):
+        if accelerator == "cpu" and swap_on_fallback:
+            # The CPU bundle this call asked for is what came back; the install that replaces it
+            # with a GPU build lands immediately afterwards, before anything probes it again.
+            swapped.append(True)
+        return str(managed)
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", _ensure)
+
+    def _probe(_binary, *args):
+        if args == ("--list-devices",):
+            if swapped:
+                return "CUDA0\tNVIDIA H100 PCIe\nCPU\tIntel(R) Xeon(R) Platinum 8559C\n"
+            return "CPU\tIntel(R) Xeon(R) Platinum 8559C\n"
+        return "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+
+    def _run():
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = threading.Event(),
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+
+    return backend, _run
+
+
+def test_h3_native_cpu_fallback_refuses_a_gpu_build_that_replaced_it(monkeypatch, tmp_path):
+    """The CPU fallback's baseline is the DECISION, not a second probe. Sampling the binary again
+    after the fallback's ensure records whatever an install has just put at that path, so the
+    re-check under the reader claim compared a CUDA executable against itself and passed -- with
+    native_device already forced to "cpu" and CPU resource accounting committed around a build
+    that runs on VRAM nothing accounted for."""
+    backend, run = _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, swap_on_fallback = True)
+    with pytest.raises(RuntimeError, match = "different accelerator"):
+        run()
+    assert backend._state is None
+
+
+def test_h3_native_cpu_fallback_still_commits_to_a_managed_cpu_build(monkeypatch, tmp_path):
+    """The control: nothing replaced the binary, so the fallback has to load exactly as before.
+    A CPU fallback refused for the accelerator it deliberately chose would take H3 away from every
+    GPU host with no matching prebuilt, which is the common case this fallback exists for."""
+    backend, run = _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, swap_on_fallback = False)
+    run()
+    assert backend._state is not None
+    assert backend._state.device == "cpu"
+    assert backend._state.offload_policy == "none"
 
 
 def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypatch, tmp_path):
@@ -4532,8 +4724,15 @@ def test_h3_keyframe_fit_stretches_the_first_and_crops_the_last():
         fit_h3_keyframe(source, 64, 64, anchor = "middle")
 
 
-def _h3_native_backend(monkeypatch, calls):
-    """A backend with an H3 sd.cpp state whose engine records the params it was handed."""
+def _h3_native_backend(
+    monkeypatch,
+    calls,
+    binary = None,
+):
+    """A backend with an H3 sd.cpp state whose engine records the params it was handed.
+
+    ``binary`` stands in for what _run_load_h3_native resolves and vets: the engine gets the path
+    and the runtime records that file's identity, exactly as the real load does."""
     from core.inference.video import _VideoLoadState
     from core.inference.video_minimax_h3 import MiniMaxH3NativeRuntime
 
@@ -4561,8 +4760,18 @@ def _h3_native_backend(monkeypatch, calls):
 
     backend = VideoBackend()
     fam = _detect_load_family("unsloth/MiniMax-H3-GGUF", None, "minimax-h3")
+    from core.inference.video import _sd_cli_identity
+
+    engine = _Engine()
+    if binary is not None:
+        engine.binary = str(binary)
     backend._state = _VideoLoadState(
-        pipe = MiniMaxH3NativeRuntime(engine = _Engine(), files = object(), offload_flags = ()),
+        pipe = MiniMaxH3NativeRuntime(
+            engine = engine,
+            files = object(),
+            offload_flags = (),
+            binary_identity = _sd_cli_identity(str(binary)) if binary is not None else None,
+        ),
         family = fam,
         repo_id = "unsloth/MiniMax-H3-GGUF",
         base_repo = fam.base_repo,
@@ -4609,6 +4818,26 @@ def test_h3_native_generate_stages_both_keyframes_on_the_canvas(monkeypatch):
     assert calls[0]["init_size"] == (960, 544)
     assert calls[0]["end_size"] == (960, 544)
     assert result["conditioning"] == "fl2va"
+
+
+def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
+    """_run_generate persists these with result.get(...), so a field the native path omits lands
+    in the gallery sidecar as null. Clips generated from different GGUF quantizations of the same
+    repo then cannot be told apart or reproduced from their saved recipe, unlike the diffusers
+    path, which records the same set off the engaged state."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+
+    state = backend._state
+    assert result["model_kind"] == state.kind == "gguf"
+    assert result["gguf_filename"] == state.gguf_filename
+    assert result["memory_mode"] == state.memory_mode
+    assert result["offload_policy"] == state.offload_policy
+    assert result["transformer_quant"] == state.transformer_quant
+    assert result["text_encoder_quant"] == state.text_encoder_quant
 
 
 def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
@@ -6026,6 +6255,7 @@ def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runti
 def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
     # The whole change is inert on a default load: every family keeps its bf16-table budget, so no
     # existing decision on any device moves.
+    from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
@@ -6087,6 +6317,325 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
         * _MIB_PER_GB
     )
+
+
+# ── MiniMax-H3: the denoiser partition a ref2va load actually needs ──────────
+
+
+_H3_TWO_PARTITION_SIBLINGS = [
+    _sibling("model_index.json", 1),
+    _sibling("modular_model_index.json", 1),
+    _sibling("scheduler/scheduler_config.json", 1),
+    _sibling("audio_scheduler/scheduler_config.json", 1),
+    _sibling("vae/diffusion_pytorch_model.safetensors", 10),
+    _sibling("audio_vae/diffusion_pytorch_model.safetensors", 1),
+    _sibling("text_encoder/model-00001-of-00002.safetensors", 66),
+    _sibling("tokenizer/tokenizer.json", 1),
+    _sibling("processor/preprocessor_config.json", 1),
+    _sibling("transformer/config.json", 1),
+    _sibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 66),
+    _sibling("transformer_ref/config.json", 1),
+    _sibling("transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors", 66),
+    _sibling("FL2VA/single_file.safetensors", 144),
+    _sibling("Ref2VA/single_file.safetensors", 144),
+]
+
+
+def test_a_ref2va_pick_stages_the_reference_denoiser_and_only_that_one():
+    """MiniMaxAI/MiniMax-H3 ships two 66.28 GB denoisers, and the modular load builds exactly
+    one: diffusers' ref2va denoise step is constructed with transformer_name="transformer_ref".
+    Staging only transformer/ therefore downloaded the keyframe partition for a References load
+    and left the one it opens to be fetched inline, outside the download manager."""
+    info = types.SimpleNamespace(siblings = _H3_TWO_PARTITION_SIBLINGS)
+
+    ref = [n for n, _ in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")]
+    assert any(n.startswith("transformer_ref/") for n in ref)
+    assert not any(n.startswith("transformer/") for n in ref)
+
+    # The default (and an explicit keyframe task) keeps the fl2va partition and drops the other.
+    for task in (None, "fl2va"):
+        keyframes = [
+            n for n, _ in VideoBackend._base_download_files(info, "pipeline", h3_task = task)
+        ]
+        assert any(n.startswith("transformer/") for n in keyframes)
+        assert not any(n.startswith("transformer_ref/") for n in keyframes)
+
+    # Neither partition doubles the stage, and the packaged single-file dirs stay excluded.
+    assert not any(n.startswith(("FL2VA/", "Ref2VA/")) for n in ref)
+
+
+def test_download_plan_keys_the_h3_denoiser_on_the_requested_task(monkeypatch):
+    # The plan is what the Hub download manager stages, so the task has to reach it: without it
+    # a References pick paid for 66.28 GB of keyframe denoiser it never opens.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(monkeypatch, {"MiniMaxAI/MiniMax-H3": _H3_TWO_PARTITION_SIBLINGS})
+
+    def files_for(task):
+        plan = VideoBackend().download_plan(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            h3_task = task,
+        )
+        by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+        return by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+
+    assert any(n.startswith("transformer_ref/") for n in files_for("ref2va"))
+    assert not any(n.startswith("transformer/") for n in files_for("ref2va"))
+    assert any(n.startswith("transformer/") for n in files_for(None))
+
+
+def test_h3_records_the_guidance_that_actually_ran(monkeypatch):
+    """MiniMax-H3 declares supports_cfg=False: the diffusers branch forwards no CFG kwarg and
+    the native branch pins --cfg-scale 1.0, so a requested guidance reaches no sampler. Keeping
+    the request in the result labelled the clip and its gallery sidecar with a number that did
+    nothing, and two clips run at 1.0 read back as different recipes."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544, guidance = 7.5)
+
+    assert result["guidance"] == backend._state.family.default_guidance == 1.0
+    # And that default is exactly what the engine was told to run.
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
+def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch):
+    """The normalisation above has to use the FAMILY default, not the identifier-derived one.
+
+    ``default_video_generation_params`` matches on the repo id or path, so a local H3 file under
+    a folder named after another family picks up that family's guidance. Recording it writes back
+    exactly the inaccurate recipe this normalisation exists to prevent, and with a number no H3
+    sampler can have produced.
+    """
+    import dataclasses
+
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    backend._state = dataclasses.replace(backend._state, repo_id = local)
+
+    # Precondition: the identifier really does resolve to a different family's guidance, so the
+    # test cannot pass by that lookup happening to agree with H3.
+    from core.inference.video import default_video_generation_params
+
+    fam = backend._state.family
+    _steps, derived = default_video_generation_params(
+        local, fallback = (fam.default_steps, fam.default_guidance)
+    )
+    assert derived != fam.default_guidance
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+    assert result["guidance"] == fam.default_guidance == 1.0
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
+def test_h3_records_no_negative_prompt_because_neither_engine_takes_one(monkeypatch):
+    """The same rule as the guidance above, for the other half of the unconditional branch. A
+    negative prompt IS the unconditional branch, so a guidance-distilled family consumes none:
+    the diffusers call adds the kwarg only when the pipeline signature has it (H3's modular
+    workflow does not) and ``SdCppVideoGenParams`` carries no field for one at all. Persisting the
+    caller's string left the gallery sidecar and its restored recipe claiming conditioning that
+    never reached a sampler."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+        width = 960,
+        height = 544,
+    )
+
+    assert result["negative_prompt"] is None
+    assert not hasattr(calls[-1]["params"], "negative_prompt")
+
+
+def test_the_video_sidecar_records_the_negative_prompt_that_ran(monkeypatch, tmp_path):
+    """The recipe the gallery reads back comes from the RESULT, like guidance beside it, not from
+    the request the worker was handed: normalising inside generate() alone would have left
+    _run_generate persisting the caller's original string."""
+    from core.inference import video as video_mod
+    from core.inference import video_gallery
+
+    saved: list = []
+    monkeypatch.setattr(
+        video_gallery, "save", lambda data, meta: (saved.append(meta), {"id": "v1"})[1]
+    )
+
+    backend = VideoBackend()
+    result = {
+        "mp4_bytes": b"MP4",
+        "seed": 7,
+        "repo_id": "unsloth/MiniMax-H3-GGUF",
+        "width": 960,
+        "height": 544,
+        "num_frames": 124,
+        "fps": 24,
+        "duration_s": 5.0,
+        "has_audio": True,
+        "conditioning": "t2va",
+        "steps": 30,
+        "guidance": 1.0,
+        "negative_prompt": None,
+    }
+    monkeypatch.setattr(backend, "generate", lambda **kw: result)
+    monkeypatch.setattr(backend, "_finish_generate_job", lambda **kw: None)
+
+    backend._run_generate(
+        cancel_event = threading.Event(),
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+    )
+
+    assert saved and saved[-1]["negative_prompt"] is None
+    assert saved[-1]["prompt"] == "a fox runs through snow"
+
+
+def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):
+    """An H3 native run is an sd-cli run out of the managed tree, so it takes the same reader claim
+    the one-shot image path takes. Without it an image-engine request sees no readers, starts an
+    install, and the sweep unlinks the CLI this runtime resolved at load."""
+    pytest.importorskip("PIL.Image")
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
+
+    held: list = []
+    inner = backend._state.pipe.engine.generate_video
+
+    def _watching(files, params, **kwargs):
+        held.append(bk._tree_readers)
+        # An install decided right now must stand down rather than replace what is executing.
+        with bk._tree_claimed_for_install() as claimed:
+            held.append(claimed)
+        return inner(files, params, **kwargs)
+
+    backend._state.pipe.engine.generate_video = _watching
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert held == [1, False]
+    # And the claim is released afterwards, so the next install is not blocked forever.
+    assert bk._tree_readers == 0
+
+
+def test_an_unmanaged_h3_native_run_takes_no_claim(monkeypatch, tmp_path):
+    """A user-supplied sd-cli is one the installer cannot replace, so it must not be blocked
+    behind an unrelated managed install."""
+    pytest.importorskip("PIL.Image")
+    import core.inference.sd_cpp_backend as bk
+
+    outside = tmp_path / "mine" / "sd-cli"
+    outside.parent.mkdir(parents = True)
+    outside.write_bytes(b"my own build")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls, binary = outside)
+
+    held: list = []
+    inner = backend._state.pipe.engine.generate_video
+
+    def _watching(files, params, **kwargs):
+        held.append(bk._tree_readers)
+        return inner(files, params, **kwargs)
+
+    backend._state.pipe.engine.generate_video = _watching
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert held == [0]
+
+
+def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
+    """Existence is not identity, and the identity has to be the one recorded when
+    ensure_h3_sd_cpp_binary vetted the file. An install that lands at the SAME path leaves a build
+    that is not the one this runtime was checked against: a different accelerator, or one predating
+    the H3 options, which aborts partway through a render nobody wants to repeat."""
+    pytest.importorskip("PIL.Image")
+    import contextlib
+    import os
+
+    import core.inference.sd_cpp_backend as bk
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"the build the load checked")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    # Unchanged since the load: the run goes ahead.
+    backend.generate(prompt = "p", width = 960, height = 544)
+    assert len(calls) == 1
+
+    # The install landed BEFORE this generation, not during it. Two reads taken now would agree
+    # with each other, which is exactly why the comparison is against the load-time value.
+    managed.write_bytes(b"some other accelerator's build")
+    os.utime(managed, (1, 1))
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert len(calls) == 1, "the run must not reach a build the load never checked"
+
+    # A replacement that lands DURING the wait is caught the same way.
+    @contextlib.contextmanager
+    def _install_lands_during_the_wait(
+        _binary,
+        _cancel = None,
+        _msg = None,
+    ):
+        managed.write_bytes(b"yet another build")
+        os.utime(managed, (2, 2))
+        yield
+
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
+    monkeypatch.setattr(bk, "_tree_reader", _install_lands_during_the_wait)
+    with pytest.raises(RuntimeError, match = "Reload the model"):
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert len(calls) == 1
+
+
+def test_a_cancelled_h3_install_wait_reads_as_a_cancellation(monkeypatch, tmp_path):
+    """The reader is shared with the image path, whose sentinel _run_generate does not recognise.
+    Left untranslated, an ordinary H3 cancellation surfaces as "Video generation failed"."""
+    pytest.importorskip("PIL.Image")
+    import threading
+
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(bk, "_tree_installing", True)
+    monkeypatch.setattr(bk, "_TREE_WAIT_TICK_S", 0.02)
+
+    # Cancel shortly after the generation parks in the install wait.
+    threading.Timer(0.1, lambda: backend.cancel_generate()).start()
+    with pytest.raises(RuntimeError) as exc:
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert str(exc.value) == VIDEO_CANCELLED_MSG
+    assert calls == []
 
 
 # ── the refusal reads the plan the load will actually take ────────────────────
