@@ -2347,3 +2347,43 @@ def test_audio_input_stopped_while_queued_is_never_sent(monkeypatch):
     assert o._active_cancel_events == []
     assert o._gen_lock.acquire(blocking = False)
     o._gen_lock.release()
+
+
+def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
+    """/load waits for the cancel's teardown to signal cancel_complete, and only
+    /unload's finally sets it. A disconnect or a shutdown between the two leaves
+    nobody to set it, so the wait has to be bounded: an unbounded one parks the
+    load under inference_lifecycle_gate for the process lifetime, and
+    asyncio.to_thread's executor threads are non-daemon, so it also blocks exit.
+    """
+    import asyncio
+
+    import routes.inference as inf
+    from models.inference import LoadRequest, UnloadRequest
+
+    request = LoadRequest(model_path = "org/a", load_request_id = "handshake-drop")
+    original_impl = inf._load_model_impl
+    original_timeout = inf._SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S
+
+    async def cancel_then_die(*args, **kwargs):
+        attempt, is_running = inf._cancel_scoped_load_attempt(
+            UnloadRequest(model_path = "org/a", cancel_load_request_id = "handshake-drop"), "s"
+        )
+        assert attempt is not None and is_running
+        attempt.cancel_complete.clear()  # the teardown never reached its finally
+        return {"status": "loaded"}
+
+    inf._load_model_impl = cancel_then_die
+    inf._SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 0.25
+    try:
+        asyncio.run(
+            asyncio.wait_for(
+                inf._run_tracked_load_model_impl(request, None, "s"), timeout = 30
+            )
+        )
+    finally:
+        inf._load_model_impl = original_impl
+        inf._SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = original_timeout
+        with inf._scoped_load_attempts_lock:
+            inf._scoped_load_attempts.clear()
+            inf._scoped_load_cancel_tombstones.clear()
