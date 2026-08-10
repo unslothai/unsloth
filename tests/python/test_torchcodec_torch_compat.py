@@ -373,6 +373,8 @@ def test_select_torchcodec_spec_matches_compat_matrix():
             f"torch {torch_minor}: installer admits {sorted(admitted)}, "
             f"matrix allows {sorted(allowed)}"
         )
+
+
 def test_audio_extras_are_gated_to_platforms_with_a_torchcodec_wheel():
     """torchcodec publishes no sdist and no wheel for Linux aarch64, Windows ARM64 or
     Intel Mac, so an ungated pin makes pip fail the whole install on those hosts instead
