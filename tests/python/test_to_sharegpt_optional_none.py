@@ -95,3 +95,69 @@ def test_optional_block_falsy_but_present_gating_value_still_renders():
     merged_prompt = "Count: [[{n}]]!"
     out = _render(merged_prompt, ["n"], {"n": [0]})
     assert out[0] == "Count: 0!"
+
+
+def _load_to_sharegpt():
+    # Same trick as above: pull to_sharegpt and the two helpers it calls out of
+    # the source without importing unsloth.
+    source = Path(__file__).parents[2] / "unsloth" / "chat_templates.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    wanted = {"_parse_combined_prompt", "_create_formatter", "to_sharegpt"}
+    funcs = [
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    namespace = {"re": re}
+    module = ast.Module(body = funcs, type_ignores = [])
+    ast.fix_missing_locations(module)
+    exec(compile(module, str(source), "exec"), namespace)
+    return namespace["to_sharegpt"]
+
+
+def _alpaca():
+    from datasets import Dataset
+
+    return Dataset.from_dict(
+        {"instruction" : ["a", "b", "c", "d"], "output" : ["1", "2", "3", "4"]}
+    )
+
+
+def test_conversation_extension_with_columns_kept():
+    # Both flags are documented. Extending shuffled copies used to concatenate
+    # the caller's columns once per extension, which datasets rejects.
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        remove_unused_columns = False,
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["instruction", "output", "conversations"]
+    assert len(converted[0]["conversations"]) == 6
+
+
+def test_conversation_extension_drops_its_scaffolding_columns():
+    to_sharegpt = _load_to_sharegpt()
+    for extension in (2, 3, 4):
+        converted = to_sharegpt(
+            _alpaca(),
+            merged_prompt = "{instruction}",
+            remove_unused_columns = False,
+            conversation_extension = extension,
+        )
+        numbered = [name for name in converted.column_names if name.startswith("conversations")]
+        assert numbered == ["conversations"], converted.column_names
+        assert len(converted[0]["conversations"]) == 2 * extension
+
+
+def test_conversation_extension_unchanged_when_columns_removed():
+    to_sharegpt = _load_to_sharegpt()
+    converted = to_sharegpt(
+        _alpaca(),
+        merged_prompt = "{instruction}",
+        conversation_extension = 3,
+    )
+
+    assert converted.column_names == ["conversations"]
+    assert len(converted[0]["conversations"]) == 6
+    assert all(turn["value"] for row in converted for turn in row["conversations"])
