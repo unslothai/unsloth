@@ -155,16 +155,48 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
     assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
 
 
-def test_the_speech_route_stays_inside_a_small_loaded_context(monkeypatch):
-    """This route is reachable after a plain /api/inference/load, whose default
-    max_seq_length=0 becomes 2048, so the full ceiling would overflow or truncate."""
-    cli, calls, _saved = _make_client(monkeypatch)
+def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
+    """The cap now lives in _tts_max_new_tokens, which both TTS routes share, rather than
+    being computed at the speech route. Exercised directly since the route tests fake the
+    shared core that applies it."""
+    from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
+    from models.inference import ChatCompletionRequest
+
     monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "x"}],
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+    )
     text = "x" * 300
-    assert cli.post("/v1/audio/speech", json = {"input": text}).status_code == 200
-    budget = calls[0]["payload"].max_tokens
+
+    budget = routes_module._tts_max_new_tokens(payload, text)
+
     assert budget < 2048
-    assert budget == 2048 - max(1, len(text) // 3)
+    assert budget == 2048 - routes_module._prompt_token_estimate(text)
+
+
+def test_an_over_context_prompt_is_a_client_error(monkeypatch):
+    """Flooring at one token forwarded the whole over-context prompt anyway and failed deep
+    in generation. Both routes share this guard through _generate_tts_wav."""
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+
+    with pytest.raises(HTTPException) as excinfo:
+        routes_module._raise_if_prompt_leaves_no_speech_budget("x" * 8000)
+
+    assert excinfo.value.status_code == 400
+    assert "too long" in str(excinfo.value.detail).lower()
+    # A normal line is untouched.
+    routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
+
+
+def test_the_shared_core_guards_before_generating():
+    """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
+    import inspect
+
+    source = inspect.getsource(routes_module._generate_tts_wav)
+    assert "_raise_if_prompt_leaves_no_speech_budget(text)" in source
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):
@@ -186,17 +218,3 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
     assert len(remaining) == 3
     # Newest kept, oldest dropped.
     assert set(ids[-3:]) == remaining
-
-
-def test_an_over_context_prompt_is_a_client_error(monkeypatch):
-    """Flooring at one token forwarded the whole over-context prompt anyway and failed deep
-    in generation; say so while the caller can still shorten the input."""
-    cli, calls, _saved = _make_client(monkeypatch)
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
-
-    resp = cli.post("/v1/audio/speech", json = {"input": "x" * 8000})
-
-    assert resp.status_code == 400
-    # install_api_error_handlers reshapes HTTPException into the OpenAI error envelope.
-    assert "too long" in json.dumps(resp.json()).lower()
-    assert calls == []

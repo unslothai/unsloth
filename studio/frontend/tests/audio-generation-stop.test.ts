@@ -89,3 +89,12 @@ test("deleting a clip drops the row without waiting on the refresh", () => {
     /await deleteAudioClip\(id\);[\s\S]*galleryCache\.clips = galleryCache\.clips\.filter\([\s\S]*setClips\(galleryCache\.clips\);/,
   );
 });
+
+test("the response fallback is dropped once its gallery record arrives", () => {
+  // Kept past that point, deleting the now-visible clip made the fallback reappear from a
+  // stale data URL, labelled as saved, as though the delete had not happened.
+  assert.match(
+    source,
+    /fallbackClipRef\.current &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
+  );
+});

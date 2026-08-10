@@ -554,6 +554,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
+        // The response audio was kept only until its record showed up. Left mounted, deleting
+        // the now-visible clip made the "saved, waiting for the gallery" copy reappear from a
+        // stale data URL as though the delete had not happened.
+        if (
+          fallbackClipRef.current &&
+          galleryCache.selectedId &&
+          merged.some((c) => c.id === galleryCache.selectedId)
+        ) {
+          setFallbackClip(null);
+        }
         if (
           galleryCache.selectedId &&
           !merged.some((c) => c.id === galleryCache.selectedId)

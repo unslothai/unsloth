@@ -402,6 +402,26 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
     return max(1, budget)
 
 
+def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
+    """400 when the prompt alone consumes the loaded context.
+
+    Shared by both TTS routes: the budget helper floors at one token so generation always
+    has something to ask for, which on its own would send an over-context prompt into the
+    backend to fail there or return a clip too short to hold codec tokens.
+    """
+    context_length = _monitor_context_length()
+    if not context_length:
+        return
+    if context_length - _prompt_token_estimate(text) < _MIN_SPEECH_OUTPUT_TOKENS:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"Input is too long for the loaded model's {context_length}-token context. "
+                "Shorten it, or load the model with a larger context."
+            ),
+        )
+
+
 def _prompt_token_estimate(prompt: str) -> int:
     """Tokens the prompt will occupy, from the loaded tokenizer where one is reachable.
 
@@ -9128,6 +9148,7 @@ async def _generate_tts_wav(
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
+    _raise_if_prompt_leaves_no_speech_budget(text)
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
     # unload an audio GGUF the next request then failed to restore. Validation
@@ -9349,24 +9370,10 @@ async def openai_audio_speech(
     # after any /api/inference/load, including the default max_seq_length=0 that becomes
     # 2048. Asking for the full ceiling against that context overflows or truncates, so
     # cap to what is actually left once the prompt is accounted for.
-    budget = AUDIO_GENERATION_MAX_TOKENS
-    context_length = _monitor_context_length()
-    if context_length:
-        remaining = context_length - _prompt_token_estimate(body.input)
-        # Flooring at 1 here would forward an over-context prompt anyway and fail deep in
-        # generation. Say so instead, while the caller can still shorten the input.
-        if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
-            raise HTTPException(
-                status_code = 400,
-                detail = (
-                    f"Input is too long for the loaded model's {context_length}-token context. "
-                    "Shorten it, or load the model with a larger context."
-                ),
-            )
-        budget = min(budget, remaining)
+    # The over-context check lives in _generate_tts_wav, so both routes share it.
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
-        max_tokens = budget,
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.input, payload, request, current_subject
