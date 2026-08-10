@@ -6,7 +6,7 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
-import { timeoutSignal } from "@/features/hub/lib/abort-signals";
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
@@ -47,6 +47,19 @@ export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
 // bounds the request itself so a wedged socket cannot stall every reader waiting on the write
 const THREAD_WRITE_TIMEOUT_MS = 30_000;
+
+/** authFetch under a disposed timeout, so the ponyfill path leaves no timer behind. */
+async function threadWriteFetch(
+  input: string,
+  init: RequestInit,
+): Promise<Response> {
+  const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  try {
+    return await authFetch(input, { ...init, signal: timeout.signal });
+  } finally {
+    timeout.dispose();
+  }
+}
 
 /**
 * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
@@ -734,11 +747,10 @@ export class ChatThreadDeletedError extends Error {
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
-    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
@@ -768,13 +780,12 @@ export async function updateChatThread(
   if (options.expectedOpeningMessageId !== undefined) {
     body.expectedOpeningMessageId = options.expectedOpeningMessageId;
   }
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
@@ -823,11 +834,10 @@ export async function getForkCount(
 
 export async function deleteChatThreads(threadIds: string[]): Promise<void> {
   if (threadIds.length === 0) return;
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: threadIds }),
-    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   await parseJsonOrThrow<unknown>(response);
   notifyChatHistoryUpdated();
@@ -975,7 +985,7 @@ export async function syncChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
@@ -984,7 +994,6 @@ export async function syncChatMessages(
         messages,
         pruneMissing: options.pruneMissing ?? false,
       }),
-      signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
@@ -1005,14 +1014,13 @@ export async function clearBackendChats(
     tombstoneThreadIds?: string[];
   } = {},
 ): Promise<string[]> {
-  const response = await authFetch("/api/chat", {
+  const response = await threadWriteFetch("/api/chat", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ids: options.tombstoneThreadIds ?? [],
       operationId: options.operationId,
     }),
-    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   const data = await parseJsonOrThrow<{ deletedThreadIds: string[] }>(response);
   if (options.notify !== false) {

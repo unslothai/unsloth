@@ -55,6 +55,25 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   );
 }
 
+/**
+* Confirm a thread is stored before documents are indexed against it. An id reaches this
+* component before its row write lands, from a cached initialize() or from activeThreadId, and
+* upload_thread_document does not check the thread itself. A transport failure is not proof the
+* row is missing, so only a definitive miss blocks the upload.
+*/
+async function requireStoredThread(threadId: string): Promise<void> {
+  if (isThreadIncognito(threadId)) return;
+  let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
+  try {
+    stored = await ensureStoredChatThread(threadId);
+  } catch {
+    return;
+  }
+  if (!stored) {
+    throw new Error(`Thread ${threadId} was not persisted`);
+  }
+}
+
 export function ThreadDocumentsBar({
   threadId,
   onIndexingChange,
@@ -113,9 +132,14 @@ export function ThreadDocumentsBar({
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    // an id the component already holds came from a thread that exists, so it needs no round-trip
     if (effectiveThreadId) {
-      return Promise.resolve(effectiveThreadId);
+      return requireStoredThread(effectiveThreadId).then(
+        () => effectiveThreadId,
+        () => {
+          toast.error("Couldn't start a chat for these documents");
+          return null;
+        },
+      );
     }
     const current = initPromiseRef.current;
     if (current) {
@@ -127,12 +151,7 @@ export function ThreadDocumentsBar({
       .threadListItem()
       .initialize()
       .then(async ({ remoteId }) => {
-        // a cached initialize() resolves while the row write is still pending, so confirm the row
-        // these documents will be indexed against
-        const needsStoredRow = !isThreadIncognito(remoteId);
-        if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
-          throw new Error(`Thread ${remoteId} was not persisted`);
-        }
+        await requireStoredThread(remoteId);
         // a clear that landed while the row write was in flight is deleting this thread
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");

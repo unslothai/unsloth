@@ -247,8 +247,11 @@ def _run(
 
         _progress(conn, job_id, "storing", 0.9)
         # a project delete or a discarded upload can remove the document while this job runs, and
-        # chunks carry no foreign key to it, so writing now would strand rows under a dead scope
+        # chunks carry no foreign key to it, so writing after one would strand rows under a dead
+        # scope; the writer lock is taken before the check so a delete cannot land between them
+        conn.execute("BEGIN IMMEDIATE")
         if store.get_document(conn, document_id) is None:
+            conn.rollback()
             _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
             _emit(
                 job_id,

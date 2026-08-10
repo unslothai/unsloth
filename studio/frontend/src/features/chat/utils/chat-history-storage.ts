@@ -900,7 +900,24 @@ export async function deleteStoredChatThreads(
   if (ids.length === 0) return;
   // the backend tombstones every requested id in the transaction that deletes its row, so a save
   // reaching sqlite later is rejected rather than resurrecting the thread
-  await deleteChatThreads(ids);
+  try {
+    await deleteChatThreads(ids);
+  } catch (error) {
+    // an aborted or dropped response is not proof the delete failed. the caller rolls its
+    // tombstone back on a throw, and doing that for a row the backend did remove leaves the
+    // thread 410 on every later write, so confirm the rows really survived first.
+    const survived = await Promise.all(
+      ids.map((id) =>
+        getChatThread(id).then(
+          (thread) => thread !== null,
+          () => true,
+        ),
+      ),
+    );
+    if (survived.some(Boolean)) {
+      throw error;
+    }
+  }
   for (const id of ids) {
     failedThreadRecordByThreadId.delete(id);
     initializingThreadRecords.delete(id);
