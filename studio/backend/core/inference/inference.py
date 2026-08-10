@@ -457,6 +457,7 @@ class InferenceBackend:
                             )
                         elif base_repo:
                             from huggingface_hub import snapshot_download
+
                             # Same token as the load below: a private or gated base would
                             # otherwise 401 here while resolving the BiCodec assets.
                             abs_repo_path = os.path.abspath(
