@@ -720,3 +720,95 @@ def test_unreadable_breadcrumbs_do_not_cancel_the_cache_sweep(monkeypatch, tmp_p
     _join_background_sweep()
 
     assert not partial.exists()
+
+
+def test_an_owned_partial_that_is_still_growing_is_spared(monkeypatch, blobs):
+    """Ownership proves OUR writer died, never that no other process shares the cache."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: False)  # lies
+    monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_destructive_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+
+    real_sleep = time.sleep
+
+    def _write_while_we_watch(_seconds):
+        real_sleep(_seconds)
+        with partial.open("ab") as handle:
+            handle.write(b"y" * 10)  # an external writer, mid-transfer
+
+    monkeypatch.setattr(download_registry.time, "sleep", _write_while_we_watch)
+
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        owns_all_blobs = True,
+    )
+
+    assert swept == 0
+    assert partial.exists()
+
+
+def test_an_owned_partial_that_never_moves_is_swept_without_the_full_grace(monkeypatch, blobs):
+    """The corpse of a cancelled download must not outlive the retry that follows it."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_destructive_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)  # written seconds ago, far inside the abandonment grace
+
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        owns_all_blobs = True,
+    )
+
+    assert swept == 1
+    assert not partial.exists()
+
+
+def test_a_breadcrumb_whose_worker_already_exited_is_claimed(monkeypatch, tmp_path, blobs):
+    """A container restart leaves the crumb behind and the pid long gone."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    (workers / "job.json").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "repo_type": "model",
+                "repo_id": "Org/Model",
+                "variant": None,
+                "transport": "http",
+                "hub_cache": str(blobs.parent.parent),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)  # fresh, so only an ownership claim reaches it
+
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: False)  # already dead
+    monkeypatch.setattr(download_registry, "_STILLNESS_PROBE_SECONDS", 0.05)
+    monkeypatch.setattr(download_registry, "_settle_orphaned_download", lambda *_a, **_k: None)
+    monkeypatch.setattr(download_registry, "hf_cache_roots", lambda *_a, **_k: [tmp_path / "none"])
+    monkeypatch.setattr(
+        download_registry,
+        "iter_destructive_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    download_registry.reap_orphan_workers()
+    _join_background_sweep()
+
+    assert not partial.exists()

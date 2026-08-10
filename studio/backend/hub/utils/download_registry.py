@@ -381,7 +381,11 @@ def reap_orphan_workers() -> None:
             _safe_unlink(entry)
             continue
         try:
-            if _process_alive(pid) and _is_our_worker(pid, repo_id):
+            if not _process_alive(pid):
+                # Already gone, which is better proof than killing it ourselves. Its partial
+                # is ours to sweep even though this invocation reaped nothing.
+                reaped.append((data.get("repo_type") or "model", repo_id, data.get("hub_cache")))
+            elif _is_our_worker(pid, repo_id):
                 if not _kill_orphan(pid):
                     # Still running. Keeping the breadcrumb keeps it tracked for the next boot,
                     # and claiming no ownership keeps its live partial out of the sweep.
@@ -487,10 +491,12 @@ def _purge_incomplete_blobs(
 
     ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir (one with no
     variant, which claim() will not let a sibling share), are blobs whose only Studio-side
-    writer has just been reaped, so the wait buys nothing: the staleness check exists to infer a live writer, and here the answer is
-    known. The lock check still runs, which is what makes this safe -- hf takes the per-blob
-    lock BEFORE creating its temporary file, so any partial belonging to a live writer
-    (including a retry for this same job) is necessarily locked.
+    writer has just been reaped. Those do not wait out the full grace -- the corpse would
+    outlive the retry that follows a cancel, which is the frozen bar this whole change is
+    about -- but they are not simply trusted either: registry ownership proves OUR writer is
+    gone, never that no independent process shares the cache. They go through a stillness
+    probe instead, which is the one liveness test that survives a filesystem where flock is
+    granted to every caller and the lock therefore reads free while somebody writes.
     """
     now = time.time()
     blobs_dir = entry / "blobs"
@@ -498,6 +504,7 @@ def _purge_incomplete_blobs(
         return _PurgeOutcome(0, 0)
     removed = 0
     failed = 0
+    watched: list[tuple[Path, str, int, float]] = []
     try:
         candidates = list(blobs_dir.iterdir())
     except OSError:
@@ -527,6 +534,10 @@ def _purge_incomplete_blobs(
                 if not owned:
                     if now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
                         continue
+                elif now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
+                    stat = blob.stat()
+                    watched.append((blob, blob_hash, stat.st_size, stat.st_mtime))
+                    continue
             blob.unlink()
             removed += 1
         except FileNotFoundError:
@@ -536,6 +547,38 @@ def _purge_incomplete_blobs(
         except OSError:
             failed += 1
             continue
+    watched_outcome = _purge_still_partials(watched)
+    return _PurgeOutcome(removed + watched_outcome.removed, failed + watched_outcome.failed)
+
+
+# One shared pause is enough to tell a frozen corpse from a writer mid-transfer: hf writes a
+# partial continuously, so anything untouched across it is not being written by anyone.
+_STILLNESS_PROBE_SECONDS = 2.0
+
+
+def _purge_still_partials(watched: "Sequence[tuple[Path, str, int, float]]") -> _PurgeOutcome:
+    """Delete the owned partials that do not move while we watch them.
+
+    Sampled once before, once after a single shared sleep, so the cost is one pause per sweep
+    rather than one per file. Anything that grew or was touched in between has a live writer,
+    whatever the advisory lock had to say about it.
+    """
+    if not watched:
+        return _PurgeOutcome(0, 0)
+    time.sleep(_STILLNESS_PROBE_SECONDS)
+    removed = 0
+    failed = 0
+    for blob, _blob_hash, size, mtime in watched:
+        try:
+            stat = blob.stat()
+            if stat.st_size != size or stat.st_mtime != mtime:
+                continue  # it moved, so somebody owns it after all
+            blob.unlink()
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError:
+            failed += 1
     return _PurgeOutcome(removed, failed)
 
 
