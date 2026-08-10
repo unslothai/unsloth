@@ -246,6 +246,15 @@ def _run(
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
+        # a project delete or a discarded upload can remove the document while this job runs, and
+        # chunks carry no foreign key to it, so writing now would strand rows under a dead scope
+        if store.get_document(conn, document_id) is None:
+            _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
+            _emit(
+                job_id,
+                {"type": "error", "stage": "cancelled", "error": "Document was deleted"},
+            )
+            return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
         _replace_old_document(conn, replaces, stored_path)

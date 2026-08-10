@@ -4,6 +4,7 @@
 """Ingestion lifecycle tests: pending -> completed, SSE events, dedupe, delete."""
 
 import os
+import threading
 import time
 
 import pytest
@@ -22,14 +23,18 @@ def _drain(job_id):
     return list(ingestion.job_events(job_id))
 
 
-def _wait_completed(job_id, timeout = 30.0):
+def _wait_finished(job_id, timeout = 30.0, terminal = ("completed", "failed", "cancelled")):
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = ingestion.get_job_status(job_id)
-        if status and status["status"] in ("completed", "failed"):
+        if status and status["status"] in terminal:
             return status
         time.sleep(0.05)
     raise AssertionError("ingestion did not finish in time")
+
+
+def _wait_completed(job_id, timeout = 30.0):
+    return _wait_finished(job_id, timeout, ("completed", "failed"))
 
 
 def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp_path):
@@ -58,6 +63,42 @@ def test_ingestion_lifecycle_pending_to_completed(rag_home, stub_embeddings, tmp
         assert doc["status"] == "completed"
         assert doc["num_chunks"] > 0
         assert store.search_lexical(conn, scope, "alpha", 10)
+    finally:
+        conn.close()
+
+
+def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """A project delete mid-job must not leave chunks under a scope nothing can reach."""
+    path = _write(tmp_path, "doc.txt", "alpha bravo charlie " * 50)
+    scope = store.project_scope("P1")
+    real_embed_all = ingestion._embed_all
+    deleted = {}
+    doc_id_known = threading.Event()
+
+    def delete_document_then_embed(texts, model_name):
+        vectors = real_embed_all(texts, model_name)
+        doc_id_known.wait(30)
+        conn = rag_db.get_connection()
+        try:
+            store.delete_document(conn, deleted["id"])
+        finally:
+            conn.close()
+        return vectors
+
+    monkeypatch.setattr(ingestion, "_embed_all", delete_document_then_embed)
+    doc_id, job_id = ingestion.start_ingestion(
+        scope, None, None, "doc.txt", path, project_id = "P1"
+    )
+    deleted["id"] = doc_id
+    doc_id_known.set()
+
+    assert _wait_finished(job_id)["status"] == "cancelled"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id) is None
+        assert store.search_lexical(conn, scope, "alpha", 10) == []
     finally:
         conn.close()
 
