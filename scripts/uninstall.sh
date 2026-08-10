@@ -424,6 +424,53 @@ _remove_cli_shim() {
     esac
 }
 
+# Print key $2 from the Info.plist $1. PlistBuddy also reads binary plists;
+# the awk fallback covers XML on hosts without it.
+_plist_string() {
+    [ -f "$1" ] || return 1
+    if [ -x /usr/libexec/PlistBuddy ]; then
+        /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null && return 0
+    fi
+    awk -v k="<key>$2</key>" 'index($0, k) { f = 1; next }
+         f && /<string>/ { sub(/.*<string>/, ""); sub(/<\/string>.*/, ""); print; exit }' "$1"
+}
+
+# True when the bundle $1 is the packaged desktop app carrying bundle id $2.
+# install.sh's shell launcher shares that id, so exclude it by its executable.
+_owns_bundle_id() {
+    [ -d "$1" ] || return 1
+    [ "$(_plist_string "$1/Contents/Info.plist" CFBundleIdentifier)" = "$2" ] || return 1
+    [ "$(_plist_string "$1/Contents/Info.plist" CFBundleExecutable)" != "launch-studio" ]
+}
+
+# Path of the installed app owning bundle id $1, empty if there is none. A renamed
+# bundle or a subdirectory such as "/Applications/AI & ML/Unsloth.app" is a supported
+# layout, so match on the identifier rather than on a fixed set of paths.
+_bundle_id_owner() {
+    # Overridable so tests can point the scan at a fixture dir.
+    _bio_apps="${UNSLOTH_APPLICATIONS_DIR:-/Applications}"
+    # Spotlight finds it anywhere on disk. Skipped for a fixture scan: a real
+    # install on the machine running the tests must not change the result.
+    if [ -z "${UNSLOTH_APPLICATIONS_DIR:-}" ] && command -v mdfind >/dev/null 2>&1; then
+        _bio_hit=$(mdfind "kMDItemCFBundleIdentifier == '$1'" 2>/dev/null |
+                   while IFS= read -r _bio_app; do
+                       _owns_bundle_id "$_bio_app" "$1" && { printf '%s\n' "$_bio_app"; break; }
+                   done | head -n 1)
+        if [ -n "$_bio_hit" ]; then
+            printf '%s\n' "$_bio_hit"
+            return 0
+        fi
+    fi
+    # Spotlight can be off or still indexing, so walk the usual roots too.
+    find "$_bio_apps" "$HOME/Applications" -maxdepth 3 -name '*.app' -type d 2>/dev/null |
+    while IFS= read -r _bio_app; do
+        if _owns_bundle_id "$_bio_app" "$1"; then
+            printf '%s\n' "$_bio_app"
+            break
+        fi
+    done | head -n 1
+}
+
 _unsloth_uninstall_main() {
     # Reject unknown arguments before destructive work.
     for _arg in "$@"; do
@@ -561,17 +608,7 @@ _unsloth_uninstall_main() {
             # writes this data; the shell launcher just opens a browser. This script never
             # removes that app, so it must not reset it either.
             _bid="ai.unsloth.studio"
-            # Overridable so tests can point the scan at a fixture dir.
-            _bid_apps="${UNSLOTH_APPLICATIONS_DIR:-/Applications}"
-            _bid_owner=""
-            for _bid_cand in "$_bid_apps/Unsloth.app" \
-                             "$_bid_apps/Unsloth Studio (Desktop).app" \
-                             "$HOME/Applications/Unsloth.app"; do
-                if [ -x "$_bid_cand/Contents/MacOS/unsloth-studio" ]; then
-                    _bid_owner="$_bid_cand"
-                    break
-                fi
-            done
+            _bid_owner=$(_bundle_id_owner "$_bid")
             if [ -n "$_bid_owner" ]; then
                 echo "Keeping app data ($_bid): it belongs to $_bid_owner"
             else
