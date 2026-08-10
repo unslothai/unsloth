@@ -267,3 +267,94 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     source = inspect.getsource(SyntheticDataKit.__init__)
     assert "_await_vllm_server" in source
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
+
+
+# --------------------------------------------------------------------------
+# The timeout is a deadline, not a number of laps.
+#
+# Both of these bound work by ELAPSED time. The earlier shapes bounded it by
+# attempt count and by a flat poll interval, which are only the same thing when
+# each attempt is instant, and the failing cases here are exactly the ones where
+# it is not.
+# --------------------------------------------------------------------------
+
+
+class _RecordingCapture(_FakeCapture):
+    """Remembers every timeout it was asked to wait for."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.waits = []
+
+    def wait_for_ready(self, timeout = None):
+        self.waits.append(timeout)
+        return super().wait_for_ready(timeout)
+
+
+def test_no_single_wait_outruns_the_callers_timeout():
+    """A flat poll interval overshoots any timeout shorter than it.
+
+    `timeout = 0.05` used to wait a full second on the first lap, so the method
+    could return success from a deadline that had already passed.
+    """
+    capture = _RecordingCapture(ready = False)
+    kit = _kit(capture, _FakeCapture(), _FakeProcess())
+    with pytest.raises(RuntimeError):
+        kit._await_vllm_server(timeout = 0.05, poll_interval = 1.0)
+    assert capture.waits, "the readiness event was never waited on"
+    assert max(capture.waits) <= 0.05, (
+        f"waited {max(capture.waits)}s against a 0.05s timeout; a lap must be "
+        f"capped to the time left"
+    )
+
+
+def test_a_short_timeout_returns_promptly():
+    """The wall clock, not just the arithmetic."""
+    kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess())
+    started = time.monotonic()
+    with pytest.raises(RuntimeError):
+        kit._await_vllm_server(timeout = 0.05, poll_interval = 1.0)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"took {elapsed:.2f}s to honour a 0.05s timeout"
+
+
+def test_the_whole_timeout_is_still_used_when_it_is_long():
+    """The cap must not cut a long wait short: readiness at 0.2s must be seen."""
+    kit = _kit(
+        _FakeCapture(ready = False, ready_after = 0.2),
+        _FakeCapture(),
+        _FakeProcess(),
+    )
+    kit._await_vllm_server(timeout = 5.0, poll_interval = 0.05)
+
+
+def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
+    """`check_vllm_status` allows each request 5 seconds.
+
+    Counting to 100 with a 1 second sleep therefore spent up to ten minutes,
+    while the message promised 100 seconds. Bound it by the clock so the two
+    agree however slow a request is.
+    """
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    # each health check burns its full 5s request timeout, then the 1s sleep
+    monkeypatch.setattr(time, "sleep", lambda s: clock.__setitem__("now", clock["now"] + s))
+
+    calls = {"n": 0}
+
+    def stalled_check():
+        calls["n"] += 1
+        clock["now"] += 5.0
+        return False
+
+    kit = _kit(_FakeCapture(ready = True), _FakeCapture(), _FakeProcess())
+    kit.check_vllm_status = stalled_check
+
+    started = clock["now"]
+    with pytest.raises(RuntimeError):
+        kit._await_metrics_endpoint()
+    spent = clock["now"] - started
+    assert spent <= 110, (
+        f"spent {spent:.0f}s of simulated time on a wait the message calls "
+        f"100 seconds"
+    )

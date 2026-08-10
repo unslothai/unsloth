@@ -290,16 +290,27 @@ class SyntheticDataKit:
         self._await_vllm_server(timeout = timeout)
         print("vLLM Server Ready Detected")
 
-        trial = 0
+        self._await_metrics_endpoint()
+        return
+
+    def _await_metrics_endpoint(self, timeout = 100.0, poll_interval = 1.0):
+        """Block until `/metrics` answers, or raise saying it never did.
+
+        Bounded by elapsed time rather than by a count of attempts.
+        `check_vllm_status` allows each request 5 seconds, so a server that
+        accepts the connection and then stalls spent 5s per attempt plus the
+        sleep: a hundred attempts is ten minutes, not the hundred seconds the
+        message promises, and this is the path meant to surface a bad startup
+        promptly.
+        """
+        deadline = time.monotonic() + timeout
         while not self.check_vllm_status():
-            if trial >= 100:
+            if time.monotonic() >= deadline:
                 self._fail_vllm_server(
                     "printed its readiness line but never answered "
-                    "http://localhost:8000/metrics (waited 100 seconds)"
+                    f"http://localhost:8000/metrics (waited {timeout:g} seconds)"
                 )
-            trial += 1
-            time.sleep(1)
-        return
+            time.sleep(poll_interval)
 
     def _await_vllm_server(
         self,
@@ -315,15 +326,24 @@ class SyntheticDataKit:
         """
         deadline = time.monotonic() + timeout
         while True:
-            if self.stdout_capture.wait_for_ready(timeout = poll_interval):
+            # Cap the wait at whatever is left, so `timeout` keeps the exact
+            # meaning it had when it was passed straight to `wait_for_ready`.
+            # A flat `poll_interval` overshoots any timeout shorter than it, and
+            # readiness arriving inside that overshoot would return success from
+            # a deadline that had already expired.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._fail_vllm_server(f"was not ready within {timeout} seconds")
+            if self.stdout_capture.wait_for_ready(timeout = min(poll_interval, remaining)):
                 return
             returncode = self.vllm_process.poll()
             if returncode is not None:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
-            if time.monotonic() >= deadline:
-                self._fail_vllm_server(f"was not ready within {timeout} seconds")
+            # The expiry check is at the top of the loop, so a dead or closed
+            # child is still diagnosed by its own branch above rather than being
+            # reported as a plain timeout on the last lap.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
