@@ -112,6 +112,39 @@ def test_startup_preserves_foreign_leased_work_until_its_lease_expires(rag_home)
 
 
 @requires_sqlite_vec
+def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_home):
+    """The survivor's own startup pass ran before the other backend crashed."""
+    from core.rag import ingestion, job_leases
+
+    _, folder = _folder(rag_home)
+    folder_sync._recover_startup_state()
+    with _connection() as conn:
+        document_id = store.create_document(
+            conn,
+            scope = folder["scope"],
+            filename = "orphan.txt",
+            sha256 = "orphan",
+            linked_folder_id = folder["id"],
+            linked_relative_path = "orphan.txt",
+        )
+        ingestion_job = ingestion._new_job(conn, document_id, folder["scope"])
+        conn.execute(
+            "UPDATE rag_job_leases SET owner_id='crashed', expires_at='2000-01-01' "
+            "WHERE kind=? AND job_id=?",
+            (job_leases.INGESTION, ingestion_job),
+        )
+        conn.commit()
+
+    folder_sync._enqueue_periodic()
+
+    with _connection() as conn:
+        assert store.get_document(conn, document_id) is None
+        assert conn.execute(
+            "SELECT 1 FROM ingestion_jobs WHERE id=?", (ingestion_job,)
+        ).fetchone() is None
+
+
+@requires_sqlite_vec
 def test_normal_scheduling_reclaims_an_expired_running_job(rag_home):
     from core.rag import job_leases
 

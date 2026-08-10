@@ -1515,6 +1515,7 @@ def _enqueue_periodic() -> None:
                 "VALUES(?,?,'sync','pending','queued',?)",
                 (str(uuid.uuid4()), row["id"], now),
             )
+        _reap_orphaned_documents(conn, now)
         conn.commit()
         _prune_terminal_jobs(conn)
 
@@ -1629,32 +1630,40 @@ def _recover_startup_state() -> None:
             "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
             "AND rebuild_requested=1"
         ).fetchall()
-        # A crash between successful ingestion and mapping installation can leave
-        # a folder-owned document unreferenced. It is safe to remove at startup.
-        orphans = conn.execute(
-            "SELECT d.id, d.stored_path FROM documents d "
-            "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
-            "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id) AND NOT EXISTS ("
-            "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
-            "ON l.kind=? AND l.job_id=j.id WHERE j.document_id=d.id "
-            "AND j.status IN ('pending','running') AND l.expires_at>?) AND NOT EXISTS ("
-            "SELECT 1 FROM linked_folder_sync_jobs sj JOIN rag_job_leases sl "
-            "ON sl.kind=? AND sl.job_id=sj.id WHERE sj.folder_id=d.linked_folder_id "
-            "AND sl.expires_at>?)",
-            (job_leases.INGESTION, now, job_leases.FOLDER_SYNC, now),
-        ).fetchall()
-        for orphan in orphans:
-            _remove_retired_snapshot(orphan["stored_path"])
-            store.delete_document(conn, orphan["id"], commit = False)
-            conn.execute(
-                "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
-                "(SELECT id FROM ingestion_jobs WHERE document_id=?)",
-                (job_leases.INGESTION, orphan["id"]),
-            )
-            conn.execute("DELETE FROM ingestion_jobs WHERE document_id=?", (orphan["id"],))
+        _reap_orphaned_documents(conn, now)
         conn.commit()
     for job in rebuild_handoffs:
         _queue_requested_rebuild(job["id"])
+
+
+def _reap_orphaned_documents(conn, now: str) -> None:
+    """Drop folder-owned documents left unreferenced by a crash before mapping.
+
+    Also runs periodically: a process that survives the crash reclaims the
+    expired job and reindexes the file, so its own startup pass is long past.
+    Anything still leased by a live ingestion or folder sync is left alone.
+    """
+    orphans = conn.execute(
+        "SELECT d.id, d.stored_path FROM documents d "
+        "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id) AND NOT EXISTS ("
+        "SELECT 1 FROM ingestion_jobs j JOIN rag_job_leases l "
+        "ON l.kind=? AND l.job_id=j.id WHERE j.document_id=d.id "
+        "AND j.status IN ('pending','running') AND l.expires_at>?) AND NOT EXISTS ("
+        "SELECT 1 FROM linked_folder_sync_jobs sj JOIN rag_job_leases sl "
+        "ON sl.kind=? AND sl.job_id=sj.id WHERE sj.folder_id=d.linked_folder_id "
+        "AND sl.expires_at>?)",
+        (job_leases.INGESTION, now, job_leases.FOLDER_SYNC, now),
+    ).fetchall()
+    for orphan in orphans:
+        _remove_retired_snapshot(orphan["stored_path"])
+        store.delete_document(conn, orphan["id"], commit = False)
+        conn.execute(
+            "DELETE FROM rag_job_leases WHERE kind=? AND job_id IN "
+            "(SELECT id FROM ingestion_jobs WHERE document_id=?)",
+            (job_leases.INGESTION, orphan["id"]),
+        )
+        conn.execute("DELETE FROM ingestion_jobs WHERE document_id=?", (orphan["id"],))
 
 
 def start_auto_sync(
