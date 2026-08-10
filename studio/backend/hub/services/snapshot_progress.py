@@ -533,9 +533,7 @@ def compute_snapshot_progress(
         completed_bytes = 0
         # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
         # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
-        # Each reading carries its mtime, because "largest" alone cannot tell a racer apart
-        # from the corpse of a killed attempt (see the reduction below the scan).
-        partial_readings: dict[str, list[tuple[float, int]]] = {}
+        partial_bytes: dict[str, int] = {}
         completed_hashes: set[str] = set()
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
@@ -576,8 +574,8 @@ def compute_snapshot_progress(
                         elif not count_unscoped:
                             unattributable_partial = True
                             continue
-                        partial_readings.setdefault(partial_hash, []).append(
-                            (f.stat().st_mtime, blob_bytes_present(f))
+                        partial_bytes[partial_hash] = max(
+                            partial_bytes.get(partial_hash, 0), blob_bytes_present(f)
                         )
                     else:
                         if expected_hashes:
@@ -599,19 +597,18 @@ def compute_snapshot_progress(
         # no bytes in flight, pinned a fully downloaded variant at 0.99 until the orphan was
         # swept -- and an orphan outlives the process that would have unlinked it on the way out.
         for blob_hash in completed_hashes:
-            partial_readings.pop(blob_hash, None)
-        # Among writers for one blob, the most recently touched one IS the reading. A retry
-        # leaves the killed attempt's partial beside the replacement's, both unresumable and
-        # both named for the same etag, and taking the larger reported the corpse -- freezing
-        # the bar at the dead attempt's high-water mark until the live transfer overtook it.
-        # Size cannot separate them, and neither can the gap between their mtimes, which is
-        # smallest exactly when the retry was quickest. Only "which one is still being
-        # written" can, and huggingface_hub writes continuously, so that is the newest mtime.
-        # Genuine concurrent racers are all advancing within a chunk of each other, so
-        # preferring the freshest over the largest costs at most a chunk there.
-        partial_bytes: dict[str, int] = {}
-        for blob_hash, writers in partial_readings.items():
-            partial_bytes[blob_hash] = max(writers)[1]
+            partial_bytes.pop(blob_hash, None)
+        # Largest wins, deliberately, even though a killed attempt's partial can sit beside its
+        # replacement's under the same etag. Preferring the freshest mtime reads better against
+        # a corpse but oscillates between two GENUINELY live writers, which is what a broken
+        # advisory lock produces: each write makes a different one newest, so the bar would
+        # jump between the leader and the straggler.
+        #
+        # A corpse is not this reading's problem to solve, because it should not outlive the
+        # job that made it: a terminal job sweeps its own blobs without waiting out the
+        # abandonment grace, and a backend that died before it could is caught at boot. If one
+        # survives both (an unrelated client holding the blob lock over it) the bar over-reads
+        # until the next sweep, which is a smaller wrong than a reading that will not sit still.
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)

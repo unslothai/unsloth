@@ -259,10 +259,27 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
 
 
 def _kill_orphan(pid: int) -> None:
+    """Signal the process and wait for it to actually be gone.
+
+    The wait is what makes the boot sweep meaningful: the signal only schedules the death, and
+    a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and
+    spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a
+    reason to hold up startup.
+    """
     try:
         os.kill(pid, signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL)
     except OSError:
-        pass
+        return
+    deadline = time.monotonic() + _ORPHAN_REAP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not _process_alive(pid):
+            return
+        time.sleep(0.05)
+    logger.debug("Orphan worker pid=%s still alive after the reap timeout.", pid)
+
+
+# Long enough for a SIGKILLed worker to be torn down, short enough not to delay a boot.
+_ORPHAN_REAP_TIMEOUT_SECONDS = 5.0
 
 
 def _settle_orphaned_download(

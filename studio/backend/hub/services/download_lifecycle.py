@@ -926,6 +926,11 @@ def register_worker(
         if getattr(_metadata, "variant", None)
         else None
     )
+    _owned_for_sweep = (
+        getattr(_metadata, "progress_blob_hashes", None) or _own_blob_hashes
+        if _own_blob_hashes is not None
+        else None
+    )
     # Sampled before the worker can write, so "did this job move bytes over Xet" is answerable on
     # exit. launch_worker samples BEFORE spawn(); sampling here would race a fast child that already
     # finalized its blobs, making a real transfer look like a no-op and leaving the streak uncleared.
@@ -1114,9 +1119,13 @@ def register_worker(
                     repo_type,
                     repo_id,
                     protected_blob_hashes = registry.peer_blob_hashes(key),
-                    owned_blob_hashes = _own_blob_hashes if terminal else None,
-                    # _own_blob_hashes is None for a job with no variant, and claim() refuses a
-                    # concurrent sibling for those, so such a job owns the whole repo dir.
+                    # The PROGRESS set, not _own_blob_hashes: companions (a shared mmproj) live
+                    # only there, and this worker was writing one when it died just as much as
+                    # it was writing the main quant. A companion a sibling is writing right now
+                    # is still held back by peer_blob_hashes above.
+                    owned_blob_hashes = _owned_for_sweep if terminal else None,
+                    # No variant means no resolved hashes, and claim() refuses a concurrent
+                    # sibling for those, so such a job owns the whole repo dir.
                     owns_all_blobs = terminal and _own_blob_hashes is None,
                     # The cache this worker actually wrote to. Resolving the live one instead
                     # would miss the orphan whenever the download location changed mid-run,

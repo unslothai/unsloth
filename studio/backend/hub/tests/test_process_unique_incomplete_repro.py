@@ -376,36 +376,36 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
     assert result["progress"] == 1.0
 
 
-def test_progress_reports_the_live_writer_not_the_killed_attempt(monkeypatch, tmp_path):
-    """The immediate retry: both partials written seconds apart, the corpse the larger."""
+def test_progress_is_stable_across_which_racer_wrote_last(monkeypatch, tmp_path):
+    """Two genuinely live writers must not make the bar jump between leader and straggler."""
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
-    corpse = blobs / f"{_BLOB_HASH}.11111111.incomplete"
-    corpse.write_bytes(b"x" * 80)
-    live = blobs / f"{_BLOB_HASH}.22222222.incomplete"
-    live.write_bytes(b"x" * 10)
-    # A retry seconds after the kill, so the two mtimes are far closer together than any
-    # abandonment threshold. Only which one is still advancing separates them.
-    now = time.time()
-    os.utime(corpse, (now - 8, now - 8))
-    os.utime(live, (now, now))
+    leader = blobs / f"{_BLOB_HASH}.11111111.incomplete"
+    leader.write_bytes(b"x" * 80)
+    straggler = blobs / f"{_BLOB_HASH}.22222222.incomplete"
+    straggler.write_bytes(b"x" * 10)
 
     monkeypatch.setattr(
         snapshot_progress,
         "preferred_repo_cache_dirs",
         lambda *_args, **_kwargs: [entry],
     )
-    result = snapshot_progress.compute_snapshot_progress(
-        repo_type = "model",
-        repo_id = "Org/Model-GGUF",
-        job_key = "model:org/model-gguf#q4_k_m",
-        expected_bytes = 100,
-        hf_token = None,
-        registry = _running_registry(),
-        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
-        variant = "Q4_K_M",
-    )
 
-    # Before: 80, the dead attempt's high-water mark, until the live one overtook it.
-    assert result["downloaded_bytes"] == 10
+    def _read():
+        return snapshot_progress.compute_snapshot_progress(
+            repo_type = "model",
+            repo_id = "Org/Model-GGUF",
+            job_key = "model:org/model-gguf#q4_k_m",
+            expected_bytes = 100,
+            hf_token = None,
+            registry = _running_registry(),
+            metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+            variant = "Q4_K_M",
+        )
+
+    now = time.time()
+    for newest in (leader, straggler):
+        # Whichever of them happened to write last, the answer has to be the same one.
+        os.utime(newest, (now, now))
+        assert _read()["downloaded_bytes"] == 80

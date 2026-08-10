@@ -472,3 +472,52 @@ def test_the_boot_sweep_runs_after_the_orphan_is_killed(monkeypatch, tmp_path, b
 
     assert order[0] == "kill"
     assert not partial.exists()
+
+
+def test_a_companion_the_dead_worker_was_writing_is_owned_too(monkeypatch, blobs):
+    """A shared mmproj lives in progress_blob_hashes, never in the main blob_hashes set."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    companion = blobs / f"{_PEER}.feedface{hf_cache_state.INCOMPLETE_SUFFIX}"
+    companion.write_bytes(b"x" * 25)  # fresh, as a just-cancelled worker's companion would be
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    # Ownership limited to the variant's own quant leaves the companion waiting out the grace.
+    assert (
+        download_registry.sweep_abandoned_partials(
+            "model",
+            "Org/Model",
+            owned_blob_hashes = frozenset({_MAIN}),
+        )
+        == 0
+    )
+    assert companion.exists()
+
+    assert (
+        download_registry.sweep_abandoned_partials(
+            "model",
+            "Org/Model",
+            owned_blob_hashes = frozenset({_MAIN, _PEER}),
+        )
+        == 1
+    )
+    assert not companion.exists()
+
+
+def test_the_reaper_waits_for_the_worker_to_actually_die(monkeypatch):
+    """SIGKILL only schedules the death; the lock outlives the signal by a moment."""
+    alive = {"n": 3}
+
+    def _still_alive(_pid):
+        alive["n"] -= 1
+        return alive["n"] > 0
+
+    monkeypatch.setattr(download_registry.os, "kill", lambda *_a: None)
+    monkeypatch.setattr(download_registry, "_process_alive", _still_alive)
+
+    download_registry._kill_orphan(4242)
+
+    assert alive["n"] == 0  # returned only once the process was gone, not straight after kill
