@@ -30,6 +30,27 @@ def test_h3_measured_diffusers_memory_estimates():
     assert estimate_h3_diffusers_host_ram_gb(132) == 85
 
 
+def test_the_host_floor_tracks_the_components_the_load_holds():
+    """The VRAM floor is rebuilt from the engaged components; the host floor has to be too, or an
+    80 GB device running the int8 conditioner and the int8 denoiser clears the VRAM check at 55 GB
+    and is then told it needs 150 GB of system RAM for 47.5 GB of weights."""
+    from core.inference.video_minimax_h3 import (
+        H3_TEXT_ENCODER_BF16_GB,
+        H3_TRANSFORMER_BF16_GB,
+    )
+
+    # Unset is the released pair, so the shipped number is unchanged to the decimal.
+    assert estimate_h3_diffusers_host_ram_gb(
+        126, text_encoder_gb = H3_TEXT_ENCODER_BF16_GB, transformer_gb = H3_TRANSFORMER_BF16_GB
+    ) == pytest.approx(150.0, abs = 0.001)
+    # The hosted int8 conditioner + int8 denoiser: the sum, not the released one.
+    assert estimate_h3_diffusers_host_ram_gb(
+        126, text_encoder_gb = 27.2, transformer_gb = 20.3
+    ) == pytest.approx(64.5, abs = 0.001)
+    # Above the tier the answer is the tier's, whatever the components.
+    assert estimate_h3_diffusers_host_ram_gb(132, text_encoder_gb = 27.2, transformer_gb = 20.3) == 85
+
+
 @pytest.mark.parametrize(
     "repo_id",
     [

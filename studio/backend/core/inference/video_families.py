@@ -86,6 +86,12 @@ class VideoFamily:
     # can take one without the other. Same semantics as DiffusionFamily.prequant_repos, so the
     # shared diffusion_prequant resolver reads this table through plain attribute access.
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # RESIDENT size of one of those hosted denoisers, in decimal GB, when the generic
+    # _QUANT_STEADY_FACTOR does not describe it. MiniMax-H3's is both quantized AND structurally
+    # pruned (the curve-form adaLN, ~40% of the released parameters), so 0.55 x 66.3 GB over-states
+    # it by 16 GB and a hard refusal turns away a load that fits. Measured from Hub file metadata
+    # (2026-08-09): MiniMax-H3-FP8.pt 20,260,192,855 bytes, MiniMax-H3-INT8.pt 20,253,894,865.
+    prequant_resident_gb: Optional[float] = None
     # Per-variant overrides as (base_repo, scheme, repo_id), keyed on the LOWERCASED upstream base
     # id. A pre-quantized checkpoint is baked from ONE base's weights and the loader refuses it for
     # any other base, so a variant that ships its own denoiser needs its own entry; a variant
@@ -149,6 +155,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # the layout every image-side prequant repo already uses and the one prequant_repo_filename
         # builds without help.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
+        prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
         default_flow_shift = 12.0,
         default_audio_flow_shift = 3.0,
