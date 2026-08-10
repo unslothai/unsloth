@@ -34,6 +34,9 @@ rename the heading at release time.
 
 ## Unreleased
 
+- DFlash speculative decoding now starts automatically for models that ship a
+  DFlash sidecar, with no setting to change.
+
 ## 2026.8.7
 
 ### What's Changed

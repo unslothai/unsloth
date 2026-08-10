@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file drafter contracts: MTP (Gemma 4) and DSpark (DeepSeek V4 Flash).
+"""Separate-file drafter contracts: MTP (Gemma 4), DSpark and DFlash.
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -36,6 +36,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
     _local_gguf_companion_search_root,
     detect_gguf_model,
+    detect_dflash_file,
     detect_dspark_file,
     detect_mtp_file,
     extract_model_size_b,
@@ -1565,3 +1566,521 @@ def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert not (snap / "mtp-model.gguf").is_symlink()
     assert not (snap / "mmproj-F16.gguf").is_symlink()
+
+
+# ── DFlash: predicate, discovery, capability gate and emission ───────
+#
+# DFlash is the third separate-file drafter kind. It differs from DSpark in two
+# ways that these tests pin:
+#   * it is ON under Auto rather than opt-in, because the published sidecar is
+#     ~1.5 GiB and ships in the model's own GGUF repo (DSpark's is ~11 GB);
+#   * its published filename (``dflash-kquant.gguf``) names no model family, so
+#     discovery confirms the header's ``general.architecture`` instead of
+#     pairing on the filename.
+
+
+DFLASH_PREDICATE_CASES = [
+    # The published sidecar, and the family-named scheme ggml-org uses.
+    ("dflash-kquant.gguf", True),
+    ("dflash-Qwen3.6-27B-BF16.gguf", True),
+    ("dflash-draft-3.6-q8_0.gguf", True),
+    ("DFLASH-Qwen3.6-27B-Q8_0.gguf", True),
+    # Adversarial: dflash is also a family a publisher puts on real weights.
+    ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("qwen35-4b-dflash-Q8_0.gguf", False),
+    ("laguna-s-2.1-dflash-Q4_K_M.gguf", False),
+    # A user's own dflash/ folder holds whatever they downloaded, so unlike
+    # dspark/ and MTP/ the DIRECTORY is not a drafter marker (_DRAFTER_DIR_KINDS).
+    ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("foo/dflash/bar.gguf", False),
+    # The other kinds must not leak into this one: each needs its own --spec-type.
+    ("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", False),
+    ("mtp-gemma-4-12b-it.gguf", False),
+    ("dflash-notes.txt", False),
+]
+
+
+@pytest.mark.parametrize("path,expected", DFLASH_PREDICATE_CASES)
+def test_is_dflash_drafter_path(path, expected):
+    from core.inference.llama_cpp import (
+        _is_dflash_drafter_path,
+        _is_dspark_drafter_path,
+        _is_mtp_only_drafter_path,
+    )
+
+    assert _is_dflash_drafter_path(path) is expected
+    if expected:
+        # The three kinds partition: a DFlash sidecar launched as MTP or DSpark
+        # would get a --spec-type its architecture cannot serve.
+        assert _is_dspark_drafter_path(path) is False
+        assert _is_mtp_only_drafter_path(path) is False
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("dflash", "dflash"),
+        ("DFlash", "dflash"),
+        ("  dflash ", "dflash"),
+        ("draft-dflash", "dflash"),
+        ("DRAFT-DFLASH", "dflash"),
+    ],
+)
+def test_canonicalize_spec_mode_accepts_dflash(value, expected):
+    from core.inference.llama_cpp import _canonicalize_spec_mode
+
+    assert _canonicalize_spec_mode(value) == expected
+
+
+# ── Capability probe ─────────────────────────────────────────────────
+
+_NEEDS_BASH = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "fake llama-server is a bash stub; Windows has no direct executor",
+)
+
+
+def _fake_llama_server(path: Path, help_text: str) -> Path:
+    path.write_text(f"#!/usr/bin/env bash\ncat <<'EOF'\n{help_text}\nEOF\n")
+    path.chmod(0o755)
+    return path
+
+
+@_NEEDS_BASH
+@pytest.mark.parametrize(
+    "spec_line,expected",
+    [
+        ("--spec-type none,draft-mtp,draft-dflash,draft-dspark,ngram-mod", True),
+        # A published prebuilt that predates the arch: emitting draft-dflash
+        # would abort the launch instead of falling back.
+        ("--spec-type none,draft-mtp,draft-dspark,ngram-mod", False),
+        # Word boundaries, so a longer token cannot be read as support.
+        ("--spec-type none,draft-dflash2,ngram-mod", False),
+        ("--spec-type none,xdraft-dflash,ngram-mod", False),
+    ],
+)
+def test_probe_server_capabilities_reports_dflash(tmp_path, spec_line, expected):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    fake = _fake_llama_server(tmp_path / "llama-server", spec_line)
+    LlamaCppBackend._capability_cache.clear()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dflash"] is expected
+    # DSpark's answer is read from the same block and must not move.
+    assert caps["supports_dspark"] is ("draft-dspark" in spec_line)
+
+
+def test_missing_binary_reports_no_dflash():
+    """The not-found dict is returned before any parsing, so it has to carry the
+    key: a caller reading it with .get() would otherwise treat "absent" as False
+    only by luck, and _estimate_gguf_required_gb default-denies on it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    caps = LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server")
+    assert caps["found"] is False
+    assert caps["supports_dflash"] is False
+
+
+# ── Emission ─────────────────────────────────────────────────────────
+
+
+def _spec_backend(monkeypatch, *, supports_dflash = True, supports_dspark = True):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    caps = {
+        "found": True,
+        "mtp_token": "draft-mtp",
+        "supports_mtp": True,
+        "supports_dspark": supports_dspark,
+        "supports_dflash": supports_dflash,
+        "mtp_probe_inconclusive": False,
+        "ngram_mod_flavor": "new",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+    backend = LlamaCppBackend()
+    backend._nextn_predict_layers = None
+    return backend
+
+
+def _spec_flags(backend, **kwargs):
+    base = dict(
+        speculative_type = None,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    base.update(kwargs)
+    return backend._build_speculative_flags(**base)
+
+
+def test_auto_launches_dflash_when_a_sidecar_is_present(monkeypatch):
+    """The headline behaviour: unlike DSpark, DFlash needs no opt-in. On a
+    B200 with the published 1.52 GiB sidecar this is 1.21x-1.36x decode over
+    spec-off at n_max=2, at 61-77% draft acceptance."""
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
+
+    assert flags == [
+        "--model-draft",
+        "/m/dflash-kquant.gguf",
+        "--spec-type",
+        "draft-dflash",
+        "--spec-draft-n-max",
+        "2",
+    ]
+    assert backend._speculative_type == "draft-dflash"
+    assert backend._spec_drafter_kind == "dflash"
+    assert backend._spec_fallback_reason is None
+
+
+def test_auto_uses_the_cpu_draft_depth_off_gpu(monkeypatch):
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend, speculative_type = "auto", dflash_draft_path = "/m/d.gguf", gpus = False
+    )
+    assert flags[-2:] == ["--spec-draft-n-max", "3"]
+
+
+def test_a_user_draft_depth_override_reaches_dflash(monkeypatch):
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend, speculative_type = "dflash", dflash_draft_path = "/m/d.gguf", spec_draft_n_max = 6
+    )
+    assert flags[-2:] == ["--spec-draft-n-max", "6"]
+    assert backend._spec_draft_n_max == 6
+
+
+def test_auto_does_not_emit_dflash_when_the_binary_cannot_run_it(monkeypatch):
+    """A --spec-type the binary does not know aborts the launch, so the sidecar
+    being on disk is not enough. Published prebuilts predate the arch."""
+    backend = _spec_backend(monkeypatch, supports_dflash = False)
+    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/dflash-kquant.gguf")
+
+    assert "draft-dflash" not in flags
+    assert "--model-draft" not in flags
+    assert flags == ["--spec-default"]
+    assert backend._speculative_type == "default"
+
+
+def test_forced_dflash_without_the_capability_falls_back(monkeypatch):
+    backend = _spec_backend(monkeypatch, supports_dflash = False)
+    flags = _spec_flags(backend, speculative_type = "dflash", dflash_draft_path = "/m/d.gguf")
+
+    assert flags == ["--spec-default"]
+    assert backend._speculative_type == "default"
+    assert backend._spec_fallback_reason == "binary_no_mtp"
+
+
+def test_forced_dflash_without_a_sidecar_falls_back(monkeypatch):
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(backend, speculative_type = "dflash", dflash_draft_path = None)
+
+    assert flags == ["--spec-default"]
+    assert backend._spec_fallback_reason == "drafter_not_found"
+    assert backend._spec_drafter_kind == "dflash"
+
+
+def test_dspark_keeps_first_refusal_when_a_repo_ships_both(monkeypatch):
+    """Mirrors llama.cpp's own downloader, which ranks dspark ahead of dflash.
+    In practice a repo ships one kind or neither; this pins that adding DFlash
+    did not reorder the existing choice."""
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend,
+        speculative_type = "auto",
+        dspark_draft_path = "/m/dspark-x-Q8_0.gguf",
+        dflash_draft_path = "/m/dflash-kquant.gguf",
+    )
+    assert "draft-dspark" in flags
+    assert "draft-dflash" not in flags
+    assert backend._spec_drafter_kind == "dspark"
+
+
+def test_dspark_emission_is_unchanged(monkeypatch):
+    """Regression guard on the behaviour this PR must not touch."""
+    backend = _spec_backend(monkeypatch)
+    flags = _spec_flags(
+        backend, speculative_type = "dspark", dspark_draft_path = "/m/dspark-x-Q8_0.gguf"
+    )
+    assert flags == [
+        "--model-draft",
+        "/m/dspark-x-Q8_0.gguf",
+        "--spec-type",
+        "draft-dspark",
+        "--spec-draft-n-max",
+        "3",
+    ]
+    assert backend._speculative_type == "draft-dspark"
+
+
+def test_a_dflash_sidecar_alone_does_not_change_the_mtp_or_off_paths(monkeypatch):
+    """Forced modes stay forced: a sidecar sitting on disk must not promote."""
+    backend = _spec_backend(monkeypatch)
+    assert _spec_flags(backend, speculative_type = "off", dflash_draft_path = "/m/d.gguf") == []
+    flags = _spec_flags(backend, speculative_type = "ngram", dflash_draft_path = "/m/d.gguf")
+    assert "draft-dflash" not in flags
+    assert flags[:2] == ["--spec-type", "ngram-mod"]
+
+
+# ── Local discovery ──────────────────────────────────────────────────
+
+
+def _write_gguf(path: Path, architecture: str) -> Path:
+    """A real GGUF header carrying one general.architecture string, which is
+    what detect_dflash_file confirms."""
+    import struct
+
+    key = b"general.architecture"
+    value = architecture.encode()
+    blob = struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+    blob += struct.pack("<Q", len(key)) + key
+    blob += struct.pack("<I", 8) + struct.pack("<Q", len(value)) + value
+    path.write_bytes(blob)
+    return path
+
+
+def test_detect_dflash_file_finds_the_unpaired_published_sidecar(tmp_path):
+    """The published sidecar is dflash-kquant.gguf, which names no model family,
+    so the filename pairing DSpark uses would reject the one file this exists to
+    find. The header settles it instead."""
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_dflash_file_rejects_a_real_model_that_is_merely_named_dflash(tmp_path):
+    """Two layers have to hold: the prefix rule (this file does not start with
+    dflash-) and the header check behind it."""
+    weight = _write_gguf(tmp_path / "Qwen3.6-27B-Q4_K_M.gguf", "qwen3")
+    _write_gguf(tmp_path / "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", "qwen3moe")
+
+    assert detect_dflash_file(str(weight)) is None
+
+
+def test_detect_dflash_file_rejects_a_dflash_prefixed_file_of_another_architecture(tmp_path):
+    """The prefix alone is not enough: someone may name real weights that way,
+    and --model-draft on a full model is a silent 15 GB allocation."""
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
+
+    assert detect_dflash_file(str(weight)) is None
+
+
+def test_detect_dflash_file_ignores_a_dflash_directory(tmp_path):
+    """dflash/ is a folder name a user picks for the family they downloaded, so
+    unlike dspark/ it is never scanned. Reaching in would hand llama-server a
+    real weight as --model-draft."""
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    sub = tmp_path / "dflash"
+    sub.mkdir()
+    _write_gguf(sub / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) is None
+
+
+def test_detect_dflash_file_prefers_the_sidecar_that_names_this_weight(tmp_path):
+    """Both schemes are published. In a multi-model folder the family-named one
+    wins for the weight it names, so a foreign sidecar cannot attach first."""
+    weight = _write_gguf(tmp_path / "Qwen3.6-27B-Q4_K_M.gguf", "qwen3")
+    _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+    paired = _write_gguf(tmp_path / "dflash-Qwen3.6-27B-Q8_0.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) == str(paired.resolve())
+
+
+@pytest.mark.parametrize("shape", ["dangling", "directory"])
+def test_detect_dflash_file_skips_a_sidecar_it_cannot_open(tmp_path, shape):
+    """Same guard as detect_dspark_file: a --model-draft llama-server cannot open
+    fails the whole load rather than falling back to no speculation."""
+    import os
+
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    sidecar = tmp_path / "dflash-kquant.gguf"
+    if shape == "dangling":
+        os.symlink(tmp_path / "missing_blob", sidecar)
+    else:
+        sidecar.mkdir()
+
+    assert detect_dflash_file(str(weight)) is None
+
+
+def test_model_config_reports_a_local_dflash_sidecar(tmp_path):
+    """The field the load intent and the VRAM guard both read."""
+    _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    config = ModelConfig.from_identifier(str(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf"))
+    assert config.is_gguf is True
+    assert config.gguf_dflash_file == str(sidecar.resolve())
+    assert config.gguf_dspark_file is None
+
+
+# ── Download gating ──────────────────────────────────────────────────
+
+
+def _dflash_download_probe(monkeypatch, *, supports_dflash, cached = None):
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": supports_dflash}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: cached
+    )
+    reached = {}
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+        outcome = None,
+    ):
+        reached["hit"] = True
+        reached["picked"] = pick(
+            [
+                "Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+                "mmproj-Muse-Glimmer-30B-Q8_0.gguf",
+                "dflash-kquant.gguf",
+            ]
+        )
+        if outcome is not None:
+            outcome["listed"] = True
+        return "/cache/dflash-kquant.gguf"
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    got = b._download_dflash(
+        hf_repo = "unsloth/Muse-Glimmer-30B-GGUF",
+        near_path = "/cache/snap/Muse-Glimmer-30B-UD-Q4_K_XL.gguf",
+        binary = "/fake/llama-server",
+    )
+    return got, reached
+
+
+def test_download_dflash_fetches_when_the_binary_supports_it(monkeypatch):
+    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = True)
+    assert got == "/cache/dflash-kquant.gguf"
+    assert reached["hit"] is True
+    # The picker must select the sidecar, not the weight or the projector.
+    assert reached["picked"] == "dflash-kquant.gguf"
+
+
+def test_download_dflash_skips_the_fetch_when_the_binary_cannot_run_it(monkeypatch):
+    """Same gate as DSpark: _build_speculative_flags drops DFlash outright on a
+    binary without --spec-type draft-dflash, so the file would never be opened."""
+    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = False)
+    assert got is None
+    assert reached.get("hit", False) is False
+
+
+def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
+    """The route rediscovers it on every Apply, so answering None would compare
+    it against a launched None and reload the same server each time."""
+    cached = "/cache/snap/dflash-kquant.gguf"
+    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = False, cached = cached)
+    assert got == cached
+    assert reached.get("hit", False) is False
+
+
+def test_download_dflash_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
+    """Most repos publish none, and retrying that on every Apply would relaunch
+    an identical server forever; a failed fetch must still be retried."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+
+    def _companion(listed):
+        def _fake(
+            *,
+            hf_repo,
+            hf_token,
+            pick,
+            label,
+            cancel_event = None,
+            near_path = None,
+            outcome = None,
+        ):
+            if outcome is not None:
+                outcome["listed"] = listed
+            return None
+
+        return _fake
+
+    for listed, expect_absent in ((False, True), (True, False)):
+        b = LlamaCppBackend()
+        b._download_companion_gguf = _companion(listed)
+        assert b._download_dflash(hf_repo = "org/repo", binary = "/fake/llama-server") is None
+        assert b._dflash_sidecar_absent is expect_absent
+
+
+def test_a_cached_dflash_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
+    """Each kind needs its own --spec-type, so the offline MTP reuse scan must
+    not pick up a DFlash sidecar sitting in the same snapshot."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    for name in ("dflash-kquant.gguf", "model-Q4_K_M.gguf"):
+        (snap / name).write_bytes(b"x")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    assert b._cached_repo_mtp_drafter("org/repo") is None
+    assert b._cached_repo_dspark_drafter("org/repo") is None
+    assert b._cached_repo_dflash_drafter("org/repo") == str(snap / "dflash-kquant.gguf")
+
+
+# ── Reclaim: deliberately unchanged ──────────────────────────────────
+
+
+def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
+    """Auto downloading a sidecar does not make the name safe to delete by.
+    Reclaiming wrongly destroys weights a user chose (whole repos publish
+    nothing but root-level dflash-*.gguf), while not reclaiming leaves ~1.5 GiB,
+    an order of magnitude under the ~11 GB DSpark case the rule was written for.
+    The positive control below shows the reclaim itself still works."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+    from hub.utils.gguf import is_reclaimable_drafter_path
+
+    assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
+    assert is_reclaimable_drafter_path("dspark-model-Q8_0.gguf") is True
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "org/Model-GGUF",
+        ["model-Q4_K_M.gguf", "dflash-kquant.gguf", "dspark-model-Q8_0.gguf"],
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dflash-kquant.gguf").is_symlink()
+    assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()

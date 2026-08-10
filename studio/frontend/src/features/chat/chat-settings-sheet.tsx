@@ -418,7 +418,7 @@ function specFallbackMessage({
   updateAvailable,
 }: {
   reason: string;
-  drafter: "MTP" | "DSpark";
+  drafter: "MTP" | "DSpark" | "DFlash";
   isLocalGguf: boolean;
   updateAvailable: boolean;
 }): string {
@@ -432,6 +432,11 @@ function specFallbackMessage({
         return isLocalGguf
           ? "No matching DSpark sidecar was found. Place its dspark-*.gguf beside the model or in its dspark folder, then reload the model."
           : "The DSpark sidecar could not be downloaded, so this model is running without speculative decoding. Check network or Hugging Face access, then reload it.";
+      }
+      if (drafter === "DFlash") {
+        return isLocalGguf
+          ? "No matching DFlash sidecar was found. Place its dflash-*.gguf beside the model, then reload the model."
+          : "The DFlash sidecar could not be downloaded, so this model is running without speculative decoding. Check network or Hugging Face access, then reload it.";
       }
       return isLocalGguf
         ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
@@ -525,8 +530,12 @@ export function ChatSettingsPanel({
   // The loaded model's own kind, not the pending control: the notice explains a
   // fallback that already happened, so a staged edit (or a preset applied without
   // a reload) must not re-label it and point at the wrong file.
-  const speculativeDrafterLabel =
-    (specDrafterKind ?? speculativeType) === "dspark" ? "DSpark" : "MTP";
+  const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" =
+    (specDrafterKind ?? speculativeType) === "dspark"
+      ? "DSpark"
+      : (specDrafterKind ?? speculativeType) === "dflash"
+        ? "DFlash"
+        : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -561,7 +570,8 @@ export function ChatSettingsPanel({
     (speculativeType === "auto" ||
       speculativeType === "mtp" ||
       speculativeType === "mtp+ngram" ||
-      speculativeType === "dspark");
+      speculativeType === "dspark" ||
+      speculativeType === "dflash");
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&

@@ -1141,6 +1141,7 @@ try:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dflash_file,
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
@@ -1193,6 +1194,7 @@ except ImportError:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dflash_file,
         detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
@@ -3828,6 +3830,10 @@ def _loaded_is_local_model(
 _DRAFTER_NATIVE_RULES = {
     "mtp": ("MTP drafter", "mtp"),
     "dspark": ("DSpark drafter", "dspark"),
+    # No companion subdirectory: dflash/ is a family name a user picks for real
+    # weights, so detect_dflash_file only ever offers a root-level sidecar and
+    # nothing outside the model's own directory is in bounds.
+    "dflash": ("DFlash drafter", None),
 }
 
 
@@ -3857,7 +3863,7 @@ def _validate_native_mtp_drafter(
             str(shard),
             gguf_path,
             label,
-            allowed_subdirs = (subdir,),
+            allowed_subdirs = (subdir,) if subdir else (),
             mtp_search_root = mtp_search_root,
         )
 
@@ -4050,7 +4056,7 @@ def _drafter_for_path(
     """
     if not gguf_path:
         return None
-    detect = detect_dspark_file if kind == "dspark" else detect_mtp_file
+    detect = {"dspark": detect_dspark_file, "dflash": detect_dflash_file}.get(kind, detect_mtp_file)
     root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     rejected = False
     accept = None
@@ -4099,6 +4105,20 @@ def _dspark_draft_for_path(
         gguf_path,
         native_grant_backed,
         kind = "dspark",
+        log_native_fallback = log_native_fallback,
+    )
+
+
+def _dflash_draft_for_path(
+    gguf_path: Optional[str],
+    native_grant_backed: bool,
+    *,
+    log_native_fallback: bool = False,
+) -> Optional[str]:
+    return _drafter_for_path(
+        gguf_path,
+        native_grant_backed,
+        kind = "dflash",
         log_native_fallback = log_native_fallback,
     )
 
@@ -4163,6 +4183,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
         extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
@@ -5284,16 +5305,21 @@ def _remote_gguf_companion_bytes(
     include_mmproj: bool,
     include_mtp: bool = True,
     include_dspark: bool = False,
+    include_dflash: bool = False,
 ) -> int:
     """Bytes of companion GGUFs the requested launch downloads. 0 on error."""
     try:
-        from core.inference.llama_cpp import _is_dspark_drafter_path
+        from core.inference.llama_cpp import (
+            _is_dflash_drafter_path,
+            _is_dspark_drafter_path,
+        )
         from huggingface_hub import model_info
-        from utils.models.model_config import dspark_preference_key
+        from utils.models.model_config import dflash_preference_key, dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
         dspark_candidates: list[tuple[str, int]] = []
+        dflash_candidates: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
@@ -5306,10 +5332,14 @@ def _remote_gguf_companion_bytes(
                 total += getattr(sibling, "size", 0) or 0
             if include_dspark and _is_dspark_drafter_path(name):
                 dspark_candidates.append((name, getattr(sibling, "size", 0) or 0))
+            if include_dflash and _is_dflash_drafter_path(name):
+                dflash_candidates.append((name, getattr(sibling, "size", 0) or 0))
         if dspark_candidates:
             # Same preference order the download uses, so the budget sizes the
             # file the launch will actually fetch.
             total += min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
+        if dflash_candidates:
+            total += min(dflash_candidates, key = lambda c: dflash_preference_key(c[0]))[1]
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -5498,6 +5528,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_requests_dflash,
             _extra_args_requests_dspark,
         )
 
@@ -5528,11 +5559,34 @@ def _estimate_gguf_required_gb(
             _dspark_capable
             and (_forced_dspark or (_auto_dspark and getattr(config, "gguf_dspark_file", None)))
         )
+        # DFlash: same shape as DSpark above, and Auto sizes it for the same
+        # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
+        # protects a running training job still has to charge for it.
+        _forced_dflash = bool(
+            _spec_mode == "dflash" or _extra_args_requests_dflash(llama_extra_args, env = {})
+        )
+        _auto_dflash = _spec_mode == "auto"
+        _dflash_capable = True
+        if _forced_dflash or _auto_dflash:
+            try:
+                _dflash_capable = bool(
+                    LlamaCppBackend.probe_server_capabilities().get("supports_dflash")
+                )
+            except Exception:
+                pass
+        # DSpark keeps first refusal under Auto, mirroring the loader.
+        dflash_requested = bool(
+            _dflash_capable
+            and not dspark_requested
+            and (_forced_dflash or (_auto_dflash and getattr(config, "gguf_dflash_file", None)))
+        )
         # Forced DSpark on a binary that cannot run it falls back to --spec-default,
         # which loads no drafter at all, so charging the MTP one would refuse a load
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
-        _charge_no_drafter = _forced_dspark and not _dspark_capable
+        _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
+            _forced_dflash and not _dflash_capable
+        )
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
@@ -5542,7 +5596,12 @@ def _estimate_gguf_required_gb(
         # for a load that never opens it.
         _sized_attrs = ["gguf_mmproj_file"]
         if not _charge_no_drafter:
-            _sized_attrs.append("gguf_dspark_file" if dspark_requested else "gguf_mtp_file")
+            if dspark_requested:
+                _sized_attrs.append("gguf_dspark_file")
+            elif dflash_requested:
+                _sized_attrs.append("gguf_dflash_file")
+            else:
+                _sized_attrs.append("gguf_mtp_file")
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
@@ -5583,8 +5642,12 @@ def _estimate_gguf_required_gb(
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
-                include_mtp = (not _charge_no_drafter and (_auto_dspark or not dspark_requested)),
+                include_mtp = (
+                    not _charge_no_drafter
+                    and (_auto_dspark or not (dspark_requested or dflash_requested))
+                ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
+                include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
             )
             total_gb = (main_bytes + companions) / (1024**3)
             # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
@@ -6006,12 +6069,19 @@ def _resolve_gguf_load_intent(
                     True,
                     log_native_fallback = True,
                 )
+            if config.gguf_dflash_file:
+                config.gguf_dflash_file = _dflash_draft_for_path(
+                    config.gguf_file,
+                    True,
+                    log_native_fallback = True,
+                )
         source = GgufLoadIntent(
             model_identifier = config.identifier,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
             dspark_draft_path = config.gguf_dspark_file,
+            dflash_draft_path = config.gguf_dflash_file,
             hf_variant = config.gguf_variant,
         )
 
@@ -7009,6 +7079,7 @@ async def _load_model_impl(
                     gguf_intent,
                     mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
                     dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
+                    dflash_draft_path = _dflash_draft_for_path(llama_backend.gguf_path, False),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(

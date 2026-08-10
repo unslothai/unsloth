@@ -103,6 +103,7 @@ const SPECULATIVE_TYPE_LABELS: Record<
   auto: "Auto",
   mtp: "MTP",
   dspark: "DSpark",
+  dflash: "DFlash",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",

@@ -1765,6 +1765,17 @@ def dspark_preference_key(name: str) -> tuple[int, str]:
     return dspark_precision_rank(name), Path(name).name.lower()
 
 
+# DFlash publishes the same precision vocabulary (and the published sidecar
+# carries no precision token at all, which lands in the catch-all rank), so the
+# ordering is shared rather than duplicated.
+dflash_precision_rank = dspark_precision_rank
+
+
+def dflash_preference_key(name: str) -> tuple[int, str]:
+    """Sort key picking the preferred DFlash sidecar by name alone."""
+    return dflash_precision_rank(name), Path(name).name.lower()
+
+
 def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,
@@ -2038,6 +2049,115 @@ def detect_dspark_file(
         if accept is not None and not accept(launch):
             continue
         logger.info("Detected DSpark drafter: %s", launch)
+        return launch
+    return None
+
+
+def detect_dflash_file(
+    path: str,
+    search_root: Optional[str] = None,
+    accept: Optional[Callable[[str], bool]] = None,
+) -> Optional[str]:
+    """Find a DFlash sidecar for a local GGUF model.
+
+    Two things differ from detect_dspark_file, both forced by how DFlash is
+    published:
+
+    1. Root level only. ``dspark/`` is always a publisher's companion folder, so
+       that scan is safe; ``dflash/`` is a family name a user picks for real
+       weights (the reason llama_cpp._DRAFTER_DIR_KINDS leaves it out), so
+       reaching into it would launch a weight copy as --model-draft.
+    2. No filename pairing. The published sidecar is ``dflash-kquant.gguf``,
+       which names no model family at all, so _drafter_matches_weight would
+       reject the one file this exists to find. The header is checked instead:
+       a DFlash sidecar declares ``general.architecture = dflash``, which no
+       real weight does, and that is a stronger signal than a filename. It also
+       settles the adversarial case on its own, since a model merely CALLED
+       DFlash (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf``) reports its own
+       architecture.
+
+    A sidecar that does name a family (``dflash-Qwen3.6-27B-BF16.gguf``, the
+    scheme ggml-org uses) still wins over an unnamed one for the weight it
+    matches, so a multi-model folder attaches the specific sidecar first.
+
+    ``accept`` filters candidates in preference order, so a caller with extra
+    rules (a native lease) keeps scanning instead of treating the first
+    rejection as no sidecar at all.
+    """
+
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A sidecar naming THIS weight's family first, then any unpaired one,
+        # then precision, then total size so a split copy cannot outrank a
+        # smaller single file, then name for a stable order.
+        paired = _drafter_matches_weight(candidate.name, weight_name, kind = "dflash")
+        return (
+            0 if paired else 1,
+            _drafter_stem_rank(candidate.name, kind = "dflash") if paired else 0,
+            dflash_precision_rank(candidate.name),
+            _drafter_total_size(candidate),
+            candidate.name.lower(),
+        )
+
+    p = Path(path)
+    weight_name = p.name if p.suffix.lower() == ".gguf" else None
+    start_dir = p.parent if p.is_file() else p
+    dirs = [start_dir]
+    if search_root is not None:
+        dirs.append(Path(search_root))
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    # dict.fromkeys: search_root is the weight's own parent for a flat layout,
+    # and scanning it twice doubles the directory reads for nothing.
+    for root in dict.fromkeys(dirs):
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for candidate in entries:
+            lower = candidate.name.lower()
+            if not lower.endswith(".gguf"):
+                continue
+            # Drop the shard suffix first: a split copy under the old scheme is
+            # <model>-Q8_0-dflash-00001-of-00002.gguf, whose stem does not end
+            # in -dflash.
+            stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
+            if not (lower.startswith("dflash-") or stem.endswith("-dflash")):
+                continue
+            try:
+                # Collapse a split copy to shard 1 before ranking.
+                launch = _local_gguf_load_path(candidate)
+                # is_file() follows the link, so this also drops a dangling
+                # snapshot symlink and a directory named like a sidecar. Without
+                # it --model-draft gets a path llama-server cannot open, which
+                # fails the whole load rather than falling back to no
+                # speculation (detect_dspark_file guards the same way).
+                if not (launch.is_file() and _drafter_split_is_complete(launch)):
+                    continue
+                resolved = launch.resolve()
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(launch)
+
+    for candidate in sorted(candidates, key = _rank):
+        meta = read_gguf_general_metadata(str(candidate)) or {}
+        if (meta.get("general.architecture") or "").strip().lower() != "dflash":
+            logger.info(
+                "detect_dflash_file: dropped %s (architecture %r is not dflash)",
+                candidate.name,
+                meta.get("general.architecture"),
+            )
+            continue
+        try:
+            launch = _drafter_launch_path(candidate)
+        except OSError:
+            continue
+        if accept is not None and not accept(launch):
+            continue
+        logger.info("Detected DFlash drafter: %s", launch)
         return launch
     return None
 
@@ -3530,6 +3650,7 @@ class ModelConfig:
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
+    gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -3682,6 +3803,7 @@ class ModelConfig:
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
                 dspark_file = detect_dspark_file(gguf_file, search_root = companion_root)
+                dflash_file = detect_dflash_file(gguf_file, search_root = companion_root)
 
                 return cls(
                     identifier = identifier,
@@ -3702,6 +3824,7 @@ class ModelConfig:
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
                     gguf_dspark_file = dspark_file,
+                    gguf_dflash_file = dflash_file,
                 )
         else:
             # Does the HF repo contain GGUF files?

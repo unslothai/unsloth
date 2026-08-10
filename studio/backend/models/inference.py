@@ -106,13 +106,15 @@ class LoadRequest(BaseModel):
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
             "'auto' (platform-aware: DSpark when the model ships a sidecar, "
-            "else MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "
+            "else DFlash when it ships one, else MTP on MTP GGUFs, ngram-mod "
+            "fallback for sub-3B), "
             "'mtp' (force draft-mtp only on both GPU and CPU), "
             "'dspark' (force a draft-dspark sidecar), "
+            "'dflash' (force a draft-dflash sidecar), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
-            "'draft-dspark' (-> dspark), "
+            "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. Ignored for non-GGUF models."
         ),
@@ -122,11 +124,12 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP or DSpark speculative decoding "
-            "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
-            "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
-            "quants). Only applied when speculative_type resolves to "
-            "'mtp', 'mtp+ngram', or 'dspark'."
+            "Max draft tokens per step for MTP, DSpark or DFlash speculative "
+            "decoding (--spec-draft-n-max). Defaults to 2 on GPU and 3 on "
+            "CPU/Mac when unset (upstream-bench sweet spot for dense Qwen3.6 "
+            "MTP quants, and the measured sweet spot for DFlash too). Only "
+            "applied when speculative_type resolves to 'mtp', 'mtp+ngram', "
+            "'dspark' or 'dflash'."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -842,7 +845,8 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spec_drafter_kind: Optional[str] = Field(
         None,
         description = (
-            "Which drafter the resolution was about, 'mtp' or 'dspark'. Needed "
+            "Which drafter the resolution was about: 'mtp', 'dspark' or "
+            "'dflash'. Needed "
             "because Auto resolves the kind itself, so speculative_type still "
             "reads 'auto', and a fallback leaves the engaged type at 'default': "
             "neither still says which file the UI should tell the user to fix."
