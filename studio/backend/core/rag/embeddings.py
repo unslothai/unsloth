@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from contextlib import contextmanager
 from functools import lru_cache
 from typing import Callable
 
@@ -167,6 +168,95 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
         )
 
 
+class _CaptureLoadReport(logging.Filter):
+    """Swallow transformers' multi-line "<Model> LOAD REPORT" table, keeping the text.
+
+    transformers >= 5 emits the report through ``logger.warning`` with embedded ANSI
+    colour codes, so it lands in the server log as ~7 unstructured lines that break
+    every JSON consumer. It fires on every boot for the RAG embedder because
+    bge-small-en-v1.5 ships a legacy ``embeddings.position_ids`` key that the current
+    BertModel does not expect, which is benign and identical every time.
+
+    Nothing is lost: the caller re-emits the report (see ``_quiet_transformers_load``)
+    at debug when it only reports UNEXPECTED keys, and at warning when it mentions
+    anything that could change the model's behaviour.
+    """
+
+    _BENIGN = ("UNEXPECTED",)
+    _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reports: list[str] = []
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:  # noqa: BLE001 - a broken record must not break loading
+            return True
+        if "LOAD REPORT" not in msg:
+            return True
+        self.reports.append(msg)
+        return False
+
+    def is_serious(self) -> bool:
+        return any(tag in r for r in self.reports for tag in self._SERIOUS)
+
+
+_LOAD_REPORT_LOGGERS = (
+    "transformers.utils.loading_report",
+    "transformers.modeling_utils",
+)
+
+
+@contextmanager
+def _quiet_transformers_load():
+    """Keep a transformers weight load from writing raw ANSI/tqdm output to stdout.
+
+    Scoped to the embedder load only, so a user-visible model load keeps its normal
+    progress bar and report. Restores the progress-bar setting exactly as found, so
+    a caller that had already disabled bars stays disabled.
+    """
+    capture = _CaptureLoadReport()
+    attached = []
+    for name in _LOAD_REPORT_LOGGERS:
+        log = logging.getLogger(name)
+        log.addFilter(capture)
+        attached.append(log)
+
+    # The weight-load bar is transformers.utils.logging.tqdm, so disable_progress_bar()
+    # reaches it. The "is it on right now" probe has been spelled both ways across
+    # versions (is_progress_bar_enabled in 4.x/5.x, are_progress_bars_disabled in
+    # some builds), so accept either and skip the restore when neither exists rather
+    # than re-enabling a bar the caller had deliberately turned off.
+    reenable = False
+    hf_logging = None
+    try:
+        from transformers.utils import logging as hf_logging
+        if hasattr(hf_logging, "is_progress_bar_enabled"):
+            was_on = bool(hf_logging.is_progress_bar_enabled())
+        elif hasattr(hf_logging, "are_progress_bars_disabled"):
+            was_on = not bool(hf_logging.are_progress_bars_disabled())
+        else:
+            was_on = False
+        if was_on:
+            hf_logging.disable_progress_bar()
+            reenable = True
+    except Exception:  # noqa: BLE001 - older/absent transformers: nothing to disable
+        hf_logging = None
+
+    try:
+        yield capture
+    finally:
+        for log in attached:
+            log.removeFilter(capture)
+        if reenable and hf_logging is not None:
+            try:
+                hf_logging.enable_progress_bar()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _st_accepts_local_files_only(st_cls) -> bool:
     """Whether this SentenceTransformer version accepts local_files_only; passing it to an
     older constructor raises, so gate on the signature."""
@@ -210,7 +300,16 @@ def _get(model_name: str | None = None):
                     load_target = str(snapshot)
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
-            _model = SentenceTransformer(load_target, **st_kwargs)
+            with _quiet_transformers_load() as report:
+                _model = SentenceTransformer(load_target, **st_kwargs)
+            for text in report.reports:
+                # Re-emit what the filter swallowed, as one record on our own logger:
+                # debug for the expected legacy-key notice, warning for anything that
+                # could actually change the embeddings.
+                if report.is_serious():
+                    logger.warning("embedding model load report: %s", text)
+                else:
+                    logger.debug("embedding model load report: %s", text)
             _name = name
         return _model
 
