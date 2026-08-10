@@ -90,6 +90,10 @@ _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
     _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
     _TC_FUNC_CLOSED_PAT: "</function>",
+    # Literal in both rehearsal patterns: skips the sub AND its _code_spans scan on the
+    # common answer that has no rehearsal at all.
+    _REHEARSAL_CLOSED_STRIP_RE: "[ARGS]",
+    _REHEARSAL_TAIL_STRIP_RE: "[ARGS]",
 }
 
 
@@ -124,7 +128,7 @@ def apply_tool_strip_patterns(
             text = pat.sub(
                 lambda m: m.group(0)
                 if (enabled_tool_names is not None and m.group(1) not in enabled_tool_names)
-                or any(s <= m.start() < e for s, e in spans)
+                or _in_code(spans, m.start())
                 else "",
                 text,
             )
@@ -178,9 +182,12 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 
 # Markdown code: a fenced block (closing fence optional so a streaming block counts) or
 # an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
-# documentation stays text instead of executing.
+# documentation stays text instead of executing. ``>`` container prefixes are allowed so
+# a fence inside a block quote counts, and an inline span closes on a backtick run of its
+# own length (``code`` is one span, not two empty ones).
 _CODE_SPAN_RE = re.compile(
-    r"^[ \t]*(?:```+|~~~+).*?(?:^[ \t]*(?:```+|~~~+)[ \t]*$|\Z)|`[^`\n]*`",
+    r"^[ \t]*(?:>[ \t]*)*(?:```+|~~~+).*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t]*$|\Z)"
+    r"|(`+)(?:(?!\1).)+?\1(?!`)",
     re.DOTALL | re.MULTILINE,
 )
 
@@ -321,10 +328,17 @@ def _code_spans(text: str) -> list[tuple[int, int]]:
     A line-start fence cannot occur inside a call's JSON body (a raw newline is
     invalid JSON there), so no tool-markup exclusion is needed; a stray inline span
     can at worst hide a same-line rehearsal, which drops a call rather than
-    inventing one."""
+    inventing one. Spans are ordered and non-overlapping, so ``_in_code`` bisects
+    them instead of rescanning from the front per candidate."""
     if "`" not in text and "~~~" not in text:
         return []
     return [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+
+
+def _in_code(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``spans`` (ordered, non-overlapping)."""
+    i = bisect.bisect_right(spans, (pos, pos)) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
 
 
 def _iter_bracket_spans(
@@ -389,7 +403,7 @@ def _iter_bracket_spans(
         if kind == "rehearsal":
             if code_spans is None:
                 code_spans = _code_spans(text)
-            if any(s <= m.start() < e for s, e in code_spans):
+            if _in_code(code_spans, m.start()):
                 # Quoted syntax, not a call: advance past its body without yielding.
                 cursor = end + 1
                 continue

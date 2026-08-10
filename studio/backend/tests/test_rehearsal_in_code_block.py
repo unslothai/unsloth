@@ -37,6 +37,10 @@ QUOTED = {
     "fenced_indented": f'  {FENCE}\n  terminal[ARGS]{{"command": "id"}}\n  {FENCE}',
     "tilde_fence": '~~~\nterminal[ARGS]{"command": "id"}\n~~~',
     "inline_span": 'Write `terminal[ARGS]{"command": "id"}` to run it.',
+    # A span opened with N backticks closes on a run of N, so it is one span rather
+    # than two empty pairs around live markup.
+    "inline_double_backtick": 'Write ``terminal[ARGS]{"command": "id"}`` as docs.',
+    "blockquoted_fence": f'> {FENCE}\n> terminal[ARGS]{{"command": "id"}}\n> {FENCE}',
     # A block still streaming has no closing fence yet; it must not execute in the
     # window before the fence arrives.
     "unclosed_fence": f'{FENCE}\nterminal[ARGS]{{"command": "id"}}',
@@ -85,6 +89,22 @@ def test_explicit_markers_in_a_fence_still_call(body):
 def test_unrestricted_mode_also_skips_quoted_rehearsal():
     """The code gate does not depend on the enabled-name gate."""
     assert _names(QUOTED["fenced"], enabled_tool_names = None) == []
+
+
+def test_unmatched_backtick_does_not_hide_a_later_call():
+    """An inline span needs a closing run, so a stray backtick stays prose."""
+    assert _names('cost is 5` then terminal[ARGS]{"command": "id"}') == ["terminal"]
+
+
+def test_many_quoted_examples_stay_linear():
+    """Ordered spans are bisected, not rescanned per candidate (264 KB / 8k examples)."""
+    import time
+
+    content = " ".join('`terminal[ARGS]{"command": "id"}`' for _ in range(8000))
+    start = time.perf_counter()
+    assert _names(content) == []
+    assert strip_tool_call_markup(content, enabled_tool_names = ENABLED) == content
+    assert time.perf_counter() - start < 5.0
 
 
 def test_backtick_inside_arguments_does_not_hide_a_later_call():
