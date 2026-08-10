@@ -23,7 +23,11 @@ def _drain(job_id):
     return list(ingestion.job_events(job_id))
 
 
-def _wait_finished(job_id, timeout = 30.0, terminal = ("completed", "failed", "cancelled")):
+def _wait_finished(
+    job_id,
+    timeout = 30.0,
+    terminal = ("completed", "failed", "cancelled"),
+):
     deadline = time.time() + timeout
     while time.time() < deadline:
         status = ingestion.get_job_status(job_id)
@@ -88,9 +92,7 @@ def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
         return vectors
 
     monkeypatch.setattr(ingestion, "_embed_all", delete_document_then_embed)
-    doc_id, job_id = ingestion.start_ingestion(
-        scope, None, None, "doc.txt", path, project_id = "P1"
-    )
+    doc_id, job_id = ingestion.start_ingestion(scope, None, None, "doc.txt", path, project_id = "P1")
     deleted["id"] = doc_id
     doc_id_known.set()
 
