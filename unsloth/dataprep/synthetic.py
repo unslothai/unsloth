@@ -287,32 +287,72 @@ class SyntheticDataKit:
         )
         # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
 
-        ready = self.stdout_capture.wait_for_ready(timeout = timeout)
-        if not ready:
-            if self.stdout_capture.has_closed() or self.vllm_process.poll() is not None:
-                print("Stdout stream ended before readiness message detected.")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-            else:
-                print(f"Unsloth: vllm_process failed to load! (timeout={timeout})")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-            terminate_tree(self.vllm_process)
-            return
-        else:
-            print("vLLM Server Ready Detected")
+        self._await_vllm_server(timeout = timeout)
+        print("vLLM Server Ready Detected")
 
         trial = 0
         while not self.check_vllm_status():
             if trial >= 100:
-                print("Unsloth: vllm_process failed to load!")
-                print("\n--- stdout tail ---\n", self.stdout_capture.tail(50))
-                print("\n--- stderr tail ---\n", self.stderr_capture.tail(50))
-                terminate_tree(self.vllm_process)
-                return
+                self._fail_vllm_server(
+                    "printed its readiness line but never answered "
+                    "http://localhost:8000/metrics (waited 100 seconds)"
+                )
             trial += 1
             time.sleep(1)
         return
+
+    def _await_vllm_server(self, timeout, poll_interval = 1.0):
+        """Block until the server is ready, or raise saying why it is not.
+
+        Waiting on the readiness event alone cannot notice the child dying, so
+        a server that fails to import in twenty seconds still burned the whole
+        `timeout`. Poll the readiness event, the exit status and the closed
+        pipe together, and stop at whichever happens first.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.stdout_capture.wait_for_ready(timeout = poll_interval):
+                return
+            returncode = self.vllm_process.poll()
+            if returncode is not None:
+                self._fail_vllm_server(
+                    f"exited with code {returncode} before it was ready"
+                )
+            if self.stdout_capture.has_closed():
+                self._fail_vllm_server(
+                    "closed its stdout before it was ready"
+                )
+            if time.monotonic() >= deadline:
+                self._fail_vllm_server(
+                    f"was not ready within {timeout} seconds"
+                )
+
+    def _fail_vllm_server(self, what_happened):
+        """Terminate the server and raise, quoting what it managed to say.
+
+        This used to print and `return`, handing back a SyntheticDataKit whose
+        server was gone. Every `synthetic-data-kit` step then reported "VLLM
+        server not available", wrote no file and still exited 0, so the first
+        error that stopped the notebook was a FileNotFoundError on
+        `data/final/..._qa_pairs_ft.json` five cells later, with the real
+        traceback long since scrolled away.
+        """
+        stdout_tail = self.stdout_capture.tail(50)
+        stderr_tail = self.stderr_capture.tail(50)
+        terminate_tree(self.vllm_process)
+        raise RuntimeError(
+            f"Unsloth: the vLLM server behind SyntheticDataKit "
+            f"{what_happened}.\n"
+            f"Nothing after this point can work: `synthetic-data-kit` reaches "
+            f"the model over http://localhost:8000/v1, so ingest/create/"
+            f"save-as would each report \"VLLM server not available\", write "
+            f"no file, and leave the failure to surface as a FileNotFoundError "
+            f"much later on.\n"
+            f"The cause is almost always in the server's own output below "
+            f"rather than in this process.\n"
+            f"\n--- vLLM stdout (last 50 lines) ---\n{stdout_tail}\n"
+            f"\n--- vLLM stderr (last 50 lines) ---\n{stderr_tail}"
+        )
 
     @staticmethod
     def from_pretrained(
@@ -337,10 +377,13 @@ class SyntheticDataKit:
     @staticmethod
     def check_vllm_status():
         try:
-            response = requests.get("http://localhost:8000/metrics")
-            if response.status_code == 200:
-                return True
-        except requests.exceptions.ConnectionError:
+            # A server that accepts the connection and then stalls used to hang
+            # here forever, since requests has no default timeout.
+            response = requests.get("http://localhost:8000/metrics", timeout = 5)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            # ConnectionError alone let a read timeout or a chunked-encoding
+            # error out of the readiness loop as an unrelated traceback.
             return False
 
     def cleanup(self):
