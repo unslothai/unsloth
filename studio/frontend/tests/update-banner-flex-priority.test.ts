@@ -71,7 +71,7 @@ for (const [name, source] of CARDS) {
     );
     assert.match(
       source,
-      /\bmin-h-48 sm:min-h-32\b|\bmin-h-48\b[^"]*\bsm:min-h-32\b/,
+      /min-h-48[^"]*min-\[480px\]:min-h-32/,
       "one floor for both widths clips the wrapped action row",
     );
   });
@@ -82,7 +82,7 @@ test("the desktop failure card does not shrink at all", () => {
   // only clips the diagnostics and the retry button.
   assert.match(
     TAURI,
-    /showFailure \? "shrink-0" : "min-h-48 sm:min-h-32"/,
+    /showFailure \? "shrink-0" : "min-h-48 min-\[480px\]:min-h-32"/,
     "the failure card shares the notes-bearing card's floor, which is too low",
   );
 });
@@ -100,7 +100,7 @@ test("the two update cards do not drift apart", () => {
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => !rule.endsWith("min-h-32") && rule !== "min-h-48")
+      .filter((rule) => !rule.includes("min-h-32") && rule !== "min-h-48")
       .join(" ");
   assert.equal(
     root(TAURI),

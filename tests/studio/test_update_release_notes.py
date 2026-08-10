@@ -1139,7 +1139,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead and the stack scrolls past it.
     web = WEB_BANNER.read_text(encoding = "utf-8")
-    assert "min-h-48" in web and "sm:min-h-32" in web
+    assert "min-h-48" in web and "min-[480px]:min-h-32" in web
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
@@ -1150,7 +1150,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert "min-h-48" in tauri and "sm:min-h-32" in tauri
+    assert "min-h-48" in tauri and "min-[480px]:min-h-32" in tauri
 
 
 def test_the_stack_geometry_is_checked_numerically():
