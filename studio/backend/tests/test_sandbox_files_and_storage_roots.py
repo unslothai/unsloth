@@ -2565,6 +2565,8 @@ def test_a_same_size_overwrite_is_still_reported(tmp_path, monkeypatch):
 
     tools._workdirs.clear()
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_same111"))
+    # The premise: where mtime alone separates the writes there is no digest.
+    monkeypatch.setattr(tools, "_volume_timestamps_finely", lambda _: False)
     report = workdir / "report.csv"
     report.write_text("a,b\n1,2\n", encoding = "utf-8")
 
@@ -5350,6 +5352,7 @@ def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, mon
     from core.inference import tools
 
     _forget_sandbox_state(tools)
+    monkeypatch.setattr(tools, "_volume_timestamps_finely", lambda _: False)
     workdir = tmp_path / "sandbox"
     workdir.mkdir()
     untouched = workdir / "z-report.csv"
@@ -5769,6 +5772,66 @@ def test_a_retry_that_still_keeps_the_files_offers_again():
     src = Path(__file__).resolve().parents[2] / "frontend/src"
     offer = (src / "features/chat/utils/offer-kept-sandbox-files.ts").read_text(encoding = "utf-8")
     assert "if (stillKept.length > 0) offerToDeleteKeptSandboxes(stillKept);" in offer
+
+
+def test_a_finely_timestamped_volume_is_not_read_twice_per_call(tmp_path, monkeypatch):
+    """Hashing every artifact was ~90% of a snapshot, and two snapshots run per
+    tool call. Where mtime already separates the writes, nothing is read."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_fine1"))
+    if not tools._volume_timestamps_finely(str(workdir)):
+        pytest.skip("this filesystem records whole seconds, where digests are the point")
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    read = []
+    real_key = tools._content_key
+    monkeypatch.setattr(
+        tools, "_content_key",
+        lambda path, size: (read.append(path), real_key(path, size))[1],
+    )
+    snapshot = tools._snapshot_workdir_files(str(workdir))
+
+    assert snapshot["report.csv"][2] is None, "the file was hashed anyway"
+    assert not read, f"the snapshot read {read}"
+
+
+def test_one_whole_second_stamp_is_not_taken_for_a_coarse_volume(tmp_path, monkeypatch):
+    """A directory that happens to land on a whole second is chance. Reading
+    only mtime would pin the volume to hashing for the life of the process."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_SANDBOX_HOME", str(tmp_path / "sb"))
+
+    from core.inference import tools
+
+    tools._workdirs.clear()
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_stamp1"))
+    if not tools._volume_timestamps_finely(str(workdir)):
+        pytest.skip("this filesystem records whole seconds")
+    tools._fine_mtime_devices.clear()
+    real_stat = os.stat
+    monkeypatch.setattr(
+        os, "stat",
+        lambda p, *a, **k: (
+            _WholeSecondMtime(real_stat(p, *a, **k)) if str(p) == str(workdir)
+            else real_stat(p, *a, **k)
+        ),
+    )
+    assert tools._volume_timestamps_finely(str(workdir)), "one whole second was enough"
+
+
+class _WholeSecondMtime:
+    """A stat result whose mtime lost its sub-second part, and nothing else."""
+
+    def __init__(self, stat):
+        self._stat = stat
+
+    st_mtime_ns = property(lambda self: self._stat.st_mtime_ns // 10**9 * 10**9)
+
+    def __getattr__(self, name):
+        return getattr(self._stat, name)
 
 
 if __name__ == "__main__":

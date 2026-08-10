@@ -23,6 +23,7 @@ import re
 import shlex
 import shutil
 import ssl
+from stat import S_ISREG
 import subprocess
 import sys
 import tempfile
@@ -12048,6 +12049,39 @@ def _content_key(path: str, size: int) -> "str | None":
         return None
 
 
+# Volumes already known to timestamp finely, by device id. Only the positive is
+# kept: a negative costs one stat to redo and hashing to get wrong.
+_fine_mtime_devices: "set[int]" = set()
+
+
+def _volume_timestamps_finely(workdir: str) -> bool:
+    """Whether this volume records sub-second times, so digests can be skipped.
+
+    That is the only thing the digest buys: at sub-second resolution a program
+    cannot overwrite a file inside the tick of its own previous write, and
+    reading every artifact twice per call was ~90% of a snapshot's cost.
+
+    Read off the directory rather than probed with a file of our own: several
+    chats can share a workdir, and a probe file appearing mid-walk is reported
+    as a file the other call created. Three stamps because one whole-second
+    reading on a fine volume is chance; three is not. Anything unreadable
+    answers False, which hashes exactly as before.
+    """
+    try:
+        stat = os.stat(workdir)
+    except OSError:
+        return False
+    if stat.st_dev in _fine_mtime_devices:
+        return True
+    if not any(
+        stamp % 1_000_000_000
+        for stamp in (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_atime_ns)
+    ):
+        return False
+    _fine_mtime_devices.add(stat.st_dev)
+    return True
+
+
 def _defuse_sentinels(text: str) -> str:
     """Break a marker line the executed program printed itself.
 
@@ -12074,8 +12108,8 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     All files, not just images: a .csv the model wrote used to be invisible.
     Size rides along with mtime because FAT/exFAT and some network volumes have
     coarse timestamps, where an overwrite inside one tick would look unchanged,
-    and a digest rides along with both for files small enough to read, since a
-    same-length rewrite matches on all of it otherwise.
+    and on those volumes alone a digest rides along too, since a same-length
+    rewrite inside one tick matches on all of it otherwise.
     """
     snapshot: "dict[str, tuple]" = {}
     if not workdir or not os.path.isdir(workdir):
@@ -12083,7 +12117,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # Directories are budgeted separately from files: thousands of empty output
     # folders never reach the file cap, and this walk runs twice per tool call.
     visited = 0
-    hash_budget = _MAX_SNAPSHOT_HASH_BYTES
+    hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
     # Walked, not listed: a script writing outputs/report.csv is ordinary, and a
     # top-level listing saw only the directory and dropped it.
     for base, dirs, names in os.walk(workdir):
@@ -12109,12 +12143,15 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 continue
             path = os.path.join(base, name)
             try:
-                if not os.path.isfile(path) or os.path.islink(path):
+                # One lstat where isfile + islink + stat were three, on every
+                # file of every walk. A link is not a regular file to lstat, so
+                # this drops the same entries the pair did.
+                stat = os.lstat(path)
+                if not S_ISREG(stat.st_mode):
                     continue
                 relative = os.path.relpath(path, workdir).replace(os.sep, "/")
-                stat = os.stat(path)
                 content = None
-                if hash_budget >= stat.st_size:
+                if hash_budget and hash_budget >= stat.st_size:
                     content = _content_key(path, stat.st_size)
                     if content is not None:
                         hash_budget -= stat.st_size
