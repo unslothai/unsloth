@@ -2187,6 +2187,7 @@ class DiffusionBackend:
                     "files": files,
                     "bytes": int(sum(sized.get(name, 0) for name in files)),
                     "gguf_filename": gguf,
+                    "gguf_bytes": int(sized.get(gguf, 0)) if gguf else 0,
                 }
             )
 

@@ -52,6 +52,10 @@ import {
   buildSourceTabs,
   isFineTunedSource,
 } from "./model-selector/source-tabs";
+import {
+  type CompanionBytesResolver,
+  CompanionBytesContext,
+} from "./model-selector/companion-bytes";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -166,6 +170,8 @@ interface ModelSelectorProps {
   catalog?: CatalogGroup[];
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
+  /** Bytes a quant of this repo downloads beyond the GGUF itself, so its row advertises the whole pick. Supplied by the Images / Video pages, which own the load settings the answer depends on; chat passes none and the rows are unchanged. */
+  resolveCompanionBytes?: CompanionBytesResolver;
 }
 
 function ModelSelectorTrigger({
@@ -702,6 +708,7 @@ export function ModelSelector({
   catalog,
   placeholder,
   loaded,
+  resolveCompanionBytes,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -804,43 +811,45 @@ export function ModelSelector({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <ModelSelectorTrigger
-        currentModel={currentModel}
-        isLoaded={isLoaded}
-        showCloudIndicator={showCloudIndicator}
-        variant={variant}
-        size={size}
-        className={className}
-        dataTour={triggerDataTour}
-        onEject={onEject ? handleEject : undefined}
-        placeholder={placeholder}
-      />
-      <ModelSelectorContent
-        open={open}
-        models={models}
-        loraModels={loraModels}
-        externalModels={externalModels}
-        value={selected}
-        activeGgufVariant={activeGgufVariant}
-        activeModelConfig={activeModelConfig}
-        activeGgufContextLength={activeGgufContextLength}
-        selectedConfig={selectedConfig}
-        selectedGgufVariant={selectedGgufVariant}
-        onSelect={handleSelect}
-        onEject={onEject ? handleEject : undefined}
-        onFoldersChange={onFoldersChange}
-        onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the "Search Hub" button.
-        onBrowseHub={task ? undefined : handleBrowseHub}
-        onModelsChange={onModelsChange}
-        deleteDisabled={deleteDisabled}
-        className={contentClassName}
-        dataTour={contentDataTour}
-        task={task}
-        catalog={catalog}
-      />
-    </Popover>
+    <CompanionBytesContext.Provider value={resolveCompanionBytes ?? null}>
+      <Popover open={open} onOpenChange={setOpen}>
+        <ModelSelectorTrigger
+          currentModel={currentModel}
+          isLoaded={isLoaded}
+          showCloudIndicator={showCloudIndicator}
+          variant={variant}
+          size={size}
+          className={className}
+          dataTour={triggerDataTour}
+          onEject={onEject ? handleEject : undefined}
+          placeholder={placeholder}
+        />
+        <ModelSelectorContent
+          open={open}
+          models={models}
+          loraModels={loraModels}
+          externalModels={externalModels}
+          value={selected}
+          activeGgufVariant={activeGgufVariant}
+          activeModelConfig={activeModelConfig}
+          activeGgufContextLength={activeGgufContextLength}
+          selectedConfig={selectedConfig}
+          selectedGgufVariant={selectedGgufVariant}
+          onSelect={handleSelect}
+          onEject={onEject ? handleEject : undefined}
+          onFoldersChange={onFoldersChange}
+          onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
+          // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the "Search Hub" button.
+          onBrowseHub={task ? undefined : handleBrowseHub}
+          onModelsChange={onModelsChange}
+          deleteDisabled={deleteDisabled}
+          className={contentClassName}
+          dataTour={contentDataTour}
+          task={task}
+          catalog={catalog}
+        />
+      </Popover>
+    </CompanionBytesContext.Provider>
   );
 }
 

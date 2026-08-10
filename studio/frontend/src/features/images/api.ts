@@ -280,6 +280,14 @@ export interface DiffusionDownloadPlan {
   }[];
   total_bytes: number;
   /**
+   * Of total_bytes, the share that is not the picked GGUF: the base repo's text encoder, VAE,
+   * tokenizer and configs, plus any hosted pre-cast checkpoint replacing them. The picker adds it
+   * to a quant row, which is otherwise sized from the GGUF alone and advertised 41 GB for a pick
+   * that fetched 58 GB. Cache-aware like the entries, so it is 0 once the base is on disk.
+   * Optional: an older backend omits it.
+   */
+  companion_bytes?: number;
+  /**
    * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
    * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
    * silent rather than guessing; when it does speak, refuse the pick here -- the alternative is the

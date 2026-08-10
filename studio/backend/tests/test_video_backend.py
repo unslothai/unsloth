@@ -2845,6 +2845,8 @@ def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.
+    from models.inference import DiffusionDownloadPlanResponse
+
     _plan_api(
         monkeypatch,
         {
@@ -2876,6 +2878,15 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     for dropped in ("vae/", "vocoder/", "connectors/", "transformer/"):
         assert not any(f.startswith(dropped) for f in base["files"]), dropped
     assert plan["total_bytes"] == ckpt["bytes"] + base["bytes"]
+
+    # What the picker adds to a quant row. Counted per FILE: the extras share the checkpoint's
+    # entry, so charging that whole entry to the checkpoint would advertise 3.5 GB of VAEs and
+    # connectors as free.
+    assert ckpt["gguf_bytes"] == 12_000_000_000
+    assert (
+        DiffusionDownloadPlanResponse(**plan).companion_bytes
+        == plan["total_bytes"] - 12_000_000_000
+    )
 
 
 def _cuda_bf16_target(monkeypatch):

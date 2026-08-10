@@ -2947,6 +2947,13 @@ class DiffusionDownloadPlanEntry(BaseModel):
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
     )
+    gguf_bytes: int = Field(
+        0,
+        description = "Of ``bytes``, the picked checkpoint's own share, so companion_bytes can be "
+        "derived per file rather than per repo. They differ whenever companions live in the "
+        "picked repo: an LTX-2.3 pick reads its VAEs and text projections out of the same "
+        "unsloth/LTX-2.3-GGUF entry as the checkpoint.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
@@ -2955,6 +2962,15 @@ class DiffusionDownloadPlanResponse(BaseModel):
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
     total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    companion_bytes: int = Field(
+        0,
+        description = "Of total_bytes, the share that is NOT the picked GGUF: the base repo's "
+        "text encoder, VAE, tokenizer and configs, plus any hosted pre-cast checkpoint that "
+        "replaces them. The picker adds this to a quant row so the advertised size is what "
+        "lands on disk rather than the GGUF alone (a Qwen-Image-Edit BF16 pick advertised "
+        "40.87 GB and fetched 57.73 GB). Derived from entries, so it drops whatever the cache "
+        "already serves, exactly as the rows the Downloads panel lists do.",
+    )
     incompatible_reason: Optional[str] = Field(
         None,
         description = "Why this pick cannot load as selected (today: a FLUX.2 GGUF paired with a "
@@ -2964,6 +2980,16 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
         "unreadable header, an unmapped base or an offline host.",
     )
+
+    @model_validator(mode = "after")
+    def _derive_companion_bytes(self) -> "DiffusionDownloadPlanResponse":
+        """Everything staged that is not the picked checkpoint itself.
+
+        Derived here rather than in each planner so the three that build this shape
+        (DiffusionBackend, SdCppBackend, VideoBackend) cannot disagree, and so a carried
+        value can never drift from the rows the Downloads panel shows."""
+        self.companion_bytes = max(0, self.total_bytes - sum(e.gguf_bytes for e in self.entries))
+        return self
 
 
 class DiffusionStatusResponse(BaseModel):

@@ -2216,6 +2216,29 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [stage, currentLoadAdvanced, pickGuard],
   );
 
+  // What a quant of `repoId` downloads beyond the checkpoint itself, so the picker advertises the
+  // whole pick rather than the GGUF alone: a Qwen-Image-Edit BF16 row read 41 GB and then fetched
+  // 58. Built from the same plan the staging above plans with, and from the same Advanced values,
+  // so a row and the Downloads panel report one number.
+  const resolveCompanionBytes = useCallback(
+    async (repoId: string, sampleGgufFilename: string): Promise<number | null> => {
+      const advanced = currentLoadAdvanced(repoId);
+      const plan = await getDiffusionDownloadPlan({
+        model_path: repoId,
+        gguf_filename: sampleGgufFilename,
+        model_kind: "gguf",
+        hf_token: hfApiToken(getHfToken()),
+        cpu_offload: advanced.cpu_offload,
+        speed_mode: advanced.speed_mode,
+        transformer_quant: advanced.transformer_quant,
+        memory_mode: advanced.memory_mode,
+        loras: advanced.loras,
+      });
+      return plan.companion_bytes ?? null;
+    },
+    [currentLoadAdvanced],
+  );
+
   // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend
   // rejects a gguf load with no filename and a pipeline load of a GGUF repo, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
@@ -3029,6 +3052,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 placeholder="Select image model"
+                resolveCompanionBytes={resolveCompanionBytes}
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
               />

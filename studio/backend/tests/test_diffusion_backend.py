@@ -6204,6 +6204,42 @@ def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
     assert "transformer/diffusion_pytorch_model-00001-of-00003.safetensors" in base["files"]
 
 
+def test_download_plan_reports_the_companion_share_of_the_pick(monkeypatch):
+    """The picker sizes a quant row from the GGUF repo alone, so a Qwen-Image-Edit BF16 pick
+    advertised 40.87 GB and then fetched 57.73 GB: the base repo's text encoder, VAE, tokenizer
+    and configs were never named. companion_bytes is that difference, and the row adds it."""
+    from models.inference import DiffusionDownloadPlanResponse
+
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_quant_prefetch_needed",
+        lambda self, fam, kwargs, **_: False,
+    )
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    checkpoint, base = plan["entries"]
+    # Per file, not per entry: a repo holding companions beside the checkpoint must not have them
+    # counted as the checkpoint.
+    assert checkpoint["gguf_bytes"] == 7 * GB
+    assert base["gguf_bytes"] == 0
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == base["bytes"]
+
+
 def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     # A pipeline load has no separate checkpoint repo: the repo IS the pipeline.
     _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _FLUX_BASE_SIBLINGS})
@@ -6917,6 +6953,8 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
 
 def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
     # The common case after a base repo is shared: the companion is on disk, a new quant is not.
+    from models.inference import DiffusionDownloadPlanResponse
+
     _fake_hf_api(
         monkeypatch,
         {
@@ -6951,6 +6989,8 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
     assert plan["entries"][0]["files"] == ["flux1-dev-Q4_K_M.gguf"]
     # The cached base is gone from the total too, or the progress bar waits on bytes nobody fetches.
     assert plan["total_bytes"] == 7 * GB
+    # And out of what the picker adds to the row: a base already on disk costs this pick nothing.
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == 0
 
 
 def _seed_cache_file(

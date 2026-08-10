@@ -1763,6 +1763,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [stage, pickGuard],
   );
 
+  // What a quant of `repoId` downloads beyond the checkpoint itself, so the picker advertises the
+  // whole pick rather than the GGUF alone. Built from the same plan the staging above plans with,
+  // so a row and the Downloads panel report one number. On an LTX-2.3 repo the companions it counts
+  // (the VAEs and text projections) live in the picked repo rather than a separate base.
+  const resolveCompanionBytes = useCallback(
+    async (repoId: string, sampleGgufFilename: string): Promise<number | null> => {
+      const plan = await getVideoDownloadPlan({
+        model_path: repoId,
+        gguf_filename: sampleGgufFilename,
+        model_kind: "gguf",
+        hf_token: hfApiToken(getHfToken()),
+        memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+      });
+      return plan.companion_bytes ?? null;
+    },
+    // The state, not memoryModeRef: the advertised size has to be re-asked when the mode changes,
+    // and only a new callback identity makes the picker do that.
+    [memoryMode],
+  );
+
   // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend
   // rejects a gguf load with no filename and a pipeline load of a GGUF repo, so name the file from the listing first.
   const loadGgufRepoPick = useCallback(
@@ -2304,6 +2324,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             task={VIDEO_GEN_TASKS}
             catalog={VIDEO_CATALOG}
             placeholder="Select video model"
+            resolveCompanionBytes={resolveCompanionBytes}
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />

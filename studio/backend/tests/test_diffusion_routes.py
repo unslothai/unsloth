@@ -1576,6 +1576,51 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_tells_the_picker_what_the_gguf_does_not_cover(client, monkeypatch):
+    # The picker sizes a quant row from the GGUF repo alone, so a Qwen-Image-Edit BF16 pick said
+    # 41 GB and fetched 58. The row adds this field, so the route has to carry it even though no
+    # planner sets it: it is derived from the entries the planner did return.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        return {
+            "entries": [
+                {
+                    "repo_id": "unsloth/Qwen-Image-Edit-2511-GGUF",
+                    "files": ["qwen-image-edit-2511-BF16.gguf"],
+                    "bytes": 40_870,
+                    "gguf_filename": "qwen-image-edit-2511-BF16.gguf",
+                    "gguf_bytes": 40_870,
+                },
+                {
+                    "repo_id": "Qwen/Qwen-Image-Edit-2511",
+                    "files": ["text_encoder/model-00001-of-00004.safetensors"],
+                    "bytes": 16_860,
+                    "gguf_filename": None,
+                },
+            ],
+            "total_bytes": 57_730,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/Qwen-Image-Edit-2511-GGUF",
+            "gguf_filename": "qwen-image-edit-2511-BF16.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["companion_bytes"] == 16_860
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router

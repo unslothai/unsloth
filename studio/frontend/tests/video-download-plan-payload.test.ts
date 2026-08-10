@@ -19,11 +19,22 @@ const source = readFileSync(
   "utf8",
 );
 
+/**
+ * The plan call inside `loadOrStage`, which is the one that stages, sliced *width* chars wide.
+ *
+ * Anchored on loadOrStage rather than on the first getVideoDownloadPlan in the file: the picker
+ * asks for a plan of its own to size its rows, and a slice that landed on that one would assert
+ * about a call that stages nothing.
+ */
+function stagingPlanCall(width: number): string {
+  const body = source.slice(source.indexOf("const loadOrStage = useCallback("));
+  const start = body.indexOf("await getVideoDownloadPlan({");
+  assert.notEqual(start, -1, "loadOrStage must ask for a download plan");
+  return body.slice(start, start + width);
+}
+
 test("the video download plan is asked with the selected precision", () => {
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 900,
-  );
+  const call = stagingPlanCall(900);
   assert.ok(call.length > 0, "the plan call must exist");
   assert.ok(
     call.includes("transformer_quant:"),
@@ -39,10 +50,7 @@ test("the staged plan reads the precision live, not the value it closed over", (
   // plain capture of transformerQuant therefore froze at the value selected when the callback
   // was built, and the ordinary auto -> FP8 change sent the plan no precision at all: the
   // pre-download refusal was skipped and tens of GB were staged before the load refused it.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 900,
-  );
+  const call = stagingPlanCall(900);
   assert.ok(
     call.includes("transformerQuantRef.current"),
     "the plan must read the precision through the ref",
@@ -61,10 +69,7 @@ test("the staged plan carries the memory request too", () => {
   // The route refuses an explicit precision under balanced or low_vram only when it can see the
   // memory mode. Omitting it here meant the plan succeeded, tens of GB were staged, and the
   // identical pick was then rejected by /video/load -- the regression the plan gate exists for.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 1200,
-  );
+  const call = stagingPlanCall(1200);
   assert.ok(call.includes("memory_mode:"), "the plan must be asked with the memory request");
   assert.ok(
     call.includes("memoryModeRef.current"),

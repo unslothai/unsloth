@@ -98,6 +98,7 @@ import {
   useState,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import { useCompanionBytes } from "./companion-bytes";
 import { FolderBrowser } from "./folder-browser";
 import {
   type ModelCapabilities,
@@ -1328,6 +1329,18 @@ function GgufVariantExpander({
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
+  // Any listed quant resolves the same base, and so the same companions; the recommended one is
+  // simply the most representative pick to ask about. A local path stages nothing, so it is not
+  // worth a round trip.
+  const companionSampleFilename = useMemo(() => {
+    if (isLocalPath || !sortedVariants || sortedVariants.length === 0) return null;
+    const recommended = sortedVariants.find(
+      (v) => v.quant === effectiveRecommended,
+    );
+    return (recommended ?? sortedVariants[0]).filename;
+  }, [isLocalPath, sortedVariants, effectiveRecommended]);
+  const companionBytes = useCompanionBytes(repoId, companionSampleFilename);
+
   const variantOptionKeys = useMemo(
     () =>
       (displayVariants ?? []).map((variant) =>
@@ -1474,7 +1487,7 @@ function GgufVariantExpander({
                   </span>
                 )}
                 <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                  <SizeText value={formatBytes(v.size_bytes + companionBytes)} />
                 </span>
               </span>
             </button>
@@ -1580,6 +1593,12 @@ function GgufVariantExpander({
           </div>
         );
       })}
+      {companionBytes > 0 && (
+        <div className="px-2 pb-1 pt-1.5 text-ui-9 leading-snug text-muted-foreground">
+          Includes {formatBytes(companionBytes)} of base assets (text encoder,
+          VAE) that every quantization downloads.
+        </div>
+      )}
     </div>
   );
 }

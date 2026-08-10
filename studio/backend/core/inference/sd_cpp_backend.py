@@ -1099,13 +1099,17 @@ class SdCppDiffusionBackend:
         for repo, names in by_repo.items():
             repo_bytes = int(sum(sizes.get((repo, n), 0) for n in names))
             total += repo_bytes
+            is_checkpoint_repo = repo == fetch_repo_id
             entries.append(
                 {
                     "repo_id": repo,
                     "files": names,
                     "bytes": repo_bytes,
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
-                    "gguf_filename": gguf_filename if repo == fetch_repo_id else None,
+                    "gguf_filename": gguf_filename if is_checkpoint_repo else None,
+                    "gguf_bytes": (
+                        int(sizes.get((repo, gguf_filename), 0)) if is_checkpoint_repo else 0
+                    ),
                 }
             )
         return {"entries": entries, "total_bytes": total}

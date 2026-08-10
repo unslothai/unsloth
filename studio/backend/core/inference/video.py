@@ -1534,7 +1534,8 @@ class VideoBackend:
             if not files:
                 return 0
             entry = entries.setdefault(
-                repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
+                repo,
+                {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None, "gguf_bytes": 0},
             )
             seen = set(entry["files"])
             added = 0
@@ -1545,6 +1546,10 @@ class VideoBackend:
                 entry["files"].append(name)
                 entry["bytes"] += int(size)
                 added += int(size)
+                # Per file, not the whole entry: an LTX-2.3 pick adds its VAEs and text
+                # projections to this same repo, and they are companions, not the checkpoint.
+                if gguf and name == gguf:
+                    entry["gguf_bytes"] = int(size)
             if gguf:
                 entry["gguf_filename"] = gguf
             return added
@@ -1642,7 +1647,13 @@ class VideoBackend:
                 size = int(match.size or 0)
                 entry = grouped.setdefault(
                     repo,
-                    {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None},
+                    {
+                        "repo_id": repo,
+                        "files": [],
+                        "bytes": 0,
+                        "gguf_filename": None,
+                        "gguf_bytes": 0,
+                    },
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
@@ -1650,6 +1661,7 @@ class VideoBackend:
                     total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
+                    entry["gguf_bytes"] = size
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
