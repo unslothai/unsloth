@@ -5599,11 +5599,11 @@ def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
     adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
     assert "function isSandboxWrapper(result: unknown, toolName?: string)" in adapter
     assert "SANDBOX_FILE_TOOLS.has(toolName)" in adapter
-    assert "isSandboxWrapper(result, tc.toolName ?? \"\")" in adapter
+    assert 'isSandboxWrapper(result, tc.toolName ?? "")' in adapter
     # The export paths pass the name too, so a wrapper is stripped in one place.
-    dialog = (
-        src / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
-    ).read_text(encoding = "utf-8")
+    dialog = (src / "features/chat/prompt-storage/prompt-storage-dialog.tsx").read_text(
+        encoding = "utf-8"
+    )
     assert "toolResultModelText(p.result, p.toolName)" in dialog
     assert "toolResultModelText(p.result, name)" in dialog
 
