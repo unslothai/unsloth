@@ -18,8 +18,6 @@ const HF_TOKEN_SYNC_KEY = "unsloth_hf_token_backend_revision";
 
 let stagedLegacyToken = "";
 
-let legacyHfCredentialAccessAllowed = false;
-
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
@@ -30,7 +28,6 @@ export function normalizeHfToken(raw: string): string {
 
 function loadLegacyToken(): string {
 
-  if (!legacyHfCredentialAccessAllowed) return "";
   if (!canUseStorage()) return stagedLegacyToken;
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
@@ -47,16 +44,27 @@ function loadLegacyToken(): string {
   }
 }
 
-function removeLegacyToken(): void {
-
-  stagedLegacyToken = "";
+function removeLegacyToken(expectedToken: string): void {
+  const expected = normalizeHfToken(expectedToken);
+  if (!expected) return;
+  if (normalizeHfToken(stagedLegacyToken) === expected) stagedLegacyToken = "";
   if (!canUseStorage()) return;
   try {
-    window.localStorage.removeItem(HF_TOKEN_KEY);
+    const direct = window.localStorage.getItem(HF_TOKEN_KEY);
+    if (direct !== null && normalizeHfToken(direct) === expected) {
+      window.localStorage.removeItem(HF_TOKEN_KEY);
+    }
     const raw = window.localStorage.getItem(LEGACY_TRAINING_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as { state?: Record<string, unknown> };
-    if (!parsed.state || !("hfToken" in parsed.state)) return;
+    const trainingToken = parsed.state?.hfToken;
+    if (
+      !parsed.state ||
+      typeof trainingToken !== "string" ||
+      normalizeHfToken(trainingToken) !== expected
+    ) {
+      return;
+    }
     delete parsed.state.hfToken;
     window.localStorage.setItem(LEGACY_TRAINING_KEY, JSON.stringify(parsed));
   } catch {
@@ -95,6 +103,8 @@ function persistTokenToBackend(token: string): void {
       // Collapse rapid field edits before they reach the network. In-flight
       // writes remain ordered, so an older response can never win last.
       if (revision !== persistenceRevision) return;
+
+      const legacyTokenBeforeSave = loadLegacyToken();
       try {
         const { clearSavedHfToken, saveHfToken } = await loadHfTokenApi();
         const response = token
@@ -103,10 +113,10 @@ function persistTokenToBackend(token: string): void {
         const persistedToken = response.token
           ? normalizeHfToken(response.token)
           : "";
-        lastPersistedToken = persistedToken;
-        removeLegacyToken();
-        announcePersistedTokenChange();
         if (revision === persistenceRevision) {
+          lastPersistedToken = persistedToken;
+          removeLegacyToken(legacyTokenBeforeSave);
+          announcePersistedTokenChange();
           useHfTokenStore.setState({
             token: persistedToken,
             isPersisting: false,
@@ -166,22 +176,12 @@ export function stageLegacyHfTokenForMigration(value: string): void {
   const token = normalizeHfToken(value);
   if (!token) return;
   stagedLegacyToken ||= token;
-  if (
-    legacyHfCredentialAccessAllowed &&
-    !useHfTokenStore.getState().token
-  ) {
+  if (!useHfTokenStore.getState().token) {
     useHfTokenStore.setState({ token });
   }
 }
 
 
-/** Allow browser-wide legacy input only for the account that claimed it. */
-export function setLegacyHfCredentialAccess(allowed: boolean): void {
-  legacyHfCredentialAccessAllowed = allowed;
-  if (!allowed && !serverCredentialHydrated) {
-    useHfTokenStore.setState({ token: "", persistenceError: null });
-  }
-}
 
 let hydrationPromise: Promise<void> | null = null;
 
@@ -222,9 +222,9 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
           persistenceError: null,
         });
       },
-      removeLegacyToken: () => {
+      removeLegacyToken: (expectedToken) => {
         assertCurrentSession();
-        removeLegacyToken();
+        removeLegacyToken(expectedToken);
       },
     });
   })().finally(() => {
@@ -239,7 +239,6 @@ function resetHfCredentialSession(): void {
   hydrationPromise = null;
   serverCredentialHydrated = false;
 
-  legacyHfCredentialAccessAllowed = false;
   stagedLegacyToken = "";
   lastPersistedToken = "";
   useHfTokenStore.setState({

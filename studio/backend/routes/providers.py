@@ -6,7 +6,7 @@ API routes for external LLM provider management.
 
 Endpoints:
   - Discover available provider types (registry)
-  - CRUD for saved provider configurations and owner-scoped API keys
+  - CRUD for saved provider configurations and API keys
   - Fetch the RSA public key for API key encryption
   - Test provider connectivity
   - List models from a provider
@@ -16,12 +16,9 @@ import uuid
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.authentication import get_current_credential, get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 
-from routes.provider_credentials import (
-    current_credential_write,
-    resolve_provider_api_key_or_400,
-)
+from routes.provider_credentials import require_ui_session, resolve_provider_api_key_or_400
 from core.inference.key_exchange import (
     get_public_key_fingerprint,
     get_public_key_pem,
@@ -51,7 +48,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 
-def _provider_response(row: dict, current_subject: str) -> ProviderResponse:
+def _provider_response(row: dict) -> ProviderResponse:
     return ProviderResponse(
         id = row["id"],
         provider_type = row["provider_type"],
@@ -59,7 +56,6 @@ def _provider_response(row: dict, current_subject: str) -> ProviderResponse:
         base_url = row["base_url"],
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
-            current_subject,
             credential_secrets.PROVIDER_API_KEY_KIND,
             row["id"],
         ),
@@ -109,18 +105,21 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 
 
 @router.get("/", response_model = list[ProviderResponse])
-async def list_provider_configs(current_subject: str = Depends(get_current_subject)):
+async def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [_provider_response(row, current_subject) for row in rows]
+    return [_provider_response(row) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
 async def create_provider_config(
-    payload: ProviderCreate, credential: tuple = Depends(get_current_credential)
+    payload: ProviderCreate,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    current_subject = credential[0]
     """Create a saved provider configuration and optional encrypted API key."""
+
+    require_ui_session(via_api_key)
     info = get_provider_info(payload.provider_type)
     if info is None:
         raise HTTPException(
@@ -129,40 +128,41 @@ async def create_provider_config(
             f"Use GET /api/providers/registry to see available types.",
         )
 
-    api_key = resolve_provider_api_key_or_400(current_subject, None, payload.encrypted_api_key)
+    api_key = resolve_provider_api_key_or_400(None, payload.encrypted_api_key)
     provider_id = uuid.uuid4().hex[:16]
     base_url = payload.base_url or info["base_url"]
 
     if api_key:
         credential_secrets.get_or_create_credential_encryption_key()
-    with current_credential_write(credential):
-        providers_db.create_provider(
-            id = provider_id,
-            provider_type = payload.provider_type,
-            display_name = payload.display_name,
-            base_url = base_url,
-            models = payload.models,
-            available_models = payload.available_models,
-        )
-        try:
-            if api_key:
-                credential_secrets.save_provider_api_key(current_subject, provider_id, api_key)
-        except Exception:
-            providers_db.delete_provider(provider_id)
-            raise
+    providers_db.create_provider(
+        id = provider_id,
+        provider_type = payload.provider_type,
+        display_name = payload.display_name,
+        base_url = base_url,
+        models = payload.models,
+        available_models = payload.available_models,
+    )
+    try:
+        if api_key:
+            credential_secrets.save_provider_api_key(provider_id, api_key)
+    except Exception:
+        providers_db.delete_provider(provider_id)
+        raise
 
     row = providers_db.get_provider(provider_id)
-    return _provider_response(row, current_subject)
+    return _provider_response(row)
 
 
 @router.put("/{provider_id}", response_model = ProviderResponse)
 async def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
-    credential: tuple = Depends(get_current_credential),
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    current_subject = credential[0]
     """Update a saved provider configuration."""
+
+    require_ui_session(via_api_key)
     existing = providers_db.get_provider(provider_id)
     if not existing:
         raise HTTPException(status_code = 404, detail = "Provider not found")
@@ -178,42 +178,39 @@ async def update_provider_config(
     if payload.encrypted_api_key:
         credential_secrets.get_or_create_credential_encryption_key()
 
-    with current_credential_write(credential):
-        if metadata_requested:
-            providers_db.update_provider(
-                id = provider_id,
-                display_name = payload.display_name,
-                base_url = payload.base_url,
-                is_enabled = payload.is_enabled,
-                models = payload.models,
-                available_models = payload.available_models,
-            )
-        if payload.encrypted_api_key:
-            api_key = resolve_provider_api_key_or_400(
-                current_subject, provider_id, payload.encrypted_api_key
-            )
-            if not api_key:
-                raise HTTPException(status_code = 400, detail = "API key cannot be empty")
-            credential_secrets.save_provider_api_key(current_subject, provider_id, api_key)
-        elif payload.clear_api_key:
-            credential_secrets.delete_provider_api_key(current_subject, provider_id)
-
+    if metadata_requested:
+        providers_db.update_provider(
+            id = provider_id,
+            display_name = payload.display_name,
+            base_url = payload.base_url,
+            is_enabled = payload.is_enabled,
+            models = payload.models,
+            available_models = payload.available_models,
+        )
+    if payload.encrypted_api_key:
+        api_key = resolve_provider_api_key_or_400(provider_id, payload.encrypted_api_key)
+        if not api_key:
+            raise HTTPException(status_code = 400, detail = "API key cannot be empty")
+        credential_secrets.save_provider_api_key(provider_id, api_key)
+    elif payload.clear_api_key:
+        credential_secrets.delete_provider_api_key(provider_id)
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
     row = providers_db.get_provider(provider_id)
-    return _provider_response(row, current_subject)
+    return _provider_response(row)
 
 
 @router.delete("/{provider_id}", status_code = 204)
 async def delete_provider_config(
-    provider_id: str, credential: tuple = Depends(get_current_credential)
+    provider_id: str,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    current_subject = credential[0]
-    """Idempotently delete a saved provider and this caller's scoped key."""
-    with current_credential_write(credential):
-        credential_secrets.delete_provider_api_key(current_subject, provider_id)
-        providers_db.delete_provider(provider_id)
+    """Idempotently delete a saved provider and its installation credential."""
+    require_ui_session(via_api_key)
+    credential_secrets.delete_provider_api_key(provider_id)
+    providers_db.delete_provider(provider_id)
 
 
 def _bind_saved_provider_target(payload):
@@ -244,7 +241,9 @@ def _bind_saved_provider_target(payload):
 
 @router.post("/test", response_model = ProviderTestResult)
 async def test_provider(
-    payload: ProviderTestRequest, current_subject: str = Depends(get_current_subject)
+    payload: ProviderTestRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     Test connectivity to an external provider.
@@ -263,7 +262,9 @@ async def test_provider(
         )
 
     api_key = resolve_provider_api_key_or_400(
-        current_subject, payload.provider_id, payload.encrypted_api_key
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
     )
 
     base_url = payload.base_url or info["base_url"]
@@ -340,7 +341,9 @@ async def test_provider(
 
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
-    payload: ProviderModelsRequest, current_subject: str = Depends(get_current_subject)
+    payload: ProviderModelsRequest,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """
     List models available from an external provider.
@@ -357,7 +360,9 @@ async def list_provider_models(
         )
 
     api_key = resolve_provider_api_key_or_400(
-        current_subject, payload.provider_id, payload.encrypted_api_key
+        payload.provider_id,
+        payload.encrypted_api_key,
+        allow_saved_key = not via_api_key,
     )
 
     if info.get("model_list_mode") == "curated":

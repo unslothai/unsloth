@@ -12,12 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from auth.authentication import (
     authenticated_via_api_key,
-    get_current_credential,
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
 
-from routes.provider_credentials import current_credential_write
+from routes.provider_credentials import require_ui_session
 
 from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
@@ -136,30 +135,32 @@ class HuggingFaceTokenResponse(BaseModel):
 
 @router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def get_hugging_face_token(
-    current_subject: str = Depends(get_current_subject),
+    _current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
-    if via_api_key:
-        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
-    token = credential_secrets.get_hf_token(current_subject)
+    require_ui_session(via_api_key)
+    token = credential_secrets.get_hf_token()
     return HuggingFaceTokenResponse(token = token, has_token = token is not None)
 
 
 @router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def update_hugging_face_token(
-    payload: HuggingFaceTokenPayload, credential: tuple = Depends(get_current_credential)
+    payload: HuggingFaceTokenPayload,
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
-    with current_credential_write(credential) as current_subject:
-        credential_secrets.save_hf_token(current_subject, payload.token)
+    require_ui_session(via_api_key)
+    credential_secrets.save_hf_token(payload.token)
     return HuggingFaceTokenResponse(token = payload.token, has_token = True)
 
 
 @router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def clear_hugging_face_token(
-    credential: tuple = Depends(get_current_credential),
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
-    with current_credential_write(credential) as current_subject:
-        credential_secrets.delete_hf_token(current_subject)
+    require_ui_session(via_api_key)
+    credential_secrets.delete_hf_token()
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 

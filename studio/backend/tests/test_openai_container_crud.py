@@ -19,6 +19,8 @@ import json
 import httpx
 import pytest
 
+from fastapi import HTTPException
+
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
@@ -174,8 +176,8 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
         },
     )
 
-    def resolve(subject, provider_id, encrypted_api_key):
-        raise ResolverReached(subject, provider_id, encrypted_api_key)
+    def resolve(provider_id, encrypted_api_key, **kwargs):
+        raise ResolverReached(provider_id, encrypted_api_key, kwargs)
 
     monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", resolve)
     payload = ChatCompletionRequest(
@@ -186,17 +188,22 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
 
     with pytest.raises(ResolverReached) as reached:
         _drive(inf_mod._proxy_to_external_provider(payload, None, current_subject = "alice"))
-    assert reached.value.args == ("alice", "provider-1", None)
+    assert reached.value.args == ("provider-1", None, {"allow_saved_key": True})
 
 
 def test_container_client_uses_saved_provider_key(monkeypatch):
     from routes import inference as inf_mod
     from models.inference import OpenAIContainerRequest
 
-    calls: list[tuple[str, str | None, str | None]] = []
+    calls: list[tuple[str | None, str | None, bool]] = []
 
-    def resolve(subject, provider_id, encrypted_api_key):
-        calls.append((subject, provider_id, encrypted_api_key))
+    def resolve(
+        provider_id,
+        encrypted_api_key,
+        *,
+        allow_saved_key = True,
+    ):
+        calls.append((provider_id, encrypted_api_key, allow_saved_key))
         return "saved-key"
 
     monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", resolve)
@@ -216,14 +223,37 @@ def test_container_client_uses_saved_provider_key(monkeypatch):
             provider_id = "provider-1",
             provider_base_url = "https://attacker.invalid/v1",
         ),
-        current_subject = "alice",
+        allow_saved_key = True,
     )
 
     assert client.api_key == "saved-key"
 
     assert client.base_url == "https://api.openai.com/v1"
-    assert calls == [("alice", "provider-1", None)]
+    assert calls == [("provider-1", None, True)]
     _drive(client.close())
+
+
+def test_container_client_rejects_openai_lookalike_host(monkeypatch):
+    from routes import inference as inf_mod
+    from models.inference import OpenAIContainerRequest
+
+    monkeypatch.setattr(
+        inf_mod.providers_db,
+        "get_provider",
+        lambda _provider_id: {
+            "provider_type": "openai",
+            "base_url": "https://api.openai.com.attacker.example/v1",
+            "display_name": "OpenAI",
+            "is_enabled": True,
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        inf_mod._resolve_openai_cloud_client(
+            OpenAIContainerRequest(provider_id = "provider-1"),
+            allow_saved_key = True,
+        )
+    assert error.value.status_code == 400
 
 
 def test_list_route_filters_expired_containers(monkeypatch):

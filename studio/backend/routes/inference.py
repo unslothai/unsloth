@@ -9962,9 +9962,9 @@ async def _proxy_to_external_provider(
         )
 
     api_key = resolve_provider_api_key_or_400(
-        current_subject or "",
         payload.provider_id,
         payload.encrypted_api_key,
+        allow_saved_key = not _request_used_api_key(request),
     )
 
     model = payload.external_model or payload.model
@@ -10103,7 +10103,7 @@ async def _proxy_to_external_provider(
 
 
 def _resolve_openai_cloud_client(
-    body: OpenAIContainerRequest, current_subject: str
+    body: OpenAIContainerRequest, *, allow_saved_key: bool
 ) -> ExternalProviderClient:
     """
     Decrypt the API key + validate the base URL points at OpenAI cloud, then
@@ -10132,7 +10132,10 @@ def _resolve_openai_cloud_client(
                 detail = f"Provider '{config['display_name']}' is disabled.",
             )
         base_url = config["base_url"]
-    if not base_url or "api.openai.com" not in base_url:
+    from urllib.parse import urlparse
+
+    parsed_base_url = urlparse(base_url)
+    if parsed_base_url.scheme != "https" or parsed_base_url.hostname != "api.openai.com":
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -10142,9 +10145,9 @@ def _resolve_openai_cloud_client(
             ),
         )
     api_key = resolve_provider_api_key_or_400(
-        current_subject,
         body.provider_id,
         body.encrypted_api_key,
+        allow_saved_key = allow_saved_key,
     )
     if not api_key:
         raise HTTPException(status_code = 400, detail = "No OpenAI API key is saved.")
@@ -10179,10 +10182,12 @@ def _summarize_container(raw: dict) -> OpenAIContainerSummary:
     response_model = ListOpenAIContainersResponse,
 )
 async def list_openai_containers(
-    body: OpenAIContainerRequest, current_subject: str = Depends(get_current_subject)
+    body: OpenAIContainerRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ) -> ListOpenAIContainersResponse:
     """List the user's OpenAI shell-tool containers."""
-    client = _resolve_openai_cloud_client(body, current_subject)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
     try:
         try:
             raw = await client.list_openai_containers()
@@ -10219,10 +10224,12 @@ async def list_openai_containers(
     response_model = OpenAIContainerSummary,
 )
 async def create_openai_container(
-    body: CreateOpenAIContainerBody, current_subject: str = Depends(get_current_subject)
+    body: CreateOpenAIContainerBody,
+    request: Request,
+    _current_subject: str = Depends(get_current_subject),
 ) -> OpenAIContainerSummary:
     """Create a named container with the user-chosen idle TTL."""
-    client = _resolve_openai_cloud_client(body, current_subject)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
     try:
         try:
             raw = await client.create_openai_container(
@@ -10255,7 +10262,9 @@ async def create_openai_container(
 
 @router.post("/external/openai/containers/delete", status_code = 204)
 async def delete_openai_container(
-    body: DeleteOpenAIContainerBody, current_subject: str = Depends(get_current_subject)
+    body: DeleteOpenAIContainerBody,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ) -> None:
     """Delete a named container by id."""
     logger.info(
@@ -10264,7 +10273,7 @@ async def delete_openai_container(
         body.container_id,
         body.provider_base_url,
     )
-    client = _resolve_openai_cloud_client(body, current_subject)
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
     try:
         try:
             await client.delete_openai_container(body.container_id)

@@ -98,6 +98,8 @@ export function resetOnboardingDone(): void {
   localStorage.removeItem(ONBOARDING_DONE_KEY);
 }
 
+
+
 export function getPostAuthRoute(): PostAuthRoute {
   if (isTauri) return "/chat";
   if (mustChangePassword()) return "/change-password";

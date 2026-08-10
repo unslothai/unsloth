@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Encrypted, owner-scoped credential persistence in ``studio.db``.
+"""Encrypted installation-wide credential persistence in ``studio.db``.
 
-This is deliberately a small application-layer envelope rather than a secrets
-service. The AES key lives separately in auth.db; authenticated metadata binds
-each ciphertext to its owner, kind, and scope so rows cannot be swapped.
+Studio is a single-user local application. Credentials belong to the installation,
+not to an authenticated subject. The AES key lives separately in auth.db and the
+credential kind/scope are authenticated so ciphertext rows cannot be swapped.
 """
 
 from __future__ import annotations
@@ -34,10 +34,8 @@ _schema_lock = threading.Lock()
 _schema_ready = False
 
 
-def _associated_data(owner_subject: str, credential_kind: str, scope_id: str) -> bytes:
-    return f"unsloth-studio-credential\0{owner_subject}\0{credential_kind}\0{scope_id}".encode(
-        "utf-8"
-    )
+def _associated_data(credential_kind: str, scope_id: str) -> bytes:
+    return f"unsloth-studio-credential\0{credential_kind}\0{scope_id}".encode("utf-8")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -46,7 +44,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS credential_secrets (
-            owner_subject TEXT NOT NULL,
             credential_kind TEXT NOT NULL,
             scope_id TEXT NOT NULL,
             format_version INTEGER NOT NULL,
@@ -54,7 +51,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ciphertext BLOB NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            PRIMARY KEY (owner_subject, credential_kind, scope_id)
+            PRIMARY KEY (credential_kind, scope_id)
         ) WITHOUT ROWID
         """
     )
@@ -84,10 +81,10 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def upsert_secret(owner_subject: str, credential_kind: str, scope_id: str, plaintext: str) -> None:
-    """Encrypt and atomically insert or replace one credential."""
-    if not owner_subject or not credential_kind or not scope_id:
-        raise ValueError("Credential owner, kind, and scope are required")
+def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
+    """Encrypt and atomically insert or replace one installation credential."""
+    if not credential_kind or not scope_id:
+        raise ValueError("Credential kind and scope are required")
     if not plaintext:
         raise ValueError("Credential value cannot be empty")
 
@@ -96,7 +93,7 @@ def upsert_secret(owner_subject: str, credential_kind: str, scope_id: str, plain
     ciphertext = AESGCM(key).encrypt(
         nonce,
         plaintext.encode("utf-8"),
-        _associated_data(owner_subject, credential_kind, scope_id),
+        _associated_data(credential_kind, scope_id),
     )
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
@@ -104,46 +101,33 @@ def upsert_secret(owner_subject: str, credential_kind: str, scope_id: str, plain
         conn.execute(
             """
             INSERT INTO credential_secrets (
-                owner_subject, credential_kind, scope_id, format_version,
+                credential_kind, scope_id, format_version,
                 nonce, ciphertext, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(owner_subject, credential_kind, scope_id) DO UPDATE SET
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(credential_kind, scope_id) DO UPDATE SET
                 format_version = excluded.format_version,
                 nonce = excluded.nonce,
                 ciphertext = excluded.ciphertext,
                 updated_at = excluded.updated_at
             """,
-            (
-                owner_subject,
-                credential_kind,
-                scope_id,
-                _FORMAT_VERSION,
-                nonce,
-                ciphertext,
-                now,
-                now,
-            ),
+            (credential_kind, scope_id, _FORMAT_VERSION, nonce, ciphertext, now, now),
         )
         conn.commit()
     finally:
         conn.close()
 
 
-def get_secret(owner_subject: str, credential_kind: str, scope_id: str) -> Optional[str]:
-    """Return a decrypted credential, or ``None`` if absent or unreadable.
-
-    Corrupt rows, unknown envelope versions, and a replaced auth.db key fail
-    closed for this credential only and never prevent Studio startup.
-    """
+def get_secret(credential_kind: str, scope_id: str) -> Optional[str]:
+    """Return a decrypted credential, or ``None`` if absent or unreadable."""
     conn = get_connection()
     try:
         row = conn.execute(
             """
             SELECT format_version, nonce, ciphertext
             FROM credential_secrets
-            WHERE owner_subject = ? AND credential_kind = ? AND scope_id = ?
+            WHERE credential_kind = ? AND scope_id = ?
             """,
-            (owner_subject, credential_kind, scope_id),
+            (credential_kind, scope_id),
         ).fetchone()
     finally:
         conn.close()
@@ -153,7 +137,7 @@ def get_secret(owner_subject: str, credential_kind: str, scope_id: str) -> Optio
         plaintext = AESGCM(get_or_create_credential_encryption_key()).decrypt(
             bytes(row["nonce"]),
             bytes(row["ciphertext"]),
-            _associated_data(owner_subject, credential_kind, scope_id),
+            _associated_data(credential_kind, scope_id),
         )
         return plaintext.decode("utf-8")
     except Exception:
@@ -164,21 +148,17 @@ def get_secret(owner_subject: str, credential_kind: str, scope_id: str) -> Optio
         return None
 
 
-def has_secret(owner_subject: str, credential_kind: str, scope_id: str) -> bool:
-    """True only when a saved credential is present and decryptable."""
-    return get_secret(owner_subject, credential_kind, scope_id) is not None
+def has_secret(credential_kind: str, scope_id: str) -> bool:
+    return get_secret(credential_kind, scope_id) is not None
 
 
-def delete_secret(owner_subject: str, credential_kind: str, scope_id: str) -> bool:
+def delete_secret(credential_kind: str, scope_id: str) -> bool:
     """Idempotently delete one credential; return whether a row existed."""
     conn = get_connection()
     try:
         cursor = conn.execute(
-            """
-            DELETE FROM credential_secrets
-            WHERE owner_subject = ? AND credential_kind = ? AND scope_id = ?
-            """,
-            (owner_subject, credential_kind, scope_id),
+            "DELETE FROM credential_secrets WHERE credential_kind = ? AND scope_id = ?",
+            (credential_kind, scope_id),
         )
         conn.commit()
         return cursor.rowcount > 0
@@ -186,37 +166,35 @@ def delete_secret(owner_subject: str, credential_kind: str, scope_id: str) -> bo
         conn.close()
 
 
-def get_hf_token(owner_subject: str) -> Optional[str]:
-    return get_secret(owner_subject, HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+def get_hf_token() -> Optional[str]:
+    return get_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
-def save_hf_token(owner_subject: str, token: str) -> None:
-    upsert_secret(owner_subject, HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+def save_hf_token(token: str) -> None:
+    upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
 
 
-def delete_hf_token(owner_subject: str) -> bool:
-    return delete_secret(owner_subject, HF_TOKEN_KIND, HF_TOKEN_SCOPE)
+def delete_hf_token() -> bool:
+    return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
 
-def get_provider_api_key(owner_subject: str, provider_id: str) -> Optional[str]:
-    return get_secret(owner_subject, PROVIDER_API_KEY_KIND, provider_id)
+def get_provider_api_key(provider_id: str) -> Optional[str]:
+    return get_secret(PROVIDER_API_KEY_KIND, provider_id)
 
 
-def save_provider_api_key(owner_subject: str, provider_id: str, api_key: str) -> None:
-    upsert_secret(owner_subject, PROVIDER_API_KEY_KIND, provider_id, api_key)
+def save_provider_api_key(provider_id: str, api_key: str) -> None:
+    upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key)
 
 
-def delete_provider_api_key(owner_subject: str, provider_id: str) -> bool:
-    return delete_secret(owner_subject, PROVIDER_API_KEY_KIND, provider_id)
+def delete_provider_api_key(provider_id: str) -> bool:
+    return delete_secret(PROVIDER_API_KEY_KIND, provider_id)
 
 
-def resolve_provider_api_key(
-    owner_subject: str, provider_id: Optional[str], encrypted_api_key: Optional[str]
-) -> str:
-    """Resolve explicit legacy/request key first, then an owner-scoped saved key."""
+def resolve_provider_api_key(provider_id: Optional[str], encrypted_api_key: Optional[str]) -> str:
+    """Resolve an explicit request key first, then the installation's saved key."""
     if encrypted_api_key:
         from core.inference.key_exchange import decrypt_api_key
         return decrypt_api_key(encrypted_api_key)
     if provider_id:
-        return get_provider_api_key(owner_subject, provider_id) or ""
+        return get_provider_api_key(provider_id) or ""
     return ""

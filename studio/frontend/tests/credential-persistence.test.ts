@@ -8,9 +8,12 @@ import test from "node:test";
 
 import type { ProviderConfig } from "../src/features/chat/api/providers-api.ts";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import {
+  installLocalStorageFake,
+  registerStoreStubResolver,
+} from "./helpers/kit.ts";
 
-registerBundlerResolver();
+registerStoreStubResolver();
 
 const {
   reconcileLegacyHfToken,
@@ -20,10 +23,6 @@ const {
 
 const { resolveProviderCredentialEdit } = await import(
   "../src/features/chat/provider-credential-edit.ts"
-);
-
-const { authSubjectFromJwt, legacyCredentialOwnerAction } = await import(
-  "../src/features/credentials/migration-owner.ts"
 );
 
 
@@ -71,12 +70,12 @@ test("provider migration is server-first and removes only confirmed keys", async
         saved.push(`${id}:${key}`);
         return provider(id, true);
       },
-      removeLegacyKey: (id) => removed.push(id),
+      removeLegacyKey: (id, key) => removed.push(`${id}:${key}`),
     },
   );
 
   assert.deepEqual(saved, ["legacy:old-key"]);
-  assert.deepEqual(removed, ["server", "legacy"]);
+  assert.deepEqual(removed, ["server:stale-key", "legacy: old-key "]);
   assert.equal(result.every((row) => row.has_api_key), true);
 });
 
@@ -138,7 +137,7 @@ test("provider migration is retry-safe after partial success", async () => {
 
 test("HF migration is server-first, retry-safe, and idempotent", async () => {
   const applied: string[] = [];
-  let removed = 0;
+  const removed: string[] = [];
   let saves = 0;
   const server = await reconcileLegacyHfToken({
     loadSavedToken: async () => ({ has_token: true, token: "hf_server" }),
@@ -147,15 +146,33 @@ test("HF migration is server-first, retry-safe, and idempotent", async () => {
       saves += 1;
       return { has_token: true, token: "hf_legacy" };
     },
-    removeLegacyToken: () => {
-      removed += 1;
+    removeLegacyToken: (token) => {
+      removed.push(token);
     },
     applyToken: (token) => applied.push(token),
   });
   assert.equal(server.token, "hf_server");
   assert.deepEqual(applied, ["hf_server"]);
   assert.equal(saves, 0);
-  assert.equal(removed, 1);
+  assert.deepEqual(removed, ["hf_legacy"]);
+
+
+  await assert.rejects(
+    reconcileLegacyHfToken({
+      loadSavedToken: async () => {
+        throw new Error("backend unavailable");
+      },
+      getLegacyToken: () => "hf_read_retry",
+      saveLegacyToken: async () => {
+        throw new Error("must not upload without server status");
+      },
+      removeLegacyToken: (token) => {
+        removed.push(token);
+      },
+      applyToken: (token) => applied.push(token),
+    }),
+    /backend unavailable/,
+  );
 
   await assert.rejects(
     reconcileLegacyHfToken({
@@ -164,14 +181,39 @@ test("HF migration is server-first, retry-safe, and idempotent", async () => {
       saveLegacyToken: async () => {
         throw new Error("offline");
       },
-      removeLegacyToken: () => {
-        removed += 1;
+      removeLegacyToken: (token) => {
+        removed.push(token);
       },
       applyToken: (token) => applied.push(token),
     }),
     /offline/,
   );
-  assert.equal(removed, 1);
+  assert.deepEqual(removed, ["hf_legacy"]);
+  assert.deepEqual(applied, ["hf_server", "hf_read_retry", "hf_retry"]);
+});
+
+
+test("HF cleanup removes only the value observed before the request", async () => {
+  let legacyToken = "hf_old";
+  const removed: string[] = [];
+  await reconcileLegacyHfToken({
+    loadSavedToken: async () => {
+      legacyToken = "hf_new";
+      return { has_token: true, token: "hf_server" };
+    },
+    getLegacyToken: () => legacyToken,
+    saveLegacyToken: async () => {
+      throw new Error("server token must win");
+    },
+    removeLegacyToken: (expectedToken) => {
+      removed.push(expectedToken);
+      if (legacyToken === expectedToken) legacyToken = "";
+    },
+    applyToken: () => undefined,
+  });
+
+  assert.deepEqual(removed, ["hf_old"]);
+  assert.equal(legacyToken, "hf_new");
 });
 
 test("credential bootstrap releases providers only after both attempts settle", async () => {
@@ -241,22 +283,43 @@ test("provider migration does not consume local input after a session change", a
   assert.deepEqual(removed, []);
 });
 
-test("legacy migration input is bound to one authenticated subject", () => {
-  assert.equal(legacyCredentialOwnerAction(null, "alice"), "claim");
-  assert.equal(legacyCredentialOwnerAction("alice", "alice"), "keep");
-  assert.equal(legacyCredentialOwnerAction("alice", "bob"), "ignore");
-  assert.equal(authSubjectFromJwt("x.eyJzdWIiOiJhbGljZSJ9.y"), "alice");
-  assert.equal(authSubjectFromJwt("not-a-jwt"), null);
-});
-
-
-test("account switches preserve but do not expose another owner's migration input", () => {
+test("legacy migration remains installation-wide and retry-safe", () => {
   const bootstrapSource = readFileSync(
     new URL("../src/features/credentials/bootstrap.ts", import.meta.url),
     "utf8",
   );
-  assert.match(bootstrapSource, /return action !== "ignore"/);
-  assert.doesNotMatch(bootstrapSource, /discardAllLegacy|removeLegacyToken/);
+  assert.doesNotMatch(bootstrapSource, /migration-owner|legacy_credential_owner/);
+  assert.doesNotMatch(bootstrapSource, /authSubjectFromJwt|currentOwner/);
+});
+
+
+test("HF store hydrates from the API without recreating plaintext storage", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  store.set("unsloth_hf_token", "hf_legacy");
+  const originalFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requests.push(String(input));
+    return new Response(
+      JSON.stringify({ token: "hf_server", has_token: true }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const hfStore = await import(
+      "../src/features/hub/stores/hf-token-store.ts"
+    );
+    await hfStore.hydrateHfTokenFromBackend();
+    assert.equal(hfStore.getHfToken(), "hf_server");
+    assert.deepEqual(requests, ["/api/settings/hugging-face-token"]);
+    assert.equal(store.has("unsloth_hf_token"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
 });
 
 
@@ -269,6 +332,19 @@ test("new HF edits never write the token back to localStorage", () => {
 
   assert.match(source, /persistenceError:/);
   assert.match(source, /HF_TOKEN_SYNC_KEY/);
+});
+
+
+test("legacy training HF tokens never merge back into persisted state", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/features/training/stores/training-config-persistence.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /if \(key === "hfToken"\) return false/);
+  assert.match(source, /delete persistedRecord\.hfToken/);
 });
 
 test("provider edit state keeps, replaces, and explicitly clears saved keys", () => {
@@ -309,5 +385,13 @@ test("credential gate follows authentication session transitions", () => {
   assert.match(rootSource, /AUTH_SESSION_CLEARED_EVENT, reconcile/);
   assert.match(rootSource, /AUTH_SESSION_STORED_EVENT, reconcile/);
   assert.match(rootSource, /!isAuthFlowRoute \|\| pathname === "\/onboarding"/);
+  assert.match(sessionSource, /const sessionStarted = !localStorage\.getItem\(AUTH_TOKEN_KEY\)/);
   assert.match(sessionSource, /dispatchEvent\(new Event\(AUTH_SESSION_STORED_EVENT\)\)/);
+  const bootstrapSource = readFileSync(
+    new URL("../src/features/credentials/bootstrap.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(bootstrapSource, /const isCurrent = hasAuthToken/);
+  assert.doesNotMatch(bootstrapSource, /getAuthToken\(\) === sessionToken/);
+
 });

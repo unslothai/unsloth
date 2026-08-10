@@ -12,17 +12,28 @@ export interface LegacyHfTokenReconciliationDependencies<
   loadSavedToken: () => Promise<T>;
   getLegacyToken: () => string;
   saveLegacyToken: (token: string) => Promise<T>;
-  removeLegacyToken: () => void;
+  removeLegacyToken: (expectedToken: string) => void;
   applyToken: (token: string) => void;
 }
 
 export async function reconcileLegacyHfToken<T extends HfCredentialStatus>(
   dependencies: LegacyHfTokenReconciliationDependencies<T>,
 ): Promise<T> {
-  const saved = await dependencies.loadSavedToken();
+
+  const legacyTokenBeforeLoad = dependencies.getLegacyToken().trim();
+  let saved: T;
+  try {
+    saved = await dependencies.loadSavedToken();
+  } catch (error) {
+    const retainedToken = dependencies.getLegacyToken().trim();
+    if (retainedToken) dependencies.applyToken(retainedToken);
+    throw error;
+  }
   if (saved.has_token && saved.token) {
     dependencies.applyToken(saved.token);
-    dependencies.removeLegacyToken();
+    if (legacyTokenBeforeLoad) {
+      dependencies.removeLegacyToken(legacyTokenBeforeLoad);
+    }
     return saved;
   }
 
@@ -32,10 +43,18 @@ export async function reconcileLegacyHfToken<T extends HfCredentialStatus>(
     return saved;
   }
 
-  const migrated = await dependencies.saveLegacyToken(legacyToken);
+  let migrated: T;
+  try {
+    migrated = await dependencies.saveLegacyToken(legacyToken);
+  } catch (error) {
+    // Keep upgraded users working from their retained legacy token while the
+    // backend is unavailable. The caller still sees the failure and can retry.
+    dependencies.applyToken(legacyToken);
+    throw error;
+  }
   if (migrated.has_token) {
     dependencies.applyToken(migrated.token ?? legacyToken);
-    dependencies.removeLegacyToken();
+    dependencies.removeLegacyToken(legacyToken);
   }
   return migrated;
 }
@@ -51,7 +70,7 @@ export interface LegacyProviderKeyReconciliationDependencies<
 > {
   getLegacyKey: (providerId: string) => string;
   saveLegacyKey: (providerId: string, apiKey: string) => Promise<T>;
-  removeLegacyKey: (providerId: string) => void;
+  removeLegacyKey: (providerId: string, expectedApiKey: string) => void;
 
   isCurrent?: () => boolean;
 }
@@ -68,17 +87,19 @@ export async function reconcileLegacyProviderKeys<
     if (dependencies.isCurrent && !dependencies.isCurrent()) return reconciled;
     const config = reconciled[index];
     if (config.has_api_key) {
-      dependencies.removeLegacyKey(config.id);
+      const legacyKey = dependencies.getLegacyKey(config.id);
+      if (legacyKey) dependencies.removeLegacyKey(config.id, legacyKey);
       continue;
     }
-    const legacyKey = dependencies.getLegacyKey(config.id).trim();
-    if (!legacyKey) continue;
+    const legacyKey = dependencies.getLegacyKey(config.id);
+    const normalizedLegacyKey = legacyKey.trim();
+    if (!normalizedLegacyKey) continue;
     try {
-      const saved = await dependencies.saveLegacyKey(config.id, legacyKey);
+      const saved = await dependencies.saveLegacyKey(config.id, normalizedLegacyKey);
       if (dependencies.isCurrent && !dependencies.isCurrent()) return reconciled;
       reconciled[index] = saved;
       if (saved.has_api_key) {
-        dependencies.removeLegacyKey(config.id);
+        dependencies.removeLegacyKey(config.id, legacyKey);
       }
     } catch {
       // Preserve local input for retry and per-request fallback.

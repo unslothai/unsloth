@@ -78,7 +78,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     monkeypatch.setattr(
         providers_route,
         "resolve_provider_api_key_or_400",
-        lambda _subject, _provider_id, envelope: plaintext_by_envelope.get(envelope, ""),
+        lambda _provider_id, envelope, **_kwargs: plaintext_by_envelope.get(envelope, ""),
     )
 
     created = asyncio.run(
@@ -88,61 +88,90 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
                 display_name = "OpenAI",
                 encrypted_api_key = "first",
             ),
-            credential = ("alice", None),
+            _current_subject = "alice",
+            via_api_key = False,
         )
     )
     assert created.has_api_key is True
-    assert credential_secrets.get_provider_api_key("alice", created.id) == "sk-first"
-    assert credential_secrets.get_provider_api_key("bob", created.id) is None
+    assert credential_secrets.get_provider_api_key(created.id) == "sk-first"
 
     metadata_only = asyncio.run(
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(display_name = "Renamed"),
-            credential = ("alice", None),
+            _current_subject = "alice",
+            via_api_key = False,
         )
     )
     assert metadata_only.display_name == "Renamed"
-    assert credential_secrets.get_provider_api_key("alice", created.id) == "sk-first"
+    assert credential_secrets.get_provider_api_key(created.id) == "sk-first"
 
     replaced = asyncio.run(
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(encrypted_api_key = "second"),
-            credential = ("alice", None),
+            _current_subject = "alice",
+            via_api_key = False,
         )
     )
     assert replaced.has_api_key is True
-    assert credential_secrets.get_provider_api_key("alice", created.id) == "sk-second"
+    assert credential_secrets.get_provider_api_key(created.id) == "sk-second"
 
     cleared = asyncio.run(
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(clear_api_key = True),
-            credential = ("alice", None),
+            _current_subject = "alice",
+            via_api_key = False,
         )
     )
     assert cleared.has_api_key is False
-    assert credential_secrets.get_provider_api_key("alice", created.id) is None
+    assert credential_secrets.get_provider_api_key(created.id) is None
 
-    credential_secrets.save_provider_api_key("alice", created.id, "sk-before-delete")
+    credential_secrets.save_provider_api_key(created.id, "sk-before-delete")
 
-    asyncio.run(providers_route.delete_provider_config(created.id, credential = ("alice", None)))
-    asyncio.run(providers_route.delete_provider_config(created.id, credential = ("alice", None)))
+    asyncio.run(
+        providers_route.delete_provider_config(
+            created.id, _current_subject = "alice", via_api_key = False
+        )
+    )
+    asyncio.run(
+        providers_route.delete_provider_config(
+            created.id, _current_subject = "alice", via_api_key = False
+        )
+    )
 
-    assert credential_secrets.get_provider_api_key("alice", created.id) is None
+    assert credential_secrets.get_provider_api_key(created.id) is None
     assert providers_db.get_provider(created.id) is None
 
 
+def test_provider_mutations_reject_api_key_authentication():
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            providers_route.create_provider_config(
+                ProviderCreate(provider_type = "openai", display_name = "Forbidden"),
+                _current_subject = "alice",
+                via_api_key = True,
+            )
+        )
+    assert error.value.status_code == 403
+    assert providers_db.list_providers() == []
+
+
 def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch):
-    credential_secrets.save_provider_api_key("alice", "provider-1", "saved")
-    assert providers_route.resolve_provider_api_key_or_400("alice", "provider-1", None) == "saved"
+    credential_secrets.save_provider_api_key("provider-1", "saved")
+    assert providers_route.resolve_provider_api_key_or_400("provider-1", None) == "saved"
+
+    assert (
+        providers_route.resolve_provider_api_key_or_400("provider-1", None, allow_saved_key = False)
+        == ""
+    )
 
     from core.inference import key_exchange
 
     monkeypatch.setattr(key_exchange, "decrypt_api_key", lambda value: f"explicit:{value}")
     assert (
-        providers_route.resolve_provider_api_key_or_400("alice", "provider-1", "ciphertext")
+        providers_route.resolve_provider_api_key_or_400("provider-1", "ciphertext")
         == "explicit:ciphertext"
     )
 
@@ -152,7 +181,7 @@ def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch
         lambda _value: (_ for _ in ()).throw(ValueError("secret detail")),
     )
     with pytest.raises(HTTPException) as error:
-        providers_route.resolve_provider_api_key_or_400("alice", "provider-1", "broken")
+        providers_route.resolve_provider_api_key_or_400("provider-1", "broken")
     assert error.value.status_code == 400
     assert "secret detail" not in str(error.value.detail)
 
@@ -178,9 +207,9 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
         display_name = "Mistral",
         base_url = "https://api.mistral.ai/v1",
     )
-    credential_secrets.save_provider_api_key("alice", "provider-1", "saved-key")
+    credential_secrets.save_provider_api_key("provider-1", "saved-key")
 
-    credential_secrets.save_hf_token("alice", "hf-after-restart")
+    credential_secrets.save_hf_token("hf-after-restart")
     auth_storage._credential_encryption_key_cache = None
     credential_secrets._schema_ready = False
     assert (
@@ -195,7 +224,8 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
                 provider_id = "provider-1",
                 base_url = "https://attacker.invalid/v1",
             ),
-            current_subject = "alice",
+            _current_subject = "alice",
+            via_api_key = False,
         )
     )
     result = asyncio.run(
@@ -205,26 +235,63 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
                 provider_id = "provider-1",
                 base_url = "https://attacker.invalid/v1",
             ),
-            current_subject = "alice",
+            _current_subject = "alice",
+            via_api_key = False,
+        )
+    )
+
+    api_key_models = asyncio.run(
+        providers_route.list_provider_models(
+            ProviderModelsRequest(
+                provider_type = "custom",
+                provider_id = "provider-1",
+            ),
+            _current_subject = "alice",
+            via_api_key = True,
         )
     )
 
     assert [model.id for model in models] == ["mistral-large-latest"]
     assert result.success is True
+
+    assert [model.id for model in api_key_models] == ["mistral-large-latest"]
     assert seen_clients == [
         ("mistral", "https://api.mistral.ai/v1", "saved-key"),
         ("mistral", "https://api.mistral.ai/v1", "saved-key"),
+        ("mistral", "https://api.mistral.ai/v1", ""),
     ]
 
 
-def test_hugging_face_routes_are_owner_scoped_and_idempotent():
+def test_hugging_face_routes_are_global_and_idempotent():
     saved = settings_route.update_hugging_face_token(
         settings_route.HuggingFaceTokenPayload(token = " 'hf_alice' "),
-        credential = ("alice", None),
+        _current_subject = "alice",
+        via_api_key = False,
     )
     assert saved.token == "hf_alice"
     assert settings_route.get_hugging_face_token("alice", via_api_key = False).token == "hf_alice"
-    assert settings_route.get_hugging_face_token("bob", via_api_key = False).has_token is False
+    assert settings_route.get_hugging_face_token("bob", via_api_key = False).token == "hf_alice"
 
-    assert settings_route.clear_hugging_face_token(("alice", None)).has_token is False
-    assert settings_route.clear_hugging_face_token(("alice", None)).has_token is False
+    assert settings_route.clear_hugging_face_token("alice", via_api_key = False).has_token is False
+    assert settings_route.clear_hugging_face_token("alice", via_api_key = False).has_token is False
+
+
+def test_hugging_face_secret_routes_reject_api_key_authentication():
+    with pytest.raises(HTTPException) as get_error:
+        settings_route.get_hugging_face_token("alice", via_api_key = True)
+    assert get_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as put_error:
+        settings_route.update_hugging_face_token(
+            settings_route.HuggingFaceTokenPayload(token = "hf_forbidden"),
+            _current_subject = "alice",
+            via_api_key = True,
+        )
+    assert put_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as delete_error:
+        settings_route.clear_hugging_face_token(
+            "alice",
+            via_api_key = True,
+        )
+    assert delete_error.value.status_code == 403

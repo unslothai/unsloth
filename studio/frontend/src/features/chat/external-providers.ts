@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
-import { AUTH_SESSION_CLEARED_EVENT } from "../auth/session-events.ts";
-
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -17,7 +14,7 @@ export interface ExternalProviderConfig {
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
 
-  /** Whether the backend has an owner-scoped saved key. */
+  /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
@@ -426,19 +423,6 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
   }
 }
 
-let legacyProviderCredentialAccessAllowed = false;
-
-/** Allow browser-wide legacy keys only for the account that claimed them. */
-export function setLegacyProviderCredentialAccess(allowed: boolean): void {
-  legacyProviderCredentialAccessAllowed = allowed;
-}
-
-
-if (typeof window !== "undefined") {
-  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
-    legacyProviderCredentialAccessAllowed = false;
-  });
-}
 
 
 /** Load legacy browser keys for retry-safe backend migration. */
@@ -488,16 +472,20 @@ export function getExternalProviderApiKey(
   providerId: string,
 ): string {
 
-  if (!legacyProviderCredentialAccessAllowed) return "";
   const keys = loadRawKeyMap();
   return keys[providerId] ?? "";
 }
 
 
-export function removeExternalProviderApiKey(providerId: string): void {
+export function removeExternalProviderApiKey(
+  providerId: string,
+  expectedApiKey?: string,
+): void {
   if (!canUseStorage()) return;
   try {
     const keys = loadRawKeyMap();
+
+    if (expectedApiKey !== undefined && keys[providerId] !== expectedApiKey) return;
     delete keys[providerId];
     saveRawKeyMap(keys);
   } catch {
