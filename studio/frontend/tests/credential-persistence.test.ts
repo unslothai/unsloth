@@ -19,6 +19,8 @@ const {
   reconcileLegacyHfToken,
   reconcileLegacyProviderKeys,
   runCredentialBootstrap,
+
+  settleTasksIfCurrent,
 } = await import("../src/features/credentials/reconciliation.ts");
 
 const { resolveProviderCredentialEdit } = await import(
@@ -134,6 +136,56 @@ test("provider migration is retry-safe after partial success", async () => {
   assert.equal(second.every((row) => row.has_api_key), true);
   assert.deepEqual([...removed], ["first", "second"]);
 });
+
+test("superseded provider backfills are not launched", async () => {
+  let launched = 0;
+  await settleTasksIfCurrent(
+    [async () => { launched += 1; }],
+    () => false,
+  );
+  assert.equal(launched, 0);
+
+  await settleTasksIfCurrent([async () => { launched += 1; }], () => true);
+  assert.equal(launched, 1);
+});
+
+
+test("authoritative provider cleanup removes only orphaned legacy keys", async () => {
+  const { store } = installLocalStorageFake();
+  store.set(
+    "unsloth_chat_external_provider_keys",
+    JSON.stringify({ retained: "sk-retained", orphan: "sk-orphan" }),
+  );
+  try {
+    const { pruneExternalProviderApiKeys } = await import(
+      "../src/features/chat/external-providers.ts"
+    );
+    pruneExternalProviderApiKeys(["retained"]);
+    assert.deepEqual(
+      JSON.parse(store.get("unsloth_chat_external_provider_keys") ?? "{}"),
+      { retained: "sk-retained" },
+    );
+  } finally {
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+test("browser credential migration uses insert-if-absent endpoints", () => {
+  const hfSource = readFileSync(
+    new URL("../src/features/hub/stores/hf-token-store.ts", import.meta.url),
+    "utf8",
+  );
+  const providerSource = readFileSync(
+    new URL("../src/features/chat/sync-external-providers.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(hfSource, /migrateHfToken\(token\)/);
+  assert.match(providerSource, /saveLegacyKey: migrateProviderApiKey/);
+});
+
+
 
 test("HF migration is server-first, retry-safe, and idempotent", async () => {
   const applied: string[] = [];

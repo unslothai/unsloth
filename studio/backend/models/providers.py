@@ -84,6 +84,16 @@ class ProviderUpdate(BaseModel):
     )
 
 
+class ProviderCredentialMigration(BaseModel):
+    """One-time browser credential migration that never replaces a saved key."""
+
+    encrypted_api_key: str = Field(
+        ...,
+        min_length = 1,
+        description = "RSA-encrypted legacy API key to insert only when no key exists",
+    )
+
+
 class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
 

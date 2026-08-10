@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { reconcileLegacyProviderKeys } from "@/features/credentials/reconciliation";
+import {
+  reconcileLegacyProviderKeys,
+  settleTasksIfCurrent,
+} from "@/features/credentials/reconciliation";
 
 import {
   type ProviderRegistryEntry,
   listProviderConfigs,
   listProviderRegistry,
+  migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   type ExternalProviderConfig,
-
   getExternalProviderApiKey,
-  removeExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
+  pruneExternalProviderApiKeys,
+  removeExternalProviderApiKey,
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
@@ -136,19 +140,21 @@ export async function syncExternalProvidersFromBackend(
   ]);
   const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
     getLegacyKey: getExternalProviderApiKey,
-    saveLegacyKey: (providerId, apiKey) =>
-      updateProviderConfig(providerId, { apiKey }),
+    saveLegacyKey: migrateProviderApiKey,
     removeLegacyKey: removeExternalProviderApiKey,
 
     isCurrent,
   });
+
+  if (isCurrent && !isCurrent()) return existingProviders;
+  pruneExternalProviderApiKeys(loadedConfigRows.map((config) => config.id));
 
   const existingById = new Map<string, ExternalProviderConfig>();
   for (const provider of existingProviders) {
     existingById.set(provider.id, provider);
   }
 
-  const backfillTasks: Promise<unknown>[] = [];
+  const backfillTasks: Array<() => Promise<unknown>> = [];
   const syncedProviders = configRows
     .filter((config) => config.is_enabled)
     .map((config) => {
@@ -204,7 +210,7 @@ export async function syncExternalProvidersFromBackend(
       const needsAvailableBackfill =
         serverAvailableModels.length === 0 && savedAvailableModels.length > 0;
       if (needsModelBackfill || needsAvailableBackfill) {
-        backfillTasks.push(
+        backfillTasks.push(() =>
           updateProviderConfig(config.id, {
             models: resolvedModels,
             availableModels: resolvedAvailableModels,
@@ -234,8 +240,6 @@ export async function syncExternalProvidersFromBackend(
 
   if (isCurrent && !isCurrent()) return existingProviders;
 
-  if (backfillTasks.length > 0) {
-    await Promise.allSettled(backfillTasks);
-  }
+  await settleTasksIfCurrent(backfillTasks, isCurrent);
   return syncedProviders;
 }

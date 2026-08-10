@@ -159,6 +159,21 @@ def update_hugging_face_token(
     return HuggingFaceTokenResponse(token = payload.token, has_token = True)
 
 
+@router.put("/hugging-face-token/migrate", response_model = HuggingFaceTokenResponse)
+def migrate_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HuggingFaceTokenResponse:
+    """Insert a browser legacy token only when the installation has none."""
+    require_ui_session(via_api_key)
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token_if_absent(payload.token)
+        token = credential_secrets.get_hf_token()
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
 @router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def clear_hugging_face_token(
     credential: tuple = Depends(get_current_credential),

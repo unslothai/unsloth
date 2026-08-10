@@ -17,6 +17,7 @@ from fastapi import HTTPException
 from auth import storage as auth_storage
 from models.providers import (
     ProviderCreate,
+    ProviderCredentialMigration,
     ProviderModelsRequest,
     ProviderTestRequest,
     ProviderUpdate,
@@ -383,6 +384,44 @@ def test_hugging_face_routes_are_global_and_idempotent():
 
     assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
     assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
+
+
+def test_legacy_migration_never_replaces_newer_credentials(monkeypatch):
+    credential = ("alice", None)
+    settings_route.update_hugging_face_token(
+        settings_route.HuggingFaceTokenPayload(token = "hf_newer"),
+        credential = credential,
+        via_api_key = False,
+    )
+    migrated_hf = settings_route.migrate_hugging_face_token(
+        settings_route.HuggingFaceTokenPayload(token = "hf_legacy"),
+        credential = credential,
+        via_api_key = False,
+    )
+    assert migrated_hf.token == "hf_newer"
+
+    providers_db.create_provider(
+        id = "provider-1",
+        provider_type = "openai",
+        display_name = "OpenAI",
+        base_url = "https://api.openai.com/v1",
+    )
+    credential_secrets.save_provider_api_key("provider-1", "sk-newer")
+    monkeypatch.setattr(
+        providers_route,
+        "resolve_provider_api_key_or_400",
+        lambda *_args, **_kwargs: "sk-legacy",
+    )
+    migrated_provider = asyncio.run(
+        providers_route.migrate_provider_api_key(
+            "provider-1",
+            ProviderCredentialMigration(encrypted_api_key = "encrypted-legacy"),
+            credential = credential,
+            via_api_key = False,
+        )
+    )
+    assert migrated_provider.has_api_key is True
+    assert credential_secrets.get_provider_api_key("provider-1") == "sk-newer"
 
 
 def test_hugging_face_secret_routes_reject_api_key_authentication():

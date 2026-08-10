@@ -55,6 +55,12 @@ def test_upsert_and_delete_are_idempotent():
     credential_secrets.save_provider_api_key("provider-1", "first")
     credential_secrets.save_provider_api_key("provider-1", "second")
     assert credential_secrets.get_provider_api_key("provider-1") == "second"
+
+    assert credential_secrets.save_provider_api_key_if_absent("provider-1", "legacy") is False
+    assert credential_secrets.get_provider_api_key("provider-1") == "second"
+    assert credential_secrets.save_hf_token_if_absent("hf_legacy") is True
+    assert credential_secrets.save_hf_token_if_absent("hf_delayed") is False
+    assert credential_secrets.get_hf_token() == "hf_legacy"
     assert credential_secrets.delete_provider_api_key("provider-1") is True
     assert credential_secrets.delete_provider_api_key("provider-1") is False
 

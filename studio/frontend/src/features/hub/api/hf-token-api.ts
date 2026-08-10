@@ -53,6 +53,19 @@ export async function saveHfToken(
   );
 }
 
+export async function migrateHfToken(
+  token: string,
+): Promise<SavedHfTokenResponse> {
+  return parse(
+    await authFetch("/api/settings/hugging-face-token/migrate", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }),
+  );
+}
+
+
 export async function clearSavedHfToken(): Promise<SavedHfTokenResponse> {
   return parse(
     await authFetch("/api/settings/hugging-face-token", { method: "DELETE" }),

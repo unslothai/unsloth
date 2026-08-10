@@ -476,6 +476,24 @@ export function getExternalProviderApiKey(
   return keys[providerId] ?? "";
 }
 
+export function pruneExternalProviderApiKeys(providerIds: Iterable<string>): void {
+  if (!canUseStorage()) return;
+  const retainedIds = new Set(providerIds);
+  try {
+    const keys = loadRawKeyMap();
+    let changed = false;
+    for (const providerId of Object.keys(keys)) {
+      if (retainedIds.has(providerId)) continue;
+      delete keys[providerId];
+      changed = true;
+    }
+    if (changed) saveRawKeyMap(keys);
+  } catch {
+    // Keep legacy data untouched when storage is unavailable.
+  }
+}
+
+
 
 export function removeExternalProviderApiKey(
   providerId: string,

@@ -40,6 +40,7 @@ from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
 from models.providers import (
     ProviderCreate,
+    ProviderCredentialMigration,
     ProviderModelsRequest,
     ProviderModelInfo,
     ProviderResponse,
@@ -231,6 +232,28 @@ async def update_provider_config(
 
     row = providers_db.get_provider(provider_id)
     return _provider_response(row)
+
+
+@router.put("/{provider_id}/api-key/migrate", response_model = ProviderResponse)
+async def migrate_provider_api_key(
+    provider_id: str,
+    payload: ProviderCredentialMigration,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """Insert a browser legacy key only when this provider has no saved key."""
+    require_ui_session(via_api_key)
+    if providers_db.get_provider(provider_id) is None:
+        raise HTTPException(status_code = 404, detail = "Provider not found")
+    api_key = resolve_provider_api_key_or_400(
+        None, payload.encrypted_api_key, allow_saved_key = False
+    )
+    if not api_key:
+        raise HTTPException(status_code = 400, detail = "API key cannot be empty")
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_provider_api_key_if_absent(provider_id, api_key)
+    return _provider_response(providers_db.get_provider(provider_id))
 
 
 @router.delete("/{provider_id}", status_code = 204)

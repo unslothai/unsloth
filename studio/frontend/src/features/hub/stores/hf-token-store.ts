@@ -231,7 +231,7 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
   };
 
   hydrationPromise = (async () => {
-    const { loadSavedHfToken, saveHfToken } = await loadHfTokenApi();
+    const { loadSavedHfToken, migrateHfToken } = await loadHfTokenApi();
     await reconcileLegacyHfToken({
       loadSavedToken: async () => {
         const response = await loadSavedHfToken();
@@ -244,7 +244,7 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
         return loadLegacyToken();
       },
       saveLegacyToken: async (token) => {
-        const response = await saveHfToken(token);
+        const response = await migrateHfToken(token);
         assertCurrentSession();
         return response;
       },

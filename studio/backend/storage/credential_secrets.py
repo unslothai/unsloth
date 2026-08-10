@@ -81,13 +81,13 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
-    """Encrypt and atomically insert or replace one installation credential."""
+def _encrypted_secret(
+    credential_kind: str, scope_id: str, plaintext: str
+) -> tuple[bytes, bytes, str]:
     if not credential_kind or not scope_id:
         raise ValueError("Credential kind and scope are required")
     if not plaintext:
         raise ValueError("Credential value cannot be empty")
-
     key = get_or_create_credential_encryption_key()
     nonce = os.urandom(_NONCE_BYTES)
     ciphertext = AESGCM(key).encrypt(
@@ -95,7 +95,12 @@ def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
         plaintext.encode("utf-8"),
         _associated_data(credential_kind, scope_id),
     )
-    now = datetime.now(timezone.utc).isoformat()
+    return nonce, ciphertext, datetime.now(timezone.utc).isoformat()
+
+
+def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
+    """Encrypt and atomically insert or replace one installation credential."""
+    nonce, ciphertext, now = _encrypted_secret(credential_kind, scope_id, plaintext)
     conn = get_connection()
     try:
         conn.execute(
@@ -113,6 +118,26 @@ def upsert_secret(credential_kind: str, scope_id: str, plaintext: str) -> None:
             (credential_kind, scope_id, _FORMAT_VERSION, nonce, ciphertext, now, now),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_secret_if_absent(credential_kind: str, scope_id: str, plaintext: str) -> bool:
+    """Atomically insert a migration credential without replacing an existing value."""
+    nonce, ciphertext, now = _encrypted_secret(credential_kind, scope_id, plaintext)
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO credential_secrets (
+                credential_kind, scope_id, format_version,
+                nonce, ciphertext, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (credential_kind, scope_id, _FORMAT_VERSION, nonce, ciphertext, now, now),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -174,6 +199,10 @@ def save_hf_token(token: str) -> None:
     upsert_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
 
 
+def save_hf_token_if_absent(token: str) -> bool:
+    return insert_secret_if_absent(HF_TOKEN_KIND, HF_TOKEN_SCOPE, token)
+
+
 def delete_hf_token() -> bool:
     return delete_secret(HF_TOKEN_KIND, HF_TOKEN_SCOPE)
 
@@ -184,6 +213,10 @@ def get_provider_api_key(provider_id: str) -> Optional[str]:
 
 def save_provider_api_key(provider_id: str, api_key: str) -> None:
     upsert_secret(PROVIDER_API_KEY_KIND, provider_id, api_key)
+
+
+def save_provider_api_key_if_absent(provider_id: str, api_key: str) -> bool:
+    return insert_secret_if_absent(PROVIDER_API_KEY_KIND, provider_id, api_key)
 
 
 def delete_provider_api_key(provider_id: str) -> bool:

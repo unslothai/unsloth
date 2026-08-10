@@ -196,6 +196,21 @@ export async function updateProviderConfig(
   });
 }
 
+export async function migrateProviderApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<ProviderConfig> {
+  return withApiKeyEncryptionRetry(apiKey, async (encryptedApiKey) => {
+    const response = await authFetch(`/api/providers/${providerId}/api-key/migrate`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ encrypted_api_key: encryptedApiKey }),
+    });
+    return parseJsonOrThrow<ProviderConfig>(response);
+  });
+}
+
+
 async function withApiKeyEncryptionRetry<T>(
   plaintextApiKey: string,
   call: (encryptedApiKey: string | null) => Promise<T>,

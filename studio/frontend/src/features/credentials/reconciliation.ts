@@ -108,6 +108,15 @@ export async function reconcileLegacyProviderKeys<
   return reconciled;
 }
 
+
+export async function settleTasksIfCurrent(
+  tasks: Array<() => Promise<unknown>>,
+  isCurrent?: () => boolean,
+): Promise<void> {
+  if (isCurrent && !isCurrent()) return;
+  await Promise.allSettled(tasks.map((task) => task()));
+}
+
 export interface CredentialBootstrapDependencies<T> {
   hydrateHfToken: () => Promise<void>;
   getProviders: () => T[];
