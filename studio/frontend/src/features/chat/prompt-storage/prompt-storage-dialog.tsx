@@ -168,7 +168,10 @@ function contentBlocksToText(content: unknown): string {
       } else if (p.type === "tool-call") {
         // Keep base64 image payloads and sandbox card metadata out of every
         // export format: use the model-visible text (matches chat replay).
-        const result = toolResultModelText(p.result, p.toolName);
+        const result = toolResultModelText(
+          p.result,
+          typeof p.toolName === "string" ? p.toolName : undefined,
+        );
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,

@@ -1034,7 +1034,10 @@ export function toolResultModelText(
  * and images is someone else's, and unwrapping it drops every other field it
  * returned. The backend gates the same strip on the tool name.
  */
-function isSandboxWrapper(result: unknown, toolName?: string): boolean {
+function isSandboxWrapper(
+  result: unknown,
+  toolName?: string,
+): result is { text: string; sessionId: string } {
   if (toolName !== undefined && !SANDBOX_FILE_TOOLS.has(toolName)) return false;
   return isSandboxToolResult(result);
 }
