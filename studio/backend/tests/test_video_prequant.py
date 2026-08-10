@@ -821,10 +821,18 @@ def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
     assert fp32 is not None and bf16 is not None and fp32[0] == bf16[0] * 2
 
 
-def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch):
-    """The whole point of making this conditional. A card with room gets exactly what it got
-    before: the released weights and the same picture, because the pin plus the regional compile
-    make it fast without changing a single value."""
+def test_auto_takes_the_hosted_denoiser_even_on_a_card_with_room_to_spare(monkeypatch):
+    """int8 is the DEFAULT, not a fallback, so having room for the released denoiser is not a
+    reason to load it.
+
+    It is not a tie broken on memory. Measured on an H200 and a B200, every component resident in
+    both rows, the hosted checkpoint is faster per generation AND 45 GB smaller:
+
+        released bf16   20.06 / 12.76 / 12.77 s   102.8 GB steady
+        hosted int8     23.08 / 11.74 / 11.84 s    57.8 GB steady
+
+    What it costs is the picture (mean SSIM 0.49 against the released weights), which is a choice
+    ``transformer_quant='none'`` reverses and which no amount of free VRAM changes."""
     import torch
 
     from core.inference import video as vid
@@ -844,7 +852,7 @@ def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch
             task = "fl2va",
             base_repo = fam.base_repo,
         )
-        is None
+        == "int8"
     )
 
 

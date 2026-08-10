@@ -723,21 +723,23 @@ def _h3_auto_denoiser_scheme(
 ) -> Optional[str]:
     """The hosted scheme an UNSET ``transformer_quant`` resolves to, or None to keep bfloat16.
 
-    None whenever the released denoiser can stay resident, so a card with room gets exactly what
-    it got before: the released weights, bit-identical output, and the pin plus regional compile
-    that make it fast.
+    int8 wherever the hosted checkpoint exists for this partition and fits, which is now the
+    DEFAULT rather than a fallback. Measured on an H200 (141 GB) and a B200 (183 GB), 960x544,
+    124 frames, 8 steps, every component resident in both rows:
 
-    The fallback exists because the alternative on a smaller card is not "a bit slower". A denoiser
-    that does not fit stays in the CPU-offload rotation, and a module that moves cannot be compiled
-    either, so the regional compile is dropped with it: 194 s against 23.7 s on the same 8-step job,
-    every step paying 66.3 GB across the bus. The hosted checkpoint is 20.3 GB resident, which pins,
-    which restores the compile.
+        released bf16   20.06 / 12.76 / 12.77 s    102.8 GB steady
+        hosted int8     23.08 / 11.74 / 11.84 s     57.8 GB steady
 
-    The cost is real and is why this is a fallback rather than the default everywhere: the hosted
-    denoisers RE-ROLL the sample (mean SSIM 0.49 against the released weights, where that config
-    against itself scores 0.99). Different is not worse -- no NaN, no black frames, no visible
-    degradation at the model's own 30-step schedule -- but it is not the same picture, so it is
-    taken only when the choice is against a configuration nobody would pick knowingly.
+    So int8 is faster per generation and needs 45 GB less, which is what makes it the better
+    default on a card of any size. On a card that cannot hold the released denoiser the margin is
+    not 8% but the difference between running and crawling: bf16 there rides the CPU-offload
+    rotation and a module that moves cannot be compiled either, 194 s against 23.7 s.
+
+    What it costs is the picture, and that is the whole of the trade: the hosted denoisers RE-ROLL
+    the sample (mean SSIM 0.49 against the released weights, where that config against itself
+    scores 0.99). No NaN, no black frames, no visible degradation at the model's own 30-step
+    schedule, but the same seed and prompt render a different video. ``transformer_quant='none'``
+    keeps the released weights, and speed_mode="off" declines this on its own below.
 
     ``free_reader`` is how the device is measured: live free memory by default, and CAPACITY for
     the pre-download decision, which runs while the previous pipeline is still resident.
@@ -767,8 +769,6 @@ def _h3_auto_denoiser_scheme(
     if sizes is None or free_bytes is None:
         # No reading is not evidence of a shortfall, and guessing wrong here changes the picture a
         # user gets. Keep the released denoiser, which is what happens today.
-        return None
-    if _h3_dense_denoiser_fits(sizes, free_bytes):
         return None
     if not video_family_prequant_available(
         fam, H3_AUTO_FALLBACK_SCHEME, task = task, base_repo = base_repo
