@@ -338,6 +338,9 @@ def test_the_conditioner_repo_is_protected_while_the_load_is_in_flight(monkeypat
     backend._loading = video_mod._VideoLoadingState(repo_id = H3_BASE, base_repo = H3_BASE)
 
     seen: dict[str, tuple[str, ...]] = {}
+    # The verified resolver reads the base's modular index; this test is about the delete guard,
+    # not the index, and the suite blocks the network.
+    monkeypatch.setattr(backend, "_h3_te_base_index_source", lambda *a, **k: H3_BASE)
     monkeypatch.setattr(backend, "_estimate_download_bytes", lambda *a, **k: 1)
     monkeypatch.setattr(backend, "_fetch_te_prequant", lambda *a, **k: ())
     monkeypatch.setattr(backend, "_predownload_base", lambda *a, **k: None)
