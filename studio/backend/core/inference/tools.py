@@ -7214,6 +7214,7 @@ def record_orphaned_project(
     project_id: str,
     workspace: str,
     pending_delete: bool = False,
+    root_path: "str | None" = None,
 ) -> None:
     """Remember where a deleted project's kept workspace lives.
 
@@ -7226,7 +7227,13 @@ def record_orphaned_project(
         return
     import json as _json
 
-    record = {"path": os.path.realpath(workspace), "pendingDelete": bool(pending_delete)}
+    record = {
+        "path": os.path.realpath(workspace),
+        # The whole workspace is what the delete dialog offers, and the sandbox
+        # is one directory inside it.
+        "rootPath": os.path.realpath(root_path) if root_path else None,
+        "pendingDelete": bool(pending_delete),
+    }
     try:
         os.makedirs(_orphan_records_dir(), exist_ok = True)
         with open(os.path.join(_orphan_records_dir(), project_id), "w", encoding = "utf-8") as fh:
@@ -7245,8 +7252,8 @@ def forget_orphaned_project(project_id: str) -> None:
         pass
 
 
-def list_orphaned_projects() -> "list[tuple[str, str, bool]]":
-    """Every recorded (project id, workspace, pending delete) still on disk."""
+def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool]]":
+    """Every recorded (project id, workspace, project root, pending) still there."""
     import json as _json
 
     records = []
@@ -7265,13 +7272,30 @@ def list_orphaned_projects() -> "list[tuple[str, str, bool]]":
         try:
             record = _json.loads(raw)
             path, pending = record["path"], bool(record.get("pendingDelete"))
+            root = record.get("rootPath") or None
         except (ValueError, TypeError, KeyError):
             continue
         if path and os.path.isdir(path) and not os.path.islink(path):
-            records.append((name, path, pending))
+            records.append((name, path, root, pending))
         else:
             forget_orphaned_project(name)
     return records
+
+
+def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | None") -> None:
+    """Remove a recorded workspace the way the immediate delete would.
+
+    Through the storage helper when the project root is known, so the whole
+    workspace goes and not just its sandbox, and so its name check still
+    decides what may be removed.
+    """
+    if root:
+        from storage.studio_db import delete_project_workspace
+
+        delete_project_workspace({"id": project_id, "rootPath": root})
+        if not os.path.exists(root):
+            return
+    shutil.rmtree(workspace, ignore_errors = True)
 
 
 def collect_orphaned_project_workspaces() -> None:
@@ -7282,7 +7306,7 @@ def collect_orphaned_project_workspaces() -> None:
     running in there, or while a chat still shows its files.
     """
     from storage.studio_db import sandbox_is_referenced_elsewhere
-    for project_id, workspace, pending in list_orphaned_projects():
+    for project_id, workspace, root, pending in list_orphaned_projects():
         if not pending:
             continue
         try:
@@ -7291,8 +7315,14 @@ def collect_orphaned_project_workspaces() -> None:
                 continue
             if sandbox_is_referenced_elsewhere(session):
                 continue
-            shutil.rmtree(workspace, ignore_errors = True)
-            forget_orphaned_project(project_id)
+            _delete_recorded_workspace(project_id, workspace, root)
+            if not os.path.exists(workspace):
+                forget_orphaned_project(project_id)
+            else:
+                # A locked file on Windows, or a network volume having a bad
+                # moment. The record stays so the next launch tries again:
+                # forgetting it loses both the path and the user's request.
+                logger.warning("Workspace for %s is still there; left pending", project_id)
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
             logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
 
@@ -7322,7 +7352,7 @@ def finish_workspace_delete_when_idle(
 
 def _recorded_project_workdir(project_id: str) -> "str | None":
     """The kept workspace of a deleted project, wherever the user put it."""
-    for name, path, _pending in list_orphaned_projects():
+    for name, path, _root, _pending in list_orphaned_projects():
         if name == project_id:
             return path
     return None
@@ -7798,13 +7828,17 @@ def _legacy_session_dir(session_id: str) -> "str | None":
     """
     legacy_root = _legacy_sandbox_root()
     names = [_sandbox_name(session_id)]
-    if _usable_session_id(session_id) and session_id not in names:
-        names.append(session_id)
+    if _usable_session_id(session_id):
+        # Only the derived-prefix case: an id the old code could hold kept its
+        # folder under the literal name while _sandbox_name now hashes it.
+        if session_id not in names:
+            names.append(session_id)
     else:
         # Before this change an id the filesystem could not hold shared one
         # bucket with every other such chat. Those files are read from where
         # they are; nothing moves or deletes them, since they are not this
-        # chat's alone.
+        # chat's alone. Only for such an id: an ordinary chat reading that
+        # bucket would be reading somebody else's files.
         names.append(_LEGACY_SHARED_BUCKET)
     for name in names:
         candidate = os.path.join(legacy_root, name)
@@ -8013,7 +8047,10 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
     owner = _marker_owner(workdir)
     if owner is not None:
         return owner == _sandbox_name(session_id)
-    return _root_is_ours()
+    # No marker, so the name is the only evidence, and `Foo` and `foo` are one
+    # directory on Windows and on a default macOS volume. The delete path has
+    # always asked this; a read that did not let the other chat's files through.
+    return _root_is_ours() and os.path.basename(workdir) == _sandbox_name(session_id)
 
 
 def _get_workdir(session_id: str | None = None) -> str:

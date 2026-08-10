@@ -4454,7 +4454,7 @@ def test_the_orphan_records_live_under_the_studio_home(tmp_path, monkeypatch):
     readonly_parent.chmod(0o500)
     try:
         tools.record_orphaned_project("projro123", str(workspace), True)
-        assert [name for name, _p, _d in tools.list_orphaned_projects()] == ["projro123"]
+        assert [name for name, _p, _r, _d in tools.list_orphaned_projects()] == ["projro123"]
     finally:
         readonly_parent.chmod(0o700)
 
@@ -4469,6 +4469,107 @@ def test_an_image_below_a_subdirectory_keeps_its_separators():
 
     assert "sandboxFilePath(sessionId, filename)" in view
     assert "encodeURIComponent(filename)" not in view
+
+
+def test_an_ordinary_chat_never_reads_the_old_shared_bucket(tmp_path, monkeypatch):
+    """That bucket holds every rejected id's files, and an ordinary chat with
+    no legacy folder of its own was being handed all of them."""
+    fake_home = tmp_path / "userprofile"
+    bucket = fake_home / "studio_sandbox" / "_invalid"
+    bucket.mkdir(parents = True)
+    (bucket / "someone-elses.csv").write_text("private", encoding = "utf-8")
+
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._legacy_sandbox_migrated = False
+
+    ordinary = "__LOCALID_plain11"
+    assert tools._usable_session_id(ordinary) is True
+    served = Path(tools.resolve_sandbox_workdir(ordinary))
+    assert not (served / "someone-elses.csv").exists(), served
+
+    # The chats that really did share it still see it.
+    rejected = "client.v1"
+    assert tools._usable_session_id(rejected) is False
+    served = Path(tools.resolve_sandbox_workdir(rejected))
+    assert (served / "someone-elses.csv").is_file()
+
+
+def test_a_case_variant_cannot_read_a_markerless_sandbox(tmp_path, monkeypatch):
+    """With the marker gone the name is the only evidence, and `Foo` and `foo`
+    are one directory on Windows and on a default macOS volume."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    workdir = Path(tools.get_sandbox_workdir("Bar_chat1"))
+    (workdir / "notes.txt").write_text("theirs", encoding = "utf-8")
+    (workdir / tools._SANDBOX_MARKER).unlink()
+
+    assert tools._owned_by_session(str(workdir), "Bar_chat1") is True
+    assert tools._owned_by_session(str(workdir), "bar_chat1") is False
+
+
+def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
+    """A locked file on Windows must not lose both the path and the fact that
+    the user asked for it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    workspace = tmp_path / "stuck-workspace"
+    workspace.mkdir()
+    (workspace / "locked.bin").write_bytes(b"x")
+    tools.record_orphaned_project("projstuck", str(workspace), True)
+
+    monkeypatch.setattr(tools.shutil, "rmtree", lambda *a, **k: None)
+    tools.collect_orphaned_project_workspaces()
+
+    assert workspace.is_dir()
+    assert [name for name, _p, _r, pending in tools.list_orphaned_projects() if pending] == [
+        "projstuck"
+    ], "the record was forgotten with the workspace still there"
+
+    monkeypatch.undo()
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    tools.collect_orphaned_project_workspaces()
+    assert not workspace.exists(), "the retry never happened"
+
+
+def test_a_deferred_delete_removes_the_whole_workspace(tmp_path, monkeypatch):
+    """The dialog offers the project workspace, and the sandbox is one folder
+    inside it: the immediate path removes the root, so this one must too."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+
+    project_id = "projwhole"
+    root = Path(tmp_path / "projects" / f"My Notes-{project_id[:8]}")
+    sandbox = root / "sandbox"
+    sandbox.mkdir(parents = True)
+    (sandbox / "out.csv").write_text("a,b\n", encoding = "utf-8")
+    (root / "notes.md").write_text("beside the sandbox", encoding = "utf-8")
+
+    tools.record_orphaned_project(project_id, str(sandbox), True, str(root))
+    tools.collect_orphaned_project_workspaces()
+
+    assert not root.exists(), sorted(p.name for p in root.iterdir()) if root.exists() else None
 
 
 if __name__ == "__main__":

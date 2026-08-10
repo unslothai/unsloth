@@ -719,6 +719,7 @@ async def delete_project(
                 project_id,
                 project["sandboxPath"],
                 False,
+                project.get("rootPath"),
             )
         elif not idle:
             # Still running after the wait. Removing a live tool call's working
@@ -739,11 +740,14 @@ async def delete_project(
         elif delete_files:
             # Written down so it can be resolved and, once nothing is using it,
             # collected: the row that knew where it lives is gone.
+            # The root as well: the dialog offers the whole workspace, and a
+            # deferred delete has to remove what the immediate one would.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,
                 project["sandboxPath"],
                 True,
+                project.get("rootPath"),
             )
             if not idle:
                 # Nothing else would come back to it: the collection otherwise
