@@ -75,6 +75,7 @@ from core.training.diffusion_train_common import (
     DEFAULT_LORA_TARGETS,
     DiffusionLoraConfig,
     EventCb,
+    MODULAR_BASE_FAMILIES,
     PermutationBatchSampler,
     StopCb,
     _apply_perf_flags,
@@ -494,8 +495,13 @@ def run_h3_lora_training(
 
     # allow_modular: this loop loads through ModularPipeline.from_pretrained, and a local
     # MiniMax-H3 pipeline carries modular_model_index.json and no model_index.json, so the
-    # conventional shape check refused the only local layout the family has.
-    _assert_trusted_base_model(cfg.base_model, allow_modular = True)
+    # conventional shape check refused the only local layout the family has. Read off the shared
+    # set rather than hard-coded True, because the start route runs this same gate first and has
+    # to reach the same verdict about the same directory.
+    _assert_trusted_base_model(
+        cfg.base_model,
+        allow_modular = (cfg.resolved_family or "").strip().lower() in MODULAR_BASE_FAMILIES,
+    )
     pairs = discover_clip_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )

@@ -1241,6 +1241,11 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         "center_crop": True,
         "random_flip": False,
         "snr_gamma": None,
+        # The loop encodes each clip once into one cached tuple and frees the VAEs; it reads
+        # neither field, so a request for no cache, or for the schema's four variants, ran
+        # cached-with-one anyway and the record said otherwise.
+        "cache_latents": True,
+        "cache_variants": 1,
     }
     # Config-only, and no other family's loop disagrees with its request.
     other = DiffusionLoraConfig(
@@ -1325,6 +1330,49 @@ def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
     for allow in (True, False):
         with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
             _assert_trusted_base_model(str(empty), allow_modular = allow)
+
+
+def test_the_start_route_reaches_the_same_modular_verdict_as_the_trainer():
+    """The route runs the trainers' trust gate first, so an untrusted base 400s before the
+    resident GPU models are freed. It called it with the default conventional-only shape check,
+    while the H3 loop called it with allow_modular -- so a local modular pipeline, the only local
+    layout the family HAS, was rejected at the route and the loop that can load it never ran.
+    Both sides now select off one set, which is the only way they cannot disagree again."""
+    import inspect
+
+    from core.training import diffusion_h3_trainer
+    from core.training.diffusion_train_common import MODULAR_BASE_FAMILIES
+    from routes import training as training_routes
+
+    assert "minimax-h3" in MODULAR_BASE_FAMILIES
+    # A family whose trainer loads a conventional pipeline must NOT be in it, or the shape check
+    # would start accepting a modular directory its loader cannot read.
+    assert MODULAR_BASE_FAMILIES.isdisjoint({"flux.1", "qwen-image", "sdxl", "ltx-2"})
+
+    # Neither call site may hard-code its answer: that is what let them drift apart.
+    route_src = inspect.getsource(training_routes.start_diffusion_training)
+    assert "MODULAR_BASE_FAMILIES" in route_src
+    assert "_assert_trusted_base_model(\n            config.get" in route_src
+    trainer_src = inspect.getsource(diffusion_h3_trainer)
+    assert "MODULAR_BASE_FAMILIES" in trainer_src
+    assert "allow_modular = True" not in trainer_src
+
+
+def test_h3_advertises_that_it_cannot_checkpoint():
+    """save_steps is REFUSED for a checkpointless family, not ignored, so a panel that keeps
+    offering "Checkpoint every" offers a value that rejects Start with nothing on the control
+    saying why. The family metadata already carries supports_compile for the same reason."""
+    from core.training.diffusion_train_common import CHECKPOINTLESS_FAMILIES, family_train_infos
+
+    infos = {info["name"]: info for info in family_train_infos()}
+    assert "minimax-h3" in CHECKPOINTLESS_FAMILIES
+    for name, info in infos.items():
+        assert info["supports_checkpoints"] == (name not in CHECKPOINTLESS_FAMILIES), name
+    # The flag has to agree with the validation, or the panel hides a control that works or
+    # offers one that does not.
+    with pytest.raises(ValueError, match = "save_steps is not supported"):
+        _cfg(save_steps = 50).normalized()
+    _cfg(save_steps = 0).normalized()
 
 
 def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):

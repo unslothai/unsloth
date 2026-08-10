@@ -2839,10 +2839,19 @@ async def start_diffusion_training(
             raise HTTPException(status_code = 400, detail = str(e))
 
     # Run the trainers' trust gate here too, so an untrusted/typoed base 400s BEFORE freeing GPU residents rather than failing in the child.
-    from core.training.diffusion_train_common import _assert_trusted_base_model
+    from core.training.diffusion_train_common import (
+        MODULAR_BASE_FAMILIES,
+        _assert_trusted_base_model,
+    )
 
     try:
-        _assert_trusted_base_model(config.get("base_model", ""))
+        # Same answer the trainer's own call reaches. A local MiniMax-H3 pipeline is a modular
+        # directory (modular_model_index.json, no model_index.json); without this the gate here
+        # rejected it and returned 400 before the trainer that CAN load it ever ran.
+        _assert_trusted_base_model(
+            config.get("base_model", ""),
+            allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+        )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 

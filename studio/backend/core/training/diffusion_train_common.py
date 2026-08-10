@@ -860,6 +860,11 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # compile is offered for SDXL's regional U-Net and the shared DiT trainer, except
                 # a family the GPU cannot train in bf16, and except a trainer that cannot compile.
                 "supports_compile": supports_compile or name == "sdxl",
+                # Same reasoning one field up, for the other control a family can simply not
+                # have. save_steps is REFUSED for a checkpointless family, not ignored, so a
+                # panel that keeps offering "Checkpoint every" turns a nonzero value into a
+                # rejected Start with no way to see why from the control itself.
+                "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
             }
@@ -1359,6 +1364,14 @@ def discover_image_caption_pairs(
 # neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
+# Families whose trainer loads its base through ``ModularPipeline.from_pretrained``. Their local
+# layout is ``modular_model_index.json`` and no ``model_index.json``, so the conventional shape
+# check in ``_assert_trusted_base_model`` refuses the only local form the family HAS. The trainer
+# knew this and passed allow_modular itself; the START ROUTE runs the same gate first, and
+# without the same answer a local H3 pipeline 400'd there before the trainer was ever reached.
+# One set, read by both, so the two cannot drift into disagreeing about the same directory.
+MODULAR_BASE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+
 # MiniMax-H3 canvas multiple: a 16x VAE compression and a 2x patch.
 _H3_CANVAS_MULTIPLE = 32
 
@@ -1430,15 +1443,22 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
 
 
 # The SCHEMA defaults the MiniMax-H3 loop cannot honour, and the value it actually runs with.
-# Unlike the fields ``h3_train_unsupported_reason`` refuses, these three have a DEFAULT that the
-# loop disagrees with, so refusing them would 422 every untouched request; they are normalised
+# Unlike the fields ``h3_train_unsupported_reason`` refuses, these have a DEFAULT that the loop
+# disagrees with, so refusing them would 422 every untouched request; they are normalised
 # instead. center_crop/random_flip: every frame goes through the same centre cover-crop and
 # nothing is flipped (a per-frame flip tears a clip, and a per-clip one has nowhere to live --
 # the cached tensors carry no variant axis). snr_gamma: the step is a plain unweighted MSE.
+# cache_latents/cache_variants: the loop encodes every clip once, up front, into exactly one
+# cached (video_a, video_b, audio) tuple and then frees the VAEs, with no per-step encode path
+# to fall back to and nowhere to put a second draw. It never reads either field, so a request
+# asking for no cache, or for the schema's four variants, got one cache of one variant anyway
+# and a run record claiming otherwise.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
     "random_flip": False,
     "snr_gamma": None,
+    "cache_latents": True,
+    "cache_variants": 1,
 }
 
 

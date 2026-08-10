@@ -1101,6 +1101,11 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # Whether this family's loop writes checkpoint bundles. False makes the panel drop the
+    # "Checkpoint every" control: save_steps is refused, not ignored, for such a family, so
+    # offering the control means offering a value that rejects Start. Defaults True so an older
+    # backend's payload, which has no such families in it, keeps the control.
+    supports_checkpoints: bool = True
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
 

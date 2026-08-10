@@ -400,6 +400,10 @@ export function DiffusionTrainPanel({
   }, [reportedFamily?.precision_modes, familyUntrainable]);
   // Whether to show the torch.compile control. The backend advertises it per family; default on for DiT families on an older backend.
   const supportsCompile = reportedFamily?.supports_compile ?? isDiT;
+  // Same idea for checkpoints. MiniMax-H3's loop writes no resume bundle and its validation
+  // REFUSES a nonzero save_steps rather than ignoring it, so leaving the field on offer meant a
+  // user could set it and get a rejected Start with nothing on the control saying why.
+  const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
 
   const setBaseChoice = onBaseChoiceChange;
   const [customBase, setCustomBase] = useState("");
@@ -1036,7 +1040,10 @@ export function DiffusionTrainPanel({
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
-        save_steps: Math.max(0, Math.floor(saveSteps)),
+        // Zero rather than the field's value when the family has none, because the field is
+        // only hidden, not reset: a value typed for one family would otherwise still be sent
+        // after switching to a checkpointless one, and refused.
+        save_steps: supportsCheckpoints ? Math.max(0, Math.floor(saveSteps)) : 0,
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only send compile where supported.
         base_precision: isDiT ? basePrecision : undefined,
@@ -1075,6 +1082,7 @@ export function DiffusionTrainPanel({
     isDiT,
     basePrecision,
     supportsCompile,
+    supportsCheckpoints,
     compileTransformer,
     poll,
   ]);
@@ -1278,10 +1286,11 @@ export function DiffusionTrainPanel({
           min: 0,
           hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
         })}
-        {numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
-          min: 0,
-          hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
-        })}
+        {supportsCheckpoints &&
+          numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
+            min: 0,
+            hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
+          })}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
