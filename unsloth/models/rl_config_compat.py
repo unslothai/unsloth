@@ -95,9 +95,7 @@ TRL_CONFIG_RENAMES = {
 # `GRPOConfig`, and a GRPO caller never reaches this table).
 TRL_REMOVED_FIELD_ADVICE = {
     # GRPOConfig, removed in TRL 0.28.0.
-    "max_prompt_length": (
-        "filter overlong prompts out of your dataset before training instead"
-    ),
+    "max_prompt_length": ("filter overlong prompts out of your dataset before training instead"),
     # DPOConfig, removed in TRL 0.29.0.
     "max_completion_length": "use `max_length` to cap total sample length instead",
     "base_model_attribute_name": "the base model is now retrieved via `get_decoder`",
@@ -106,13 +104,9 @@ TRL_REMOVED_FIELD_ADVICE = {
     "label_pad_token_id": "this value is no longer configurable",
     "model_adapter_name": "only the default adapter is supported now",
     "ref_adapter_name": "the trainer handles the reference adapter itself now",
-    "ref_model_init_kwargs": (
-        "build the reference model yourself and pass it as `ref_model`"
-    ),
+    "ref_model_init_kwargs": ("build the reference model yourself and pass it as `ref_model`"),
     "reference_free": "use `CPOTrainer` for a reference-free objective",
-    "rpo_alpha": (
-        "add 'sft' to `loss_type` and set its weight in `loss_weights` instead"
-    ),
+    "rpo_alpha": ("add 'sft' to `loss_type` and set its weight in `loss_weights` instead"),
     "tools": "pass tools through the dataset instead",
     "use_logits_to_keep": "the DPO trainer no longer uses this setting",
     "padding_value": "this value is no longer configurable",
@@ -213,7 +207,11 @@ def _default_notifier(message):
     print(message)
 
 
-def filter_config_init_kwargs(config_class, kwargs, notify=None):
+def filter_config_init_kwargs(
+    config_class,
+    kwargs,
+    notify = None,
+):
     """Return `kwargs` reduced to what `config_class.__init__` will accept.
 
     Renames are applied where TRL documented one; everything else the config

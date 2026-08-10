@@ -66,15 +66,13 @@ class LegacyGRPOConfig:
 def _collect(config_class, arguments):
     """Filter `arguments`, returning the survivors and the messages emitted."""
     messages = []
-    kept = filter_config_init_kwargs(config_class, arguments, notify=messages.append)
+    kept = filter_config_init_kwargs(config_class, arguments, notify = messages.append)
     return kept, messages
 
 
 def test_a_retired_argument_is_dropped_rather_than_raising():
     """The bug: this exact call is what a pinned GRPO notebook makes."""
-    kept, messages = _collect(
-        ModernGRPOConfig, {"output_dir": "out", "max_prompt_length": 256}
-    )
+    kept, messages = _collect(ModernGRPOConfig, {"output_dir": "out", "max_prompt_length": 256})
     assert kept == {"output_dir": "out"}
     # Constructing with the survivors is the thing that used to raise.
     assert ModernGRPOConfig(**kept).output_dir == "out"
@@ -110,9 +108,7 @@ def test_every_documented_rename_is_carried_across():
 def test_a_rename_overwrites_the_mirrored_default_not_a_real_value():
     """The generated __init__ always passes the new name, carrying the class
     default when untouched. The rename must win over that default..."""
-    kept, _ = _collect(
-        ModernGRPOConfig, {"use_liger_kernel": False, "use_liger_loss": True}
-    )
+    kept, _ = _collect(ModernGRPOConfig, {"use_liger_kernel": False, "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
 
 
@@ -130,9 +126,7 @@ def test_the_two_pass_result_does_not_depend_on_ordering():
     """`**kwargs` lands last today, but nothing in the contract promises it."""
     forward = {"use_liger_kernel": False, "use_liger_loss": True}
     backward = {"use_liger_loss": True, "use_liger_kernel": False}
-    assert _collect(ModernGRPOConfig, forward)[0] == _collect(
-        ModernGRPOConfig, backward
-    )[0]
+    assert _collect(ModernGRPOConfig, forward)[0] == _collect(ModernGRPOConfig, backward)[0]
 
 
 def test_an_older_trl_that_still_has_the_field_is_left_alone():
@@ -169,7 +163,11 @@ def test_a_config_taking_its_own_kwargs_is_never_filtered():
     """Nothing can be judged unacceptable if the base forwards it onwards."""
 
     class Permissive:
-        def __init__(self, output_dir="out", **kwargs):
+        def __init__(
+            self,
+            output_dir = "out",
+            **kwargs,
+        ):
             pass
 
     arguments = {"output_dir": "out", "anything_at_all": 1}
@@ -190,7 +188,7 @@ def test_an_unreadable_signature_forwards_everything_unchanged():
 def test_empty_kwargs_short_circuit():
     """The common path allocates nothing and says nothing."""
     messages = []
-    assert filter_config_init_kwargs(ModernGRPOConfig, {}, notify=messages.append) == {}
+    assert filter_config_init_kwargs(ModernGRPOConfig, {}, notify = messages.append) == {}
     assert messages == []
 
 
@@ -208,12 +206,10 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
 
     @dataclasses.dataclass
     class WithFactory:
-        include_for_metrics: list = dataclasses.field(default_factory=list)
+        include_for_metrics: list = dataclasses.field(default_factory = list)
         use_liger_kernel: bool = False
 
-    kept, _ = _collect(
-        WithFactory, {"include_for_metrics": [], "use_liger_loss": True}
-    )
+    kept, _ = _collect(WithFactory, {"include_for_metrics": [], "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
     assert kept["include_for_metrics"] == []
 
@@ -245,8 +241,7 @@ def test_the_generated_file_imports_the_filter_with_a_safe_fallback():
     # An import failure must degrade to the historical passthrough, never to a
     # NameError inside a generated trainer.
     assert (
-        "def _unsloth_filter_config_init_kwargs(config_class, kwargs): return kwargs"
-        in RL_SOURCE
+        "def _unsloth_filter_config_init_kwargs(config_class, kwargs): return kwargs" in RL_SOURCE
     )
 
 
