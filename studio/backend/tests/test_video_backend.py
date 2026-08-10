@@ -924,9 +924,7 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     assert call["sigmas"] == list(LTX23_DISTILLED_SIGMAS)
 
 
-@pytest.mark.parametrize(
-    "device, expected", [("mps", "cpu"), ("cuda", "cuda")]
-)
+@pytest.mark.parametrize("device, expected", [("mps", "cpu"), ("cuda", "cuda")])
 def test_generate_seeds_metal_from_a_cpu_generator(fake_runtime, tmp_path, device, expected):
     # Metal reproduces a seed only through a CPU generator, and this also keeps the path off
     # whatever torch.Generator(device="mps") does on the older torch releases install.sh keeps.
