@@ -272,7 +272,12 @@ def test_a_wait_false_unload_rechecks_active_requests_under_the_lock():
     real_lock = sidecar._lock
 
     class _RacingLock:
-        def acquire(self, blocking = True, *args, **kwargs):
+        def acquire(
+            self,
+            blocking = True,
+            *args,
+            **kwargs,
+        ):
             sidecar._active_requests = 1
             return real_lock.acquire(blocking, *args, **kwargs)
 
