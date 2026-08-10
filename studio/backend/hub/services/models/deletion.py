@@ -850,13 +850,18 @@ def _delete_cached_model_blocking(
             # remembered cache must not veto removing the companion-only copy that was listed.
             if cache_path:
                 wanted = Path(cache_path)
-                scoped = [
+                copies = [
                     r
                     for r in copies
                     if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
                 ]
-                if scoped:
-                    copies = scoped
+                if not copies:
+                    # No fallback to the other copies. An empty match means the target root is
+                    # not in this scan (its scan failed, or the copy is gone), and the delete
+                    # below can still purge that directory by path -- so concluding "orphan" from
+                    # copies we did not look at is exactly the fail-open this precondition exists
+                    # to prevent. Raising here lands in the fail-closed 503 below.
+                    raise RuntimeError(f"cache root not present in the scan: {cache_path}")
             still_orphan = not any(
                 companion_assets.repo_holds_denoiser(repo) for repo in copies
             )

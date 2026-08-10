@@ -24,7 +24,7 @@ from fastapi import HTTPException
 from loggers import get_logger
 
 from hub.utils import companion_assets
-from hub.utils.gguf import extract_quant_label
+from hub.utils.gguf import gguf_variant_key
 from hub.services.models import cache_inventory
 from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
@@ -78,17 +78,30 @@ def _repos_by_id(cache_scans) -> dict[str, list]:
     return out
 
 
+def _variant_keys(repo_info, variant: str) -> set[str]:
+    """The variant keys *variant* names in *repo_info*, from the destructive path's own resolver.
+
+    The inventory and the delete both identify a row by ``gguf_variant_key``, which for a
+    path-qualified checkpoint (``distilled/ltx-2.3-22b-distilled-Q6_K``) is not the bare quant
+    label. Comparing labels here made the preview miss the file entirely: 0 B reclaimed, and the
+    last checkpoint of a repo read as if a sibling survived, so its companions were described as
+    retained rather than freed."""
+    from hub.services.models.deletion import _variant_keys_to_delete
+
+    return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
+
+
 def _variant_bytes(repo_info, variant: str) -> int:
-    target = variant.strip().lower()
+    wanted = _variant_keys(repo_info, variant)
 
     def _matches(name: str) -> bool:
-        return _is_main_gguf_filename(name) and extract_quant_label(name).lower() == target
+        return _is_main_gguf_filename(name) and gguf_variant_key(name).lower() in wanted
 
     return _repo_blob_bytes(repo_info, only = _matches)
 
 
 def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None) -> set[str]:
-    skip = (excluding or "").strip().lower()
+    skip = _variant_keys(repo_info, excluding) if excluding else set()
     found: set[str] = set()
     for revision in getattr(repo_info, "revisions", ()) or ():
         snapshot = getattr(revision, "snapshot_path", None)
@@ -102,9 +115,9 @@ def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None)
                     pass
             if not _is_main_gguf_filename(name):
                 continue
-            label = extract_quant_label(name).lower()
-            if label and label != skip:
-                found.add(label)
+            key = gguf_variant_key(name).lower()
+            if key and key not in skip:
+                found.add(key)
     return found
 
 

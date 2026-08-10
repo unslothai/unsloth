@@ -831,3 +831,32 @@ def test_re_resolving_a_base_refreshes_its_place_in_the_list(monkeypatch):
         "some-vendor/b",
         "some-vendor/a",
     ]
+
+
+def test_the_orphan_precondition_refuses_when_the_target_root_is_not_in_the_scan(monkeypatch):
+    """An empty scoped match means the target root was not scanned, and the delete below can
+    still purge that directory by path. Concluding "orphan" from copies we did not look at is the
+    fail-open this precondition exists to prevent."""
+    from hub.services.models import deletion
+
+    dev = "black-forest-labs/FLUX.2-dev"
+    _install(monkeypatch, _repo(dev, [("model_index.json", 460)], cache = "/c1"))
+    with pytest.raises(HTTPException) as excinfo:
+        deletion._delete_cached_model_blocking(
+            dev, None, None, "/unscanned/models--black-forest-labs--FLUX.2-dev", only_if_orphan = True
+        )
+    assert excinfo.value.status_code == 503
+
+
+def test_the_preview_reads_a_path_qualified_variant(monkeypatch):
+    """The inventory and the delete identify a row by gguf_variant_key, which for a checkpoint in
+    its own directory is not the bare quant label. Comparing labels reported 0 B reclaimed and
+    described the last checkpoint's companions as retained rather than freed."""
+    repo = "unsloth/LTX-2.3-22B-GGUF"
+    variant = "distilled/ltx-2.3-22b-distilled-Q6_K"
+    _install(
+        monkeypatch,
+        _repo(repo, [("distilled/ltx-2.3-22b-distilled-Q6_K.gguf", 6_000_000)]),
+    )
+    impact = asyncio.run(companion_cleanup.delete_impact_response(repo, variant))
+    assert impact["reclaimed_bytes"] == 6_000_000
