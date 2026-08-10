@@ -881,7 +881,8 @@ jobs:
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
             "$appimage"
           signature="${appimage}.sig"
-          npx --prefix studio tauri signer sign "$appimage" > "$signature"
+          # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
+          npx --prefix studio tauri signer sign "$appimage"
           python3 - "$signature" <<'PY'
           import base64
           import binascii
@@ -893,9 +894,9 @@ jobs:
           try:
               decoded = base64.b64decode(signature_value, validate=True)
           except (binascii.Error, ValueError):
-              sys.exit('Tauri signer stdout was not a base64 minisign signature')
+              sys.exit('Tauri signer did not create a base64 minisign signature')
           if not decoded.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded:
-              sys.exit('Tauri signer stdout was not a minisign signature payload')
+              sys.exit('Tauri signer did not create a minisign signature payload')
           signature_path.write_text(signature_value + '\n', encoding='utf-8')
           PY
           python3 - <<'PY'
