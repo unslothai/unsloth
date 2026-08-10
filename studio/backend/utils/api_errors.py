@@ -33,6 +33,9 @@ Public contract (other modules depend on these):
 - ``install_api_error_handlers(app)``
 """
 
+import math
+from itertools import islice
+
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
@@ -215,28 +218,43 @@ def _summarize_error_input(value, depth: int = 0):
         return f"<{len(bytes(value))} bytes of binary data>"
     if isinstance(value, str):
         return _truncate_text(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        # NaN and Infinity survive jsonable_encoder but Starlette's JSONResponse
+        # dumps with allow_nan = False, so echoing one turns the 422 into a 500.
+        return repr(value)
     if isinstance(value, dict):
         if depth >= _MAX_ECHOED_DEPTH:
             return f"<dict with {len(value)} keys>"
-        items = list(value.items())
-        out = {k: _summarize_error_input(v, depth + 1) for k, v in items[:_MAX_ECHOED_ITEMS]}
-        if len(items) > _MAX_ECHOED_ITEMS:
-            out["..."] = f"({len(items) - _MAX_ECHOED_ITEMS} more keys)"
+        # islice, not a slice of items(): a 10 MB object should not be materialized
+        # into a list just to keep the first 20 entries. A key can be arbitrarily
+        # long too, so it gets the same budget as a value.
+        out = {
+            _truncate_text(k) if isinstance(k, str) else k: _summarize_error_input(v, depth + 1)
+            for k, v in islice(value.items(), _MAX_ECHOED_ITEMS)
+        }
+        if len(value) > _MAX_ECHOED_ITEMS:
+            out["..."] = f"({len(value) - _MAX_ECHOED_ITEMS} more keys)"
         return out
     if isinstance(value, (list, tuple)):
         if depth >= _MAX_ECHOED_DEPTH:
             return f"<sequence of {len(value)} items>"
-        out = [_summarize_error_input(v, depth + 1) for v in value[:_MAX_ECHOED_ITEMS]]
+        out = [_summarize_error_input(v, depth + 1) for v in islice(value, _MAX_ECHOED_ITEMS)]
         if len(value) > _MAX_ECHOED_ITEMS:
             out.append(f"... ({len(value) - _MAX_ECHOED_ITEMS} more items)")
         return out
     return value
 
 
+# One error dictionary per rejected array element is normal for a route that validates
+# each item, so the count itself is unbounded even when every entry is tiny.
+_MAX_ECHOED_ERRORS = 20
+
+
 def safe_validation_errors(errors) -> list:
     """FastAPI's ``exc.errors()`` with every ``input`` made JSON-encodable."""
     safe = []
-    for err in errors:
+    total = len(errors) if hasattr(errors, "__len__") else None
+    for err in islice(errors, _MAX_ECHOED_ERRORS):
         if not isinstance(err, dict):
             safe.append(err)
             continue
@@ -257,6 +275,14 @@ def safe_validation_errors(errors) -> list:
                 for k, v in ctx.items()
             }
         safe.append(cleaned)
+    if total is not None and total > _MAX_ECHOED_ERRORS:
+        safe.append(
+            {
+                "type": "too_many_errors",
+                "loc": [],
+                "msg": f"... ({total - _MAX_ECHOED_ERRORS} more validation errors omitted)",
+            }
+        )
     return safe
 
 
@@ -273,7 +299,10 @@ def install_api_error_handlers(app) -> None:
     async def _handle_validation_error(request, exc):
         path = request.url.path
         if wants_api_error_envelope(path):
-            summary, param = _summarize_validation_errors(exc.errors())
+            # Same sanitizing as the 422 branch: /v1 builds its message from msg,
+            # and a validator that quotes the submitted value (models/inference.py
+            # embeds an unsupported block's type with btype!r) makes msg unbounded.
+            summary, param = _summarize_validation_errors(safe_validation_errors(exc.errors()))
             return JSONResponse(
                 status_code = 400,
                 content = error_body_for_path(path, summary, status = 400, param = param),

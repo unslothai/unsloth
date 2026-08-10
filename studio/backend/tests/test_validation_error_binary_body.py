@@ -155,3 +155,40 @@ def test_a_ctx_error_quoting_the_value_is_bounded():
     )
     assert len(str(safe[0]["ctx"]["error"])) < 300
     jsonable_encoder(safe)
+
+
+def test_a_long_dictionary_key_is_truncated():
+    errors = [{"type": "x", "loc": ("body",), "msg": "bad", "input": {"k" * 100_000: 1}}]
+    out = safe_validation_errors(errors)[0]["input"]
+    assert all(len(k) < 300 for k in out), [len(k) for k in out]
+
+
+def test_non_finite_numbers_do_not_break_json():
+    # Starlette's JSONResponse dumps with allow_nan = False, so an echoed NaN or
+    # Infinity turns the intended 422 into a 500.
+    import json
+
+    errors = [
+        {"type": "x", "loc": ("body", "max_grad_norm"), "msg": "bad", "input": float("nan")},
+        {"type": "x", "loc": ("body", "lr"), "msg": "bad", "input": float("inf")},
+    ]
+    safe = safe_validation_errors(errors)
+    json.dumps(jsonable_encoder(safe), allow_nan = False)
+
+
+def test_the_number_of_errors_is_capped():
+    errors = [
+        {"type": "x", "loc": ("body", "messages", i, "role"), "msg": "bad", "input": "z"}
+        for i in range(5000)
+    ]
+    safe = safe_validation_errors(errors)
+    assert len(safe) == 21, len(safe)
+    assert "4980 more validation errors omitted" in safe[-1]["msg"]
+
+
+def test_the_v1_surface_gets_the_same_message_cap():
+    from utils.api_errors import _summarize_validation_errors, safe_validation_errors as sve
+
+    msg = "Unsupported content block type " + "q" * 500_000
+    summary, _ = _summarize_validation_errors(sve([{"type": "x", "loc": ("body", "messages"), "msg": msg, "input": "x"}]))
+    assert len(summary) < 400, len(summary)
