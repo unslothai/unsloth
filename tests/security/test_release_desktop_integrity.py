@@ -13,7 +13,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
-RELEASE_TAG = "desktop-v0.1.50-beta"
+RELEASE_TAG = "v0.1.50-beta"
 SOURCE_SHA = "1f02275b86f0e0d3a5b1c9f2a4d6e8b0c2a4e6f8"
 
 
@@ -142,7 +142,6 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
 def _run_create_release(workflow, tmp_path: Path, **kwargs):
     _stage_assets(tmp_path)
     env = {
-        "DESKTOP_PRERELEASE": "true",
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
         "APP_VERSION": "0.1.50",
         "GITHUB_SHA": SOURCE_SHA,
@@ -271,6 +270,9 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     assert "--verify-tag" in create
     assert any("git/refs" in line and f"sha={SOURCE_SHA}" in line for line in commands)
 
+    assert "--latest=false" in create
+    assert "--prerelease" not in create
+
     body_file = tmp_path / "desktop-release-body.md"
     assert f"--notes-file {body_file}" in create
     body = body_file.read_text(encoding = "utf-8")
@@ -291,14 +293,12 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     assert "latest.json" in create_step["run"]
 
 
-def test_versioned_uploads_never_clobber_but_the_channel_pointer_does():
+def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
     assert len(versioned) == 2, uploads
-    assert len(channel) == 1, uploads
+    assert channel == [], uploads
 
     for line in versioned:
         assert "--clobber" not in line, line
-    # The channel pointer is intentionally mutable.
-    assert "--clobber" in channel[0]

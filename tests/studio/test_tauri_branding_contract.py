@@ -54,7 +54,7 @@ def test_desktop_display_name_and_compatibility_ids() -> None:
     assert config["identifier"] == "ai.unsloth.studio"
     assert config["plugins"]["deep-link"]["desktop"]["schemes"] == ["unsloth"]
     assert config["plugins"]["updater"]["endpoints"] == [
-        "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json"
+        "https://github.com/unslothai/unsloth/releases/latest/download/latest.json"
     ]
     assert 'name = "unsloth-studio"' in read(TAURI / "Cargo.toml")
 
@@ -158,4 +158,4 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
     assert "Desktop app for Unsloth." in workflow
     assert '--title "Unsloth ${STUDIO_VERSION}"' in workflow
-    assert '--title "Unsloth Desktop updater channel"' in workflow
+    assert '--title "Unsloth Desktop updater channel"' not in workflow

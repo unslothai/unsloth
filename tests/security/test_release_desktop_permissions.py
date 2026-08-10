@@ -75,28 +75,57 @@ def test_versioned_release_hides_updater_signature_assets():
     assert "--clobber" not in publish["run"]
 
 
-def test_publishing_draft_advances_updater_without_rebuilding():
+def test_publishing_draft_validates_normal_release_without_rebuilding():
     workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
-    assert workflow.get("on", workflow.get(True)) == {"release": {"types": ["published"]}}
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers["release"] == {"types": ["published"]}
+    assert "workflow_dispatch" in triggers
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["queue"] == "max"
 
     job = workflow["jobs"]["publish-updater"]
     assert "build" not in workflow["jobs"]
     assert job["permissions"] == {"contents": "write"}
-    assert "startsWith(github.event.release.tag_name, 'desktop-v')" in job["if"]
+    assert "startsWith(github.event.release.tag_name, 'v')" in job["if"]
+    # The job runs for a mistakenly flagged prerelease so validation fails visibly.
+    assert "github.event.release.prerelease" not in job["if"]
     assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
-    assert any("desktop-latest" in step.get("run", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
-
-    download = next(
-        step for step in job["steps"] if step.get("name") == "Download updater metadata"
-    )
-    assert "HTTP 404" in download["run"]
-    assert "desktop-current" not in download["run"] or "|| true" not in download["run"]
 
     validate = next(
         step for step in job["steps"] if step.get("name") == "Validate updater metadata"
     )
     assert "source-release.json" in validate["run"]
     assert "bundle_name not in release_assets" in validate["run"]
+    assert "source.get('prerelease')" in validate["run"]
+    assert "'/releases/latest/'" in validate["run"]
+
+    downgrade = next(
+        step for step in job["steps"] if step.get("name") == "Prevent GitHub latest downgrade"
+    )
+    assert "Refusing to replace GitHub latest" in downgrade["run"]
+    assert "releases/latest" in downgrade["run"]
+
+
+    promote = next(
+        step for step in job["steps"] if step.get("name") == "Mark published release as GitHub latest"
+    )
+    assert "make_latest=true" in promote["run"]
+    assert "releases/latest" in promote["run"]
+
+    bridge = next(
+        step for step in job["steps"] if step.get("name") == "Bridge legacy desktop-latest clients once"
+    )
+    assert "workflow_dispatch" in bridge["if"]
+    assert "inputs.bridge_legacy_channel" in bridge["if"]
+    assert "gh release create desktop-latest" not in bridge["run"]
+    assert "gh release upload desktop-latest" in bridge["run"]
+    assert "--clobber" in bridge["run"]
+
+    assert "Refusing to move desktop-latest" in bridge["run"]
+    assert 'releases/latest" --jq .tag_name' in bridge["run"]
+
+    ordinary_steps = [
+        step for step in job["steps"] if step.get("name") != "Bridge legacy desktop-latest clients once"
+    ]
+    assert not any("gh release upload desktop-latest" in step.get("run", "") for step in ordinary_steps)
