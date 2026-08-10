@@ -69,3 +69,23 @@ test("a non-abort generation failure refreshes authoritative residency", () => {
     /const refreshStatus[\s\S]*catch \{[\s\S]*setStatus\(null\)/,
   );
 });
+
+test("a saved clip the refresh missed keeps its response audio mounted", () => {
+  // selectClip nulls the fallback by default, which undid the setFallbackClip immediately
+  // before it and left selectedId pointing at a clip that is not in `clips` yet, so the
+  // player rendered the empty state.
+  assert.match(
+    source,
+    /const selectClip = useCallback\(\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
+  );
+  assert.match(source, /saved: true,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
+});
+
+test("deleting a clip drops the row without waiting on the refresh", () => {
+  // refreshGallery swallows a failed GET and returns the cache without setClips, which left
+  // the deleted row on screen against an already-revoked object URL.
+  assert.match(
+    source,
+    /await deleteAudioClip\(id\);[\s\S]*galleryCache\.clips = galleryCache\.clips\.filter\([\s\S]*setClips\(galleryCache\.clips\);/,
+  );
+});

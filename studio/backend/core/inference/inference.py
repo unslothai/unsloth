@@ -430,6 +430,40 @@ class InferenceBackend:
                             token = hf_token if hf_token and hf_token.strip() else None,
                             trust_remote_code = trust_remote_code,
                         )
+                    elif config.is_local and os.path.isdir(config.path):
+                        # A merged export saves the LLM straight into the export directory, so
+                        # there is no repo to download and no LLM/ child. snapshot_download on
+                        # an absolute path is not a repo id and fails outright. BiCodec weights
+                        # are not exported alongside it, so resolve those from the base model
+                        # recorded at export time, as the processor fallback below does.
+                        llm_path = os.path.join(config.path, "LLM")
+                        if not os.path.isdir(llm_path):
+                            llm_path = config.path
+                        base_repo = None
+                        try:
+                            meta_path = Path(config.path) / "export_metadata.json"
+                            if meta_path.exists():
+                                base_repo = json.loads(
+                                    meta_path.read_text(encoding = "utf-8-sig")
+                                ).get("base_model")
+                        except Exception:
+                            base_repo = None
+                        if base_repo and os.path.isdir(base_repo):
+                            # A base recorded as .../Spark-TTS-0.5B/LLM keeps BiCodec in its parent.
+                            abs_repo_path = os.path.abspath(
+                                os.path.dirname(base_repo)
+                                if os.path.basename(base_repo.rstrip("/\\")) == "LLM"
+                                else base_repo
+                            )
+                        elif base_repo:
+                            from huggingface_hub import snapshot_download
+
+                            abs_repo_path = os.path.abspath(snapshot_download(base_repo))
+                        else:
+                            abs_repo_path = os.path.abspath(config.path)
+                        logger.info(
+                            f"Spark-TTS merged export: LLM from {llm_path}, BiCodec from {abs_repo_path}"
+                        )
                     else:
                         # Base model: download full HF repo, load from /LLM subfolder
                         from huggingface_hub import snapshot_download

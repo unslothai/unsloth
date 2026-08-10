@@ -629,10 +629,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     if (clip) void ensureClipSrc(clip);
   }, [clips, selectedId, ensureClipSrc]);
 
-  const selectClip = useCallback((id: string) => {
+  /** `keepFallback` is for the one case where the id is not in `clips` yet: the server
+   *  persisted the clip but this refresh missed it, so the response audio has to stay
+   *  mounted or the player falls through to the empty state. */
+  const selectClip = useCallback((id: string, keepFallback = false) => {
     galleryCache.selectedId = id;
     setSelectedId(id);
-    setFallbackClip(null);
+    if (!keepFallback) setFallbackClip(null);
   }, []);
 
   // --- Model selection ----------------------------------------------------
@@ -1280,7 +1283,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           model: generated.model,
           saved: true,
         });
-        selectClip(generated.clip_id);
+        selectClip(generated.clip_id, true);
       } else {
         // Gallery persistence is best-effort server-side, so a full or unwritable
         // disk still returns the audio. Play it from the response rather than
@@ -1480,6 +1483,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         await deleteAudioClip(id);
         galleryCache.srcById.delete(id);
         setSrcById(galleryCache.srcById.toRecord());
+        // Drop the row now, as the clear-all path does: refreshGallery swallows a failed
+        // GET and returns the cache without calling setClips, which left the deleted clip
+        // on screen against an object URL that has already been revoked.
+        galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
+        setClips(galleryCache.clips);
+        if (galleryCache.selectedId === id) {
+          galleryCache.selectedId = null;
+          setSelectedId(null);
+        }
         await refreshGallery(id);
       } catch (error) {
         toast.error(
