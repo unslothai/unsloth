@@ -464,6 +464,28 @@ def test_the_promotion_guard_fails_closed_on_a_failed_latest_lookup():
     assert "2>/dev/null" not in guard.split("releases/latest", 1)[1].split("\n", 1)[0]
 
 
+def _guarded_bodies(script, header):
+    """Return the body of every `header` block, delimited by matching braces."""
+    bodies = []
+    at = script.find(header)
+    while at != -1:
+        start = at + len(header)
+        depth = 1
+        for index in range(start, len(script)):
+            if script[index] == "{":
+                depth += 1
+            elif script[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    bodies.append(script[start:index])
+                    break
+        else:
+            raise AssertionError(f"unbalanced braces after {header!r}")
+        at = script.find(header, start)
+    assert bodies, f"{header!r} is gone"
+    return bodies
+
+
 def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
     """Dead cmdlets must not read as "no scanner"; only a dead engine may.
 
@@ -484,16 +506,34 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "exit 0" not in before_control
     ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
-    # $status/$pref are unreadable then, so every check reading them is guarded.
+    # The two cmdlets fail independently -- Get-MpComputerStatus runs an extrinsic
+    # method against the live service through the Defender WMI provider, while
+    # Get-MpPreference reads back registry-backed settings -- so each probe must
+    # sit inside the guard for the result it reads, and neither result may be
+    # dereferenced outside one. A blanket $cmdletsDown guard would discard a
+    # readable Get-MpPreference reporting MAPSReporting=0 and publish on a scan
+    # that cannot produce the cloud "!ml" verdict this gate exists for.
+    bodies = _guarded_bodies(scan, "if ($status) {") + _guarded_bodies(scan, "if ($pref) {")
     for probe in (
         "$status.RealTimeProtectionEnabled",
         "$pref.MAPSReporting",
+        "$pref.DisableBlockAtFirstSeen",
+        "$pref.SubmitSamplesConsent",
+        "$pref.CloudBlockLevel",
         "$pref.ExclusionPath",
     ):
-        guarded = scan.split("if (-not $cmdletsDown) {", 1)
-        assert len(guarded) == 2
-        assert probe in scan
-    assert "if (-not $cmdletsDown) {" in scan
+        assert any(probe in body for body in bodies), f"{probe} left the guard that proves it was read"
+    outside = scan
+    for body in bodies:
+        outside = outside.replace(body, "", 1)
+    for held in ("$status.", "$pref."):
+        assert held not in outside, f"a {held[:-1]} dereference sits outside its availability guard"
+
+    config = scan.split("$fatal = @()", 1)[1].split("# Configuration is not connectivity", 1)[0]
+    assert "$cmdletsDown" not in config, (
+        "the configuration checks are gated on the blanket flag again; one dead "
+        "cmdlet would discard the other cmdlet's readable result"
+    )
 
     # The only remaining skip is a positive control that will not fire, which is
     # the one signal that MpCmdRun cannot scan either.

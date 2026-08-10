@@ -1229,7 +1229,8 @@ jobs:
           $cmdletsDown = [bool]$unavailable
           if ($cmdletsDown) {
             Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
-          } else {
+          }
+          if ($status) {
             Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
           }
 
@@ -1239,13 +1240,20 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
-          # Every check here reads $status/$pref, so none of it can run when the
-          # cmdlets are down. MpCmdRun still answers, and the MAPS and EICAR probes
-          # below exercise the same properties directly.
+          # The two cmdlets fail independently, so guard each check on the result
+          # it actually reads rather than on a blanket flag. Get-MpComputerStatus
+          # runs an extrinsic method against the live service through the Defender
+          # WMI provider; Get-MpPreference reads back registry-backed settings, so
+          # one answers while the other throws. Discarding a readable
+          # Get-MpPreference would drop the MAPS and block-at-first-sight checks
+          # while the signature-based EICAR control still passes, publishing on a
+          # scan blind to the cloud "!ml" verdicts this gate exists to catch.
           $fatal = @()
           $degraded = @()
-          if (-not $cmdletsDown) {
+          if ($status) {
             if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          }
+          if ($pref) {
             if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
             if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
             if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
@@ -1352,11 +1360,13 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          # Unreadable with the cmdlets down, and unnecessary there: exclusions
-          # exist to stop real-time protection quarantining the copy mid-scan, and
-          # real-time protection is not running when the service RPC endpoint is
-          # what took the cmdlets out.
-          if (-not $cmdletsDown) {
+          # Keyed on the cmdlet that does the reading, not on the blanket flag: a
+          # live Get-MpPreference can still verify these while Get-MpComputerStatus
+          # is down. With Get-MpPreference itself unreadable there is nothing to
+          # read back; real-time protection may well still be live, so a detection
+          # can quarantine the copy mid-scan, but that surfaces below as a bundle
+          # MpCmdRun could not scan and still fails the job.
+          if ($pref) {
             $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
             $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
             $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
