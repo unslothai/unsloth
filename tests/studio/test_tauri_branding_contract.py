@@ -3,9 +3,12 @@
 
 """Desktop display-branding contracts."""
 
+import importlib.util
 import json
 from pathlib import Path
 import struct
+
+import pytest
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -115,6 +118,57 @@ def test_dmg_install_window_matches_its_background_art() -> None:
 
     assert dmg["appPosition"] == {"x": 180, "y": 170}
     assert dmg["applicationFolderPosition"] == {"x": 480, "y": 170}
+
+
+def load_module(path: Path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dmg_background_art_is_what_its_renderer_produces() -> None:
+    """The checked-in TIFF is generated, so it has to track its own script."""
+    np = pytest.importorskip("numpy")
+    ImageSequence = pytest.importorskip("PIL.ImageSequence")
+    from PIL import Image
+
+    renderer = load_module(REPO / "scripts/make_dmg_background.py")
+    image = renderer.build()
+    expected = [
+        image.resize((renderer.WIN_W, renderer.WIN_H), Image.LANCZOS).convert("RGB"),
+        image.convert("RGB"),
+    ]
+
+    # the iterator seeks one shared handle, so each page is copied off it
+    tiff = Image.open(TAURI / "dmg/background.tiff")
+    pages = [page.convert("RGB") for page in ImageSequence.Iterator(tiff)]
+    assert [page.size for page in pages] == [page.size for page in expected]
+
+    # a tolerance, not equality, so no one Pillow build is baked in. a stale asset is far worse
+    for page, reference in zip(pages, expected):
+        drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
+        assert drift.max() <= 2
+
+
+def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
+    """Finder draws black "Unsloth" text here, so tinting it up is an accessibility change."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+
+    renderer = load_module(REPO / "scripts/make_dmg_background.py")
+    scale = renderer.SCALE
+    # the band Finder puts the icon label in, just under the app icon
+    label = (
+        np.asarray(renderer.build().convert("RGB"), dtype = np.float32)[
+            238 * scale : 260 * scale, 140 * scale : 220 * scale
+        ]
+        / 255.0
+    )
+
+    channel = np.where(label <= 0.04045, label / 12.92, ((label + 0.055) / 1.055) ** 2.4)
+    luminance = channel @ np.array([0.2126, 0.7152, 0.0722], dtype = np.float32)
+    assert (luminance.min() + 0.05) / 0.05 >= 7.0  # WCAG AAA for body text
 
 
 def test_desktop_release_asset_names_are_human_readable() -> None:
