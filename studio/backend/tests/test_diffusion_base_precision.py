@@ -272,6 +272,27 @@ def test_family_train_infos_empties_dit_modes_on_non_bf16(monkeypatch):
     assert dit_seen  # the registry must still expose at least one DiT family to have covered it
 
 
+def test_family_train_infos_drops_base_specs_on_a_dit_block(monkeypatch, dit_train_host):
+    # The per-base overlay wins in resolveDiffusionTrainingFacts, and FamilyFacts renders
+    # vram_note only when there are NO chips. So a blocked host that still published base_specs
+    # would put the 9B / 18 GB chips back the moment Klein base-9B is selected, and swap the
+    # actionable reason (no CUDA, no native bf16) for a size the user cannot act on. Clearing the
+    # family chips is not enough on a family whose bases carry their own.
+    from core.training.diffusion_train_common import _DIT_TRAIN_FAMILIES, family_train_infos
+
+    unblocked = {info["name"]: info for info in family_train_infos()}
+    # At least one DiT family must ship a per-base overlay, or this asserts nothing.
+    assert any(unblocked[n]["base_specs"] for n in _DIT_TRAIN_FAMILIES if n in unblocked)
+
+    monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: "no bfloat16 on this GPU")
+    for name, info in ((n, i) for n, i in
+                       ((i["name"], i) for i in family_train_infos())
+                       if n in _DIT_TRAIN_FAMILIES):
+        assert info["base_specs"] == {}, name
+        # The reason survives, which is the whole point of dropping the chips.
+        assert info["vram_note"] == "no bfloat16 on this GPU", name
+
+
 def test_base_precision_gates_skip_sdxl():
     # SDXL ignores base_precision, so the dense-mode gates must not fire for it even on a prequant-looking name.
     norm = _cfg(base_model = _SDXL_PREQUANT_NAME, base_precision = "bf16").normalized()

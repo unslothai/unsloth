@@ -799,8 +799,13 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
                 # Families with several train/deploy pairs cannot use the scalar above.
                 "deploy_bases": deploy_bases,
-                # Checkpoint-specific facts overlay the family facts in the Train UI.
-                "base_specs": base_specs,
+                # Checkpoint-specific facts overlay the family facts in the Train UI. Dropped on a
+                # dit_block for the same reason the family chips above are: the overlay wins in
+                # resolveDiffusionTrainingFacts, so a per-base entry would put the 9B / 18 GB chips
+                # back, and FamilyFacts renders vram_note only when there are NO chips. Leaving
+                # these populated therefore replaces the actionable hardware reason (no CUDA, no
+                # native bf16) with a size the host cannot act on.
+                "base_specs": {} if dit_block else base_specs,
             }
         )
     return infos
