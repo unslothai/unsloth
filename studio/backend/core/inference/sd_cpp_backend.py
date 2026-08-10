@@ -1200,6 +1200,14 @@ class SdCppDiffusionBackend:
                                 "falling back to one-shot sd-cli."
                             )
                             mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                            # And pin off THIS engine. The one-shot pin above was taken while the
+                            # mode was still "server", i.e. off an engine of None, so leaving it
+                            # would compare the sd-cli just resolved against None and refuse the
+                            # documented fallback on every load that reaches it. Resolved here,
+                            # inside the claim, so it is vetted at the moment it is pinned.
+                            engine_accelerator = _installed_accelerator_of(
+                                getattr(engine, "binary", None)
+                            )
                         elif _installed_accelerator_of(server_binary) != server_accelerator:
                             # Runnable, and at the same path -- and still not the build this load
                             # resolved. An install that landed during the download (an H3 load

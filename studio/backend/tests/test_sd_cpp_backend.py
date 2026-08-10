@@ -1591,6 +1591,59 @@ def test_server_start_failure_keeps_the_engine_the_fallback_resolved(monkeypatch
     assert len(out["images"]) == 1 and len(fake.calls) == 1
 
 
+def test_server_unusable_after_the_download_keeps_the_engine_the_fallback_resolved(monkeypatch):
+    # The other server -> one-shot fallback, the one taken when the re-resolution under the reader
+    # claim finds sd-server no longer usable. It resolves an sd-cli, but the one-shot accelerator
+    # pin was taken back when the mode was still "server", i.e. off an engine of None. The pin is
+    # then compared against the sd-cli the fallback just resolved, so a load that should have
+    # dropped cleanly to one-shot is refused as a swapped binary instead.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    # Runnable up front so the pre-download fallback is not the path under test; unusable by the
+    # time the claim re-checks it, which is what sends the load to sd-cli after the download.
+    runnable = [True]
+
+    def _runnable(*_a, **_k):
+        answer = runnable[0]
+        runnable[0] = False
+        return answer
+
+    monkeypatch.setattr(bk, "_server_binary_runnable", _runnable)
+    monkeypatch.setattr(bk, "ensure_sd_server_binary", lambda **_k: "/x/sd-server")
+    fake = _FakeEngine()
+    fake.binary = "/x/sd-cli"
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    # One tree, one accelerator, and nothing replaces it during this load: every refusal this test
+    # can see is the pin being read off the wrong engine, never a genuine swap.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda" if binary else None)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+    assert b._state is not None, f"the fallback was refused: {b.load_progress().get('error')}"
+    assert b._state.mode == "oneshot" and b._state.server is None
+    assert b._state.sd_accelerator == "cuda"
+    out = b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(out["images"]) == 1 and len(fake.calls) == 1
+
+
 def test_a_oneshot_load_refuses_a_cli_swapped_during_the_asset_download(monkeypatch):
     # The one-shot accelerator was sampled at state construction, AFTER the multi-minute asset
     # download, so an install landing in that window was recorded as this load's own answer. The
