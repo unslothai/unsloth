@@ -337,7 +337,7 @@ def finalize_worker_exit(
                 )
 
                 note_downloaded(repo_id)
-                invalidate_index()
+                invalidate_index(additions_only = True)
                 # Rebuild here, not on the first request, to keep the scan off the
                 # request path.
                 warm_index_soon()

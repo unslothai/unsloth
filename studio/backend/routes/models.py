@@ -1223,6 +1223,10 @@ async def add_scan_folder_endpoint(
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+    invalidate_index()
+    warm_index_soon()
     return folder
 
 
@@ -1235,6 +1239,10 @@ async def remove_scan_folder_endpoint(
 
     remove_scan_folder(folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
+    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+    invalidate_index()
+    warm_index_soon()
     return {"ok": True}
 
 

@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -183,6 +184,168 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert req.model_path == "unsloth/B-GGUF"
     assert req.gguf_variant == "Q4_K_M"
     assert backend.model_identifier == "unsloth/B-GGUF"
+
+
+def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+
+    def _unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("the resident model must not touch the filesystem index")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _unexpected_resolve)
+    _run_hook("unsloth/Muse-Glimmer-30B-GGUF")
+    assert rec.calls == []
+    assert warmed == [1]
+
+
+def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    calls = []
+    warmed = []
+
+    entry = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(
+        resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry})
+    )
+    resolver.invalidate_index(additions_only = True)
+    assert resolver._scan[0] == 0.0
+    assert resolver.index_is_built() is False
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+
+    assert calls == []
+    assert warmed == [1]
+    assert len(rec.calls) == 1
+
+
+def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
+    from types import SimpleNamespace
+
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+
+    old = resolver._LocalGgufEntry(
+        "unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",)
+    )
+    added = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
+    resolver._additions_only_retained = None
+    resolver.invalidate_index()
+    assert resolver.index_is_built() is False
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    removed = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/b-gguf": removed}))
+    monkeypatch.setattr(resolver, "_additions_only_retained", None)
+    scans = []
+    calls = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [
+        ("unsloth/B-GGUF", {}),
+        ("unsloth/B-GGUF", {"allow_scan": False}),
+    ]
+    assert scans == [1]
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    old = resolver._LocalGgufEntry(
+        "unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",)
+    )
+    added = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/a-gguf": old}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: scans.append(1) or {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [("unsloth/B-GGUF", {})]
+    assert scans == [1]
+    assert len(rec.calls) == 1
 
 
 def test_concurrent_same_target_loads_once(monkeypatch):
@@ -6271,7 +6434,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         def set_job(self, key, state):
             self.state = state
 
-    resolver._scan = (1234.0, {"already-here": "entry"})
+    resolver._scan = (time.monotonic(), {"already-here": "entry"})
     assert (
         download_lifecycle.finalize_worker_exit(
             _Registry(),
@@ -6291,14 +6454,13 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
+    assert resolver._additions_only_retained is entries
 
 
 def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
     # The request path reads this cache without scanning, so emptying it leaves no
     # evidence until the rebuild lands. Only a completed download invalidates, and
     # that only adds, so the entries stay true.
-    import time
-
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
     resolver.invalidate_index()
@@ -6308,6 +6470,40 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
         "Q4_K_M",
         "org/old",
     )
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    removed = []
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(
+        "storage.studio_db.remove_scan_folder", lambda folder_id: removed.append(folder_id)
+    )
+    monkeypatch.setattr(
+        local_inventory, "remove_scan_folder", lambda folder_id: removed.append(folder_id)
+    )
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver._additions_only_retained = None
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    asyncio.run(model_routes.remove_scan_folder_endpoint(7, current_subject = "tester"))
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver._additions_only_retained = None
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    assert local_inventory.remove_scan_folder_response(8) == {"ok": True}
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+    assert removed == [7, 8]
+    assert warmed == [1, 1]
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):

@@ -1018,10 +1018,18 @@ def add_scan_folder_response(path: str) -> dict:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
         raise HTTPException(status_code = 400, detail = str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
+    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+    invalidate_index()
+    warm_index_soon()
     return folder
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:
     remove_scan_folder(folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
+    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+    invalidate_index()
+    warm_index_soon()
     return {"ok": True}

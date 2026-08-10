@@ -34,6 +34,10 @@ class _LocalGgufEntry:
 _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
+# The exact retained mapping that is safe to read after an additions-only
+# invalidation. Keeping the mapping identity ties the permission to one published
+# snapshot, so a concurrent refresh cannot make an older lookup look trustworthy.
+_additions_only_retained: Optional[dict[str, _LocalGgufEntry]] = None
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 # Repos that finished downloading but are not in the published index yet: nothing
@@ -341,23 +345,30 @@ def recently_downloaded(repo_id: str) -> bool:
     return repo_id.strip().lower() in _just_downloaded
 
 
-def invalidate_index() -> None:
-    """Mark the cached scan stale so the next resolve sees a just-finished download
-    instead of waiting out the TTL.
+def invalidate_index(*, additions_only: bool = False) -> None:
+    """Mark the cached scan stale.
 
-    Keeps the entries: the request path reads this cache without scanning, so
-    emptying it would leave it with no evidence about any local model until the
-    rebuild lands, and a bare request for one would be answered by whatever is
-    resident. Only a completed download invalidates, and that only adds, so the
-    retained entries stay true.
+    Entries stay available so an additions-only download invalidation can keep
+    serving known positive hits while its background rebuild adds the new model.
+    Other invalidations retain the allocation but revoke that trust, since a scan
+    root may have been removed. Ordinary TTL expiry is likewise not additions-only.
     """
-    global _scan
+    global _scan, _additions_only_retained
     with _lock:
-        _scan = (0.0, _scan[1])
+        timestamp, retained = _scan
+        was_trusted = (
+            bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S
+        ) or (not timestamp and retained is _additions_only_retained)
+        # Revoke permission before publishing a config-invalidated snapshot. A
+        # lock-free reader can then fail safe if it runs between these assignments.
+        _additions_only_retained = (
+            retained if additions_only and was_trusted else None
+        )
+        _scan = (0.0, retained)
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _scan
+    global _scan, _additions_only_retained
     # Build under the lock so concurrent callers with an expired cache don't all
     # run the (multi-dir) scan at once; the rest wait and reuse the fresh result.
     with _lock:
@@ -370,6 +381,7 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # an install with many local models can itself exceed the TTL, which would
         # store the cache already expired and make every request rebuild the index.
         _scan = (time.monotonic(), fresh)
+        _additions_only_retained = None
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
@@ -383,6 +395,26 @@ def index_is_built() -> bool:
     ``_scan`` is only ever rebound, never mutated.
     """
     return bool(_scan[0])
+
+
+def resolve_trusted_cached_local_gguf(
+    requested: str,
+) -> Optional[tuple[str, Optional[str], str]]:
+    """Resolve a positive cache hit only when its snapshot is safe to trust.
+
+    A snapshot is trustworthy while fresh, or after an explicit additions-only
+    invalidation. A positive hit from ordinary TTL expiry or a scan-root change
+    must be rebuilt before it can trigger a model switch. The identity check closes
+    the race where a refresh publishes a different snapshot during the lookup.
+    """
+    snapshot = _scan
+    resolved = _resolve_from_index(requested, snapshot[1])
+    if resolved is None or _scan is not snapshot:
+        return None
+    timestamp, cached = snapshot
+    fresh = bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S
+    additions_only = not timestamp and cached is _additions_only_retained
+    return resolved if fresh or additions_only else None
 
 
 def warm_index_soon() -> None:
@@ -428,16 +460,27 @@ def resolve_local_gguf(
     off and resolves only when that quant is on disk, unless it names no quant at
     all (an Ollama-style ":latest"), which means the repo.
 
-    ``allow_scan=False`` answers from the last built index and never rebuilds, for
-    the request path: the scan walks several model dirs and HF caches, takes seconds
-    on a large install, and holds a lock everyone queues behind. Stale is fine there,
-    since disk barely moves and a finished download calls :func:`invalidate_index`.
+    ``allow_scan=False`` answers from the last built index and never rebuilds. It is
+    a raw snapshot read for callers that separately decide whether the snapshot is
+    trustworthy; use :func:`resolve_trusted_cached_local_gguf` for model switching.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
     try:
         index = _index() if allow_scan else _scan[1]
+        return _resolve_from_index(requested, index)
+    except Exception:
+        # Best-effort: any resolver failure falls through to the loaded model,
+        # so a malformed name can never turn a servable request into a 500.
+        return None
+
+
+def _resolve_from_index(
+    requested: str, index: dict[str, _LocalGgufEntry]
+) -> Optional[tuple[str, Optional[str], str]]:
+    """Resolve *requested* against one immutable published index mapping."""
+    try:
         entry = index.get(requested.lower())
         if entry is not None:
             variant = entry.variants[0] if entry.variants else None
@@ -461,8 +504,6 @@ def resolve_local_gguf(
         # is not on disk still misses, or a swap would serve the wrong weights.
         return entry.load_path, (entry.variants[0] if entry.variants else None), entry.loader_id
     except Exception:
-        # Best-effort: any resolver failure falls through to the loaded model,
-        # so a malformed name can never turn a servable request into a 500.
         return None
 
 

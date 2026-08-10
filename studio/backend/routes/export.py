@@ -259,6 +259,10 @@ def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
     try:
         from storage.studio_db import add_scan_folder
         folder = add_scan_folder(str(path))
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        invalidate_index()
+        warm_index_soon()
         return True, str(folder.get("path") or path)
     except Exception as exc:
         logger.warning("Could not register export scan folder %s: %s", path, exc)
