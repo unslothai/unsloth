@@ -988,14 +988,20 @@ async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsRe
     failedThreadIds: [],
   };
   let backendDeletedThreadIds: string[] = [];
-  try {
-    backendDeletedThreadIds = await clearBackendChats({
+  const runBackendClear = () =>
+    clearBackendChats({
       notify: false,
       operationId,
       // the transaction finds existing rows itself; these ids additionally fence legacy rows and
       // writes that have not committed yet
       tombstoneThreadIds: idsToFence,
     });
+  try {
+    // Retried once under the same operationId, still with admission closed. A request that timed
+    // out is not proof its transaction did not run, and the retry takes the writer lock behind
+    // that transaction and replays its recorded result, so admission cannot reopen into a window
+    // where a new chat is created and then deleted by a clear that lands late.
+    backendDeletedThreadIds = await runBackendClear().catch(() => runBackendClear());
     result.backend = "cleared";
     threadRecordWrites.confirmFinalState(idsToFence);
   } catch (error) {

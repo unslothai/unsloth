@@ -1061,3 +1061,28 @@ def test_an_empty_stored_parent_reads_as_the_root(tmp_path, monkeypatch):
         assert studio_db._surviving_parent_id(conn, "src", "a0", set()) is None
     finally:
         conn.close()
+
+
+def test_deleting_a_thread_signals_only_research_runs_a_worker_owns(tmp_path, monkeypatch):
+    # A fresh run sits in 'planning' with no lease. Deleting its thread cascades the row away, so
+    # no worker can ever claim it; signalling it would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == []
+
+
+def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
+    # The same run once a worker owns it: that worker is still running and has to be told.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == ["run-1"]

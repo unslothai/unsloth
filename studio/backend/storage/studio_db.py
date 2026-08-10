@@ -1838,12 +1838,15 @@ _ACTIVE_RESEARCH_RUN_STATUSES = (
 def _active_research_run_ids(
     conn: sqlite3.Connection, thread_ids: set[str] | None = None
 ) -> list[str]:
+    # lease_owner is the other half of "can already own a worker": a planning run that no worker
+    # has claimed yet never will once its row is gone, and signalling it would leave a
+    # cancellation event in the supervisor that nothing is left to consume.
     status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
     if thread_ids is None:
         rows = conn.execute(
             f"""
             SELECT id, created_at FROM research_runs
-            WHERE status IN ({status_placeholders})
+            WHERE status IN ({status_placeholders}) AND lease_owner IS NOT NULL
             """,
             _ACTIVE_RESEARCH_RUN_STATUSES,
         ).fetchall()
@@ -1857,7 +1860,8 @@ def _active_research_run_ids(
                 conn.execute(
                     f"SELECT id, created_at FROM research_runs "
                     f"WHERE thread_id IN ({thread_placeholders}) "
-                    f"AND status IN ({status_placeholders})",
+                    f"AND status IN ({status_placeholders}) "
+                    f"AND lease_owner IS NOT NULL",
                     (*chunk, *_ACTIVE_RESEARCH_RUN_STATUSES),
                 ).fetchall()
             )

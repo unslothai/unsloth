@@ -5,6 +5,7 @@ export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   addScanFolder,
   browseFolders,
+  ChatThreadDeletedError,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,

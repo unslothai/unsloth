@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   chatHistoryClearBoundary,
+  ChatThreadDeletedError,
   ensureStoredChatThread,
   isThreadIncognito,
 } from "@/features/chat";
@@ -66,7 +67,12 @@ async function requireStoredThread(threadId: string): Promise<void> {
   let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
   try {
     stored = await ensureStoredChatThread(threadId);
-  } catch {
+  } catch (error) {
+    // A backend tombstone is an answer, not an indeterminate transport failure: indexing
+    // against it would leave documents under a thread that can never come back.
+    if (error instanceof ChatThreadDeletedError) {
+      throw error;
+    }
     return;
   }
   if (!stored) {
