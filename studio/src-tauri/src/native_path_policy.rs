@@ -53,21 +53,27 @@ pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
 pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 
+/// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
+pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &["wav", "mp3", "m4a", "ogg", "oga", "flac"];
+
+fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
+    ATTACHMENT_EXTS
+        .iter()
+        .chain(IMAGE_ATTACHMENT_EXTS.iter())
+        .chain(AUDIO_ATTACHMENT_EXTS.iter())
+}
+
 pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
     let classified = classify_existing_path(path)?;
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported = ATTACHMENT_EXTS
-        .iter()
-        .chain(IMAGE_ATTACHMENT_EXTS.iter())
+    let supported = accepted_attachment_exts()
         .any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
-            ATTACHMENT_EXTS
-                .iter()
-                .chain(IMAGE_ATTACHMENT_EXTS.iter())
+            accepted_attachment_exts()
                 .map(|ext| format!(".{ext}"))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -615,6 +621,22 @@ mod tests {
         fs::write(&path, b"MZ").unwrap();
         assert!(classify_native_attachment_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    // The composer takes audio uploads, so a dropped one has to classify too.
+    #[test]
+    fn audio_attachments_are_accepted() {
+        for ext in AUDIO_ATTACHMENT_EXTS {
+            let path = temp_path("clip").with_extension(ext);
+            fs::write(&path, b"ID3").unwrap();
+            let classified = classify_native_attachment_path(&path)
+                .unwrap_or_else(|error| panic!(".{ext} was rejected: {error}"));
+            assert_eq!(classified.path_kind, NativePathKind::Attachment);
+            assert!(classified
+                .allowed_operations
+                .contains(&NativePathOperation::Attach));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]

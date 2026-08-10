@@ -910,6 +910,9 @@ export const ptBR = {
         allowNetworkAccess: "Permitir acesso à rede no canvas",
         allowNetworkAccessDescription:
           "Permite que as pré-visualizações do canvas carreguem scripts, estilos, fontes, mídia e recursos de rede de CDNs. Mantenha desativado para pré-visualizações totalmente offline.",
+        blockedBanner: "{count} recurso externo de {hosts} bloqueado.",
+        blockedBannerPlural: "{count} recursos externos de {hosts} bloqueados.",
+        blockedBannerAction: "Permitir neste Canvas",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",
