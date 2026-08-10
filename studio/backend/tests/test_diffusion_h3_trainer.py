@@ -1487,11 +1487,15 @@ def _h3_cache_run(monkeypatch, *, num_clips: int):
     monkeypatch.setattr(h3, "_dataset_canvas", lambda _path, _short_edge: (64, 64))
     monkeypatch.setattr(h3, "decode_clip", lambda *_a, **_k: (None, None))
     monkeypatch.setattr(
-        h3, "_encode_video_stats", lambda *_a: (torch.zeros(1, 4, 2, 8, 8), torch.zeros(1, 4, 2, 8, 8))
+        h3,
+        "_encode_video_stats",
+        lambda *_a: (torch.zeros(1, 4, 2, 8, 8), torch.zeros(1, 4, 2, 8, 8)),
     )
     num_audio = h3.h3_audio_latent_count(h3.H3_TRAIN_NUM_FRAMES)
     monkeypatch.setattr(
-        h3, "_encode_audio_latents", lambda *_a: torch.zeros(1, h3.H3_AUDIO_LATENT_CHANNELS, num_audio)
+        h3,
+        "_encode_audio_latents",
+        lambda *_a: torch.zeros(1, h3.H3_AUDIO_LATENT_CHANNELS, num_audio),
     )
 
     def _no_transformer(*_a, **_k):

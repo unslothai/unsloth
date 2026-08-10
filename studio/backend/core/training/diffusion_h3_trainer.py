@@ -589,7 +589,6 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             # numbers, instead of running the whole preparation and being OOM-killed at the end of
             # it with nothing to show.
             from core.training import diffusion_train_common as _train_common
-
             per_clip = int(sum(t.numel() * t.element_size() for t in entry))
             if _latent_cache_over_budget(per_clip, len(clip_paths)):
                 budget = _train_common._LATENT_CACHE_BUDGET_BYTES
