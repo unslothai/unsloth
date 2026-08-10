@@ -65,6 +65,10 @@ class DiffusionFamily:
     # Hosted checkpoints for NON-DEFAULT bases as (base_repo, scheme, repo_id), base_repo lowercased: one family entry covers
     # variants whose weights differ. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Bases (lowercased) with NO hosted checkpoint, which must not inherit ``prequant_repos``: the family
+    # fallback names an artifact baked from different weights, and planning acts on it before the load's
+    # base_model_id check can refuse it. Only for a base whose weights genuinely differ from the default.
+    prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
@@ -243,7 +247,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
         ),
-        # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB). NOT shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
+        # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and must quantize its own dense weights.
+        prequant_excluded_bases = ("tongyi-mai/z-image",),
+        # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB), shared with the undistilled base (byte-identical encoder). NOT shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA.
@@ -779,11 +785,15 @@ def family_prequant_repo(
 
     ``base_repo`` (when known) selects a variant-specific checkpoint first: a checkpoint is
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
-    without its own entry still returns the family default (harmless: the base_model_id
-    validation then falls back to dense-quantise, exactly as before this table existed)."""
-    # prequant_variant_repos is keyed on upstream ids.
+    without its own entry still returns the family default. That is harmless only while the
+    default is close enough that planning around it costs nothing, since the base_model_id
+    validation refuses the artifact well after the plan was made. A base whose weights really
+    differ belongs in ``prequant_excluded_bases``, which returns None here instead."""
+    # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
+        if base in fam.prequant_excluded_bases:
+            return None
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
                 return repo_id

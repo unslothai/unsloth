@@ -94,6 +94,26 @@ def test_zimage_base_is_trusted_so_the_gguf_keeps_its_companion_base():
     assert not _is_trusted_diffusion_repo("someone/Z-Image-finetune")
 
 
+def test_zimage_base_has_no_hosted_prequant_to_inherit():
+    # Both hosted checkpoints are baked from the Turbo transformer. Falling back to them for the
+    # undistilled base made planning treat an unrelated artifact as usable: auto declined the dense
+    # path when it was uncached, and an explicit int8/fp8 request downloaded it, hit the
+    # base_model_id refusal, then had no dense shards staged to fall back to.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert fam is not None and fam.name == "z-image"
+    for scheme in ("int8", "fp8"):
+        assert family_prequant_repo(fam, scheme) == "unsloth/Z-Image-Turbo-FP8"
+        assert (
+            family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image-Turbo")
+            == "unsloth/Z-Image-Turbo-FP8"
+        )
+        assert family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image") is None
+        # However the id was typed, and through the mirror the loader actually fetches.
+        assert family_prequant_repo(fam, scheme, base_repo = "  tongyi-mai/Z-IMAGE ") is None
+
+
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
     # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
     # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.

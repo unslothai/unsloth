@@ -57,6 +57,8 @@ def test_zimage_base_downloads_bf16_while_turbo_downloads_fp32():
     assert ap.hub_download_factor(_fam("z-image"), "Tongyi-MAI/Z-Image") == 1.0
     # A family with no factor at all still defaults to 1.0, base repo or not.
     assert ap.hub_download_factor(_fam("flux.2-klein"), "black-forest-labs/FLUX.2-klein-4B") == 1.0
+    # A base repo arrives however the user typed it, so the override cannot be case-sensitive.
+    assert ap.hub_download_factor(_fam("z-image"), "  tongyi-mai/Z-IMAGE ") == 1.0
 
     turbo = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
     base = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image")
@@ -92,6 +94,13 @@ def test_klein_base_9b_is_sized_like_the_9b_not_the_4b():
     # The unsloth mirror is what Studio actually loads, and canonical_base has to route it here too.
     assert (
         family_bf16_components_gb(_fam("flux.2-klein"), base_repo = "unsloth/FLUX.2-klein-base-9B")
+        == base_9b
+    )
+    # Same case-insensitivity the trust gate applies: a typed-in base must not fall back to the 4B.
+    assert (
+        family_bf16_components_gb(
+            _fam("flux.2-klein"), base_repo = " BLACK-FOREST-LABS/flux.2-klein-base-9b "
+        )
         == base_9b
     )
 

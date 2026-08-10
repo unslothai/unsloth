@@ -74,16 +74,26 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
 # Turbo publishes fp32 (23,479 MiB), while the undistilled base ships bf16 (11,740 MiB) and so
 # downloads exactly what it occupies. Without it the free-disk gate demands twice the real size.
 _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
-    "Tongyi-MAI/Z-Image": 1.0,
+    "tongyi-mai/z-image": 1.0,
 }
+
+
+def _base_key(base_repo: Optional[str]) -> str:
+    """The key both per-base tables below are written against: canonical upstream id, lowercased.
+
+    ``canonical_base`` maps a mirror back to its upstream but preserves the caller's casing for
+    everything else, and a base repo reaches here however the user typed it: the trust gate and
+    every other base-keyed table compare case-insensitively, so these must too or a lowercase
+    custom base silently misses its override and gets sized as the family default.
+    """
+    from .diffusion_families import canonical_base
+
+    return canonical_base(base_repo).strip().lower()
 
 
 def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
     """Download bytes per bf16-resident byte for this pick, defaulting to 1.0."""
-    # Both tables are keyed on UPSTREAM ids, so a mirror has to be normalised before the lookup.
-    from .diffusion_families import canonical_base
-
-    override = _BASE_REPO_HUB_DOWNLOAD_FACTOR.get(canonical_base(base_repo)) if base_repo else None
+    override = _BASE_REPO_HUB_DOWNLOAD_FACTOR.get(_base_key(base_repo)) if base_repo else None
     if override is not None:
         return override
     return _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
@@ -95,8 +105,8 @@ def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
 # klein-BASE-9B off the family default understates it by 2.3x, and the base variants are the ones the upstream
 # guidance points fine-tuning at, so it is the likelier of the two to be loaded.
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
-    "black-forest-labs/FLUX.2-klein-9B": (18.2, 16.4, 0.2),
-    "black-forest-labs/FLUX.2-klein-base-9B": (18.2, 16.4, 0.2),
+    "black-forest-labs/flux.2-klein-9b": (18.2, 16.4, 0.2),
+    "black-forest-labs/flux.2-klein-base-9b": (18.2, 16.4, 0.2),
 }
 
 
@@ -108,10 +118,7 @@ def base_repo_bf16_components_gb(base_repo: Optional[str]) -> Optional[tuple[flo
     actually named in the table, not receive the family figure back."""
     if not base_repo:
         return None
-    # Keyed on UPSTREAM ids, so mirrors have to be normalised before the lookup.
-    from .diffusion_families import canonical_base
-
-    return _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
+    return _BASE_REPO_BF16_GB.get(_base_key(base_repo))
 
 
 def family_bf16_components_gb(
