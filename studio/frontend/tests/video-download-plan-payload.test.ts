@@ -64,10 +64,16 @@ test("the staged plan carries the memory request too", () => {
 });
 
 test("the selected H3 task reaches both the plan and the load", () => {
-  const planCall = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 1500,
+  // The STAGING plan, sliced out of loadOrStage rather than found by the first
+  // `getVideoDownloadPlan` in the file: the row-sizing footprint probe calls it earlier and only
+  // ever for a named GGUF file, where the partition is the filename, not a task flag.
+  const flow = source.slice(
+    source.indexOf("const loadOrStage = useCallback("),
+    source.indexOf("// A GGUF pick can arrive"),
   );
+  const planAt = flow.indexOf("await getVideoDownloadPlan({");
+  assert.ok(planAt >= 0, "the staged flow must request the download plan");
+  const planCall = flow.slice(planAt, planAt + 1500);
   const loadCall = source.slice(
     source.indexOf("const startRequest = loadVideoModel({"),
     source.indexOf("const startRequest = loadVideoModel({") + 1500,
