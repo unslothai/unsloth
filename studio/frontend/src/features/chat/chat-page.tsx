@@ -2625,6 +2625,12 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeAudioDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     attachmentScope,
@@ -2635,6 +2641,7 @@ export function ChatPage({
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
+    onAttachAudio: handleNativeAudioDrop,
   });
 
   const handleCheckpointChange = useCallback(
