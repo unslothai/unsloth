@@ -19,6 +19,13 @@ import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -94,8 +101,8 @@ import {
   type VideoGenerateProgress,
   type VideoReferenceVideo,
   type VideoLoadProgress,
-  type VideoStatus,
   type VideoLoadRequest,
+  type VideoStatus,
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
@@ -660,6 +667,42 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
+type VideoLoadOptions = {
+  kind: "gguf" | "single_file" | "pipeline";
+  filename?: string;
+  h3Task?: H3Task;
+};
+/** A pick held back while the user chooses the H3 partition. It carries what the deferred
+ *  loadOrStage call would otherwise have been given inline, so the choice only adds `h3Task`:
+ *  `source` decides whether the pick is preflighted against the Hub download plan or loaded
+ *  straight off disk, and a dialog must not silently change that for the pick it is holding. */
+type PendingH3Load = {
+  repoId: string;
+  opts: VideoLoadOptions;
+  source: ModelSelectorChangeMeta["source"];
+  token: number;
+};
+
+const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
+
+/** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
+ *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
+ *  without passing through handleModelSelect, so checking it in one place staged the default
+ *  fl2va partition, tens of GB, with no way to ask for References.
+ *
+ *  An on-device copy counts. The same pipeline added as a directory reaches the generic
+ *  local-pipeline branch, which a Hub-id equality test never recognises, so an omitted h3_task
+ *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
+ *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
+ *  is read off its filename elsewhere. */
+function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+  if (kind !== "pipeline") return false;
+  const id = repoId.toLowerCase();
+  if (id === H3_BF16_REPO.toLowerCase()) return true;
+  const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
+  return leaf === H3_BF16_REPO.split("/")[1].toLowerCase();
+}
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
@@ -779,9 +822,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
+  const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -794,6 +835,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const {
     attach: attachSettingsScroll,
     onScroll: onSettingsScroll,
@@ -1628,10 +1670,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
-      opts: {
-        kind: "gguf" | "single_file" | "pipeline";
-        filename?: string;
-      },
+      opts: VideoLoadOptions,
       // Staged loads use the controls their preflight validated.
       pinned?: VideoLoadAdvanced,
     ): Promise<boolean> => {
@@ -1662,7 +1701,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
       const advanced = pinned ?? currentLoadAdvanced(opts.kind);
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      // Spread, so the H3 partition rides along: Reapply reloads the same denoiser, not the default one.
+      lastLoad.current = { repoId, ...opts };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
@@ -1678,6 +1718,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           attention_backend: advanced.attention_backend,
           transformer_cache: advanced.transformer_cache,
           transformer_quant: advanced.transformer_quant,
+          // Not an Advanced control: the partition is chosen per pick, so it stays on opts rather
+          // than joining the pinned set.
+          h3_task: opts.h3Task,
         });
         await startRequest;
       } catch (err) {
@@ -1727,7 +1770,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Downloads go through the Hub download manager like every other model, sharing its panel, progress, cancel and preflight. Mirrors Images.
   const pendingStagedLoad = useRef<{
     repoId: string;
-    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    opts: VideoLoadOptions;
     advanced: VideoLoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
@@ -1797,7 +1840,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const loadOrStage = useCallback(
     async (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: VideoLoadOptions,
       source: ModelSelectorChangeMeta["source"] = "hub",
       token?: number,
     ): Promise<boolean> => {
@@ -1834,6 +1877,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // The route preflights the same values used by the eventual load.
           transformer_quant: advanced.transformer_quant,
           memory_mode: advanced.memory_mode,
+          // And the partition, for the same reason: the two H3 denoisers are separate downloads,
+          // so a plan asked without it stages the default fl2va weights for a References pick.
+          h3_task: opts.h3Task,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;
@@ -1935,10 +1981,31 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
   );
 
+  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
+  // nothing will load and nothing else will restore the label. Hand the resident state back here or
+  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  const abandonPick = useCallback(() => {
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [revertPick]);
+
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
-    if (!active) pickGuard.release();
-  }, [active, pickGuard]);
+    if (!active) {
+      pickGuard.release();
+      // Through the SAME ending as pressing Cancel. The pick that opened this dialog already
+      // replaced the quant label, steps and guidance and parked their rollback in quantRevert,
+      // and the load it was deferring never ran. Clearing the dialog alone leaves the controls
+      // describing H3 over whatever model is still resident, and leaves a stale rollback for the
+      // next pick to trip over.
+      setPendingH3Load((pending) => {
+        if (pending) abandonPick();
+        return null;
+      });
+    }
+  }, [abandonPick, active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
@@ -1989,6 +2056,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, "hub"));
       return;
     }
+    // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+      setPendingH3Load({
+        repoId: pick.repoId,
+        opts: pick.opts,
+        source: "hub",
+        token,
+      });
+      return;
+    }
     void loadOrStage(pick.repoId, pick.opts, "hub", token);
   }, [
     active,
@@ -2001,10 +2078,48 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     pickGuard,
   ]);
 
+
+  // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
+  // ways out of it carry that branch's two endings: choosing runs the load and reverts if it never
+  // starts, cancelling abandons the pick outright.
+  const chooseH3Task = useCallback(
+    (task: H3Task) => {
+      const pending = pendingH3Load;
+      setPendingH3Load(null);
+      if (!pending || !pickGuard.holds(pending.token)) return;
+      const revert = quantRevert.current;
+      void loadOrStage(
+        pending.repoId,
+        { ...pending.opts, h3Task: task },
+        pending.source,
+        pending.token,
+      ).then((started) => {
+        // One slot, so only the pick that set the label may take it back.
+        if (!started && revert && quantRevert.current === revert && pickGuard.holds(pending.token)) {
+          revertPick(revert);
+          quantRevert.current = null;
+        }
+      });
+    },
+    [loadOrStage, pendingH3Load, pickGuard, revertPick],
+  );
+
+  const cancelH3TaskChoice = useCallback(() => {
+    setPendingH3Load(null);
+    abandonPick();
+    pickGuard.cancel();
+  }, [abandonPick, pickGuard]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+    if (l) {
+      void handleLoad(l.repoId, {
+        kind: l.kind,
+        filename: l.filename,
+        h3Task: l.h3Task,
+      });
+    }
   }, [handleLoad]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
@@ -2012,16 +2127,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // its pick, and the direct-local branches call handleLoad rather than loadOrStage, so clearing
   // only inside loadOrStage left the old job's onReady free to load the abandoned model over the
   // one just chosen. Bumping the sequence here also invalidates any plan still in flight.
-  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
-  // nothing will load and nothing else will restore the label. Hand the resident state back here or
-  // the selector keeps showing the abandoned pick's quant and recipe for good.
-  const abandonPick = useCallback(() => {
-    if (quantRevert.current) {
-      revertPick(quantRevert.current);
-      quantRevert.current = null;
-    }
-  }, [revertPick]);
-
   const beginPick = useCallback(() => {
     pickSeq.current += 1;
     pendingStagedLoad.current = null;
@@ -2054,6 +2159,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
+        if (isH3PipelinePick(id, spec.kind)) {
+          setPendingH3Load({
+            repoId: id,
+            opts: { kind: spec.kind, filename: spec.filename },
+            source: meta.source,
+            token,
+          });
+          return;
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
@@ -2167,6 +2281,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
+      // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
+      // it needs the same partition question: without it the load silently takes fl2va.
+      if (isH3PipelinePick(id, "pipeline")) {
+        setPendingH3Load({
+          repoId: id,
+          opts: { kind: "pipeline" },
+          source: meta.source,
+          token,
+        });
+        return;
+      }
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
@@ -2474,6 +2599,50 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <Dialog
+        open={pendingH3Load !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelH3TaskChoice();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Choose how MiniMax H3 should generate</DialogTitle>
+            <DialogDescription>
+              MiniMax H3 uses a separate denoiser for reference generation. Choose the mode you
+              want to load now. Shared components already on disk are reused.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("fl2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">Text and frames</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from text, with optional first and last frame images.
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("ref2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">References</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from reference pictures, videos and audio tracks.
+                </span>
+              </span>
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
       <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}

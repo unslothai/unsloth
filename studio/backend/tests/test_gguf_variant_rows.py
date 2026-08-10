@@ -166,6 +166,38 @@ def test_one_quant_shipped_twice_is_not_advertised_twice():
     assert rows["BF16"] == ("BF16/QwQ-32B-BF16-00001-of-00002.gguf", 65)
 
 
+def test_h3_partitions_and_builds_at_one_quant_are_separate_rows():
+    files = [
+        ("minimax_h3_fl2va-Q4_K_M.gguf", 18),
+        ("minimax_h3_fl2va_pruned-Q4_K_M.gguf", 11),
+        ("minimax_h3_ref2va-Q4_K_M.gguf", 18),
+        ("minimax_h3_ref2va_pruned-Q4_K_M.gguf", 11),
+        ("minimax_h3_ref2va_pruned-Q2_K_M.gguf", 6),
+    ]
+    rows = group_gguf_variant_files(files)
+    assert list(rows) == [
+        "minimax_h3_fl2va-Q4_K_M",
+        "minimax_h3_fl2va_pruned-Q4_K_M",
+        "minimax_h3_ref2va-Q4_K_M",
+        "minimax_h3_ref2va_pruned-Q4_K_M",
+        "minimax_h3_ref2va_pruned-Q2_K_M",
+    ]
+    assert [filename for filename, _size in rows.values()] == [
+        filename for filename, _size in files
+    ]
+
+
+def test_h3_variant_keys_match_the_loader_copy():
+    for filename in (
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+        "minimax_h3_ref2va-Q4_K_M.gguf",
+        "minimax_h3_ref2va_pruned-Q2_K_M.gguf",
+        "minimax_h3_ref2va_pruned-Q4_K_M.gguf",
+    ):
+        assert _gguf_variant_key(filename) == gguf_variant_key(filename)
+
+
 def test_local_lister_matches_the_remote_shape(tmp_path):
     snapshot = tmp_path / "snap"
     for path, _ in LTX_FILES:
