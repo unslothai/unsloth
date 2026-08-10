@@ -63,31 +63,50 @@ for (const [name, source] of CARDS) {
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
     // 8rem is the card with its notes closed, measured in a browser. Under it
-    // the buttons are the next thing to go.
-    assert.match(
-      stacked,
-      /\bmin-h-32\b/,
-      "a capped rail squeezes the card past its own buttons",
-    );
-    // min-h-0 was the old floor and it is no floor at all.
+    // the buttons are the next thing to go. min-h-0 was the old floor and it
+    // is no floor at all.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
+    assert.match(
+      source,
+      /\bmin-h-32\b/,
+      "a capped rail squeezes the card past its own buttons",
+    );
   });
 }
+
+test("the desktop failure card does not shrink at all", () => {
+  // It has no notes panel, so there is nothing in it to give up: shrinking it
+  // only clips the diagnostics and the retry button.
+  assert.match(
+    TAURI,
+    /showFailure \? "shrink-0" : "min-h-32"/,
+    "the failure card shares the notes-bearing card's floor, which is too low",
+  );
+});
 
 test("the two update cards do not drift apart", () => {
   // One is the desktop card and one the browser card, but they are the same
   // card, so a fix applied to one and not the other is the bug coming back.
-  // The header and the rail-facing root are the same string on both.
-  for (const anchor of ["flex min-w-0 ", "pointer-events-auto flex "]) {
-    assert.equal(
-      classes(TAURI, anchor),
-      classes(WEB, anchor),
-      `${anchor} differs between the desktop and browser cards`,
-    );
-  }
+  // The headers are the same string; the roots share everything except the
+  // floor, which the desktop card varies for its failure state.
+  assert.equal(
+    classes(TAURI, "flex min-w-0 "),
+    classes(WEB, "flex min-w-0 "),
+    "the headers differ between the desktop and browser cards",
+  );
+  const root = (source: string) =>
+    classes(source, "pointer-events-auto flex ")
+      .split(" ")
+      .filter((rule) => rule !== "min-h-32")
+      .join(" ");
+  assert.equal(
+    root(TAURI),
+    root(WEB),
+    "the rail-facing roots differ between the desktop and browser cards",
+  );
   // The action rows justify differently, so compare only what this fix pins.
   for (const rule of ["shrink-0", "flex-wrap"]) {
     assert.ok(
@@ -142,7 +161,17 @@ test("the rail scrolls rather than spilling its cards", () => {
     // The scroller clips at the padding box, so without room reserved there the
     // cards lose their shadows; the negative margin puts the rail back where it
     // was.
-    assert.match(rules, /\bp-3\b/);
-    assert.match(rules, /-m-3/);
+    assert.match(rules, /\bpx-3\b/);
+    assert.match(rules, /-mx-3/);
+    // Sideways only. This node is the one useStackGeometry measures, so
+    // vertical padding is counted into scrollHeight and the stack asks for room
+    // it does not occupy: a card that fits under the composer then measures as
+    // one that does not, and the rail lifts over it. The cap has to stay on
+    // this same node too, since measure() lifts it here to read the natural
+    // height; on a parent, the read would be the placement's own output.
+    assert.ok(
+      !/\bp-3\b/.test(rules) && !/\bpy-3\b/.test(rules),
+      "vertical padding on the measured node inflates the measured height",
+    );
   }
 });

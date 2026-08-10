@@ -398,10 +398,13 @@ function TauriUpdateLayer({
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
       ref={stack.ref}
-      // Scrolls when the cap is smaller than the cards, rather than
-      // spilling them over the page. The padding, cancelled by the
-      // margin, keeps the card shadows out of the scroller's clip.
-      className="pointer-events-none fixed right-4 z-[9998] -m-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain p-3"
+      // Scrolls when the cap is smaller than the cards, rather than spilling
+      // them over the page. The side gutter, cancelled by the margin, keeps the
+      // card shadows out of the scroller's clip. Horizontal only, because
+      // useStackGeometry measures this node's scrollHeight: vertical padding
+      // there inflates the height the placement thinks the stack needs, so a
+      // card that fits under the composer measures as one that does not.
+      className="pointer-events-none fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
       style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
       <UpdateBanner
@@ -686,9 +689,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         <div
           ref={stack.ref}
           // Scrolls when the cap is smaller than the cards, rather than
-          // spilling them over the page. The padding, cancelled by the
+          // spilling them over the page. The side gutter, cancelled by the
           // margin, keeps the card shadows out of the scroller's clip.
-          className="pointer-events-none fixed right-4 z-[9998] -m-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain p-3"
+          // Horizontal only, because useStackGeometry measures this node's
+          // scrollHeight: vertical padding there inflates the height the
+          // placement thinks the stack needs, so a card that fits under the
+          // composer measures as one that does not.
+          className="pointer-events-none fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
           style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >
           <WebUpdateBanner

@@ -109,12 +109,19 @@ export function UpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : // min-h-32 is this card with its notes closed. A capped rail
-                // takes its height out of the notes, which clip, and stops at
-                // the buttons. min-height:auto would be the whole card, so the
-                // card would give up nothing and the banner below it would be
-                // the one clipped.
-                "pointer-events-auto flex min-h-32 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              : cn(
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+                  // min-h-32 is this card with its notes closed. A capped rail
+                  // takes its height out of the notes, which clip, and stops at
+                  // the buttons. min-height:auto would be the whole card, so
+                  // the card would give up nothing and the banner below it
+                  // would be the one clipped.
+                  //
+                  // The failure card has no notes, so there is nothing in it to
+                  // give up: shrinking it only clips the diagnostics and the
+                  // retry button. It holds its height and the rail scrolls.
+                  showFailure ? "shrink-0" : "min-h-32",
+                ),
           )}
           data-testid="tauri-update-banner"
         >

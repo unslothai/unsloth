@@ -266,6 +266,16 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      - name: Update banner layout regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+        run: |
+          mkdir -p logs/playwright_update_banner
+          python tests/studio/playwright_update_banner_layout.py
+
       - name: Image model full-footprint selector regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
@@ -402,6 +412,7 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_fontscale
+            logs/playwright_update_banner
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold

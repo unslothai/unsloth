@@ -268,17 +268,27 @@ def boot(page, path: str) -> None:
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
+    # OLD is already NEW on a rerun, or when an earlier suite in the same job
+    # rotated it, and that login fails before the rotation below can be skipped.
     try:
-        api(
-            "/api/auth/change-password",
-            {"current_password": OLD, "new_password": NEW},
-            token,
-        )
+        token = api("/api/auth/login", {"username": "unsloth", "password": OLD})[
+            "access_token"
+        ]
     except urllib.error.HTTPError as exc:
-        # Already rotated by a previous run on the same install.
         if exc.code not in (400, 401, 403):
             raise
+        token = None
+    if token is not None:
+        try:
+            api(
+                "/api/auth/change-password",
+                {"current_password": OLD, "new_password": NEW},
+                token,
+            )
+        except urllib.error.HTTPError as exc:
+            # Already rotated by a previous run on the same install.
+            if exc.code not in (400, 401, 403):
+                raise
     session = api("/api/auth/login", {"username": "unsloth", "password": NEW})
 
     # add_init_script takes raw source, not a function to call.
