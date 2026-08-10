@@ -1946,6 +1946,24 @@ class DiffusionBackend:
                 path_override = kwargs.get("transformer_prequant_path"),
                 base_repo = kwargs.get("base_repo"),
             )
+
+            if source is None and auto:
+                retry = self._auto_prequant_retry_scheme(
+                    target,
+                    fam,
+                    mode,
+                    scheme,
+                    base_repo = kwargs.get("base_repo"),
+                    path_override = kwargs.get("transformer_prequant_path"),
+                    loras = kwargs.get("loras"),
+                )
+                if retry is not None:
+                    source = usable_prequant_source(
+                        fam,
+                        retry,
+                        path_override = kwargs.get("transformer_prequant_path"),
+                        base_repo = kwargs.get("base_repo"),
+                    )
             # A local override is the operator's own file: already on disk, never downloaded.
             if source is None or source.kind != "repo":
                 return None

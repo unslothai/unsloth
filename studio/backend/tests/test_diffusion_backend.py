@@ -6733,6 +6733,52 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert prequant["checkpoint"] is False
 
 
+def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    source = types.SimpleNamespace(
+        kind = "repo",
+        location = "unsloth/Qwen-Image-FP8",
+        filename = "Qwen-Image-INT8.pt",
+        fallback_filename = "transformer_int8.pt",
+    )
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Qwen-Image-GGUF": [_FakeSibling("Qwen-Image-Q4_K_M.gguf", 4 * GB)],
+            "Qwen/Qwen-Image": _ZIMAGE_BASE_SIBLINGS,
+            source.location: [_FakeSibling(source.filename, 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(dmod, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image")
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda *a, **k: ("fp8", "int8"),
+    )
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **kw: source if scheme == "int8" else None,
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda *a, **k: True)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+        text_encoder_quant = "off",
+    )
+    baseline = DiffusionBackend().download_plan(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+        text_encoder_quant = "off",
+        speed_mode = "off",
+    )
+
+    assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
+    assert any(source.filename in entry["files"] for entry in plan["entries"])
+
+
 def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
     # The fast path needs a plan with no offload, or a quant-sized replan that came back with
     # none. Balanced and low_vram offload BY MODE, which no replan can clear, so the load keeps
