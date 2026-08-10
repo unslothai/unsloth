@@ -115,7 +115,7 @@ def test_filter_is_removed_after_the_context():
         log.removeHandler(sink)
 
 
-def test_progress_bar_state_is_restored():
+def test_progress_bar_state_is_restored(_progress_bar_state):
     from transformers.utils import logging as hf_logging
 
     enabled_probe = getattr(hf_logging, "is_progress_bar_enabled", None)
@@ -128,7 +128,7 @@ def test_progress_bar_state_is_restored():
     assert enabled_probe() is True
 
 
-def test_a_caller_that_already_disabled_bars_stays_disabled():
+def test_a_caller_that_already_disabled_bars_stays_disabled(_progress_bar_state):
     from transformers.utils import logging as hf_logging
 
     enabled_probe = getattr(hf_logging, "is_progress_bar_enabled", None)
@@ -136,12 +136,9 @@ def test_a_caller_that_already_disabled_bars_stays_disabled():
         return
 
     hf_logging.disable_progress_bar()
-    try:
-        with _quiet_transformers_load():
-            pass
-        assert enabled_probe() is False
-    finally:
-        hf_logging.enable_progress_bar()
+    with _quiet_transformers_load():
+        pass
+    assert enabled_probe() is False
 
 
 def test_a_concurrent_thread_is_not_captured():
@@ -187,9 +184,13 @@ def test_reports_are_re_emitted_when_the_load_fails():
         log.propagate = True
 
 
-def test_a_hub_only_progress_disable_survives():
-    # transformers' enable_progress_bar() also enables the Hub's bars, which would
-    # undo unsloth's patch_ipykernel_hf_xet disable.
+@pytest.fixture
+def _progress_bar_state():
+    """Snapshot and restore the two process-global progress-bar switches.
+
+    Both are global, so a test that leaves them enabled makes later tests in the same
+    worker order-dependent and can undo an environment-specific workaround.
+    """
     from huggingface_hub.utils import (
         are_progress_bars_disabled,
         disable_progress_bars,
@@ -197,14 +198,32 @@ def test_a_hub_only_progress_disable_survives():
     )
     from transformers.utils import logging as hf_logging
 
+    hub_was_off = bool(are_progress_bars_disabled())
+    tf_was_on = bool(hf_logging.is_progress_bar_enabled())
+    try:
+        yield
+    finally:
+        if tf_was_on:
+            hf_logging.enable_progress_bar()
+        else:
+            hf_logging.disable_progress_bar()
+        if hub_was_off:
+            disable_progress_bars()
+        else:
+            enable_progress_bars()
+
+
+def test_a_hub_only_progress_disable_survives(_progress_bar_state):
+    # transformers' enable_progress_bar() also enables the Hub's bars, which would
+    # undo unsloth's patch_ipykernel_hf_xet disable.
+    from huggingface_hub.utils import are_progress_bars_disabled, disable_progress_bars
+    from transformers.utils import logging as hf_logging
+
     hf_logging.enable_progress_bar()  # transformers on, Hub-only disable after it
     disable_progress_bars()
-    try:
-        with _quiet_transformers_load():
-            pass
-        assert are_progress_bars_disabled() is True
-    finally:
-        enable_progress_bars()
+    with _quiet_transformers_load():
+        pass
+    assert are_progress_bars_disabled() is True
 
 
 def test_an_unexpected_key_other_than_the_legacy_one_stays_a_warning():
@@ -277,3 +296,24 @@ def test_the_notes_section_is_not_read_as_a_key_row():
     with _quiet_transformers_load() as report:
         log.warning(with_notes)
     assert report.is_serious() is False
+
+
+def test_a_serious_report_is_flattened_to_one_plain_line():
+    # This module logs through the stdlib logger, so re-emitting the captured table
+    # verbatim would put its ANSI escapes and newlines straight back in the log.
+    from core.rag import embeddings as emb
+
+    emitted = []
+    real_warning = emb.logger.warning
+    emb.logger.warning = lambda msg, *a, **k: emitted.append(msg % a if a else msg)
+    log, sink = _attach_sink()
+    try:
+        with _quiet_transformers_load() as report:
+            log.warning("\x1b[1mBertModel LOAD REPORT\x1b[0m from: x\nencoder.0 | MISSING")
+        emb._emit_load_reports(report)
+    finally:
+        emb.logger.warning = real_warning
+    assert emitted, emitted
+    assert "\x1b" not in emitted[0]
+    assert "\n" not in emitted[0]
+    assert "MISSING" in emitted[0]

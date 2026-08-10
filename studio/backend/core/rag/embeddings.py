@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
@@ -297,6 +298,20 @@ def _quiet_transformers_load():
                     pass
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _one_line(text: str) -> str:
+    """The report as a single plain-text line.
+
+    This module logs through the stdlib logger, not structlog, so re-emitting the
+    captured table verbatim would put the ANSI escapes and embedded newlines straight
+    back into the server log, which is the thing being fixed.
+    """
+    plain = _ANSI_RE.sub("", text)
+    return " | ".join(part.strip() for part in plain.splitlines() if part.strip())
+
+
 def _emit_load_reports(report) -> None:
     """Re-emit what the filter swallowed, as one record on our own logger: debug for
     the expected legacy-key notice, warning for anything that could change the
@@ -304,9 +319,9 @@ def _emit_load_reports(report) -> None:
     serious = report.is_serious()
     for text in report.reports:
         if serious:
-            logger.warning("embedding model load report: %s", text)
+            logger.warning("embedding model load report: %s", _one_line(text))
         else:
-            logger.debug("embedding model load report: %s", text)
+            logger.debug("embedding model load report: %s", _one_line(text))
     report.reports.clear()
 
 

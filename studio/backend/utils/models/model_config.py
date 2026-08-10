@@ -3405,6 +3405,9 @@ UI_STATUS_INDICATORS = [" (Ready)", " (Loading...)", " (Active)", "↓ "]
 # one. Bounded so a long-lived server with many models cannot grow it without end.
 _ANNOUNCED_MODEL_DEFAULTS: set = set()
 _ANNOUNCED_MODEL_DEFAULTS_MAX = 4096
+# Two request threads can resolve the same unseen model at once, and a bare
+# check-then-add would let both decide they were first.
+_ANNOUNCED_MODEL_DEFAULTS_LOCK = threading.Lock()
 
 
 def _log_model_defaults(
@@ -3413,12 +3416,13 @@ def _log_model_defaults(
     level: str = "info",
 ) -> None:
     """Log `message` at `level` the first time `key` is seen, then at debug."""
-    if key in _ANNOUNCED_MODEL_DEFAULTS:
-        logger.debug(message)
-        return
-    if len(_ANNOUNCED_MODEL_DEFAULTS) >= _ANNOUNCED_MODEL_DEFAULTS_MAX:
-        _ANNOUNCED_MODEL_DEFAULTS.clear()
-    _ANNOUNCED_MODEL_DEFAULTS.add(key)
+    with _ANNOUNCED_MODEL_DEFAULTS_LOCK:
+        if key in _ANNOUNCED_MODEL_DEFAULTS:
+            logger.debug(message)
+            return
+        if len(_ANNOUNCED_MODEL_DEFAULTS) >= _ANNOUNCED_MODEL_DEFAULTS_MAX:
+            _ANNOUNCED_MODEL_DEFAULTS.clear()
+        _ANNOUNCED_MODEL_DEFAULTS.add(key)
     getattr(logger, level)(message)
 
 
