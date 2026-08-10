@@ -311,6 +311,9 @@ def decode_clip(
             if int(next_target * source_fps / H3_FPS) > source_index:
                 continue
             image = frame.to_image().convert("RGB")
+            # Before the crop, not after: the canvas is in display orientation, so cropping the
+            # coded frame would trim the wrong pair of edges as well as train it sideways.
+            image = apply_display_rotation(image, display_rotation_degrees(frame, stream), Image)
             image = _cover_resize(image, width, height, Image)
             while (
                 int(next_target * source_fps / H3_FPS) <= source_index and len(frames) < num_frames
@@ -332,6 +335,70 @@ def decode_clip(
 
     waveform = _decode_clip_audio(path, target_samples, av, np)
     return np.stack(frames), waveform
+
+
+def display_rotation_degrees(frame: Any, stream: Any) -> int:
+    """The clip's display rotation, one of 0/90/180/270, as a PLAYER would apply it.
+
+    PyAV hands back the CODED frame: unlike the ffmpeg CLI, ``to_image()`` and ``to_ndarray()``
+    do not honour the display matrix, and PyAV declines to do so by design. A phone clip shot
+    in portrait is stored landscape with a 90 degree matrix, so without this the trainer caches
+    sideways frames, on a canvas taken from the equally sideways coded size, and cover-crops
+    away the sides of the real picture.
+
+    The angle is FFmpeg's own: ``av_display_rotation_get`` on the 16.16 fixed-point 3x3, then
+    ``theta = -round(...) mod 360``, which is what ffmpeg's autorotate applies. Returns 0 for a
+    clip with no matrix, and for any PyAV too old to expose one -- previous behaviour, never an
+    exception, since a decode must not fail over orientation metadata.
+    """
+    import math
+    import struct
+
+    matrix = None
+    try:
+        from av.sidedata.sidedata import Type
+
+        entry = frame.side_data.get(Type.DISPLAYMATRIX)
+        if entry is not None:
+            raw = bytes(entry)
+            if len(raw) >= 36:
+                # Native byte order: the matrix is an in-memory int32[9], not a serialised field.
+                matrix = struct.unpack("=9i", raw[:36])
+    except Exception:  # noqa: BLE001 -- no side-data API, or no matrix on this frame
+        matrix = None
+    if matrix is None:
+        # Legacy MOV/MP4 tag, still what older files carry.
+        try:
+            tag = (stream.metadata or {}).get("rotate")
+            return int(float(tag)) % 360 if tag is not None else 0
+        except Exception:  # noqa: BLE001 -- an unparsable tag is not a decode failure
+            return 0
+    try:
+        conv = lambda v: v / (1 << 16)  # noqa: E731
+        scale_x = math.hypot(conv(matrix[0]), conv(matrix[3]))
+        scale_y = math.hypot(conv(matrix[1]), conv(matrix[4]))
+        if not scale_x or not scale_y:
+            return 0
+        degrees = -math.degrees(
+            math.atan2(conv(matrix[1]) / scale_y, conv(matrix[0]) / scale_x)
+        )
+    except Exception:  # noqa: BLE001 -- a degenerate matrix means "no rotation", not a failure
+        return 0
+    theta = int(-round(degrees)) % 360
+    # Only the four square turns; anything else cannot be applied without resampling, and no
+    # camera writes one.
+    return theta if theta in (90, 180, 270) else 0
+
+
+def apply_display_rotation(image: Any, theta: int, Image: Any) -> Any:
+    """Rotate a decoded frame into display orientation. Verified against ffmpeg's autorotate."""
+    if theta == 90:
+        return image.transpose(Image.ROTATE_270)
+    if theta == 180:
+        return image.transpose(Image.ROTATE_180)
+    if theta == 270:
+        return image.transpose(Image.ROTATE_90)
+    return image
 
 
 def _cover_resize(image: Any, width: int, height: int, Image: Any) -> Any:

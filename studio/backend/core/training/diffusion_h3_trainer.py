@@ -65,6 +65,7 @@ from core.training.diffusion_h3_clips import (
     H3_VIDEO_TAG,
     decode_clip,
     discover_clip_caption_pairs,
+    display_rotation_degrees,
     h3_audio_latent_count,
     h3_packed_sequence_length,
     h3_train_canvas,
@@ -839,11 +840,24 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
 
 
 def _dataset_canvas(clip_path: str, short_edge: int) -> tuple[int, int]:
-    """The one canvas the run trains on, from the first clip's stored aspect ratio."""
+    """The one canvas the run trains on, from the first clip's DISPLAYED aspect ratio."""
     import av
 
     with av.open(str(clip_path)) as container:
         stream = container.streams.video[0]
         source_w = int(stream.codec_context.width)
         source_h = int(stream.codec_context.height)
+        # The coded size is not the displayed size for a rotated clip, and decode_clip rotates
+        # its frames, so a portrait phone clip would otherwise get a landscape canvas and be
+        # cover-cropped down to it. One frame is decoded because the matrix travels with the
+        # frame; the container is open either way.
+        theta = 0
+        try:
+            frame = next(container.decode(video = 0), None)
+            if frame is not None:
+                theta = display_rotation_degrees(frame, stream)
+        except Exception:  # noqa: BLE001 -- an undecodable first frame is decode_clip's error to raise
+            theta = 0
+    if theta in (90, 270):
+        source_w, source_h = source_h, source_w
     return h3_train_canvas(source_w, source_h, short_edge = short_edge)

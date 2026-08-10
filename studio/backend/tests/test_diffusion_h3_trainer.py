@@ -1583,3 +1583,135 @@ def test_the_h3_latent_cache_gate_honours_the_explicit_override(monkeypatch):
 
     with pytest.raises(RuntimeError, match = "reached phase 3"):
         _h3_cache_run(monkeypatch, num_clips = 4)()
+
+
+def _write_rotated_clip(path, *, theta: int, width: int = 640, height: int = 360, seconds: int = 2):
+    """A real H.264+AAC clip whose display matrix says ``theta``, coded ``width`` x ``height``."""
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+
+    with av.open(str(path), "w") as out:
+        video = out.add_stream("libx264", rate = H3_FPS)
+        video.width, video.height = width, height
+        video.pix_fmt = "yuv420p"
+        audio = out.add_stream("aac", rate = 48000)
+        if theta:
+            video.set_display_rotation(theta)
+        for i in range(H3_FPS * seconds):
+            # An asymmetric picture, so a wrong rotation cannot look like a right one.
+            img = np.zeros((height, width, 3), dtype = "uint8")
+            img[: height // 3, :, 0] = 255
+            img[:, : max(1, i * 4), 1] = 255
+            for packet in video.encode(av.VideoFrame.from_ndarray(img, format = "rgb24")):
+                out.mux(packet)
+        frame = av.AudioFrame.from_ndarray(
+            np.zeros((1, 48000 * seconds), dtype = "float32"), format = "fltp", layout = "mono"
+        )
+        frame.sample_rate = 48000
+        for packet in audio.encode(frame):
+            out.mux(packet)
+        for packet in video.encode():
+            out.mux(packet)
+        for packet in audio.encode():
+            out.mux(packet)
+
+
+def test_a_rotated_clip_reports_its_display_rotation(tmp_path):
+    """PyAV hands back the CODED frame: unlike the ffmpeg CLI it does not apply the display
+    matrix. A portrait phone clip is stored landscape with a 90 degree matrix, so the rotation
+    has to be read off the frame or every target trains sideways."""
+    av = pytest.importorskip("av")
+    from core.training.diffusion_h3_clips import display_rotation_degrees
+
+    clip = tmp_path / "portrait.mp4"
+    _write_rotated_clip(clip, theta = 90)
+    with av.open(str(clip)) as container:
+        stream = container.streams.video[0]
+        frame = next(container.decode(video = 0))
+        assert (frame.width, frame.height) == (640, 360), "the coded frame is still landscape"
+        assert display_rotation_degrees(frame, stream) == 270
+
+
+def test_an_unrotated_clip_reports_no_rotation(tmp_path):
+    """The common case must stay exactly as it was, matrix or no matrix."""
+    av = pytest.importorskip("av")
+    from core.training.diffusion_h3_clips import display_rotation_degrees
+
+    clip = tmp_path / "landscape.mp4"
+    _write_rotated_clip(clip, theta = 0)
+    with av.open(str(clip)) as container:
+        frame = next(container.decode(video = 0))
+        assert display_rotation_degrees(frame, container.streams.video[0]) == 0
+
+
+def test_the_canvas_follows_the_displayed_orientation_not_the_coded_one(tmp_path):
+    """``_dataset_canvas`` used to read ``codec_context`` alone, so a portrait clip picked a
+    LANDSCAPE canvas and every frame was then cover-cropped down to it -- the sides of the real
+    picture thrown away, on top of training it sideways."""
+    pytest.importorskip("av")
+    from core.training.diffusion_h3_trainer import _dataset_canvas
+
+    landscape = tmp_path / "landscape.mp4"
+    portrait = tmp_path / "portrait.mp4"
+    _write_rotated_clip(landscape, theta = 0)
+    _write_rotated_clip(portrait, theta = 90)
+
+    wide_w, wide_h = _dataset_canvas(str(landscape), 512)
+    tall_w, tall_h = _dataset_canvas(str(portrait), 512)
+    assert wide_w > wide_h, (wide_w, wide_h)
+    assert tall_h > tall_w, "a rotated clip must train on a portrait canvas"
+    assert (tall_w, tall_h) == (wide_h, wide_w)
+
+
+def test_decode_clip_returns_the_rotated_picture(tmp_path):
+    """End to end: the cached frames are the picture a player shows, not the coded one."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("av")
+    from core.training.diffusion_h3_clips import decode_clip
+
+    clip = tmp_path / "portrait.mp4"
+    _write_rotated_clip(clip, theta = 90, seconds = 3)
+    frames, _waveform = decode_clip(clip, num_frames = 8, width = 64, height = 128)
+
+    assert frames.shape == (8, 128, 64, 3)
+    # The red band occupies the top third of the CODED frame. Rotated 90 CCW for display it
+    # moves to the left third, so the rotation is observable in the pixels rather than assumed.
+    first = frames[0].astype("int32")
+    left = first[:, : 64 // 3, 0].mean()
+    right = first[:, -(64 // 3) :, 0].mean()
+    assert left > right + 40, f"red band did not move to the left edge (left {left}, right {right})"
+    top = first[: 128 // 3, :, 0].mean()
+    assert left > top + 40, "the band is still along the top, so no rotation was applied"
+
+
+def test_a_local_modular_pipeline_under_a_gguf_path_is_not_refused_as_gguf(tmp_path):
+    """``resolve_trainable_family`` exempted a local checkout by ``model_index.json`` only. A
+    MODULAR_BASE_FAMILIES base has ``modular_model_index.json`` and no ``model_index.json``, so
+    the one local layout MiniMax-H3 HAS was refused as a GGUF repo whenever its path contained
+    'gguf', before model_family was even consulted."""
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    base = tmp_path / "gguf" / "MiniMax-H3"
+    base.mkdir(parents = True)
+    (base / "modular_model_index.json").write_text("{}", encoding = "utf-8")
+
+    assert resolve_trainable_family(str(base), model_family = "minimax-h3") == "minimax-h3"
+
+
+def test_a_real_gguf_path_without_a_pipeline_is_still_refused(tmp_path):
+    """The exemption is the index file, not the word: an actual GGUF pick must still be refused."""
+    from core.training.diffusion_train_common import resolve_trainable_family
+
+    base = tmp_path / "gguf" / "MiniMax-H3-GGUF"
+    base.mkdir(parents = True)
+    with pytest.raises(ValueError, match = "GGUF"):
+        resolve_trainable_family(str(base), model_family = "minimax-h3")
+
+
+def test_the_advertised_h3_vram_floor_covers_the_measured_run_peak():
+    """The field's own contract is the WHOLE-RUN peak, because that is what a card has to hold.
+    A real run on this branch peaked at 77.76 GB, so the advertised floor may not sit under it:
+    the chip is what a user sizes a host from."""
+    from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
+
+    assert _FAMILY_TRAIN_SPECS["minimax-h3"]["qlora_vram_gb"] >= 78

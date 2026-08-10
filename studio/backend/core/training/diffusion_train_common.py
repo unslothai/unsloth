@@ -321,9 +321,18 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     """
     name = str(base_model or "").strip().lower()
     # GGUF weights (a ``.gguf`` file or ``*-GGUF`` repo) are inference-only: training needs the full diffusers pipeline.
-    # Exempt a local diffusers checkout that merely has "gguf" in its path, identified by its ``model_index.json``.
+    # Exempt a local diffusers checkout that merely has "gguf" in its path, identified by its
+    # index file. ``modular_model_index.json`` counts: a MODULAR_BASE_FAMILIES checkout (MiniMax-H3)
+    # has that and no ``model_index.json``, so reading only the conventional name refused the one
+    # local form the family has, under /models/gguf/..., before model_family could even be read.
     local = Path(base_model).expanduser() if base_model else None
-    is_local_diffusers = bool(local and (local / "model_index.json").is_file())
+    is_local_diffusers = bool(
+        local
+        and (
+            (local / "model_index.json").is_file()
+            or (local / "modular_model_index.json").is_file()
+        )
+    )
     if name.endswith(".gguf") or ("gguf" in name and not is_local_diffusers):
         raise ValueError(
             f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
@@ -592,10 +601,12 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     # the dtype-reading modules kept dense, see _H3_NF4_SKIP_MODULES), but the RUN peaks far
     # higher while the 63 GiB Qwen3-VL conditioner is resident and captions are encoded --
     # before it is freed and the transformer loads. The quoted figure covers the whole run,
-    # since that is what a card has to hold.
+    # since that is what a card has to hold: a real 20-step run on this branch peaked at
+    # 77.76 GB, so 72 was under its own measurement and sized users onto a card that OOMs
+    # only after the conditioner has loaded.
     "minimax-h3": {
         "params": "31B",
-        "qlora_vram_gb": 72,
+        "qlora_vram_gb": 80,
         "gated": False,
         "note": "Video with sound: trains on clips that have a soundtrack.",
     },
