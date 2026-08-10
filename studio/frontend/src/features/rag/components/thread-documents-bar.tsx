@@ -7,11 +7,11 @@ import { AttachmentIcon, FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { chatHistoryClearBoundary } from "@/features/chat/utils/chat-history-clear-boundary";
 import {
+  chatHistoryClearBoundary,
   ensureStoredChatThread,
   isThreadIncognito,
-} from "@/features/chat/utils/chat-history-storage";
+} from "@/features/chat";
 import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,

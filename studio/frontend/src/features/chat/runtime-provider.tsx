@@ -1432,11 +1432,11 @@ function useStudioRuntimeAdapters(
               store.setActiveThreadId(remoteId);
             }
           }
-          // Point reads, issued together: the model run waits on this write.
-          const [thread, existingMessage] = await Promise.all([
-            getStoredChatThread(remoteId),
-            getStoredChatMessage(remoteId, message.id),
-          ]);
+          // One point read: the model run waits on this write.
+          const existingMessage = await getStoredChatMessage(
+            remoteId,
+            message.id,
+          );
           await throwIfHistoryWasCleared(remoteId);
           const content = cloneContent(message.content);
           const attachments =

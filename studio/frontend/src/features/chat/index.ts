@@ -143,6 +143,8 @@ export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
   deleteStoredChatThreads,
+  ensureStoredChatThread,
+  isThreadIncognito,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
