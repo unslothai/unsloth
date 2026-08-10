@@ -5588,10 +5588,22 @@ def _estimate_gguf_required_gb(
         _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
             _forced_dflash and not _dflash_capable
         )
+        def _same_file_key(p: str) -> str:
+            # Identity by resolved path, so a symlinked or differently spelled
+            # copy of one file is still one file.
+            try:
+                return os.path.realpath(p)
+            except OSError:
+                return str(p)
+
         total_bytes = 0
+        # Only the files already charged above, so the extras drafter below can
+        # tell "another sidecar" from "the one discovery already found".
+        _sized_keys: set[str] = set()
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
+            _sized_keys.add(_same_file_key(str(main)))
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
@@ -5603,15 +5615,6 @@ def _estimate_gguf_required_gb(
                 _sized_attrs.append("gguf_dflash_file")
             else:
                 _sized_attrs.append("gguf_mtp_file")
-        # A caller that owns speculation through llama_extra_args names the
-        # drafter with --model-draft, and discovery never populates
-        # gguf_dflash_file / gguf_dspark_file for a file outside the model
-        # directory. load_model still hands that path to llama-server, so
-        # without this the guard admits a load beside a training run while
-        # charging nothing for the sidecar that load is about to make resident.
-        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-        if _extras_draft and Path(_extras_draft).is_file():
-            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
 
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
@@ -5620,8 +5623,31 @@ def _estimate_gguf_required_gb(
                 # so stat() alone would size a split drafter at one shard and let the
                 # guard admit a load that evicts the training run it protects.
                 total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(f))
+                _sized_keys.add(_same_file_key(str(f)))
+
+        # A caller that owns speculation through llama_extra_args names the
+        # drafter with --model-draft. load_model hands that path to llama-server,
+        # so it has to be charged, but it is charged exactly once: the same file
+        # is often the local sidecar discovery already put in gguf_dflash_file /
+        # gguf_dspark_file / gguf_mtp_file, and adding it twice billed a 1.5 GiB
+        # drafter as 3 GiB and refused loads that fit. When the drafter really is
+        # outside the model directory nothing above named it and the charge lands
+        # here. It is a companion either way, never evidence of a local main
+        # weight, so it does not decide which branch below produces the estimate:
+        # a remote repo with a local --model-draft still has to price its weights
+        # through the listing, and returning the drafter alone under-estimated a
+        # load by the whole target model.
+        _extras_bytes = 0
+        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        if (
+            _extras_draft
+            and Path(_extras_draft).is_file()
+            and _same_file_key(str(_extras_draft)) not in _sized_keys
+        ):
+            _extras_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
+
         if total_bytes > 0:
-            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+            return (total_bytes + _extras_bytes) / (1024**3) + _estimate_gguf_kv_gb(
                 main,
                 max_seq_length,
                 llama_extra_args,
@@ -5660,7 +5686,9 @@ def _estimate_gguf_required_gb(
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
                 include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
             )
-            total_gb = (main_bytes + companions) / (1024**3)
+            # Plus the local --model-draft, if the caller named one: the repo
+            # listing cannot see it, and it is resident next to these weights.
+            total_gb = (main_bytes + companions + _extras_bytes) / (1024**3)
             # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
             from core.inference.llama_server_args import parse_ctx_override
 

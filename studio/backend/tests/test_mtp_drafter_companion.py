@@ -2312,3 +2312,49 @@ def test_dflash_prefix_form_is_still_found_beside_the_weight(tmp_path):
     sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
 
     assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_path, monkeypatch):
+    """A native grant answers through ``accept``, and its answer has to arrive
+    before the file is opened.
+
+    A dflash-*.gguf inside a leased directory can be a symlink whose target sits
+    outside the lease. Parsing the header first opened that target, and no later
+    rejection takes a read back, so the order is: resolve, ask accept, then read.
+    """
+    import os
+
+    import utils.models.model_config as mc
+
+    leased = tmp_path / "leased"
+    leased.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    weight = _write_gguf(leased / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    target = _write_gguf(outside / "dflash-kquant.gguf", "dflash")
+    os.symlink(target, leased / "dflash-kquant.gguf")
+
+    reads: list[str] = []
+    real_read = mc.read_gguf_general_metadata
+
+    def _recording_read(path, *args, **kwargs):
+        reads.append(str(path))
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(mc, "read_gguf_general_metadata", _recording_read)
+
+    def _inside_the_lease(launch: str) -> bool:
+        # accept is handed the resolved launch path, not the candidate.
+        return leased in Path(launch).parents
+
+    assert detect_dflash_file(str(weight), accept = _inside_the_lease) is None
+    assert reads == []  # the out-of-grant target was never opened
+
+
+def test_detect_dflash_file_still_checks_the_header_of_an_accepted_candidate(tmp_path):
+    """The reorder must not cost the architecture check every other caller relies
+    on: an accepted candidate that is not a dflash model is still dropped."""
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
+
+    assert detect_dflash_file(str(weight), accept = lambda launch: True) is None

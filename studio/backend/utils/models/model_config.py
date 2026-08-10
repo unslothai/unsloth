@@ -2232,19 +2232,29 @@ def detect_dflash_file(
         candidates = kept
 
     for candidate in sorted(candidates, key = _rank):
-        meta = read_gguf_general_metadata(str(candidate)) or {}
+        # Resolve and validate before opening anything. A dflash-*.gguf in a
+        # directory reached through a native grant can be a symlink whose target
+        # sits outside the lease, and ``accept`` is what decides that; reading the
+        # header first opened the target before the answer arrived, which a later
+        # rejection cannot undo. Callers without a grant pass accept = None and
+        # see the same candidates in the same order as before.
+        try:
+            launch = _drafter_launch_path(candidate)
+        except OSError:
+            continue
+        if accept is not None and not accept(launch):
+            logger.info(
+                "detect_dflash_file: dropped %s (outside the granted directory)",
+                candidate.name,
+            )
+            continue
+        meta = read_gguf_general_metadata(launch) or {}
         if (meta.get("general.architecture") or "").strip().lower() != "dflash":
             logger.info(
                 "detect_dflash_file: dropped %s (architecture %r is not dflash)",
                 candidate.name,
                 meta.get("general.architecture"),
             )
-            continue
-        try:
-            launch = _drafter_launch_path(candidate)
-        except OSError:
-            continue
-        if accept is not None and not accept(launch):
             continue
         logger.info("Detected DFlash drafter: %s", launch)
         return launch

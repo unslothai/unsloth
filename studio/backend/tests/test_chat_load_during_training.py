@@ -1326,6 +1326,108 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
         self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
 
+    @staticmethod
+    def _dflash_capable(supported = True):
+        """Same shape as _dspark_capable: the DFlash sizing gate asks the binary
+        whether it can run draft-dflash."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_dflash": supported}),
+        )
+
+    def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
+        """--model-draft usually names the very sidecar discovery already found,
+        and charging it on both paths billed a 1.5 GiB drafter as 3 GiB, so the
+        guard refused an inference load that fits. Identity is the resolved path,
+        so a symlink or another spelling of the same file dedupes too, while a
+        genuinely separate drafter outside the model directory is still charged.
+        """
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dflash-kquant.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            link = p / "linked-dflash.gguf"
+            os.symlink(sidecar, link)
+            elsewhere = p / "other" / "dflash-elsewhere.gguf"
+            elsewhere.parent.mkdir()
+            elsewhere.write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = None,
+                gguf_dflash_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dflash_capable(),
+            ):
+                plain = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+                same = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(sidecar)],
+                )
+                through_link = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(link)],
+                )
+                separate = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(elsewhere)],
+                )
+        self.assertAlmostEqual(plain, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(same, 5000 / (1024**3), places = 9)  # not 8000
+        self.assertAlmostEqual(through_link, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(separate, 9000 / (1024**3), places = 9)  # 2000+3000+4000
+
+    def test_remote_weights_stay_in_the_estimate_beside_a_local_extra_args_drafter(self):
+        """A remote repo has no local main weight, so a local --model-draft was
+        the only thing making the local branch fire: it returned ~1.5 GiB and
+        skipped the listing that prices the target model entirely. The drafter is
+        a companion, not evidence of local weights, so it is added to whichever
+        branch produces the estimate."""
+        import tempfile
+
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 10 * 1024**3)
+        with tempfile.TemporaryDirectory() as d:
+            drafter = Path(d) / "dflash-kquant.gguf"
+            drafter.write_bytes(b"y" * 3000)
+            with (
+                patch.object(mc, "list_gguf_variants", return_value = ([variant], False)),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0),
+                self._dflash_capable(),
+            ):
+                gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dflash",
+                    llama_extra_args = ["--model-draft", str(drafter)],
+                )
+        # The 10 GB target weights, not just the drafter beside them.
+        self.assertAlmostEqual(gb, 10.0 + 3000 / (1024**3), places = 9)
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
