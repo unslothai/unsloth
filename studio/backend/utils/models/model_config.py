@@ -2370,9 +2370,7 @@ def _gguf_variant_key(filename: str) -> str:
     quant = _gguf_variant_token(path)
     if quant is None:
         return _gguf_variant_family(path)
-    if path.rsplit("/", 1)[-1].lower().startswith(
-        ("minimax_h3_fl2va", "minimax_h3_ref2va")
-    ):
+    if path.rsplit("/", 1)[-1].lower().startswith(("minimax_h3_fl2va", "minimax_h3_ref2va")):
         return _gguf_variant_family(path)
     for segment in path.rpartition("/")[0].split("/"):
         # A quant-named directory adds nothing the basename does not already say; a
