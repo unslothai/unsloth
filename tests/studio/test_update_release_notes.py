@@ -566,6 +566,52 @@ def test_every_refusal_records_a_deadline_retry_has_to_wait_out(notes_module):
         assert abs(ttl - expected) <= 2 and ttl <= ceiling
 
 
+def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases):
+    """A release entry carries its whole body, so the page size and the byte cap
+    are one decision. Asking for the endpoint's maximum of 100 put the response
+    near 4 MiB against a 2 MiB cap, and the fetch then fails outright with the
+    wanted release sitting at the top of the page it just threw away."""
+    import urllib.parse
+
+    query = urllib.parse.urlparse(notes_module.RELEASES_API_URL).query
+    per_page = int(urllib.parse.parse_qs(query)["per_page"][0])
+    # The largest real body checked in here, as the size of every entry.
+    largest = max(len(path.read_text(encoding = "utf-8")) for path in BODIES.glob("*.md"))
+    full_page = [
+        {
+            "tag_name": f"v0.1.{index}-beta",
+            "body": "x" * largest,
+            "published_at": f"2026-08-{index % 28 + 1:02d}T00:00:00Z",
+        }
+        for index in range(per_page)
+    ]
+    payload = releases_payload(*full_page)
+    assert len(payload) < notes_module.RELEASES_MAX_BYTES, (
+        f"a full page of {per_page} is {len(payload) / 1024 / 1024:.1f} MiB "
+        f"against a {notes_module.RELEASES_MAX_BYTES / 1024 / 1024:.0f} MiB cap"
+    )
+    serve_releases(payload)
+    assert notes_module.get_release_notes("2026.8.11")["error"] is None
+
+
+@pytest.mark.parametrize(
+    "heading",
+    ["### macOS, Linux, WSL:", "### macOS / Linux / WSL", "### macOS/Linux/WSL"],
+)
+def test_platform_headings_split_on_a_slash_as_well_as_a_comma(notes_module, heading):
+    """The install block splits its commands across per-platform headings, and
+    the separator between the platforms is written either way."""
+    body = (
+        "The announcement.\n\n"
+        "### To update Unsloth or install a new Unsloth Studio, you must use:\n\n"
+        f"{heading}\n\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"
+        "### Kimi K3\n\n- a real change\n"
+    )
+    stripped = notes_module.strip_release_body(body)
+    assert "install.sh" not in stripped and "macOS" not in stripped
+    assert "### Kimi K3" in stripped and "a real change" in stripped
+
+
 def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_releases):
     """GitHub answers a conditional request with 304 and no body, which is the
     release already held rather than a failure."""

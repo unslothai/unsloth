@@ -28,10 +28,12 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# 100 is the endpoint's maximum and costs the same one request as the default
-# 30, so the page is deep enough that a run of non-Studio releases cannot
-# push the newest announcement off it.
-RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=100"
+# The page is deliberately small. A release entry carries its whole body, and
+# the newest ones run about 40 KiB each, so the endpoint's maximum of 100 would
+# be near 4 MiB, twice the cap below, and the fetch would fail outright. 30 is
+# about 1.2 MiB at that rate, and the newest Studio release sits at the top of
+# the list, so the depth is not what is scarce here.
+RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
 RELEASES_TIMEOUT_SECONDS = 3
 RELEASES_MAX_BYTES = 2 * 1024 * 1024
@@ -147,6 +149,8 @@ _PROVENANCE = "build provenance"
 # Platform headings the upgrade block splits its commands across. They are
 # written as siblings of it as often as as children, so heading level alone
 # does not say where the block ends.
+# A slash or a comma between the platforms, however it is spaced.
+_PLATFORM_SEPARATOR = re.compile(r"\s*[/,]\s*")
 _PLATFORM_TITLES = frozenset(
     {
         "macos",
@@ -610,8 +614,12 @@ def _is_upgrade(title: str) -> bool:
 
 
 def _is_platform(title: str) -> bool:
-    """Whether `title` is one of the install block's per-platform headings."""
-    return title.replace("/", ",") in _PLATFORM_TITLES
+    """Whether `title` is one of the install block's per-platform headings.
+
+    The platforms are separated by a slash as readily as by a comma, and with
+    or without spaces around it, so the separators are read as one thing.
+    """
+    return _PLATFORM_SEPARATOR.sub(", ", title).strip(" ,") in _PLATFORM_TITLES
 
 
 def get_release_notes(version: str, refresh: bool = False) -> dict[str, Any]:
