@@ -59,10 +59,13 @@ GLOW_MIX_RADIUS = 110.0
 GLOW_STRENGTH = 1.48
 GLOW_SIGMA = 50.0
 
-# the icon label sits just below the icon, so the halo is eased well down
-# there. left, right and top keep the full falloff.
-GLOW_BOTTOM_FLOOR = 0.30
-GLOW_BOTTOM_SPAN = 90.0
+# the icon label sits just below the icon, so the halo is eased off down there.
+# the taper waits until START, which is inside the icon's own lower half, so the
+# disc still reads round and the transition is hidden behind the artwork rather
+# than eating the visible bottom edge. left, right and top keep the full falloff.
+GLOW_BOTTOM_FLOOR = 0.25
+GLOW_BOTTOM_START = 50.0
+GLOW_BOTTOM_SPAN = 30.0
 
 # chevron between the two icons, sized to match the macOS installers this
 # mirrors: a light 16x27pt mark in neutral grey, not a heavy arrow
@@ -98,11 +101,9 @@ def render_glow(canvas: np.ndarray) -> np.ndarray:
     radius = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
     weight = GLOW_STRENGTH * np.exp(-(radius**2) / (2.0 * sigma**2))
 
-    # smoothstep so the taper starts flat at the icon's centre line and leaves
-    # no visible seam where it begins
-    weight = weight * (
-        1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * smoothstep((ys - cy) / (GLOW_BOTTOM_SPAN * SCALE))
-    )
+    # smoothstep, so the taper eases in and out with no seam at either end
+    taper = smoothstep((ys - cy - GLOW_BOTTOM_START * SCALE) / (GLOW_BOTTOM_SPAN * SCALE))
+    weight = weight * (1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * taper)
 
     # a peak strength above 1 saturates the core rather than extrapolating past
     # the glow colour. that core sits under the app icon either way.
@@ -152,13 +153,15 @@ def report() -> None:
     halo = np.clip(base - render_glow(base), 0.0, None).max(axis = 2)
     cx, cy = APP_X * SCALE, APP_Y * SCALE
 
-    for name, sample in (
-        ("left", halo[cy, cx - 90 * SCALE]),
-        ("right", halo[cy, cx + 90 * SCALE]),
-        ("up", halo[cy - 90 * SCALE, cx]),
-        ("down", halo[cy + 90 * SCALE, cx]),
-    ):
-        print(f"  {name:<5} at 90pt   {sample * 100:5.1f}%")
+    # 60pt is the disc a viewer reads as round, 90pt is out in the label's row
+    for distance in (60, 90):
+        for name, sample in (
+            ("left", halo[cy, cx - distance * SCALE]),
+            ("right", halo[cy, cx + distance * SCALE]),
+            ("up", halo[cy - distance * SCALE, cx]),
+            ("down", halo[cy + distance * SCALE, cx]),
+        ):
+            print(f"  {name:<5} at {distance}pt   {sample * 100:5.1f}%")
 
     visible = np.nonzero(halo[cy, :cx] > 0.03)[0]
     print(f"  reach              {(cx - visible.min()) / SCALE:5.0f}pt")
