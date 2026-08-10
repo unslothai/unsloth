@@ -1026,10 +1026,11 @@ def add_scan_folder_response(path: str) -> dict:
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
-    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+    removed = remove_scan_folder(folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
 
-    invalidate_index()
-    warm_index_soon()
+        invalidate_index()
+        warm_index_soon()
     return {"ok": True}

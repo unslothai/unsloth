@@ -6488,6 +6488,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     def _remove(folder_id):
         calls.append((f"remove:{folder_id}", threading.get_ident()))
+        return True
 
     def _invalidate():
         calls.append(("invalidate", threading.get_ident()))
@@ -6520,13 +6521,14 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
     removed = []
     warmed = []
+
+    def _remove(folder_id):
+        removed.append(folder_id)
+        return True
+
     monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
-    monkeypatch.setattr(
-        "storage.studio_db.remove_scan_folder", lambda folder_id: removed.append(folder_id)
-    )
-    monkeypatch.setattr(
-        local_inventory, "remove_scan_folder", lambda folder_id: removed.append(folder_id)
-    )
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", _remove)
 
     resolver._scan = (time.monotonic(), {"org/old": entry})
     resolver.invalidate_index(additions_only = True)
@@ -6541,6 +6543,60 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
     assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
     assert removed == [7, 8]
     assert warmed == [1, 1]
+
+
+def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.storage import scan_folders
+    from storage import studio_db
+
+    class _Connection:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql, _params):
+            return SimpleNamespace(rowcount = self.rowcount)
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
+    for storage in (studio_db, scan_folders):
+        for rowcount, expected in ((1, True), (0, False)):
+            connection = _Connection(rowcount)
+            monkeypatch.setattr(
+                storage, "get_connection", lambda connection = connection: connection
+            )
+
+            assert storage.remove_scan_folder(7) is expected
+            assert connection.committed
+            assert connection.closed
+
+
+def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    invalidated = []
+    warmed = []
+    monkeypatch.setattr(resolver, "invalidate_index", lambda: invalidated.append(1))
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", lambda _folder_id: False)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", lambda _folder_id: False)
+
+    assert (
+        asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester"))
+        == {"ok": True}
+    )
+    assert local_inventory.remove_scan_folder_response(404) == {"ok": True}
+    assert invalidated == []
+    assert warmed == []
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):

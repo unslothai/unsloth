@@ -1584,11 +1584,12 @@ def add_scan_folder(path: str) -> dict:
     return row
 
 
-def remove_scan_folder(id: int) -> None:
+def remove_scan_folder(id: int) -> bool:
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
+        cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 

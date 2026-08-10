@@ -1237,12 +1237,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    await asyncio.to_thread(remove_scan_folder, folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
-    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
 
-    await asyncio.to_thread(invalidate_index)
-    warm_index_soon()
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
