@@ -972,14 +972,17 @@ class DiffusionTrainingStartResponse(BaseModel):
 
 
 class DiffusionMetricHistory(BaseModel):
-    """Paired step-indexed history arrays for the live training charts. ``lr`` and
-    ``grad_norm`` entries may be null so those sparse series still align with ``steps``
-    by index."""
+    """Paired step-indexed history arrays for the live training charts. Every series but
+    ``loss`` may hold nulls so the sparse ones still align with ``steps`` by index."""
 
     steps: List[int] = Field(default_factory = list)
     loss: List[float] = Field(default_factory = list)
     lr: List[Optional[float]] = Field(default_factory = list)
     grad_norm: List[Optional[float]] = Field(default_factory = list)
+    # The two halves of a joint video+audio objective (MiniMax-H3). All-null on every other
+    # family, which is what lets the chart decide whether to draw the split curves at all.
+    video_loss: List[Optional[float]] = Field(default_factory = list)
+    audio_loss: List[Optional[float]] = Field(default_factory = list)
 
 
 class DiffusionTrainingStatusResponse(BaseModel):
@@ -996,6 +999,10 @@ class DiffusionTrainingStatusResponse(BaseModel):
     learning_rate: Optional[float] = None
     # Total pre-clip gradient norm from the last optimizer step (health signal the UI charts).
     grad_norm: Optional[float] = None
+    # The last per-modality losses of a joint video+audio run (MiniMax-H3), None elsewhere. The
+    # combined loss can hold steady while one modality degrades, so these are reported apart.
+    video_loss: Optional[float] = None
+    audio_loss: Optional[float] = None
     num_images: Optional[int] = None
     in_model_load: bool = False
     output_dir: Optional[str] = None

@@ -79,8 +79,14 @@ def _trainable_here() -> set[str]:
     return {i["name"] for i in family_train_infos()}
 
 
-def _report_clips(monkeypatch, count: int) -> None:
+def _report_clips(monkeypatch, count: int, images: int | None = None) -> None:
     """Make the dataset layer report ``count`` clips for every folder it summarises.
+
+    ``images`` overrides the still count the real summariser found. The folders here are built
+    out of PNGs because there is no helper that writes a decodable clip, so a folder standing in
+    for a folder of CLIPS has to say ``images = 0`` -- otherwise it reports as a MIXED folder,
+    which is a different case with a different answer. Left as None it keeps the real count,
+    which is what an image dataset should report.
 
     Written to survive the dataset layer growing a real clip count: if
     ``DiffusionDatasetSummary`` already carries the field, the genuine model is used and this is
@@ -102,7 +108,7 @@ def _report_clips(monkeypatch, count: int) -> None:
         return model(
             name = base.name,
             path = base.path,
-            image_count = base.image_count,
+            image_count = base.image_count if images is None else images,
             caption_count = base.caption_count,
             clip_count = count,
         )
@@ -141,7 +147,9 @@ def test_a_clip_family_is_offered_as_soon_as_a_clip_dataset_is_listable(
     if not clip_families:
         pytest.skip("this install trains no clip family")
     _stills_dataset(ds_root, "video-clips")
-    _report_clips(monkeypatch, 3)
+    # A folder of clips, so images = 0: with stills left in it this is the mixed case, which
+    # test_a_mixed_folder_does_not_advertise_a_clip_family covers and which Start refuses.
+    _report_clips(monkeypatch, 3, images = 0)
 
     body = client.get("/api/train/diffusion/info").json()
     assert [d["name"] for d in body["datasets"]] == ["video-clips"]
@@ -181,10 +189,44 @@ def test_the_gate_withholds_exactly_the_clip_trained_families():
 
     # Derived from the dataset layer's own report, not from a hardcoded name or a flag someone
     # has to remember to flip: the source of the gate mentions no family at all.
-    src = inspect.getsource(tr._ui_trainable_families) + inspect.getsource(
-        tr._listed_dataset_clip_count
+    src = (
+        inspect.getsource(tr._ui_trainable_families)
+        + inspect.getsource(tr._listed_dataset_clip_count)
+        + inspect.getsource(tr._listed_dataset_trains_clips)
     )
     assert "minimax" not in src.lower()
+
+
+def test_a_mixed_folder_does_not_advertise_a_clip_family():
+    """The advertisement has to agree with the refusal that runs at Start, not merely with the
+    clip count.
+
+    ``_image_dataset_refusal`` turns a folder holding stills away from a clip family, so a mixed
+    folder that advertises H3 offers an option Start then rejects. That is the same dead end the
+    narrowing exists to close, reached one click later. A clip-only folder alongside it is enough
+    to bring the family back, because that folder really can start a run."""
+    import routes.training as tr
+    from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES, family_train_infos
+
+    every = {i["name"] for i in family_train_infos()}
+    clip_families = CLIP_TRAINED_FAMILIES & every
+    assert clip_families, "nothing to assert about if no family trains from clips"
+
+    def summary(name, images, clips_):
+        return DiffusionDatasetSummary(
+            name = name, path = f"/ds/{name}", image_count = images, clip_count = clips_,
+            caption_count = clips_ + images,
+        )
+
+    mixed_only = {i["name"] for i in tr._ui_trainable_families([summary("mixed", 4, 6)])}
+    assert not (mixed_only & clip_families)
+
+    # And the converse, so this cannot pass by withholding the family unconditionally.
+    with_clean = {
+        i["name"]
+        for i in tr._ui_trainable_families([summary("mixed", 4, 6), summary("clips", 0, 6)])
+    }
+    assert clip_families <= with_clean
 
 
 def test_a_summary_with_an_unreadable_clip_count_is_treated_as_no_clips():

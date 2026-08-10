@@ -48,6 +48,11 @@ H3_AUDIO_CHANNELS = 2
 # window is ~52ms, which covers the few-millisecond tail a container routinely ends short by
 # while still refusing a stream that is mostly silence.
 _MAX_AUDIO_PAD_FRACTION = 0.01
+# Peak amplitude at or below which a decoded window counts as silent, on PyAV's "flt" scale where
+# full scale is 1.0. About -80 dBFS: below the noise floor of any real recording, and above the
+# rounding dust an encode/decode round trip can leave on a track that was authored as digital
+# silence, so a genuinely muted soundtrack is caught whether or not it decodes to exact zeros.
+_SILENT_AUDIO_PEAK = 1e-4
 H3_AUDIO_LATENT_CHANNELS = 32
 H3_VIDEO_LATENT_CHANNELS = 24
 # Per-row modality tags, which index the transformer's AdaLN table.
@@ -462,4 +467,16 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
                 f"soundtrack runs its full length."
             )
         samples = np.pad(samples, ((0, missing), (0, 0)))
+    # A muted track runs the clip's full length, so every check above passes and the window comes
+    # back all zeros -- the same target the short-audio refusal exists to keep out, arriving by a
+    # route that refusal cannot see. Measured as peak amplitude rather than mean energy so a clip
+    # that is merely quiet, or silent for most of its length with one real sound in it, is kept:
+    # only a track with nothing above the floor anywhere is turned away.
+    if float(np.max(np.abs(samples))) <= _SILENT_AUDIO_PEAK:
+        raise ValueError(
+            f"{Path(path).name} has a soundtrack that is silent all the way through. "
+            f"MiniMax-H3 denoises video and audio together, so training on it would teach the "
+            f"adapter to stop generating sound. Use a clip whose soundtrack has audio in it, or "
+            f"take this one out of the dataset."
+        )
     return np.ascontiguousarray(samples.T)

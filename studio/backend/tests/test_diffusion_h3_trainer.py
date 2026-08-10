@@ -983,7 +983,11 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
 
         def decode(self, audio = 0):
             block = types.SimpleNamespace(
-                to_ndarray = lambda: np.zeros((self._n * clips.H3_AUDIO_CHANNELS,), dtype = "float32")
+                # A real signal, not zeros: this test is about DURATION, and an all-zero window
+                # is separately refused for being silent, which would mask what it checks.
+                to_ndarray = lambda: np.full(
+                    (self._n * clips.H3_AUDIO_CHANNELS,), 0.25, dtype = "float32"
+                )
             )
             return [block]
 
@@ -1001,6 +1005,71 @@ def test_a_mostly_silent_soundtrack_is_refused_rather_than_padded(tmp_path):
     # A soundtrack that is materially shorter is refused instead.
     with pytest.raises(ValueError, match = "of audio for a"):
         clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(target // 10), np)
+
+
+def test_a_soundtrack_that_is_silent_throughout_is_refused(tmp_path):
+    """A muted track is full length, so the duration checks above all pass and the window comes
+    back all zeros -- the very target the short-audio refusal exists to keep out, arriving by a
+    route that refusal cannot see. Training on it teaches the shared adapter to stop making
+    sound, so it is refused with the rest of the audio validation rather than accepted.
+
+    The control matters as much as the refusal: a track that is quiet, or silent for almost all
+    of its length with one real sound in it, is still a usable soundtrack and must be kept."""
+    import types
+
+    import numpy as np
+
+    from core.training import diffusion_h3_clips as clips
+
+    target = clips.h3_audio_sample_count(41)
+
+    class _Resampler:
+        def resample(self, frame):
+            return [] if frame is None else [frame]
+
+    def container_of(fill):
+        class _Container:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def decode(self, audio = 0):
+                buf = fill(target)
+                return [types.SimpleNamespace(to_ndarray = lambda b = buf: b)]
+
+        return _Container()
+
+    def fake_av(fill):
+        return types.SimpleNamespace(
+            AudioResampler = lambda **kw: _Resampler(),
+            open = lambda path, _f = fill: container_of(_f),
+        )
+
+    def silent(n):
+        return np.zeros((n * clips.H3_AUDIO_CHANNELS,), dtype = "float32")
+
+    def dithered(n):
+        # Not exact zeros: an encode/decode round trip leaves rounding dust on digital silence,
+        # and a threshold that only caught 0.0 would wave that through.
+        return (silent(n) + 1e-7).astype("float32")
+
+    def one_real_sound(n):
+        buf = silent(n)
+        buf[: 64 * clips.H3_AUDIO_CHANNELS] = 0.4
+        return buf
+
+    def quiet(n):
+        return (silent(n) + 0.01).astype("float32")
+
+    for fill in (silent, dithered):
+        with pytest.raises(ValueError, match = "silent all the way through"):
+            clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(fill), np)
+
+    for fill in (one_real_sound, quiet):
+        out = clips._decode_clip_audio(tmp_path / "a.mp4", target, fake_av(fill), np)
+        assert out.shape == (clips.H3_AUDIO_CHANNELS, target)
 
 
 def test_the_knobs_h3_cannot_honour_are_refused_or_normalised():
@@ -1525,8 +1594,10 @@ def test_the_audio_decode_stops_at_the_training_window(tmp_path):
             for _ in range(4000):  # an hour of audio behind a one-second window
                 decoded += 1
                 yield types.SimpleNamespace(
-                    to_ndarray = lambda: np.zeros(
-                        (target * clips.H3_AUDIO_CHANNELS,), dtype = "float32"
+                    # Nonzero for the same reason as above: the subject here is where decoding
+                    # STOPS, and a silent window is refused before that can be asserted.
+                    to_ndarray = lambda: np.full(
+                        (target * clips.H3_AUDIO_CHANNELS,), 0.25, dtype = "float32"
                     )
                 )
 
@@ -1683,9 +1754,12 @@ def _write_rotated_clip(
             img[:, : max(1, i * 4), 1] = 255
             for packet in video.encode(av.VideoFrame.from_ndarray(img, format = "rgb24")):
                 out.mux(packet)
-        frame = av.AudioFrame.from_ndarray(
-            np.zeros((1, 48000 * seconds), dtype = "float32"), format = "fltp", layout = "mono"
-        )
+        # An audible tone, not silence: these clips go through the real decode, which refuses a
+        # soundtrack that is silent end to end. A rotation test must not depend on that refusal
+        # being absent, and a clip with a working soundtrack is the realistic input anyway.
+        t = np.arange(48000 * seconds, dtype = "float32") / 48000.0
+        tone = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype("float32").reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(tone, format = "fltp", layout = "mono")
         frame.sample_rate = 48000
         for packet in audio.encode(frame):
             out.mux(packet)

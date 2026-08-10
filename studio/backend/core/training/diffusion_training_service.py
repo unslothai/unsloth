@@ -299,6 +299,9 @@ def _idle_state() -> dict[str, Any]:
         "avg_loss": None,
         "learning_rate": None,
         "grad_norm": None,
+        # The last per-modality losses of a joint run; None on families that train one modality.
+        "video_loss": None,
+        "audio_loss": None,
         "num_images": None,
         "in_model_load": False,
         "output_dir": None,
@@ -328,7 +331,23 @@ def _idle_state() -> dict[str, Any]:
         "metric_loss": [],
         "metric_lr": [],
         "metric_grad_norm": [],
+        # The two halves of MiniMax-H3's joint objective. Null on every other family, and null
+        # on H3 steps that reported only the combined loss, so the series stay index-aligned.
+        "metric_video_loss": [],
+        "metric_audio_loss": [],
     }
+
+
+# The value series, in append order, paired index-for-index with ``metric_steps``. One list so a
+# new series cannot be added to the appends and forgotten in the decimation below, which would
+# leave the curves silently misaligned rather than failing.
+_METRIC_SERIES: tuple[str, ...] = (
+    "metric_loss",
+    "metric_lr",
+    "metric_grad_norm",
+    "metric_video_loss",
+    "metric_audio_loss",
+)
 
 
 def _append_metric(
@@ -337,14 +356,16 @@ def _append_metric(
     loss: Any,
     lr: Any,
     grad_norm: Any = None,
+    video_loss: Any = None,
+    audio_loss: Any = None,
 ) -> None:
-    """Append one (step, loss, lr, grad_norm) point to the bounded history arrays on
-    ``state``.
+    """Append one (step, loss, lr, grad_norm, video_loss, audio_loss) point to the bounded
+    history arrays on ``state``.
 
     Only records finite, positive-step points (mirrors the LLM trainer, which logs history
     only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
     decimated in place (keep every other point) so appends stay bounded without losing the
-    curve's shape. lr / grad_norm may be None (kept as None so those series can be sparse
+    curve's shape. Everything but loss may be None (kept as None so those series can be sparse
     while staying index-aligned with ``steps``)."""
     try:
         istep = int(step)
@@ -355,28 +376,26 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay index-aligned.
-    flr = _finite_or_none(lr)
-    fgn = _finite_or_none(grad_norm)
+    # Every series but loss may be None or non-finite; non-finite is nulled (not dropped) to
+    # stay index-aligned.
+    values = {
+        "metric_loss": floss,
+        "metric_lr": _finite_or_none(lr),
+        "metric_grad_norm": _finite_or_none(grad_norm),
+        "metric_video_loss": _finite_or_none(video_loss),
+        "metric_audio_loss": _finite_or_none(audio_loss),
+    }
     steps = state["metric_steps"]
-    losses = state["metric_loss"]
-    lrs = state["metric_lr"]
-    gns = state["metric_grad_norm"]
     if len(steps) >= _METRIC_CAP:
         state["metric_steps"] = steps[::2]
-        state["metric_loss"] = losses[::2]
-        state["metric_lr"] = lrs[::2]
-        state["metric_grad_norm"] = gns[::2]
-        steps, losses, lrs, gns = (
-            state["metric_steps"],
-            state["metric_loss"],
-            state["metric_lr"],
-            state["metric_grad_norm"],
-        )
+        for key in _METRIC_SERIES:
+            state[key] = (state.get(key) or [])[::2]
+        steps = state["metric_steps"]
     steps.append(istep)
-    losses.append(floss)
-    lrs.append(flr)
-    gns.append(fgn)
+    for key in _METRIC_SERIES:
+        # setdefault, not [key]: a run resumed from a record written before a series existed
+        # carries a state dict without it, and losing the whole point is worse than a short tail.
+        state.setdefault(key, []).append(values[key])
 
 
 def _resolved_total_steps(state: dict[str, Any], cfg: dict[str, Any]) -> int:
@@ -792,6 +811,8 @@ class DiffusionTrainingService:
                 "avg_loss": s.get("avg_loss"),
                 "learning_rate": s.get("learning_rate"),
                 "grad_norm": s.get("grad_norm"),
+                "video_loss": s.get("video_loss"),
+                "audio_loss": s.get("audio_loss"),
                 "samples_per_second": s.get("samples_per_second"),
                 "peak_memory_gb": s.get("peak_memory_gb"),
                 "num_images": s.get("num_images"),
@@ -837,6 +858,8 @@ class DiffusionTrainingService:
                     "loss": s.get("metric_loss") or [],
                     "lr": s.get("metric_lr") or [],
                     "grad_norm": s.get("metric_grad_norm") or [],
+                    "video_loss": s.get("metric_video_loss") or [],
+                    "audio_loss": s.get("metric_audio_loss") or [],
                 },
             }
             path = _runs_dir() / f"{s['job_id']}.json"
@@ -941,6 +964,15 @@ class DiffusionTrainingService:
                 grad_norm = (
                     _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
                 )
+                # The two halves of a joint objective, when the trainer reports them. Folded
+                # like the rest rather than dropped: on MiniMax-H3 the combined loss can hold
+                # steady while one modality degrades, and these are the only signal that says so.
+                video_loss = (
+                    _finite_or_none(ev["video_loss"]) if "video_loss" in ev else s["video_loss"]
+                )
+                audio_loss = (
+                    _finite_or_none(ev["audio_loss"]) if "audio_loss" in ev else s["audio_loss"]
+                )
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
@@ -949,6 +981,8 @@ class DiffusionTrainingService:
                     avg_loss = avg_loss,
                     learning_rate = learning_rate,
                     grad_norm = grad_norm,
+                    video_loss = video_loss,
+                    audio_loss = audio_loss,
                     message = "Training...",
                 )
                 # Fold optional perf fields so the UI shows throughput + peak VRAM.
@@ -956,13 +990,15 @@ class DiffusionTrainingService:
                     s["samples_per_second"] = ev.get("samples_per_second")
                 if ev.get("peak_memory_gb") is not None:
                     s["peak_memory_gb"] = ev.get("peak_memory_gb")
-                # Retain a bounded (step, loss, lr, grad_norm) history for the live charts.
+                # Retain a bounded per-step history for the live charts.
                 _append_metric(
                     s,
                     ev.get("step"),
                     ev.get("loss"),
                     ev.get("learning_rate"),
                     ev.get("grad_norm"),
+                    ev.get("video_loss"),
+                    ev.get("audio_loss"),
                 )
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete with no preceding model_load_completed, leaving a stale indicator.
