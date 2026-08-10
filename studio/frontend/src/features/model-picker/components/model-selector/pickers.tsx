@@ -1751,6 +1751,7 @@ function GgufVariantExpander({
                     onDeleteVariant
                       ? {
                           title: deleteVariantTitle,
+                          impact: { repoId, variant: v.quant },
                           description: renderDeleteVariantDescription?.(
                             v.quant,
                           ) ?? (
@@ -3766,6 +3767,10 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
+              // Same preview the Hub On Device row asks for, so a companion base an
+              // installed image model still needs shows the reason and a disabled
+              // Delete rather than an enabled one that comes back 400.
+              impact: { repoId: entry.repoId, variant: entry.quant },
               description: (
                 <>
                   This will remove{" "}
@@ -3860,6 +3865,7 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
+              impact: { repoId: c.repo_id, variant: variant.quant },
               description: (
                 <>
                   This will remove{" "}
@@ -4033,6 +4039,7 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
+              impact: { repoId: c.repo_id },
               description: (
                 <>
                   This will remove{" "}
