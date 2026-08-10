@@ -300,7 +300,22 @@ class UnslothTrainer:
             ):
                 if not logs:
                     return
-                loss_value = logs.get("loss", logs.get("train_loss", None))
+                # HF logs the end-of-run summary as {"train_runtime": ..., "train_loss": ...}
+                # with no "loss" key, and `train_loss` is the MEAN loss over the whole run,
+                # not a step loss. Falling back to it reported the average as the final
+                # step's value: it landed on the chart at the same global_step as the real
+                # last step and became `final_loss` on /api/train/runs, disagreeing with the
+                # checkpoint. Keep reporting it, as the summary it is.
+                loss_value = logs.get("loss")
+                is_run_summary = loss_value is None and (
+                    logs.get("train_loss") is not None or logs.get("train_runtime") is not None
+                )
+                if is_run_summary:
+                    logger.info(
+                        "training finished: mean train_loss=%s over %s steps",
+                        logs.get("train_loss"),
+                        state.global_step,
+                    )
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
 
@@ -328,6 +343,7 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
+                    is_run_summary = is_run_summary,
                     status_message = "",
                 )
 
