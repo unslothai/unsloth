@@ -1349,7 +1349,9 @@ class VideoBackend:
 
     @staticmethod
     def _te_prequant_hub_files(
-        sources: dict[str, Any], api: Any, shas_out: Optional[dict[str, str]] = None
+        sources: dict[str, Any],
+        api: Any,
+        shas_out: Optional[dict[str, str]] = None,
     ) -> dict[str, list[tuple[str, int]]]:
         """``{component: [(rfilename, size)]}`` for every hosted pre-cast checkpoint that really
         resolves on the Hub.

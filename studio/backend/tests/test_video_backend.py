@@ -2066,7 +2066,11 @@ class _PlanSibling:
 
 
 class _PlanInfo:
-    def __init__(self, siblings, sha = None) -> None:
+    def __init__(
+        self,
+        siblings,
+        sha = None,
+    ) -> None:
         self.siblings = siblings
         self.sha = sha
 
@@ -2996,7 +3000,12 @@ def test_a_cached_precast_encoder_is_neither_staged_nor_charged(monkeypatch):
     _cuda_bf16_target(monkeypatch)
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _PlanInfo(
                 {
                     "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
@@ -3030,7 +3039,10 @@ def test_a_cached_precast_encoder_is_neither_staged_nor_charged(monkeypatch):
     base = next(e for e in plan["entries"] if e["repo_id"] == "Lightricks/LTX-2")
     assert not any(f.startswith("text_encoder/") for f in base["files"])
     # And the 13 GB it would have added is out of what the row advertises.
-    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == plan["total_bytes"] - 12_000_000_000
+    assert (
+        DiffusionDownloadPlanResponse(**plan).companion_bytes
+        == plan["total_bytes"] - 12_000_000_000
+    )
 
 
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
