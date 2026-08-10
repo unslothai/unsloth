@@ -18,6 +18,7 @@ import platform
 import random
 import re
 import shutil
+import signal
 import site
 import socket
 import ssl
@@ -5299,8 +5300,13 @@ def validate_server(
                     stderr = subprocess.STDOUT,
                     text = True,
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
+                    **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
                 )
+                # For the caller that spawned this script: a validation server is
+                # its grandchild, so a crash here leaves it holding the GPU and
+                # the staged files with nothing recording where it is.
+                _announce_child("started", process.pid)
                 deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
@@ -5360,13 +5366,11 @@ def validate_server(
                         + ("\n" + response_body if response_body else "")
                     )
         finally:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout = 5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout = 5)
+            if process is not None:
+                # Only once nothing is left in its group: announcing the stop
+                # drops the record, which is the only handle on a survivor.
+                if _terminate_validation_server(process):
+                    _announce_child("stopped", process.pid)
             try:
                 log_path.unlink(missing_ok = True)
             except Exception:
@@ -5374,6 +5378,134 @@ def validate_server(
     if last_failure is not None:
         raise last_failure
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
+
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _validation_server_leads_group() -> bool:
+    """Whether the validation server is started as its own group leader.
+
+    Only where the parent-death signal can be armed with it, so the two always
+    agree: the kill path may only killpg a group the server actually leads.
+    """
+    return os.name == "posix" and sys.platform.startswith("linux")
+
+
+def _validation_server_kwargs() -> "dict[str, Any]":
+    """Popen kwargs tying a validation server to this installer's lifetime.
+
+    Its own group keeps whatever the server starts reachable through the leader
+    alone, but it also takes the server out of the group Studio force-kills, so
+    the parent-death signal is armed alongside it: an installer that is killed
+    mid-validation must not leave a server holding the GPU and the staged files
+    until some later startup sweeps the breadcrumb.
+
+    macOS has no such signal, and the record only exists once the backend has
+    read the announcement that follows the spawn, so a session of its own there
+    would leave a window in which nothing can reach the server at all. It stays
+    in the inherited group instead, and the termination walk covers whatever it
+    starts.
+    """
+    if not _validation_server_leads_group():
+        return {}
+    kwargs: "dict[str, Any]" = {"start_new_session": True}
+    owner_pid = os.getpid()  # read pre-fork, so the child can tell reparenting apart
+
+    def _arm_parent_death() -> None:
+        # Post-fork, pre-exec: fork clears the setting, and subprocess runs
+        # preexec_fn after setsid, neither of which undoes it (a plain execve
+        # preserves it too). getppid closes the race where the installer was
+        # already gone by the time this ran.
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+            if os.getppid() != owner_pid:
+                os._exit(1)
+        except Exception:
+            pass
+
+    kwargs["preexec_fn"] = _arm_parent_death
+    return kwargs
+
+
+def _announce_child(state: str, pid: int) -> None:
+    """Tell whoever runs this script about a server it started.
+
+    Studio adopts the pid so its own sweep can reach it; run by hand the line is
+    just noise on stdout.
+    """
+    print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
+
+
+def _group_is_running(pgid: "int | None") -> bool:
+    """Whether anything is left in that process group."""
+    if pgid is None or os.name != "posix" or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_group(pgid: "int | None", grace: float) -> None:
+    """Give a signalled group its moment to go."""
+    deadline = time.time() + grace
+    while _group_is_running(pgid) and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0) -> bool:
+    """Stop the validation server and anything it started. True when it is gone.
+
+    Where it leads its own group, signalling the leader alone would leave a
+    child of its own behind, and a child that ignores SIGTERM outlives the
+    leader's exit. False means something is still in that group, and the caller
+    keeps the pid announced so a later sweep can still reach it.
+
+    Where it does not lead one it shares this installer's group, and killpg
+    would take the installer and Studio with it, so only the server itself is
+    signalled.
+    """
+    pgid = None
+    if _validation_server_leads_group() and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(process.pid)
+        except OSError:
+            # Already reaped, so its own pid is the group id: it was started in
+            # a session of its own, and the kernel holds that number for as long
+            # as any member of the group is still there.
+            pgid = process.pid
+        if pgid != process.pid:
+            pgid = None  # not the leader after all; never signal a shared group
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout = grace)
+    except subprocess.TimeoutExpired:
+        pass
+    # The leader exiting is not the answer: a member that ignored the SIGTERM
+    # is still holding the GPU and the staged files.
+    _wait_for_group(pgid, grace)
+    if pgid is not None and _group_is_running(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        _wait_for_group(pgid, grace)
+    elif pgid is None and process.poll() is None:
+        process.kill()
+    try:
+        process.wait(timeout = grace)
+    except subprocess.TimeoutExpired:
+        pass
+    return not _group_is_running(pgid) and process.poll() is not None
 
 
 def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
