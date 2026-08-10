@@ -42,7 +42,11 @@ from routes.training import (
 from routes.training import router as training_router
 
 
-def _write_png(path, color = (200, 100, 50), size = (8, 8)) -> None:
+def _write_png(
+    path,
+    color = (200, 100, 50),
+    size = (8, 8),
+) -> None:
     Image.new("RGB", size, color).save(path, format = "PNG")
 
 
