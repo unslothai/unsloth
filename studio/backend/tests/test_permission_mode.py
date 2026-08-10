@@ -2277,6 +2277,27 @@ def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("render_html", {}) is False
 
 
+def test_web_search_gated_only_when_it_fetches_a_url():
+    # Searching stays always-safe; a ``url`` makes the same tool fetch that exact page,
+    # an outbound request to a host the call names, so it asks in auto mode too.
+    for gate in (is_potentially_unsafe_tool_call, is_high_risk_tool_call):
+        assert gate("web_search", {"query": "hi"}) is False
+        assert gate("web_search", {}) is False
+        assert gate("web_search", {"url": ""}) is False
+        assert gate("web_search", {"url": None}) is False
+        assert gate("web_search", {"url": "   "}) is False
+        assert gate("web_search", {"url": "https://example.com/page"}) is True
+        assert gate("web_search", {"query": "hi", "url": "https://example.com"}) is True
+
+
+def test_web_search_name_only_gate_is_unchanged():
+    # is_always_safe_tool runs before arguments exist (streaming provisional card, the
+    # non-streaming stream requirement), so a query-only search must not start prompting.
+    from core.inference.tools import is_always_safe_tool
+
+    assert is_always_safe_tool("web_search") is True
+
+
 def test_render_html_gated_only_when_networked():
     # A static canvas auto-runs; one whose HTML/JS reaches the network asks.
     def rh(code):
