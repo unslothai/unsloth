@@ -1707,6 +1707,84 @@ def test_companion_sizes_omits_a_row_it_cannot_plan(client, monkeypatch):
     assert resp.json()["sizes"] == {"flux1-dev-Q4_K_M.gguf": 7}
 
 
+def test_companion_sizes_omits_a_row_the_hub_would_not_size(client, monkeypatch):
+    # An unreachable Hub does not raise: the planners answer with an empty best-effort plan, so a
+    # zero here would advertise the GGUF alone for a pick that then fetches its companions inline.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        if kwargs["gguf_filename"] == "flux1-dev-offline.gguf":
+            return {"entries": [], "total_bytes": 0, "sizing_failed": True}
+        return {
+            "entries": [
+                {
+                    "repo_id": "black-forest-labs/FLUX.1-dev",
+                    "files": ["x"],
+                    "bytes": 7,
+                    "gguf_filename": None,
+                }
+            ],
+            "total_bytes": 7,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["flux1-dev-Q4_K_M.gguf", "flux1-dev-offline.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["sizes"] == {"flux1-dev-Q4_K_M.gguf": 7}
+
+
+def test_companion_sizes_lists_each_repo_once_for_the_whole_batch(client, monkeypatch):
+    # 63 LTX quants each planned independently re-fetch the same checkpoint and base metadata
+    # about 126 times, which exhausts the Hub rate limit and fails the downloads that follow.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.plan_metadata import plan_model_info
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    listed: list[str] = []
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            listed.append(repo_id)
+            return types.SimpleNamespace(siblings = [], sha = "sha")
+
+    def _plan(model_path, **kwargs):
+        api = _Api()
+        # Whatever the planner would list for this pick: the repo and its base, once each.
+        plan_model_info(api, model_path)
+        plan_model_info(api, "black-forest-labs/FLUX.1-dev")
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": [f"flux1-dev-Q{n}.gguf" for n in range(8)],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    # Eight candidates, two repos, one listing each.
+    assert sorted(listed) == ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev-GGUF"]
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router

@@ -1120,7 +1120,11 @@ class SdCppDiffusionBackend:
                     ),
                 }
             )
-        return {"entries": entries, "total_bytes": total}
+        # A name the Hub would not size: the total is a floor, so a caller reporting it must not.
+        unsized = any(
+            (repo, name) not in sizes for repo, names in by_repo.items() for name in names
+        )
+        return {"entries": entries, "total_bytes": total, "sizing_failed": unsized}
 
     @staticmethod
     def _assets_by_repo(specs: list[tuple[str, str, str]]) -> dict[str, list[str]]:
@@ -1199,6 +1203,8 @@ class SdCppDiffusionBackend:
         A missing size only understates the manager's progress total; it must not fail the plan,
         which is the cheap pre-flight for a load that would otherwise download inline. The commit
         rides along because a cache hit only counts at the revision the Hub serves now."""
+        from .plan_metadata import plan_model_info
+
         out: dict[tuple[str, str], int] = {}
         shas: dict[str, str] = {}
         try:
@@ -1209,7 +1215,7 @@ class SdCppDiffusionBackend:
         for repo, names in by_repo.items():
             try:
                 # model_info, not get_paths_info: one call answers both the sizes and the commit.
-                info = api.model_info(repo, files_metadata = True)
+                info = plan_model_info(api, repo)
             except Exception:  # noqa: BLE001 -- one unreadable repo is non-fatal
                 continue
             sha = getattr(info, "sha", None)

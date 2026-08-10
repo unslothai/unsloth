@@ -1897,6 +1897,7 @@ class DiffusionBackend:
         file_sizes_out: Optional[dict[tuple[str, str], int]] = None,
         shas_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
+        failures_out: Optional[list[str]] = None,
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
@@ -1928,6 +1929,8 @@ class DiffusionBackend:
         meta-inits the encoder from the base repo's config."""
         from huggingface_hub import HfApi
 
+        from .plan_metadata import plan_model_info
+
         # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers
         # anonymously and the mirror lists the same names. _prefetch_files swaps when it pulls.
         from .diffusion_te_prequant import is_prequant_covered_weight
@@ -1943,7 +1946,7 @@ class DiffusionBackend:
 
         try:
             if kind == "pipeline":
-                info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                info = plan_model_info(api, repo_id, token = hf_token)
                 _record_sha(shas_out, repo_id, info)
                 picked = [
                     s
@@ -1968,7 +1971,7 @@ class DiffusionBackend:
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = api.model_info(repo_id, files_metadata = True, token = hf_token)
+                info = plan_model_info(api, repo_id, token = hf_token)
                 _record_sha(shas_out, repo_id, info)
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
@@ -1984,7 +1987,7 @@ class DiffusionBackend:
                 def base_filter(rfilename: str) -> bool:
                     return _base_file_downloaded(rfilename, include_transformer = include_transformer)
 
-            base_info = api.model_info(base_repo, files_metadata = True, token = hf_token)
+            base_info = plan_model_info(api, base_repo, token = hf_token)
             _record_sha(shas_out, base_repo, base_info)
             if callable(include_transformer):
                 kept = [s.rfilename for s in base_info.siblings if not _dense_te_shard(s.rfilename)]
@@ -2011,6 +2014,8 @@ class DiffusionBackend:
                 sizes_out[base_repo] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
+            if failures_out is not None:
+                failures_out.append(str(exc))
         return total, base_files
 
     @staticmethod
@@ -2120,6 +2125,7 @@ class DiffusionBackend:
         sizes: dict[str, int] = {}
         file_sizes: dict[tuple[str, str], int] = {}
         shas: dict[str, str] = {}
+        sizing_failures: list[str] = []
         # Total discarded: it counts every file the pick needs, not what is left to fetch.
         _estimate_total, base_files = self._estimate_download_bytes(
             repo_id,
@@ -2149,6 +2155,7 @@ class DiffusionBackend:
             file_sizes_out = file_sizes,
             shas_out = shas,
             skip_te_components = tuple(te_files),
+            failures_out = sizing_failures,
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
         # answers model_info anonymously, so the plan would otherwise be confident and the 401 land
@@ -2225,6 +2232,7 @@ class DiffusionBackend:
         return {
             "entries": entries,
             "total_bytes": int(sum(e["bytes"] for e in entries)),
+            "sizing_failed": bool(sizing_failures),
             "incompatible_reason": incompatible,
         }
 

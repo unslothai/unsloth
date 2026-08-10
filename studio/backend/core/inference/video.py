@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference.plan_metadata import plan_model_info
 from loggers import get_logger
 
 from .diffusion_attention import (
@@ -1336,7 +1337,7 @@ class VideoBackend:
             if n
         ]
         try:
-            info = api.model_info(source.location, files_metadata = True)
+            info = plan_model_info(api, source.location)
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
             logger.warning("video.denoiser_prequant_unavailable: %s: %s", source.location, exc)
             return None, []
@@ -1367,7 +1368,7 @@ class VideoBackend:
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
             try:
-                info = api.model_info(source.location, files_metadata = True)
+                info = plan_model_info(api, source.location)
             except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
                 logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
                 continue
@@ -1578,7 +1579,7 @@ class VideoBackend:
         try:
             api = HfApi(token = hf_token or None)
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = record_sha(repo_id, api.model_info(repo_id, files_metadata = True))
+                info = record_sha(repo_id, plan_model_info(api, repo_id))
                 sizes = [
                     (s.rfilename, int(s.size or 0))
                     for s in (info.siblings or [])
@@ -1595,7 +1596,7 @@ class VideoBackend:
                         if LTX23_EXTRAS_REPO == repo_id
                         else record_sha(
                             LTX23_EXTRAS_REPO,
-                            api.model_info(LTX23_EXTRAS_REPO, files_metadata = True),
+                            plan_model_info(api, LTX23_EXTRAS_REPO),
                         )
                     )
                     total += add(
@@ -1619,7 +1620,7 @@ class VideoBackend:
             if dq_repo:
                 total += add(dq_repo, dq_files)
             if base and not Path(base).expanduser().exists():
-                info = record_sha(base, api.model_info(base, files_metadata = True))
+                info = record_sha(base, plan_model_info(api, base))
                 total += add(
                     base,
                     self._base_download_files(
@@ -1634,7 +1635,7 @@ class VideoBackend:
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
+            return {"entries": [], "total_bytes": 0, "sizing_failed": True}
         return self._drop_cached_entries(entries.values(), shas)
 
     @staticmethod
@@ -1685,10 +1686,8 @@ class VideoBackend:
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
-                info = api.model_info(repo, files_metadata = True)
-                sha = getattr(info, "sha", None)
-                if isinstance(sha, str) and sha:
-                    shas[repo] = sha
+                info = plan_model_info(api, repo)
+                _record_plan_sha(shas, repo, info)
                 match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
                 if match is None:
                     raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
@@ -1711,7 +1710,7 @@ class VideoBackend:
                     entry["gguf_bytes"] = size
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
+            return {"entries": [], "total_bytes": 0, "sizing_failed": True}
         return VideoBackend._drop_cached_entries(grouped.values(), shas)
 
     @staticmethod

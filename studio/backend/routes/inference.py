@@ -20107,28 +20107,44 @@ async def _companion_sizes_for(filenames, plan_for) -> dict[str, int]:
 
     ``plan_for(name, check_precision)`` returns that candidate's download plan. Only the first
     candidate carries the precision check, so an unsupported scheme still refuses the batch with
-    the status the load would give, and the rest skip a verdict that never reads the filename. A
-    candidate whose plan fails is omitted, not reported as 0: its row keeps the size it had rather
-    than claiming the pick is free."""
+    the status the load would give, and the rest skip a verdict that never reads the filename.
+
+    A candidate is omitted, never reported as 0, whenever its plan raised or the Hub would not
+    size it: the planners answer an unreachable Hub with an empty best-effort plan, and reporting
+    that floor would advertise the GGUF alone for a pick that then fetches multi-GB companions
+    inline. An omitted row keeps the size it already had."""
+    from core.inference.plan_metadata import shared_plan_metadata
+
     ordered = list(dict.fromkeys(name for name in filenames if name))
     if not ordered:
         return {}
-    # Alone, because it is the one allowed to raise and must not race siblings raising the same.
-    head = DiffusionDownloadPlanResponse(**await plan_for(ordered[0], True))
-    sizes = {ordered[0]: head.companion_bytes}
-    gate = asyncio.Semaphore(_COMPANION_SIZE_CONCURRENCY)
 
-    async def _one(name: str):
-        async with gate:
-            try:
-                plan = await plan_for(name, False)
-            except Exception:  # noqa: BLE001 -- one unplannable row must not fail the expander
-                return name, None
-            return name, DiffusionDownloadPlanResponse(**plan).companion_bytes
+    def _answer(plan: dict) -> Optional[int]:
+        """The plan's companion bytes, or None when the Hub would not size it."""
+        resolved = DiffusionDownloadPlanResponse(**plan)
+        return None if resolved.sizing_failed else resolved.companion_bytes
 
-    for name, value in await asyncio.gather(*(_one(n) for n in ordered[1:])):
-        if value is not None:
-            sizes[name] = value
+    # One listing per repo for the whole batch: 63 LTX quants otherwise re-fetch the same
+    # checkpoint and base metadata ~126 times and exhaust the Hub rate limit.
+    with shared_plan_metadata():
+        # Alone, because it is the one allowed to raise and must not race siblings raising the
+        # same. It also warms the shared listings the rest read.
+        sizes: dict[str, int] = {}
+        head = _answer(await plan_for(ordered[0], True))
+        if head is not None:
+            sizes[ordered[0]] = head
+        gate = asyncio.Semaphore(_COMPANION_SIZE_CONCURRENCY)
+
+        async def _one(name: str):
+            async with gate:
+                try:
+                    return name, _answer(await plan_for(name, False))
+                except Exception:  # noqa: BLE001 -- one unplannable row must not fail the expander
+                    return name, None
+
+        for name, value in await asyncio.gather(*(_one(n) for n in ordered[1:])):
+            if value is not None:
+                sizes[name] = value
     return sizes
 
 

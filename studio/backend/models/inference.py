@@ -2987,6 +2987,13 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "40.87 GB and fetched 57.73 GB). Derived from entries, so it drops whatever the cache "
         "already serves, exactly as the rows the Downloads panel lists do.",
     )
+    sizing_failed: bool = Field(
+        False,
+        description = "The Hub would not say how big this pick is, so entries and totals are a "
+        "floor, not an answer. The plan still stages what it knows and the load still falls back "
+        "to its own inline pull, but a caller reporting a size must say nothing rather than "
+        "report the floor as the truth.",
+    )
     incompatible_reason: Optional[str] = Field(
         None,
         description = "Why this pick cannot load as selected (today: a FLUX.2 GGUF paired with a "
