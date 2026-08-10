@@ -131,6 +131,10 @@ from state.tool_approvals import (
 
 logger = get_logger(__name__)
 
+# Floor for a GGUF TTS read, scaled by requested tokens at the call site. This backend
+# decodes in seconds; the subprocess one needs minutes, so they do not share a base.
+_GGUF_AUDIO_READ_TIMEOUT = 300.0
+
 
 class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
@@ -17059,11 +17063,14 @@ class LlamaCppBackend:
 
         # Scale with the request the way the subprocess path does: a flat 300s aborts a
         # legitimate long generation on a CPU-only or slow host now that the page offers
-        # more tokens than the old ceiling. 300s stays the floor, so nothing that fit
-        # before gets less time. Imported here to keep the module import acyclic.
+        # more tokens than the old ceiling. Scaled from this backend's own 300s floor,
+        # not the subprocess one: llama.cpp answers in seconds, and /audio/speech is in
+        # _INFERENCE_SUFFIXES, so a wedged server holds other_inference_request_count()
+        # up for the whole window, blocking idle auto-unload and 409-ing a training start.
+        # Imported here to keep the module import acyclic.
         from core.inference.orchestrator import _audio_generation_timeout
 
-        read_timeout = max(300.0, _audio_generation_timeout(max_new_tokens))
+        read_timeout = _audio_generation_timeout(max_new_tokens, base = _GGUF_AUDIO_READ_TIMEOUT)
         with httpx.Client(
             timeout = httpx.Timeout(read_timeout, connect = 10),
             headers = self._auth_headers,

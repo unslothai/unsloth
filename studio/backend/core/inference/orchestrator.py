@@ -80,11 +80,20 @@ _AUDIO_CANCEL_TEARDOWN_TIMEOUT = 30.0
 _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
-def _audio_generation_timeout(max_new_tokens: int) -> float:
-    """Keep the existing floor, but give longer requested audio room to finish."""
+def _audio_generation_timeout(
+    max_new_tokens: int,
+    base: float = _AUDIO_GENERATION_TIMEOUT,
+) -> float:
+    """Scale a floor by the requested token count.
+
+    ``base`` differs per backend by an order of magnitude: the Transformers subprocess
+    needs minutes for a clip llama.cpp returns in seconds, so llama_cpp.py passes its
+    own. Sharing one base silently gave every GGUF read the Transformers budget, which
+    holds other_inference_request_count() up and blocks idle auto-unload for that long.
+    """
     max_new_tokens = min(AUDIO_GENERATION_MAX_TOKENS, max(1, int(max_new_tokens)))
     token_scale = max(1.0, max_new_tokens / _AUDIO_GENERATION_BASE_TOKENS)
-    return _AUDIO_GENERATION_TIMEOUT * token_scale
+    return base * token_scale
 
 
 _MLX_RUNTIME_MIRROR_FIELDS = (

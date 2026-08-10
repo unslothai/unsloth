@@ -2550,7 +2550,10 @@ def _audio_type_of_checkpoint(model_path: str, base_model: Optional[str]) -> Opt
         if not candidate:
             continue
         try:
-            audio_type = detect_audio_type(candidate)
+            # local_files_only: this route was a filesystem scan. A trained checkpoint's
+            # base is already cached, and a non-definitive miss is deliberately not cached,
+            # so a gated or offline base would re-fetch on every poll.
+            audio_type = detect_audio_type(candidate, local_files_only = True)
         except Exception as exc:  # never let a scan row fail the whole listing
             logger.debug("audio detection failed for %r: %s", candidate, exc)
             continue
