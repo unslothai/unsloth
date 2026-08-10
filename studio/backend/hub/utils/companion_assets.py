@@ -157,6 +157,43 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         return wrote and not known
 
 
+def _snapshot_relative_names(repo) -> Iterable[str]:
+    """Every cached file of *repo* as a SNAPSHOT-RELATIVE posix name.
+
+    ``CachedFileInfo.file_name`` is the basename alone; the path inside the snapshot only comes
+    back from ``file_path`` relative to ``snapshot_path``. Family detection reads the whole
+    relative name, so a GGUF filed under ``FLUX.2-klein/model-Q4_K_M.gguf`` is a dependent that a
+    basename-only scan cannot see. The inventory and cleanup scanners already reconstruct it this
+    way; this is the same reconstruction, so all three agree on what a cached file is called."""
+    for revision in getattr(repo, "revisions", ()) or ():
+        snapshot = getattr(revision, "snapshot_path", None)
+        for file in getattr(revision, "files", ()) or ():
+            name = str(getattr(file, "file_name", "") or "")
+            path = getattr(file, "file_path", None)
+            if path and snapshot:
+                try:
+                    name = Path(path).relative_to(Path(snapshot)).as_posix()
+                except ValueError:
+                    pass
+            if name:
+                yield name
+
+
+def holds_denoiser(name: str) -> bool:
+    """A denoiser weight: a GGUF anywhere, or a shard under the pipeline's denoiser folder.
+
+    Its presence is what separates a checkpoint the user installed from a companion-only fetch,
+    which takes everything BUT the denoiser folder."""
+    lowered = name.lower()
+    if lowered.endswith(".gguf"):
+        return True
+    return lowered.startswith(_DENOISER_DIRS) and lowered.endswith(_WEIGHT_SUFFIXES)
+
+
+_DENOISER_DIRS = ("transformer/", "unet/")
+_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
+
+
 def _cached_main_gguf_names(cache_scans) -> dict[str, str]:
     """``{repo_id_lower: one cached main GGUF filename}`` for the family probe below.
 
@@ -174,17 +211,31 @@ def _cached_main_gguf_names(cache_scans) -> dict[str, str]:
                 key = _normalise(str(getattr(repo, "repo_id", "") or ""))
                 if not key or key in names:
                     continue
-                for revision in getattr(repo, "revisions", ()) or ():
-                    for file in getattr(revision, "files", ()) or ():
-                        name = str(getattr(file, "file_name", "") or "")
-                        if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
-                            names[key] = name
-                            break
-                    if key in names:
+                for name in _snapshot_relative_names(repo):
+                    if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
+                        names[key] = name
                         break
             except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
                 continue
     return names
+
+
+def _denoiser_holding_repo_ids(cache_scans) -> set[str]:
+    """Cached repos (lowercased ids) that hold a runnable denoiser, i.e. real checkpoints."""
+    held: set[str] = set()
+    for scan in cache_scans or ():
+        for repo in getattr(scan, "repos", ()) or ():
+            try:
+                if str(getattr(repo, "repo_type", "")) != "model":
+                    continue
+                key = _normalise(str(getattr(repo, "repo_id", "") or ""))
+                if not key or key in held:
+                    continue
+                if any(holds_denoiser(name) for name in _snapshot_relative_names(repo)):
+                    held.add(key)
+            except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
+                continue
+    return held
 
 
 def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]:
@@ -214,6 +265,7 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
         # no dependent here to protect -- not a gap, the two fail together.
         return set()
     bases = {resolve_base_repo(fam, None)}
+    bases |= _curated_variant_bases(fam, repo_id, gguf_filename)
     # The NATIVE engine's companions as well. It never reads the diffusers base: it fetches a
     # single-file VAE and text encoder from their own repos, and those repos are offerable for
     # deletion, so a pre-existing native GGUF with no recorded link would have had its encoder
@@ -221,6 +273,45 @@ def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]
     # has happened since; this covers the install that predates them.
     bases |= {repo for repo, _file in _sd_cpp_component_specs(fam, repo_id, gguf_filename)}
     return _with_mirrors(bases)
+
+
+def _curated_variant_bases(fam, repo_id: str, gguf_filename: Optional[str]) -> set[str]:
+    """Curated bases of *fam* that the checkpoint's own identity names, beyond the family default.
+
+    One family entry serves several sizes, and which one a pick uses comes from the Hub card's
+    ``base_model`` tag. Offline that tag is gone, so ``resolve_base_repo(fam, None)`` answers the
+    family DEFAULT: an installed ``unsloth/FLUX.2-klein-9B-GGUF`` derived as needing the 4B base,
+    while its cached ``black-forest-labs/FLUX.2-klein-9B`` had no dependent at all. That base is
+    in the curated offerable set, so before the checkpoint's first recorded load Free up space
+    would list it and delete the companions of a model that is still installed.
+
+    Conservative on both ends. Candidates come only from the curated tables, only from entries
+    belonging to THIS family, and only when the checkpoint id or its GGUF file name literally
+    contains the base's repo name -- so a wrong guess can add a dependent, never invent a repo.
+    Naming one base too many costs a delete that is refused; naming one too few costs an
+    installed model."""
+    family = _normalise(getattr(fam, "name", "") or "")
+    if not family:
+        return set()
+    identity = f"{_normalise(repo_id)} {_normalise(gguf_filename or '')}"
+    out: set[str] = set()
+    for candidate in _curated_base_ids():
+        name = _normalise(candidate.rsplit("/", 1)[-1])
+        if name.startswith(family) and name in identity:
+            out.add(candidate)
+    return out
+
+
+def _curated_base_ids() -> set[str]:
+    """Curated family bases and their gated/mirror variants, as written in the tables."""
+    ids: set[str] = set()
+    try:
+        from core.inference.diffusion_families import _FAMILIES
+        ids |= {fam.base_repo for fam in _FAMILIES if getattr(fam, "base_repo", None)}
+    except Exception as exc:  # noqa: BLE001 -- no table means no extra candidates, as before
+        logger.debug("Companion base table unavailable: %s", exc)
+    ids |= _mirror_pair_ids()
+    return ids
 
 
 def _sd_cpp_component_specs(
@@ -320,12 +411,11 @@ def known_companion_base_ids() -> set[str]:
     Deliberately NOT "anything a link ever named": orphan cleanup offers only repos this set
     recognises, so a mis-recorded link can never turn an unrelated repo into a delete candidate.
     """
-    try:
-        from core.inference.diffusion_families import _FAMILIES
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Companion base table unavailable: %s", exc)
-        return set()
-    bases = {fam.base_repo for fam in _FAMILIES if getattr(fam, "base_repo", None)}
+    # Family bases and their gated/mirror variants. The pairs are companion bases by construction
+    # -- they exist only because a GGUF pick of that family needs an ungated copy of them -- and
+    # they cover the variants one family entry serves through a card tag (klein-9B under the
+    # klein-4B family, and so on).
+    bases = _curated_base_ids()
     # The native engine's component-only repos (a single-file VAE, a text encoder) are curated
     # table entries too, and for an sd.cpp pick they ARE the companions -- the largest half of the
     # footprint. Leaving them out made them link-only strangers: unlisted by Free up space and
@@ -337,10 +427,6 @@ def known_companion_base_ids() -> set[str]:
         bases |= set(sd_cpp_companion_only_repo_ids())
     except Exception as exc:  # noqa: BLE001 -- one missing table never hides the rest
         logger.debug("sd.cpp companion table unavailable: %s", exc)
-    # The gated/mirror pairs are companion bases by construction -- they exist only because a
-    # GGUF pick of that family needs an ungated copy of them -- and they cover the variants one
-    # family entry serves through a card tag (klein-9B under the klein-4B family, and so on).
-    bases |= _mirror_pair_ids()
     return {_normalise(b) for b in _with_mirrors(bases)}
 
 
@@ -407,10 +493,11 @@ def required_companion_bases(
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
     gguf_names = _cached_main_gguf_names(cache_scans)
+    component_only = _cached_component_only_repo_ids(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
-        if key in ignored:
+        if key in ignored or key in component_only:
             continue
         bases = _family_bases(repo_id, gguf_names.get(key))
         recorded = links.get(key)
@@ -427,6 +514,27 @@ def required_companion_bases(
                 continue
             required.setdefault(base_key, set()).add(repo_id)
     return required
+
+
+def _cached_component_only_repo_ids(cache_scans) -> set[str]:
+    """Cached curated component repos holding no denoiser: companions, never checkpoints.
+
+    Several of those ids carry a family keyword of their own -- ``unsloth/FLUX.2-dev-ComfyUI``
+    detects as flux.2-dev -- so the loop above read a bare text-encoder fetch as an installed
+    checkpoint and recorded the sibling VAE as still required. The orphaned pair then held each
+    other on disk: Free up space would not list them and a delete was refused, until the user
+    happened to remove one component first. A repo that does hold a denoiser is a model the user
+    installed and still counts, which is what keeps a borrowed chat GGUF a dependent of nothing
+    and a checkpoint of itself."""
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+        curated = {_normalise(r) for r in sd_cpp_companion_only_repo_ids()}
+    except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
+        logger.debug("sd.cpp companion table unavailable: %s", exc)
+        return set()
+    if not curated:
+        return set()
+    return curated - _denoiser_holding_repo_ids(cache_scans)
 
 
 def _canonical(repo_id: str) -> str:

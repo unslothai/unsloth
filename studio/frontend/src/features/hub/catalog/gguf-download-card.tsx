@@ -901,6 +901,7 @@ export function GgufDownloadCard({
               }}
               title="Delete quantization?"
               deleting={deleting}
+              blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
               onConfirm={() => void runDelete()}
               description={
                 <>

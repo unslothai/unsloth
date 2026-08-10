@@ -26,7 +26,7 @@ from loggers import get_logger
 from hub.utils import companion_assets
 from hub.utils.gguf import extract_quant_label
 from hub.services.models import cache_inventory
-from hub.services.models.common import _is_gguf_filename, _is_main_gguf_filename
+from hub.services.models.common import _is_main_gguf_filename
 from hub.utils.paths import is_valid_gguf_variant as _is_valid_gguf_variant
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
@@ -58,16 +58,9 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
     return sum(unique.values())
 
 
-_DENOISER_DIRS = ("transformer/", "unet/")
-_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
-
-
-def _holds_denoiser(name: str) -> bool:
-    """A denoiser weight: a GGUF anywhere, or a shard under the pipeline's denoiser folder."""
-    lowered = name.lower()
-    if _is_gguf_filename(name):
-        return True
-    return lowered.startswith(_DENOISER_DIRS) and lowered.endswith(_WEIGHT_SUFFIXES)
+# One definition, so the orphan listing and the delete preview cannot disagree about which cached
+# repos are leftovers (see companion_assets.holds_denoiser).
+_holds_denoiser = companion_assets.holds_denoiser
 
 
 def _repos_by_id(cache_scans) -> dict[str, list]:
@@ -175,7 +168,15 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         entry = {"repo_id": display, "size_bytes": base_bytes, "needed_by": holders}
         if holders:
             retained.append(entry)
-        elif base_key in offerable:
+        # The SAME offerability test orphan_companions_response applies, because this row is a
+        # pointer at that list. A borrowed chat GGUF repo (the native Qwen-Image text encoder) is a
+        # curated companion id but holds a denoiser, so the orphan endpoint skips it; advertising
+        # it here sent the user to Free up space to remove a row that is never there. Per copy,
+        # like the listing: one pipeline copy in another cache root must not hide a companion-only
+        # copy that Free up space really will offer.
+        elif base_key in offerable and any(
+            not _repo_blob_bytes(r, only = _holds_denoiser) for r in base_repos
+        ):
             freeable.append(entry)
         # Else: a base only a recorded link names. It is unheld, but the orphan endpoint is
         # table-only by design (a mis-recorded link must never turn an unrelated repo into a

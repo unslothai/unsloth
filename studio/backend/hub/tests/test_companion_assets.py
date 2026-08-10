@@ -178,13 +178,15 @@ def test_shared_base_delete_is_blocked_through_the_ungated_mirror_identity(monke
 
 
 def test_a_base_reached_only_through_a_card_tag_is_still_protected(monkeypatch):
-    """A GGUF pick caches no model card, so family detection alone would call this base an
-    orphan. The link the resolver recorded at load time is what keeps it protected."""
+    """A GGUF pick caches no model card, so family detection alone answers the family DEFAULT
+    base. The checkpoint's own identity names the variant it needs, and the link the resolver
+    recorded at load time confirms it."""
     gguf = _repo("unsloth/FLUX.2-klein-9B-GGUF", [("flux-2-klein-9b-Q4_K_M.gguf", Q4_K_M_BYTES)])
     other_base = "black-forest-labs/FLUX.2-klein-9B"
     _install(monkeypatch, gguf, _base_repo(other_base))
-    # Without the link, the family default points at klein-4B and klein-9B looks reclaimable.
-    assert companion_cleanup.companion_dependents(other_base) == []
+    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is
+    # derived even though the family default is klein-4B.
+    assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
     companion_assets.record_companion_link("unsloth/FLUX.2-klein-9B-GGUF", other_base)
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
     with pytest.raises(HTTPException) as excinfo:
@@ -569,3 +571,63 @@ def test_deleting_the_companion_quant_itself_runs_the_guard(monkeypatch):
     )
     # ... and the guard reports the dependant, so the delete is refused rather than silently done.
     assert companion_cleanup.companion_dependents(encoder_repo) == ["some-owner/qwen-image"]
+
+
+def test_a_gguf_in_a_subdirectory_still_pins_its_base(monkeypatch):
+    """``CachedFileInfo.file_name`` is the basename alone. A repo whose id says nothing and whose
+    GGUF sits in a subdirectory carries its family only in the directory part, so a basename-only
+    scan detected no family and Free up space would offer the base out from under it."""
+    _install(
+        monkeypatch,
+        _repo("some-owner/custom", [("FLUX.2-klein-4B/model-Q4_K_M.gguf", 2_000_000)]),
+        _base_repo(),
+    )
+    required = companion_assets.required_companion_bases(cache_inventory.all_hf_cache_scans())
+    assert "some-owner/custom" in required.get(BASE_REPO.lower(), set())
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
+    """A component repo is a companion, not a checkpoint. Several of those ids carry a family
+    keyword of their own, so the derivation read a bare text-encoder fetch as an installed model
+    and recorded the sibling VAE as still required: the pair survived every cleanup pass until the
+    user happened to remove one of them by hand."""
+    encoder = "unsloth/FLUX.2-dev-ComfyUI"
+    vae = "unsloth/FLUX.2-VAE"
+    _install(
+        monkeypatch,
+        _repo(encoder, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]),
+        _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+    )
+    assert companion_cleanup.companion_dependents(vae) == []
+    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    assert offered == {encoder, vae}
+
+
+def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch):
+    """The exclusion above is denoiser-gated, so a curated component id the user really did
+    install a GGUF from keeps pinning what it needs."""
+    encoder = "unsloth/FLUX.2-dev-ComfyUI"
+    _install(
+        monkeypatch,
+        _repo(encoder, [("split_files/diffusion_models/flux2-dev-Q4_K_M.gguf", 8_000_000)]),
+        _repo("unsloth/FLUX.2-VAE", [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+    )
+    assert companion_cleanup.companion_dependents("unsloth/FLUX.2-VAE") == [encoder]
+
+
+def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
+    """The delete preview must point only at rows Free up space will really show. A borrowed chat
+    GGUF repo is a curated companion id but holds a denoiser, so the orphan listing skips it;
+    naming it here sent the user to remove something that is never on that list."""
+    borrowed = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
+    checkpoint = "some-owner/qwen-image"
+    _install(
+        monkeypatch,
+        _repo(checkpoint, [("Qwen-Image-Q4_K_M.gguf", 9_000_000)]),
+        _repo(borrowed, [("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)]),
+    )
+    impact = asyncio.run(companion_cleanup.delete_impact_response(checkpoint))
+    assert borrowed not in {c["repo_id"] for c in impact["freeable_companions"]}
+    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    assert borrowed not in offered
