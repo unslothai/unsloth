@@ -310,7 +310,8 @@ class UnslothTrainer:
                 if loss_value is None and logs.get("train_loss") is not None:
                     logger.info(
                         "training finished: mean train_loss=%s over %s steps",
-                        logs.get("train_loss"), state.global_step,
+                        logs.get("train_loss"),
+                        state.global_step,
                     )
                 current_step = state.global_step
                 grad_norm = logs.get("grad_norm", None)
