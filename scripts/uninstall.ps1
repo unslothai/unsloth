@@ -389,6 +389,40 @@ Environment:
         } catch { }
     }
 
+    # The reparse-point TARGETS of $Roots, for the stop scan only.
+    #
+    # A junction or directory symlink Studio home runs its native binaries out of the PHYSICAL
+    # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
+    # and launching sd-server there, while _CustomStudioRoots only normalizes the string --
+    # System.IO.Path.GetFullPath is lexical and never touches the filesystem, so it leaves a
+    # reparse point untouched. The prefix scan below reads Win32_Process.ExecutablePath, the real
+    # image path, so without the target the running server never matches and survives an uninstall
+    # that took its tree.
+    #
+    # Stop scan only, deliberately. _RemoveRootRecordingDb and the deletes still refuse to chase a
+    # link out of the expected location -- following one to delete its target is exactly what the
+    # deny list exists to prevent. Ending a process under the target is not destructive.
+    function _ReparseTargetsOf {
+        param([string[]]$Roots)
+        $targets = @()
+        foreach ($r in @($Roots | Where-Object { $_ })) {
+            try {
+                $item = Get-Item -LiteralPath $r -Force -ErrorAction SilentlyContinue
+                if (-not $item -or -not $item.Target) { continue }
+                $t = @($item.Target)[0]
+                if ([string]::IsNullOrWhiteSpace($t)) { continue }
+                # A symlink target may be relative; a junction's never is. Anchor it on the link's
+                # own parent, or GetFullPath would read it from the uninstaller's working directory.
+                if (-not [System.IO.Path]::IsPathRooted($t)) {
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                }
+                $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
+                if ($t -and ($targets -notcontains $t)) { $targets += $t }
+            } catch { }
+        }
+        return $targets
+    }
+
     # Stop processes that would block deleting the paths we remove. Unlike
     # _StopStudioProcesses (venv exe only), this also catches llama-server/llama-cli,
     # the unsloth.exe shim, and orphaned mp workers under SYSTEM python holding a
@@ -548,7 +582,8 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop))
+    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ReparseTargetsOf $stopRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
