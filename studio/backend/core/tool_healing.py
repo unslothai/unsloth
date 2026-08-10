@@ -107,6 +107,28 @@ def strip_tool_patterns(text: str, patterns) -> str:
     return text
 
 
+def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
+    """Replacement for one rehearsal strip match: "" to remove it, else what to keep.
+
+    An inactive name or a quoted example is kept. The tail pattern runs to EOF, so a match
+    that opens on a quoted example can still cover a later real call; keep the quoted part
+    and strip from that call on, or the truncated markup leaks into the answer."""
+    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        return m.group(0)
+    if not _in_code(spans, m.start()):
+        return ""
+    pos = m.start()
+    while True:
+        nxt = pat.search(text, pos + 1)
+        if nxt is None or nxt.start() >= m.end():
+            return m.group(0)
+        if not _in_code(spans, nxt.start()) and (
+            enabled_tool_names is None or nxt.group(1) in enabled_tool_names
+        ):
+            return m.group(0)[: nxt.start() - m.start()]
+        pos = nxt.start()
+
+
 def apply_tool_strip_patterns(
     text: str,
     patterns,
@@ -125,13 +147,8 @@ def apply_tool_strip_patterns(
             # Same two gates the parser applies in _iter_bracket_spans, so a rehearsal that
             # is not promoted to a call stays visible instead of vanishing from the answer.
             spans = _code_spans(text)
-            text = pat.sub(
-                lambda m: m.group(0)
-                if (enabled_tool_names is not None and m.group(1) not in enabled_tool_names)
-                or _in_code(spans, m.start())
-                else "",
-                text,
-            )
+            _t = text
+            text = pat.sub(lambda m: _rehearsal_strip(m, pat, _t, spans, enabled_tool_names), text)
         else:
             text = pat.sub("", text)
     return text
@@ -183,11 +200,13 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 # Markdown code: a fenced block (closing fence optional so a streaming block counts) or
 # an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
 # documentation stays text instead of executing. ``>`` container prefixes are allowed so
-# a fence inside a block quote counts, and an inline span closes on a backtick run of its
-# own length (``code`` is one span, not two empty ones).
+# a fence inside a block quote counts. Inline runs are enumerated by length (double before
+# single) rather than backreferenced: ``code`` must be one span and not two empty pairs
+# around live markup, but a ``(`+)..\1`` form backtracks over every candidate length and
+# turned 21 KB of unmatched runs into a 1.8s scan.
 _CODE_SPAN_RE = re.compile(
     r"^[ \t]*(?:>[ \t]*)*(?:```+|~~~+).*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t]*$|\Z)"
-    r"|(`+)(?:(?!\1).)+?\1(?!`)",
+    r"|``[^`]*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )
 

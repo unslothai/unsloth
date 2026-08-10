@@ -107,6 +107,29 @@ def test_many_quoted_examples_stay_linear():
     assert time.perf_counter() - start < 5.0
 
 
+def test_unmatched_backtick_runs_stay_linear():
+    """Inline runs are enumerated by length; a backreference backtracked over 21 KB."""
+    import time
+
+    body = "".join("`" * n + " text " for n in range(1, 300))
+    content = body + ' terminal[ARGS]{"command": "id"}'
+    start = time.perf_counter()
+    assert _names(content) == ["terminal"]
+    assert time.perf_counter() - start < 2.0
+
+
+def test_truncated_call_after_a_quoted_example_is_still_stripped():
+    """The tail pattern runs to EOF, so a quoted opener must not shield a real call."""
+    content = '`terminal[ARGS]{"command": "doc"}` then terminal[ARGS]{"command": '
+    stripped = strip_tool_call_markup(content, final = True, enabled_tool_names = ENABLED)
+    assert stripped == '`terminal[ARGS]{"command": "doc"}` then'
+
+
+def test_quoted_example_alone_survives_the_final_pass():
+    content = '`terminal[ARGS]{"command": "doc"}`'
+    assert strip_tool_call_markup(content, final = True, enabled_tool_names = ENABLED) == content
+
+
 def test_backtick_inside_arguments_does_not_hide_a_later_call():
     content = 'web_search[ARGS]{"query": "what is `ls`"}\nterminal[ARGS]{"command": "id"}'
     assert _names(content) == ["web_search", "terminal"]
