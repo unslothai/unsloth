@@ -435,7 +435,7 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     gated = "black-forest-labs/FLUX.1-schnell"
     b = SdCppDiffusionBackend(engine = None)
     monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: ({}, {}))
     )
 
     # Only the VAE repo is gated, as on the Hub: the pick and the encoder repo answer normally.
@@ -487,7 +487,7 @@ def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
     gated = "black-forest-labs/FLUX.1-schnell"
     b = SdCppDiffusionBackend(engine = None)
     monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: ({}, {}))
     )
 
     class _Api:

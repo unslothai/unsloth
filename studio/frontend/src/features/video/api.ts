@@ -4,7 +4,7 @@
 import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Same plan shape as the images backend: both /download-plan routes share a response model.
-import type { DiffusionDownloadPlan } from "@/features/images/api";
+import type { CompanionSizes, DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -265,6 +265,19 @@ export async function getVideoDownloadPlan(
 ): Promise<DiffusionDownloadPlan> {
   return parseJson(
     await authFetch("/api/inference/video/download-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** One expander's worth of quant rows, sized in a single call. Mirrors the images route. */
+export async function getVideoCompanionSizes(
+  body: VideoLoadRequest & { gguf_filenames: string[] },
+): Promise<CompanionSizes> {
+  return parseJson(
+    await authFetch("/api/inference/video/companion-sizes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

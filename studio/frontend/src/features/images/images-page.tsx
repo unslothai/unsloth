@@ -120,6 +120,7 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  getDiffusionCompanionSizes,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
   unloadDiffusionModel,
@@ -2216,16 +2217,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [stage, currentLoadAdvanced, pickGuard],
   );
 
-  // What a quant of `repoId` downloads beyond the checkpoint itself, so the picker advertises the
-  // whole pick rather than the GGUF alone: a Qwen-Image-Edit BF16 row read 41 GB and then fetched
-  // 58. Built from the same plan the staging above plans with, and from the same Advanced values,
-  // so a row and the Downloads panel report one number.
+  // What each quant downloads beyond its own checkpoint, so a row advertises the whole pick
+  // rather than the GGUF alone: a Qwen-Image-Edit BF16 row read 41 GB and then fetched 58. Planned
+  // from the same Advanced values the staging above uses, so both report one number.
   const resolveCompanionBytes = useCallback(
-    async (repoId: string, sampleGgufFilename: string): Promise<number | null> => {
+    async (repoId: string, ggufFilenames: string[]) => {
       const advanced = currentLoadAdvanced(repoId);
-      const plan = await getDiffusionDownloadPlan({
+      const { sizes } = await getDiffusionCompanionSizes({
         model_path: repoId,
-        gguf_filename: sampleGgufFilename,
+        gguf_filenames: ggufFilenames,
         model_kind: "gguf",
         hf_token: hfApiToken(getHfToken()),
         cpu_offload: advanced.cpu_offload,
@@ -2234,7 +2234,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         memory_mode: advanced.memory_mode,
         loras: advanced.loras,
       });
-      return plan.companion_bytes ?? null;
+      return new Map(Object.entries(sizes ?? {}));
     },
     [currentLoadAdvanced],
   );

@@ -281,10 +281,8 @@ export interface DiffusionDownloadPlan {
   total_bytes: number;
   /**
    * Of total_bytes, the share that is not the picked GGUF: the base repo's text encoder, VAE,
-   * tokenizer and configs, plus any hosted pre-cast checkpoint replacing them. The picker adds it
-   * to a quant row, which is otherwise sized from the GGUF alone and advertised 41 GB for a pick
-   * that fetched 58 GB. Cache-aware like the entries, so it is 0 once the base is on disk.
-   * Optional: an older backend omits it.
+   * tokenizer and configs, plus any hosted pre-cast checkpoint replacing them. Cache-aware like
+   * the entries, so it is 0 once the base is on disk. Optional: an older backend omits it.
    */
   companion_bytes?: number;
   /**
@@ -302,6 +300,28 @@ export async function getDiffusionDownloadPlan(
 ): Promise<DiffusionDownloadPlan> {
   return parseJson(
     await authFetch("/api/inference/images/download-plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** Bytes each listed checkpoint downloads beyond itself, keyed by filename. A filename the backend could not plan is absent, not 0. */
+export interface CompanionSizes {
+  sizes?: Record<string, number>;
+}
+
+export type CompanionSizesRequest = DiffusionLoadRequest & {
+  gguf_filenames: string[];
+};
+
+/** One expander's worth of quant rows, sized in a single call. */
+export async function getDiffusionCompanionSizes(
+  body: CompanionSizesRequest,
+): Promise<CompanionSizes> {
+  return parseJson(
+    await authFetch("/api/inference/images/companion-sizes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

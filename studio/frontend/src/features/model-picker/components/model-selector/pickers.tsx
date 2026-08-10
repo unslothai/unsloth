@@ -1329,17 +1329,17 @@ function GgufVariantExpander({
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
-  // Any listed quant resolves the same base, and so the same companions; the recommended one is
-  // simply the most representative pick to ask about. A local path stages nothing, so it is not
-  // worth a round trip.
-  const companionSampleFilename = useMemo(() => {
-    if (isLocalPath || !sortedVariants || sortedVariants.length === 0) return null;
-    const recommended = sortedVariants.find(
-      (v) => v.quant === effectiveRecommended,
-    );
-    return (recommended ?? sortedVariants[0]).filename;
-  }, [isLocalPath, sortedVariants, effectiveRecommended]);
-  const companionBytes = useCompanionBytes(repoId, companionSampleFilename);
+  // A local path stages nothing, so it is not worth asking about.
+  const companionQueryFilenames = useMemo(
+    () =>
+      isLocalPath ? [] : (displayVariants ?? []).map((variant) => variant.filename),
+    [isLocalPath, displayVariants],
+  );
+  const companionBytes = useCompanionBytes(repoId, companionQueryFilenames);
+  const showsCompanionBytes = useMemo(
+    () => [...companionBytes.values()].some((bytes) => bytes > 0),
+    [companionBytes],
+  );
 
   const variantOptionKeys = useMemo(
     () =>
@@ -1487,7 +1487,11 @@ function GgufVariantExpander({
                   </span>
                 )}
                 <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                  <SizeText value={formatBytes(v.size_bytes + companionBytes)} />
+                  <SizeText
+                    value={formatBytes(
+                      v.size_bytes + (companionBytes.get(v.filename) ?? 0),
+                    )}
+                  />
                 </span>
               </span>
             </button>
@@ -1593,10 +1597,11 @@ function GgufVariantExpander({
           </div>
         );
       })}
-      {companionBytes > 0 && (
+      {/* No single figure: the companion set follows the checkpoint, so rows can differ. */}
+      {showsCompanionBytes && (
         <div className="px-2 pb-1 pt-1.5 text-ui-9 leading-snug text-muted-foreground">
-          Includes {formatBytes(companionBytes)} of base assets (text encoder,
-          VAE) that every quantization downloads.
+          Sizes include the base assets (text encoder, VAE) each quantization
+          downloads with it.
         </div>
       )}
     </div>

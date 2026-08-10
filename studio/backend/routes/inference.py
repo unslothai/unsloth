@@ -2021,11 +2021,13 @@ from models.inference import (
     SttLoadRequest,
     GenerateRequest,
     DiffusionLoadRequest,
+    DiffusionCompanionSizesRequest,
     DiffusionGenerateRequest,
     DiffusionGenerateResponse,
     DiffusionGenerateProgressResponse,
     DiffusionStatusResponse,
     DiffusionDownloadPlanResponse,
+    CompanionSizesResponse,
     DiffusionInferenceInfoResponse,
     DiffusionLoadProgressResponse,
     GalleryImage,
@@ -20095,6 +20097,131 @@ def _guard_diffusion_load_against_training() -> None:
     )
 
 
+# Plans are mostly Hub latency, so an expander resolves in about the time one row would. Held low
+# because the Hub rate-limits a picker opening on a 63-quant repo.
+_COMPANION_SIZE_CONCURRENCY = 4
+
+
+async def _companion_sizes_for(filenames, plan_for) -> dict[str, int]:
+    """``filename -> companion bytes`` for each candidate, planned concurrently.
+
+    ``plan_for(name, check_precision)`` returns that candidate's download plan. Only the first
+    candidate carries the precision check, so an unsupported scheme still refuses the batch with
+    the status the load would give, and the rest skip a verdict that never reads the filename. A
+    candidate whose plan fails is omitted, not reported as 0: its row keeps the size it had rather
+    than claiming the pick is free."""
+    ordered = list(dict.fromkeys(name for name in filenames if name))
+    if not ordered:
+        return {}
+    # Alone, because it is the one allowed to raise and must not race siblings raising the same.
+    head = DiffusionDownloadPlanResponse(**await plan_for(ordered[0], True))
+    sizes = {ordered[0]: head.companion_bytes}
+    gate = asyncio.Semaphore(_COMPANION_SIZE_CONCURRENCY)
+
+    async def _one(name: str):
+        async with gate:
+            try:
+                plan = await plan_for(name, False)
+            except Exception:  # noqa: BLE001 -- one unplannable row must not fail the expander
+                return name, None
+            return name, DiffusionDownloadPlanResponse(**plan).companion_bytes
+
+    for name, value in await asyncio.gather(*(_one(n) for n in ordered[1:])):
+        if value is not None:
+            sizes[name] = value
+    return sizes
+
+
+async def _diffusion_plan_for_pick(
+    request: DiffusionLoadRequest,
+    gguf_filename: Optional[str],
+    *,
+    check_precision: bool = True,
+) -> dict:
+    """The download plan for one checkpoint of ``request.model_path``.
+
+    Split out of the route so /images/companion-sizes plans each candidate quant exactly as the
+    load will run it. ``check_precision`` is cleared after the first candidate in a batch: the
+    verdict reads the requested scheme and the host, never the filename, so repeating it would
+    re-probe per row for one answer."""
+    from core.inference.diffusion import (
+        get_diffusion_backend,
+        resolve_local_single_file,
+        resolve_model_kind,
+    )
+    from core.inference.diffusion_engine_router import predict_engine
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = get_diffusion_backend()
+    kind = resolve_model_kind(gguf_filename, request.model_kind)
+    # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
+    if kind == "pipeline" and not gguf_filename:
+        sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+        if sole is not None:
+            gguf_filename = sole
+            kind = resolve_model_kind(sole)
+    fam = await asyncio.to_thread(
+        backend.validate_load_request,
+        request.model_path,
+        gguf_filename = gguf_filename,
+        family_override = request.family_override,
+        model_kind = kind,
+        base_repo = request.base_repo,
+    )
+    # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
+    # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
+    planner = backend
+    if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
+        from core.inference.sd_cpp_backend import get_sd_cpp_backend
+        planner = get_sd_cpp_backend()
+    # BEFORE the plan is handed back and staged. The load route refuses a precision this
+    # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+    # unsupported host paid for the GGUF and its companions -- or tens of GB of video
+    # weights -- and then got the predictable 409. Both checks are network-free.
+    # Not while a trainer holds the GPU. An UNCACHED scheme sends
+    # assert_precision_available into a quantise-and-matmul smoke probe, which initialises
+    # CUDA and allocates in the Studio process -- the very thing the load route's training
+    # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
+    # files during training is legitimate and needs no GPU, so the plan is answered without
+    # the precision check; /images/load still refuses the same pick afterwards.
+    if check_precision and fam is not None and not await asyncio.to_thread(_training_is_active):
+        if planner is backend:
+            await asyncio.to_thread(
+                backend.assert_precision_available,
+                fam,
+                model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+                # The memory request settles the offload policy for balanced/low_vram before
+                # anything is measured, and an offloaded transformer skips the dense quant.
+                memory_mode = getattr(request, "memory_mode", None),
+                cpu_offload = bool(getattr(request, "cpu_offload", False)),
+            )
+        else:
+            _assert_native_precision_unset(
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+            )
+    return await asyncio.to_thread(
+        planner.download_plan,
+        request.model_path,
+        gguf_filename = gguf_filename,
+        base_repo = request.base_repo,
+        family_override = request.family_override,
+        model_kind = kind,
+        hf_token = request.hf_token,
+        transformer_quant = request.transformer_quant,
+        # An fp8 encoder request loads a hosted pre-cast checkpoint, so the plan must stage that file instead of the dense encoder shards.
+        text_encoder_quant = request.text_encoder_quant,
+        speed_mode = request.speed_mode,
+        # The dense-quant prefetch decision also reads the memory policy, prequant path and adapter selection, so the plan must see the same values the load will.
+        memory_mode = request.memory_mode,
+        cpu_offload = request.cpu_offload,
+        transformer_prequant_path = request.transformer_prequant_path,
+        loras = request.loras,
+    )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -20104,84 +20231,10 @@ async def diffusion_download_plan(
 
     Validates the same way /images/load does, so an unloadable pick fails here rather than
     after a multi-GB download."""
-    from core.inference.diffusion import (
-        get_diffusion_backend,
-        resolve_local_single_file,
-        resolve_model_kind,
-    )
-    from core.inference.diffusion_engine_router import predict_engine
-    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
-    backend = get_diffusion_backend()
     try:
-        kind = resolve_model_kind(request.gguf_filename, request.model_kind)
-        # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
-        if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
-            if sole is not None:
-                request.gguf_filename = sole
-                kind = resolve_model_kind(sole)
-        fam = await asyncio.to_thread(
-            backend.validate_load_request,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            family_override = request.family_override,
-            model_kind = kind,
-            base_repo = request.base_repo,
-        )
-        # Plan for the engine /images/load will pick, not diffusers unconditionally: a GGUF on a GPU-less host routes to native
-        # sd.cpp, which reads different files. predict_engine applies the policy without activating anything.
-        planner = backend
-        if fam is not None and predict_engine(fam, model_kind = kind) == ENGINE_SD_CPP:
-            from core.inference.sd_cpp_backend import get_sd_cpp_backend
-            planner = get_sd_cpp_backend()
-        # BEFORE the plan is handed back and staged. The load route refuses a precision this
-        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
-        # unsupported host paid for the GGUF and its companions -- or tens of GB of video
-        # weights -- and then got the predictable 409. Both checks are network-free.
-        # Not while a trainer holds the GPU. An UNCACHED scheme sends
-        # assert_precision_available into a quantise-and-matmul smoke probe, which initialises
-        # CUDA and allocates in the Studio process -- the very thing the load route's training
-        # guard exists to prevent, and the plan runs BEFORE that guard has had a say. Staging
-        # files during training is legitimate and needs no GPU, so the plan is answered without
-        # the precision check; /images/load still refuses the same pick afterwards.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
-            if planner is backend:
-                await asyncio.to_thread(
-                    backend.assert_precision_available,
-                    fam,
-                    model_kind = kind,
-                    transformer_quant = request.transformer_quant,
-                    text_encoder_quant = request.text_encoder_quant,
-                    # The memory request settles the offload policy for balanced/low_vram before
-                    # anything is measured, and an offloaded transformer skips the dense quant.
-                    memory_mode = getattr(request, "memory_mode", None),
-                    cpu_offload = bool(getattr(request, "cpu_offload", False)),
-                )
-            else:
-                _assert_native_precision_unset(
-                    transformer_quant = request.transformer_quant,
-                    text_encoder_quant = request.text_encoder_quant,
-                )
-        plan = await asyncio.to_thread(
-            planner.download_plan,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            base_repo = request.base_repo,
-            family_override = request.family_override,
-            model_kind = kind,
-            hf_token = request.hf_token,
-            transformer_quant = request.transformer_quant,
-            # An fp8 encoder request loads a hosted pre-cast checkpoint, so the plan must stage that file instead of the dense encoder shards.
-            text_encoder_quant = request.text_encoder_quant,
-            speed_mode = request.speed_mode,
-            # The dense-quant prefetch decision also reads the memory policy, prequant path and adapter selection, so the plan must see the same values the load will.
-            memory_mode = request.memory_mode,
-            cpu_offload = request.cpu_offload,
-            transformer_prequant_path = request.transformer_prequant_path,
-            loras = request.loras,
-        )
+        plan = await _diffusion_plan_for_pick(request, request.gguf_filename)
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -20189,6 +20242,33 @@ async def diffusion_download_plan(
         # Same status the load route gives the same refusal, so the UI can reuse one handler:
         # the precision gate above raises RuntimeError, and a 500 here would read as a server
         # fault rather than the deliberate "this host cannot honour that pick" answer.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
+
+
+@studio_router.post("/images/companion-sizes", response_model = CompanionSizesResponse)
+async def diffusion_companion_sizes(
+    request: DiffusionCompanionSizesRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """What each candidate quant downloads beyond its own checkpoint, so the picker can size a
+    whole expander in one call.
+
+    Per filename because the companion set is not constant across a repo's quants: sd.cpp swaps
+    the FLUX.2-klein 9B text encoder for the 4B default by inner dim, so one sample answer applied
+    to every row misreports whichever size it did not come from."""
+    from utils.native_path_leases import redact_native_paths
+
+    try:
+        sizes = await _companion_sizes_for(
+            request.gguf_filenames,
+            lambda name, check_precision: _diffusion_plan_for_pick(
+                request, name, check_precision = check_precision
+            ),
+        )
+        return CompanionSizesResponse(sizes = sizes)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 

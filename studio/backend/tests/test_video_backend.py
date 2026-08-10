@@ -2141,6 +2141,41 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     assert plan["total_bytes"] == 43
 
 
+def test_h3_companion_bytes_follow_the_encoder_the_quant_pairs_with(monkeypatch):
+    """A -Q2_ transformer loads the Q2 Qwen3-VL encoder and every other quant the Q4 one, so the
+    two rows do not share a companion total and one sample answer cannot size both."""
+    from models.inference import DiffusionDownloadPlanResponse
+
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q2_K.gguf", 9),
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q2_K_M.gguf", 11),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+            ],
+            "Comfy-Org/MiniMax-H3": [
+                _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
+                _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
+            ],
+        },
+    )
+
+    def _companion_bytes(gguf_filename: str) -> int:
+        plan = VideoBackend().download_plan(
+            "unsloth/MiniMax-H3-GGUF",
+            gguf_filename = gguf_filename,
+            family_override = "minimax-h3",
+            model_kind = "gguf",
+        )
+        return DiffusionDownloadPlanResponse(**plan).companion_bytes
+
+    # Q2 pick: the 11-byte encoder plus both VAEs. Q4 pick: the 18-byte one instead.
+    assert _companion_bytes("minimax_h3_fl2va-Q2_K.gguf") == 11 + 5 + 1
+    assert _companion_bytes("minimax_h3_fl2va-Q4_K_M.gguf") == 18 + 5 + 1
+
+
 _H3_BASE_SIBLINGS = [
     _PlanSibling("transformer/config.json", 1),
     _PlanSibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 40),

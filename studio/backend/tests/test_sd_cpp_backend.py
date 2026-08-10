@@ -225,7 +225,7 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     monkeypatch.setattr(
         SdCppDiffusionBackend,
         "_plan_file_sizes",
-        staticmethod(lambda by_repo, token: sizes),
+        staticmethod(lambda by_repo, token: (sizes, {})),
     )
 
     plan = b.download_plan(
@@ -258,7 +258,7 @@ def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(mon
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     (tmp_path / "z-image-turbo-Q4_K_M.gguf").write_bytes(b"gguf")
     monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: ({}, {}))
     )
 
     plan = b.download_plan(
@@ -286,7 +286,7 @@ def test_download_plan_stages_the_mirrored_asset_repo(monkeypatch):
     _no_cache(monkeypatch)
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: ({}, {}))
     )
 
     plan = b.download_plan(
@@ -307,7 +307,7 @@ def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
     _no_cache(monkeypatch)
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: ({}, {}))
     )
     pulled: list = []
     monkeypatch.setattr(

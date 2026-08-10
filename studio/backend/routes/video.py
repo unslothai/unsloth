@@ -30,8 +30,10 @@ from pydantic import ValidationError
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from models.inference import (
+    CompanionSizesResponse,
     DiffusionDownloadPlanResponse,
     GalleryVideo,
+    VideoCompanionSizesRequest,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
     VideoGenerateRequest,
@@ -85,77 +87,120 @@ def _guard_video_load_against_training() -> None:
     )
 
 
-@router.post("/video/download-plan", response_model = DiffusionDownloadPlanResponse)
-async def video_download_plan(
-    request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
-):
-    """The repos + files this pick needs, so the frontend stages them through the Hub
-    download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+async def _video_plan_for_pick(
+    request: VideoLoadRequest,
+    gguf_filename: Optional[str],
+    *,
+    check_precision: bool = True,
+) -> dict:
+    """The download plan for one checkpoint of ``request.model_path``.
+
+    Split out of the route so /video/companion-sizes plans each candidate quant exactly as the
+    load will run it. ``check_precision`` is cleared after the first candidate in a batch: the
+    verdict reads the requested scheme and the host, never the filename."""
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
         resolve_video_model_kind,
     )
-    from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
-    try:
-        kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
-        if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
-            if sole is not None:
-                request.gguf_filename = sole
-                kind = resolve_video_model_kind(sole, None)
-        fam = await asyncio.to_thread(
-            backend.validate_load_request,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            family_override = request.family_override,
+    kind = resolve_video_model_kind(gguf_filename, request.model_kind)
+    if kind == "pipeline" and not gguf_filename:
+        sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+        if sole is not None:
+            gguf_filename = sole
+            kind = resolve_video_model_kind(sole, None)
+    fam = await asyncio.to_thread(
+        backend.validate_load_request,
+        request.model_path,
+        gguf_filename = gguf_filename,
+        family_override = request.family_override,
+        model_kind = kind,
+        base_repo = request.base_repo,
+        # Validation is quant-keyed: a scheme this family can serve only from a hosted
+        # pre-quantized checkpoint has to be refused HERE, on the route that stages the
+        # download, or the panel fetches ~98.7 GB before /video/load can say no.
+        transformer_quant = request.transformer_quant,
+    )
+    # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
+    # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+    # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
+    #
+    # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
+    # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
+    # plan runs before the load's training guard can refuse. Staging needs no GPU.
+    if check_precision and fam is not None and not await asyncio.to_thread(_training_is_active):
+        await asyncio.to_thread(
+            assert_video_precision_available,
+            fam,
             model_kind = kind,
-            base_repo = request.base_repo,
-            # Validation is quant-keyed: a scheme this family can serve only from a hosted
-            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
-            # download, or the panel fetches ~98.7 GB before /video/load can say no.
             transformer_quant = request.transformer_quant,
-        )
-        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
-        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
-        # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
-        #
-        # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
-        # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
-        # plan runs before the load's training guard can refuse. Staging needs no GPU.
-        if fam is not None and not await asyncio.to_thread(_training_is_active):
-            await asyncio.to_thread(
-                assert_video_precision_available,
-                fam,
-                model_kind = kind,
-                transformer_quant = request.transformer_quant,
-                text_encoder_quant = request.text_encoder_quant,
-                memory_mode = request.memory_mode,
-            )
-        plan = await asyncio.to_thread(
-            backend.download_plan,
-            request.model_path,
-            gguf_filename = request.gguf_filename,
-            base_repo = request.base_repo,
-            family_override = request.family_override,
-            model_kind = kind,
-            hf_token = request.hf_token,
-            # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
-            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
-            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
-            # the load never opens.
-            transformer_quant = request.transformer_quant,
+            memory_mode = request.memory_mode,
         )
+    return await asyncio.to_thread(
+        backend.download_plan,
+        request.model_path,
+        gguf_filename = gguf_filename,
+        base_repo = request.base_repo,
+        family_override = request.family_override,
+        model_kind = kind,
+        hf_token = request.hf_token,
+        # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
+        text_encoder_quant = request.text_encoder_quant,
+        # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
+        # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
+        # the load never opens.
+        transformer_quant = request.transformer_quant,
+    )
+
+
+@router.post("/video/download-plan", response_model = DiffusionDownloadPlanResponse)
+async def video_download_plan(
+    request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
+):
+    """The repos + files this pick needs, so the frontend stages them through the Hub
+    download manager instead of the load downloading inline. Mirrors /images/download-plan."""
+    from utils.native_path_leases import redact_native_paths
+
+    try:
+        plan = await _video_plan_for_pick(request, request.gguf_filename)
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
     except RuntimeError as exc:
         # Mirrors /video/load and /images/download-plan: the precision gate above raises
         # RuntimeError, and that refusal is a 409, not a server fault.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
+
+
+@router.post("/video/companion-sizes", response_model = CompanionSizesResponse)
+async def video_companion_sizes(
+    request: VideoCompanionSizesRequest, current_subject: str = Depends(get_current_subject)
+):
+    """What each candidate quant downloads beyond its own checkpoint. Mirrors
+    /images/companion-sizes.
+
+    Per filename because the companion set follows the checkpoint here too: MiniMax-H3 pairs a
+    -Q2_ transformer with the Q2 Qwen3-VL encoder and every other quant with the Q4 one, and an
+    LTX-2.3 checkpoint names its own VAEs and text projections."""
+    # Shared with /images/companion-sizes so both pickers batch and fail the same way.
+    from routes.inference import _companion_sizes_for
+    from utils.native_path_leases import redact_native_paths
+
+    try:
+        sizes = await _companion_sizes_for(
+            request.gguf_filenames,
+            lambda name, check_precision: _video_plan_for_pick(
+                request, name, check_precision = check_precision
+            ),
+        )
+        return CompanionSizesResponse(sizes = sizes)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 

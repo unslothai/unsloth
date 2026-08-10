@@ -27,12 +27,26 @@ const pickers = readFileSync(
 
 test("the quant row advertises the companions it also downloads", () => {
   assert.ok(
-    pickers.includes("formatBytes(v.size_bytes + companionBytes)"),
-    "the row size must include the companion bytes",
+    pickers.includes("v.size_bytes + (companionBytes.get(v.filename) ?? 0)"),
+    "the row size must include that row's own companion bytes",
   );
   assert.ok(
     !/SizeText value={formatBytes\(v\.size_bytes\)}/.test(pickers),
     "no row may still show the GGUF size alone",
+  );
+});
+
+test("companion bytes are asked for per row, not per repo", () => {
+  // The companion set follows the checkpoint: MiniMax-H3 pairs a -Q2_ transformer with the Q2
+  // Qwen3-VL encoder and every other quant with the Q4 one, so one sample answer applied to every
+  // row misreports whichever tier it did not come from by several GB.
+  assert.ok(
+    pickers.includes("(displayVariants ?? []).map((variant) => variant.filename)"),
+    "every displayed row must be in the query",
+  );
+  assert.ok(
+    pickers.includes("companionBytes.get(v.filename)"),
+    "each row must read its own answer",
   );
 });
 
@@ -73,7 +87,7 @@ test("the chat picker asks for no companion sizes", () => {
     "utf8",
   );
   assert.ok(
-    companionBytes.includes("if (!resolve || !key || !sampleGgufFilename) return;"),
+    companionBytes.includes("if (!resolve || !key) return;"),
     "no resolver means no request",
   );
 });

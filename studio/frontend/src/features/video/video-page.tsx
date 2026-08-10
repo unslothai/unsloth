@@ -105,6 +105,7 @@ import {
   getVideoGallery,
   getVideoGenerateProgress,
   getVideoLoadProgress,
+  getVideoCompanionSizes,
   getVideoDownloadPlan,
   getVideoStatus,
   loadVideoModel,
@@ -1763,23 +1764,20 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [stage, pickGuard],
   );
 
-  // What a quant of `repoId` downloads beyond the checkpoint itself, so the picker advertises the
-  // whole pick rather than the GGUF alone. Built from the same plan the staging above plans with,
-  // so a row and the Downloads panel report one number. On an LTX-2.3 repo the companions it counts
-  // (the VAEs and text projections) live in the picked repo rather than a separate base.
+  // What each quant downloads beyond its own checkpoint, so a row advertises the whole pick
+  // rather than the GGUF alone. Mirrors the images page.
   const resolveCompanionBytes = useCallback(
-    async (repoId: string, sampleGgufFilename: string): Promise<number | null> => {
-      const plan = await getVideoDownloadPlan({
+    async (repoId: string, ggufFilenames: string[]) => {
+      const { sizes } = await getVideoCompanionSizes({
         model_path: repoId,
-        gguf_filename: sampleGgufFilename,
+        gguf_filenames: ggufFilenames,
         model_kind: "gguf",
         hf_token: hfApiToken(getHfToken()),
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
       });
-      return plan.companion_bytes ?? null;
+      return new Map(Object.entries(sizes ?? {}));
     },
-    // The state, not memoryModeRef: the advertised size has to be re-asked when the mode changes,
-    // and only a new callback identity makes the picker do that.
+    // The state, not memoryModeRef: only a new identity makes the picker re-ask on a mode change.
     [memoryMode],
   );
 

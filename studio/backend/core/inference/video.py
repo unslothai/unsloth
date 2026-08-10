@@ -1525,6 +1525,14 @@ class VideoBackend:
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
         total = 0
+        # A cache hit counts only at the revision the Hub serves now; see _drop_cached_entries.
+        shas: dict[str, str] = {}
+
+        def record_sha(repo: str, info: Any) -> Any:
+            sha = getattr(info, "sha", None)
+            if isinstance(sha, str) and sha:
+                shas[repo] = sha
+            return info
 
         def add(
             repo: str,
@@ -1546,8 +1554,7 @@ class VideoBackend:
                 entry["files"].append(name)
                 entry["bytes"] += int(size)
                 added += int(size)
-                # Per file, not the whole entry: an LTX-2.3 pick adds its VAEs and text
-                # projections to this same repo, and they are companions, not the checkpoint.
+                # Per file: an LTX-2.3 pick puts its VAEs in this same entry, as companions.
                 if gguf and name == gguf:
                     entry["gguf_bytes"] = int(size)
             if gguf:
@@ -1557,7 +1564,7 @@ class VideoBackend:
         try:
             api = HfApi(token = hf_token or None)
             if gguf_filename and not Path(repo_id).expanduser().exists():
-                info = api.model_info(repo_id, files_metadata = True)
+                info = record_sha(repo_id, api.model_info(repo_id, files_metadata = True))
                 sizes = [
                     (s.rfilename, int(s.size or 0))
                     for s in (info.siblings or [])
@@ -1572,7 +1579,10 @@ class VideoBackend:
                     extras_info = (
                         info
                         if LTX23_EXTRAS_REPO == repo_id
-                        else api.model_info(LTX23_EXTRAS_REPO, files_metadata = True)
+                        else record_sha(
+                            LTX23_EXTRAS_REPO,
+                            api.model_info(LTX23_EXTRAS_REPO, files_metadata = True),
+                        )
                     )
                     total += add(
                         LTX23_EXTRAS_REPO,
@@ -1593,7 +1603,7 @@ class VideoBackend:
             if dq_repo:
                 total += add(dq_repo, dq_files)
             if base and not Path(base).expanduser().exists():
-                info = api.model_info(base, files_metadata = True)
+                info = record_sha(base, api.model_info(base, files_metadata = True))
                 total += add(
                     base,
                     self._base_download_files(
@@ -1609,7 +1619,26 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
-        return {"entries": list(entries.values()), "total_bytes": total}
+        return self._drop_cached_entries(entries.values(), shas)
+
+    @staticmethod
+    def _drop_cached_entries(entries: Any, shas: dict[str, str]) -> dict[str, Any]:
+        """The plan with every repo the cache already serves whole removed, re-totalled.
+
+        Entries are what the Downloads panel lists, so a repo on disk must not read as a download,
+        and a second quant of the same family must not be charged again for the encoders and VAEs
+        the first one fetched. The total is recomputed, never decremented, so it cannot drift."""
+        from core.inference.diffusion import DiffusionBackend
+
+        kept = [
+            entry
+            for entry in entries
+            if not entry["files"]
+            or not DiffusionBackend._files_already_cached(
+                entry["repo_id"], entry["files"], shas.get(entry["repo_id"])
+            ).issuperset(entry["files"])
+        ]
+        return {"entries": kept, "total_bytes": int(sum(e["bytes"] for e in kept))}
 
     @staticmethod
     def _h3_native_download_plan(
@@ -1634,13 +1663,16 @@ class VideoBackend:
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
         grouped: dict[str, dict[str, Any]] = {}
-        total = 0
+        shas: dict[str, str] = {}
         try:
             api = HfApi(token = hf_token or None)
             for repo, filename in wanted:
                 if Path(repo).expanduser().exists():
                     continue
                 info = api.model_info(repo, files_metadata = True)
+                sha = getattr(info, "sha", None)
+                if isinstance(sha, str) and sha:
+                    shas[repo] = sha
                 match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
                 if match is None:
                     raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
@@ -1658,14 +1690,13 @@ class VideoBackend:
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
                     entry["bytes"] += size
-                    total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
                     entry["gguf_bytes"] = size
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
             return {"entries": [], "total_bytes": 0}
-        return {"entries": list(grouped.values()), "total_bytes": total}
+        return VideoBackend._drop_cached_entries(grouped.values(), shas)
 
     @staticmethod
     def _pick_looks_like_ltx23(

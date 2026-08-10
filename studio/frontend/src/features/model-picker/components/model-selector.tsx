@@ -170,7 +170,7 @@ interface ModelSelectorProps {
   catalog?: CatalogGroup[];
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
-  /** Bytes a quant of this repo downloads beyond the GGUF itself, so its row advertises the whole pick. Supplied by the Images / Video pages, which own the load settings the answer depends on; chat passes none and the rows are unchanged. */
+  /** Bytes each quant downloads beyond its own checkpoint, so its row advertises the whole pick. Supplied by the Images / Video pages; chat passes none and the rows are unchanged. */
   resolveCompanionBytes?: CompanionBytesResolver;
 }
 

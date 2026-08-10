@@ -1621,6 +1621,87 @@ def test_download_plan_tells_the_picker_what_the_gguf_does_not_cover(client, mon
     assert resp.json()["companion_bytes"] == 16_860
 
 
+def test_companion_sizes_answers_each_quant_separately(client, monkeypatch):
+    # The companion set follows the checkpoint, not the repo: sd.cpp swaps the FLUX.2-klein 9B
+    # text encoder for the 4B default, and MiniMax-H3 pairs a -Q2_ transformer with the Q2
+    # Qwen3-VL encoder. One sample answer applied to every row misreports the other tier.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    encoder_bytes = {"flux1-dev-Q2_K.gguf": 4_000, "flux1-dev-Q6_K.gguf": 9_000}
+
+    def _plan(model_path, **kwargs):
+        name = kwargs["gguf_filename"]
+        return {
+            "entries": [
+                {
+                    "repo_id": "unsloth/FLUX.1-dev-GGUF",
+                    "files": [name],
+                    "bytes": 100,
+                    "gguf_filename": name,
+                    "gguf_bytes": 100,
+                },
+                {
+                    "repo_id": "black-forest-labs/FLUX.1-dev",
+                    "files": ["text_encoder/model.safetensors"],
+                    "bytes": encoder_bytes[name],
+                    "gguf_filename": None,
+                },
+            ],
+            "total_bytes": 100 + encoder_bytes[name],
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["flux1-dev-Q2_K.gguf", "flux1-dev-Q6_K.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["sizes"] == {"flux1-dev-Q2_K.gguf": 4_000, "flux1-dev-Q6_K.gguf": 9_000}
+
+
+def test_companion_sizes_omits_a_row_it_cannot_plan(client, monkeypatch):
+    # Absent, not 0: a row whose plan failed keeps the size it already had rather than claiming
+    # the pick costs nothing beyond its checkpoint.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        if kwargs["gguf_filename"] == "flux1-dev-broken.gguf":
+            raise RuntimeError("no plan for this one")
+        return {
+            "entries": [
+                {"repo_id": "black-forest-labs/FLUX.1-dev", "files": ["x"], "bytes": 7, "gguf_filename": None}
+            ],
+            "total_bytes": 7,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["flux1-dev-Q4_K_M.gguf", "flux1-dev-broken.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["sizes"] == {"flux1-dev-Q4_K_M.gguf": 7}
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router

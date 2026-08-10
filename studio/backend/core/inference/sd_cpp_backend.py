@@ -1093,10 +1093,18 @@ class SdCppDiffusionBackend:
         # AFTER the swap: preflighting the upstream id would refuse the very picks the ungated
         # mirror exists to rescue.
         self._preflight_companion_repos(by_repo, fetch_repo_id, hf_token)
-        sizes = self._plan_file_sizes(by_repo, hf_token)
+        # Reused, not reimplemented: "cached" must mean the same on both engines.
+        from core.inference.diffusion import DiffusionBackend
+
+        sizes, shas = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
         total = 0
         for repo, names in by_repo.items():
+            # A repo the cache serves whole is not a download, so it is neither listed nor charged.
+            if names and DiffusionBackend._files_already_cached(
+                repo, names, shas.get(repo)
+            ).issuperset(names):
+                continue
             repo_bytes = int(sum(sizes.get((repo, n), 0) for n in names))
             total += repo_bytes
             is_checkpoint_repo = repo == fetch_repo_id
@@ -1185,24 +1193,34 @@ class SdCppDiffusionBackend:
     @staticmethod
     def _plan_file_sizes(
         by_repo: dict[str, list[str]], hf_token: Optional[str]
-    ) -> dict[tuple[str, str], int]:
-        """(repo, filename) -> size in bytes, best-effort (0 for anything the Hub won't answer).
+    ) -> tuple[dict[tuple[str, str], int], dict[str, str]]:
+        """``((repo, filename) -> size, repo -> current commit)``, both best-effort.
 
         A missing size only understates the manager's progress total; it must not fail the plan,
-        which is the cheap pre-flight for a load that would otherwise download inline."""
+        which is the cheap pre-flight for a load that would otherwise download inline. The commit
+        rides along because a cache hit only counts at the revision the Hub serves now."""
         out: dict[tuple[str, str], int] = {}
+        shas: dict[str, str] = {}
         try:
             from huggingface_hub import HfApi
             api = HfApi(token = hf_token)
         except Exception:  # noqa: BLE001 -- sizes are best-effort
-            return out
+            return out, shas
         for repo, names in by_repo.items():
             try:
-                for info in api.get_paths_info(repo, paths = names, expand = False):
-                    out[(repo, getattr(info, "path", ""))] = int(getattr(info, "size", 0) or 0)
+                # model_info, not get_paths_info: one call answers both the sizes and the commit.
+                info = api.model_info(repo, files_metadata = True)
             except Exception:  # noqa: BLE001 -- one unreadable repo is non-fatal
                 continue
-        return out
+            sha = getattr(info, "sha", None)
+            if isinstance(sha, str) and sha:
+                shas[repo] = sha
+            wanted = set(names)
+            for sibling in getattr(info, "siblings", None) or ():
+                name = getattr(sibling, "rfilename", None)
+                if name in wanted:
+                    out[(repo, name)] = int(getattr(sibling, "size", 0) or 0)
+        return out, shas
 
     @staticmethod
     def _flux2_inner_dim(

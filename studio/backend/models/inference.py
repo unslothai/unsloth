@@ -2397,6 +2397,10 @@ class AnthropicMessagesResponse(BaseModel):
 # ── Diffusion (local text-to-image) ──
 
 
+# One expander's worth of rows; unsloth/LTX-2.3-GGUF, at 63 GGUFs, is already the outlier.
+MAX_COMPANION_SIZE_QUERIES = 96
+
+
 class DiffusionLoadRequest(BaseModel):
     """Request to load a local diffusion (text-to-image) checkpoint."""
 
@@ -2561,6 +2565,18 @@ class DiffusionLoadRequest(BaseModel):
                     )
                 seen.add(spec.id)
         return value
+
+
+class DiffusionCompanionSizesRequest(DiffusionLoadRequest):
+    """A load request plus the checkpoints to size, so every row is planned under the settings
+    the load will actually run with. ``gguf_filename`` is ignored; ``gguf_filenames`` names the
+    rows."""
+
+    gguf_filenames: List[str] = Field(
+        default_factory = list,
+        max_length = MAX_COMPANION_SIZE_QUERIES,
+        description = "Candidate checkpoint filenames inside model_path, one per picker row.",
+    )
 
 
 class LoraSpec(BaseModel):
@@ -2992,6 +3008,23 @@ class DiffusionDownloadPlanResponse(BaseModel):
         return self
 
 
+class CompanionSizesResponse(BaseModel):
+    """Companion bytes per candidate checkpoint, for sizing a picker's quant rows.
+
+    Per filename rather than per repo because the companion set is not constant across a repo's
+    quants: MiniMax-H3 pairs a -Q2_ transformer with the Q2 Qwen3-VL encoder and everything else
+    with the Q4 one, sd.cpp swaps the FLUX.2-klein 9B encoder for the 4B default, and an LTX-2.3
+    checkpoint names its own VAEs and text projections. One sample answer applied to every row
+    misreports whichever tier it did not come from, by multiple GB."""
+
+    sizes: Dict[str, int] = Field(
+        default_factory = dict,
+        description = "Checkpoint filename -> bytes this pick downloads beyond that checkpoint. "
+        "A filename whose plan could not be built is absent rather than zero, so the caller can "
+        "leave its row alone instead of advertising a total it does not know.",
+    )
+
+
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
@@ -3269,6 +3302,16 @@ class VideoLoadRequest(BaseModel):
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+
+class VideoCompanionSizesRequest(VideoLoadRequest):
+    """The video twin of DiffusionCompanionSizesRequest."""
+
+    gguf_filenames: List[str] = Field(
+        default_factory = list,
+        max_length = MAX_COMPANION_SIZE_QUERIES,
+        description = "Candidate checkpoint filenames inside model_path, one per picker row.",
+    )
 
 
 class VideoReferenceVideo(BaseModel):
