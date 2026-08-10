@@ -628,6 +628,39 @@ def test_minimax_h3_video_command_has_all_joint_av_components():
     assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]
 
 
+def test_video_build_appends_extra_args_verbatim_and_last():
+    """The video mirror of the image builder's last-wins contract.
+
+    Token-wise de-duplication cannot express an override: the builder already sets --rng cpu, so
+    extra_args ["--rng", "cuda"] dropped the --rng it matched and appended a bare "cuda" for the
+    parser to choke on. Every sibling builder in this module appends the list verbatim.
+    """
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            seed = 1,
+        ),
+        output_path = "/o.webm",
+        extra_args = ["--rng", "cuda"],
+    )
+    assert cmd[-2:] == ["--rng", "cuda"]
+    assert cmd[-1] != "cuda" or cmd[-2] == "--rng"
+    # Studio's own value is still there, earlier, so sd.cpp's last-wins parser takes the override.
+    assert cmd.count("--rng") == 2
+
+
 def _h3_video_cmd(**params):
     return build_sd_cpp_video_command(
         "/bin/sd-cli",

@@ -52,6 +52,8 @@ export const it = {
       recipes: "Ricette",
       images: "Immagini",
       video: "Video",
+      trainChecking: "Verifica del supporto all'addestramento su questa macchina...",
+      videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
       newBadge: "Novità",
@@ -898,6 +900,9 @@ export const it = {
         allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
         allowNetworkAccessDescription:
           "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
+        blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
+        blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
+        blockedBannerAction: "Consenti per questo Canvas",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",
@@ -1411,6 +1416,7 @@ export const it = {
       history: "Cronologia",
     },
     loadingRuntime: "Caricamento del runtime di addestramento...",
+    checkingSupport: "Verifica del supporto all'addestramento su questa macchina...",
     backToHistory: "Torna alla cronologia",
     sections: {
       model: "Modello",

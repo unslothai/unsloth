@@ -4474,6 +4474,16 @@ def has_text_only_provisional_card(name: str) -> bool:
     return name in _TEXT_PREVIEW_TOOLS
 
 
+def _web_search_fetches_url(name: str, arguments: dict) -> bool:
+    """web_search carrying a ``url`` fetches that exact page instead of searching.
+
+    That fetch is egress to a host the *call* names, the one such case in the built-in
+    set, so it asks even though plain search stays always-safe. Name-only
+    ``is_always_safe_tool`` is deliberately unchanged: it runs before arguments exist
+    (provisional card, stream requirement), where a query-only search must not prompt."""
+    return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
+
+
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
@@ -4481,6 +4491,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     auto-run, anything that can mutate state, execute arbitrary code, or is
     simply unrecognized asks first. Unknown tools fail closed.
     """
+    if _web_search_fetches_url(name, arguments):
+        return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
     # render_html auto-runs a static canvas but asks once its HTML/JS reaches the
@@ -6464,6 +6476,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
     set, rlimits and secret-env stripping remain in force underneath. Unknown tools
     fail closed (prompt).
     """
+    if _web_search_fetches_url(name, arguments):
+        return True
     if name in _ALWAYS_SAFE_TOOLS:
         return False
     if name == "render_html":

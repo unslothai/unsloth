@@ -277,8 +277,14 @@ export interface DiffusionDownloadPlan {
     files: string[];
     bytes: number;
     gguf_filename: string | null;
+    /** Whether this entry holds the selected model. Only the planner knows, because a gated pick is staged from an ungated mirror under a different repo id. Optional: an older backend omits it. */
+    checkpoint?: boolean;
   }[];
   total_bytes: number;
+  /** Full declared footprint, including files already present in cache. */
+  required_bytes?: number;
+  /** Selected checkpoint's contribution to required_bytes. */
+  checkpoint_bytes?: number;
   /**
    * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
    * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
