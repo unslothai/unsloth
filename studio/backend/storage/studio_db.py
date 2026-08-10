@@ -911,17 +911,22 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
-# route handlers run in Starlette's threadpool, so BEGIN IMMEDIATE writers now contend; sqlite's
-# 5 second default expires under a large clear and escapes as an unmapped 500
-_BUSY_TIMEOUT_SECONDS = 30.0
+# sqlite's own default, kept for every caller that may run on the event loop
+_BUSY_TIMEOUT_SECONDS = 5.0
+
+# only for the chat history transactions that run in Starlette's threadpool, where a large clear
+# can hold the writer lock past the default and the failure escapes as an unmapped 500
+_CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection(
+    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS,
+) -> sqlite3.Connection:
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = _BUSY_TIMEOUT_SECONDS)
+    conn = sqlite3.connect(str(db_path), timeout = busy_timeout_seconds)
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1583,7 +1588,7 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
 
 
 def upsert_chat_thread(thread: dict) -> dict:
-    conn = get_connection()
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _raise_if_chat_thread_deleted(conn, thread["id"])
@@ -1864,7 +1869,7 @@ def _active_research_run_ids(
 def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
     if not ids:
         return []
-    conn = get_connection()
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
@@ -1896,7 +1901,7 @@ def delete_chat_threads(ids: list[str]) -> None:
 def clear_chat_history_with_active_research_runs(
     additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
 ) -> tuple[list[str], list[str]]:
-    conn = get_connection()
+    conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         if operation_id is not None:
@@ -2030,12 +2035,13 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     if project is None:
         return None
     root_path = project.get("rootPath") or _default_project_root(project)
-    workspace_existed = Path(root_path).expanduser().exists()
     root_path = _ensure_project_workspace(root_path)
-    # a delete running in another threadpool worker can drop the row while this read recreates
-    # its workspace, leaving a directory no record points at
-    if not workspace_existed and get_chat_project(id) is None:
-        delete_chat_project_workspace({**project, "rootPath": root_path})
+    # a delete running in another threadpool worker can drop the row at any point before the
+    # directory is created, so confirm the project outlived the create rather than trusting a
+    # pre-create snapshot
+    project = get_chat_project(id)
+    if project is None:
+        delete_chat_project_workspace({"id": id, "rootPath": root_path})
         return None
     if project.get("rootPath") == root_path:
         return project

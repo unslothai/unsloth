@@ -406,6 +406,24 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
         conn.close()
 
 
+def _discard_document(document_id: str) -> None:
+    """Drop a document and its upload after the scope it was ingested for disappeared."""
+    conn = _rag_connection()
+    try:
+        document = store.get_document(conn, document_id) or {}
+        store.delete_document(conn, document_id)
+    finally:
+        conn.close()
+    stored = document.get("stored_path")
+    if not stored:
+        return
+    uploads = os.path.realpath(str(rag_uploads_root()))
+    target = os.path.realpath(stored)
+    # confined to the uploads root, matching the project delete cleanup
+    if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
+        os.remove(target)
+
+
 @router.post("/projects/{project_id}/documents")
 async def upload_project_document(
     project_id: str,
@@ -432,6 +450,11 @@ async def upload_project_document(
             ocr = ocr,
             caption = caption,
         )
+    # the project delete runs in the threadpool and can commit after the check above, once its own
+    # RAG cleanup has already listed the project's documents
+    if get_chat_project(project_id) is None:
+        _discard_document(document_id)
+        raise HTTPException(status_code = 404, detail = "Project not found")
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 
