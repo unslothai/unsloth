@@ -173,6 +173,28 @@ test("the shared image picker owns native drops and ignores stale reads", async 
   assert.match(source, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
 });
 
+// The picker rejects a format the native side would refuse anyway, so the two
+// lists have to stay in step or a droppable image starts being turned away.
+test("the picker's droppable formats match the native path policy", async () => {
+  const picker = await readFile(
+    new URL("../src/components/image-dropzone.tsx", import.meta.url),
+    "utf8",
+  );
+  const rust = await readFile(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const listed = (source: string, pattern: RegExp) =>
+    [...(source.match(pattern)?.[1].matchAll(/"([a-z0-9]+)"/g) ?? [])]
+      .map((match) => match[1])
+      .sort();
+
+  assert.deepEqual(
+    listed(picker, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/),
+    listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/),
+  );
+});
+
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
 // ChatPage, so an unconditional setState there rerenders the page per event.
 test("the chat drop overlay only publishes a changed state", async () => {
