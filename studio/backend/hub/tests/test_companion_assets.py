@@ -631,3 +631,44 @@ def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
     assert borrowed not in {c["repo_id"] for c in impact["freeable_companions"]}
     offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
     assert borrowed not in offered
+
+
+def test_an_sdxl_single_file_install_is_never_offered_as_a_leftover(monkeypatch):
+    """A single_file_is_pipeline family caches its whole checkpoint as ONE top-level file, so
+    there is no denoiser folder to recognise. Its repo is also a curated companion base whose
+    self-dependency is dropped, so the listing called an installed SDXL an unused leftover."""
+    sdxl = "stabilityai/stable-diffusion-xl-base-1.0"
+    _install(monkeypatch, _repo(sdxl, [("sd_xl_base_1.0.safetensors", 6_900_000_000)]))
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_a_variant_named_by_an_alias_spelling_still_pins_its_base(monkeypatch):
+    """Family detection accepts ``flux1-dev`` for the flux.1 family, so the curated name
+    ``FLUX.1-dev`` has to be matched with punctuation folded away. One dot apart, the dev base was
+    offerable while the dev checkpoint was installed."""
+    dev = "black-forest-labs/FLUX.1-dev"
+    _install(
+        monkeypatch,
+        _repo("some-owner/custom", [("flux1-dev-Q4_K_M.gguf", 2_000_000)]),
+        _repo(dev, [("model_index.json", 460), ("text_encoder/m.safetensors", 9_000)]),
+    )
+    assert companion_cleanup.companion_dependents(dev) == ["some-owner/custom"]
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_every_cached_gguf_in_one_repo_pins_its_own_base(monkeypatch):
+    """One generic repo can hold checkpoints of two families in separate subdirectories, and the
+    loader selects either by file name. Probing only the first left the other's base orphaned."""
+    klein = "black-forest-labs/FLUX.2-klein-4B"
+    dev = "black-forest-labs/FLUX.2-dev"
+    _install(
+        monkeypatch,
+        _repo(
+            "some-owner/multi",
+            [("FLUX.2-klein-4B/a-Q4_K_M.gguf", 2_000_000), ("FLUX.2-dev/b-Q4_K_M.gguf", 3_000_000)],
+        ),
+        _repo(klein, [("model_index.json", 460)]),
+        _repo(dev, [("model_index.json", 460)]),
+    )
+    assert companion_cleanup.companion_dependents(klein) == ["some-owner/multi"]
+    assert companion_cleanup.companion_dependents(dev) == ["some-owner/multi"]

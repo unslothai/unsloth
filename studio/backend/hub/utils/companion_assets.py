@@ -180,10 +180,12 @@ def _snapshot_relative_names(repo) -> Iterable[str]:
 
 
 def holds_denoiser(name: str) -> bool:
-    """A denoiser weight: a GGUF anywhere, or a shard under the pipeline's denoiser folder.
+    """A denoiser weight by NAME alone: a GGUF anywhere, or a shard under the denoiser folder.
 
     Its presence is what separates a checkpoint the user installed from a companion-only fetch,
-    which takes everything BUT the denoiser folder."""
+    which takes everything BUT the denoiser folder. Use :func:`repo_holds_denoiser` where the repo
+    is available: an SDXL-style whole-pipeline single file is a denoiser too, and only the repo's
+    family says so."""
     lowered = name.lower()
     if lowered.endswith(".gguf"):
         return True
@@ -194,15 +196,42 @@ _DENOISER_DIRS = ("transformer/", "unet/")
 _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 
 
-def _cached_main_gguf_names(cache_scans) -> dict[str, str]:
-    """``{repo_id_lower: one cached main GGUF filename}`` for the family probe below.
+def repo_holds_denoiser(repo) -> bool:
+    """Whether *repo* holds a runnable checkpoint, i.e. is a model the user installed.
+
+    Beyond the name-only test: a ``single_file_is_pipeline`` family (SDXL) caches its whole
+    checkpoint as ONE top-level file, ``sd_xl_base_1.0.safetensors``, with no denoiser folder to
+    recognise. Its repo is also a curated companion base whose self-dependency is dropped, so
+    without this the orphan listing called an installed SDXL an unused leftover and Free up space
+    would delete it. A companion-only fetch never lands a weight at the snapshot root, and the two
+    ways to be wrong are not symmetric: an orphan we decline to offer costs disk, a checkpoint we
+    offer costs the model."""
+    names = list(_snapshot_relative_names(repo))
+    if any(holds_denoiser(name) for name in names):
+        return True
+    repo_id = str(getattr(repo, "repo_id", "") or "")
+    for name in names:
+        if "/" in name or not name.lower().endswith(_WEIGHT_SUFFIXES):
+            continue
+        fam = _detect_family(repo_id, name)
+        if fam is not None and getattr(fam, "single_file_is_pipeline", False):
+            return True
+    return False
+
+
+def _cached_main_gguf_names(cache_scans) -> dict[str, list[str]]:
+    """``{repo_id_lower: [every cached main GGUF name]}`` for the family probe below.
 
     Both diffusion loaders detect a family from the FILENAME as well as the repo id, so a
     perfectly runnable ``some-owner/custom`` holding ``flux-2-klein-4b-Q4_K_M.gguf`` is a
     dependent that a repo-id-only probe cannot see. That matters most where there is nothing else
     to fall back on: on an upgraded install no links have been recorded yet, so the family probe
-    is the whole guard."""
-    names: dict[str, str] = {}
+    is the whole guard.
+
+    EVERY name, not the first: one generic repo can hold checkpoints of two different families in
+    separate subdirectories, and the loader will select either by file name. Probing one of them
+    left the other's base looking orphaned."""
+    names: dict[str, list[str]] = {}
     for scan in cache_scans or ():
         for repo in getattr(scan, "repos", ()) or ():
             try:
@@ -211,10 +240,13 @@ def _cached_main_gguf_names(cache_scans) -> dict[str, str]:
                 key = _normalise(str(getattr(repo, "repo_id", "") or ""))
                 if not key or key in names:
                     continue
-                for name in _snapshot_relative_names(repo):
-                    if name.lower().endswith(".gguf") and "mmproj" not in name.lower():
-                        names[key] = name
-                        break
+                found = [
+                    name
+                    for name in dict.fromkeys(_snapshot_relative_names(repo))
+                    if name.lower().endswith(".gguf") and "mmproj" not in name.lower()
+                ]
+                if found:
+                    names[key] = found
             except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
                 continue
     return names
@@ -231,11 +263,19 @@ def _denoiser_holding_repo_ids(cache_scans) -> set[str]:
                 key = _normalise(str(getattr(repo, "repo_id", "") or ""))
                 if not key or key in held:
                     continue
-                if any(holds_denoiser(name) for name in _snapshot_relative_names(repo)):
+                if repo_holds_denoiser(repo):
                     held.add(key)
             except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
                 continue
     return held
+
+
+def _family_bases_for_names(repo_id: str, gguf_filenames: Iterable[Optional[str]]) -> set[str]:
+    """:func:`_family_bases` unioned over every cached GGUF name, plus the repo id on its own."""
+    bases: set[str] = set()
+    for name in dict.fromkeys([None, *(gguf_filenames or ())]):
+        bases |= _family_bases(repo_id, name)
+    return bases
 
 
 def _family_bases(repo_id: str, gguf_filename: Optional[str] = None) -> set[str]:
@@ -286,20 +326,29 @@ def _curated_variant_bases(fam, repo_id: str, gguf_filename: Optional[str]) -> s
     would list it and delete the companions of a model that is still installed.
 
     Conservative on both ends. Candidates come only from the curated tables, only from entries
-    belonging to THIS family, and only when the checkpoint id or its GGUF file name literally
-    contains the base's repo name -- so a wrong guess can add a dependent, never invent a repo.
-    Naming one base too many costs a delete that is refused; naming one too few costs an
-    installed model."""
-    family = _normalise(getattr(fam, "name", "") or "")
+    belonging to THIS family, and only when the checkpoint id or its GGUF file name names the
+    base -- so a wrong guess can add a dependent, never invent a repo. Naming one base too many
+    costs a delete that is refused; naming one too few costs an installed model.
+
+    Matched with punctuation folded away, the way family detection accepts its own aliases:
+    ``flux1-dev-Q4_K_M.gguf`` resolves to the flux.1 family, and a literal comparison against the
+    curated name ``FLUX.1-dev`` missed it over one dot, leaving the dev base offerable while the
+    dev checkpoint was installed."""
+    family = _fold(getattr(fam, "name", "") or "")
     if not family:
         return set()
-    identity = f"{_normalise(repo_id)} {_normalise(gguf_filename or '')}"
+    identity = f"{_fold(repo_id)} {_fold(gguf_filename or '')}"
     out: set[str] = set()
     for candidate in _curated_base_ids():
-        name = _normalise(candidate.rsplit("/", 1)[-1])
-        if name.startswith(family) and name in identity:
+        name = _fold(candidate.rsplit("/", 1)[-1])
+        if name and name.startswith(family) and name in identity:
             out.add(candidate)
     return out
+
+
+def _fold(text: str) -> str:
+    """Lowercased with every separator dropped, so ``FLUX.1-dev`` and ``flux1-dev`` compare equal."""
+    return "".join(c for c in (text or "").lower() if c.isalnum())
 
 
 def _curated_base_ids() -> set[str]:
@@ -350,14 +399,15 @@ def required_companion_asset_files(cache_scans) -> dict[str, set[str]]:
     gguf_names = _cached_main_gguf_names(cache_scans)
     files: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
-        fam = _detect_family(repo_id, gguf_names.get(_normalise(repo_id)))
-        if fam is None:
-            continue
-        for repo, filename in _sd_cpp_component_specs(
-            fam, repo_id, gguf_names.get(_normalise(repo_id))
-        ):
-            if filename:
-                files.setdefault(_normalise(repo), set()).add(filename)
+        # Every cached GGUF, because one repo can hold checkpoints of two families and each opens
+        # its own components.
+        for name in dict.fromkeys([None, *gguf_names.get(_normalise(repo_id), [])]):
+            fam = _detect_family(repo_id, name)
+            if fam is None:
+                continue
+            for repo, filename in _sd_cpp_component_specs(fam, repo_id, name):
+                if filename:
+                    files.setdefault(_normalise(repo), set()).add(filename)
     return files
 
 
@@ -499,7 +549,7 @@ def required_companion_bases(
         key = _normalise(repo_id)
         if key in ignored or key in component_only:
             continue
-        bases = _family_bases(repo_id, gguf_names.get(key))
+        bases = _family_bases_for_names(repo_id, gguf_names.get(key, []))
         recorded = links.get(key)
         if recorded:
             bases |= _with_mirrors(recorded)
