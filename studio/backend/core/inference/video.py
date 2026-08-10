@@ -1112,7 +1112,14 @@ class VideoBackend:
                 try:
                     local = Path(
                         hf_hub_download_with_xet_fallback(
-                            repo, wanted, hf_token, cancel_event = cancel_event
+                            repo,
+                            wanted,
+                            hf_token,
+                            cancel_event = cancel_event,
+                            # As sd.cpp and the diffusers prefetch do. The plan drops a repo either
+                            # root serves whole, so pinning the live root here re-downloaded a
+                            # complete copy the picker had already reported as no transfer.
+                            reuse_other_cache_root = True,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name

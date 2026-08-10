@@ -20131,12 +20131,22 @@ async def _companion_sizes_for(
     # One listing per repo for the whole batch: 63 LTX quants otherwise re-fetch the same
     # checkpoint and base metadata ~126 times and exhaust the Hub rate limit.
     with shared_plan_metadata():
-        # Alone, because it is the one allowed to raise and must not race siblings raising the
-        # same. It also warms the shared listings the rest read.
+        # One candidate carries the precision check, alone, so a host-wide refusal is raised once
+        # rather than by a dozen racing siblings; it also warms the listings the rest read. A
+        # candidate this family cannot load is not that refusal, so the role passes to the next
+        # one: an unsloth/MiniMax-H3-GGUF listing puts the Qwen3-VL encoder among the rows, and
+        # validating it first would 400 the batch and leave every real transformer row disabled.
         sizes: dict[str, int] = {}
-        head = _answer(await plan_for(ordered[0], True))
-        if head is not None:
-            sizes[ordered[0]] = head
+        rest = list(ordered)
+        while rest:
+            name = rest.pop(0)
+            try:
+                head = _answer(await plan_for(name, True))
+            except (ValueError, FileNotFoundError):
+                continue
+            if head is not None:
+                sizes[name] = head
+            break
         gate = asyncio.Semaphore(_COMPANION_SIZE_CONCURRENCY)
 
         async def _one(name: str):
@@ -20151,7 +20161,7 @@ async def _companion_sizes_for(
                 except Exception:  # noqa: BLE001 -- one unplannable row must not fail the expander
                     return name, None
 
-        for name, value in await asyncio.gather(*(_one(n) for n in ordered[1:])):
+        for name, value in await asyncio.gather(*(_one(n) for n in rest)):
             if value is not None:
                 sizes[name] = value
     return sizes

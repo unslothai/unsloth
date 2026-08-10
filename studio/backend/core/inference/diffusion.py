@@ -1866,7 +1866,10 @@ class DiffusionBackend:
 
     @staticmethod
     def _te_prequant_plan_files(
-        fam: Any, text_encoder_quant: Optional[str], hf_token: Optional[str]
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        hf_token: Optional[str],
+        shas_out: Optional[dict[str, str]] = None,
     ) -> dict[str, tuple[str, list[tuple[str, int]]]]:
         """``{component: (repo_id, [(rfilename, size)])}`` for the text encoders this pick will
         take PRE-CAST from a hosted checkpoint instead of the base repo's dense weights.
@@ -1885,7 +1888,9 @@ class DiffusionBackend:
             )
             if not sources:
                 return {}
-            files = te_prequant_hub_files(sources, HfApi(token = hf_token or None), logger)
+            files = te_prequant_hub_files(
+                sources, HfApi(token = hf_token or None), logger, shas_out
+            )
             return {c: (sources[c].location, f) for c, f in files.items()}
         except Exception as exc:  # noqa: BLE001 -- an unresolvable pre-cast keeps the dense encoder
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
@@ -2162,12 +2167,12 @@ class DiffusionBackend:
         # envelope instead, the picker can refuse at SELECTION time. Metadata only (one range
         # request for the GGUF's tensor table), and None whenever nothing is known to be wrong.
         incompatible = flux2_pick_mismatch(fam, repo_id, gguf_filename, base, hf_token)
-        # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
-        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
         file_sizes: dict[tuple[str, str], int] = {}
         shas: dict[str, str] = {}
         sizing_failures: list[str] = []
+        # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
+        te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token, shas)
         # Total discarded: it counts every file the pick needs, not what is left to fetch.
         _estimate_total, base_files = self._estimate_download_bytes(
             repo_id,
@@ -2245,10 +2250,9 @@ class DiffusionBackend:
             )
 
         for repo, files in te_files.values():
-            # No revision: te_prequant_hub_files reports names and sizes only, so a pre-cast
-            # checkpoint stages whole, not off a stale refs/main. Worth surfacing its info.sha:
-            # these replace tens of GB.
-            _stage(repo, [n for n, _s in files], dict(files), None)
+            # With the commit te_prequant_hub_files recorded: without it a cached pre-cast
+            # checkpoint cannot be told from a missing one, and these replace tens of GB.
+            _stage(repo, [n for n, _s in files], dict(files), None, shas.get(repo))
         if gguf_filename and not Path(repo_id).expanduser().exists():
             _stage(
                 repo_id,

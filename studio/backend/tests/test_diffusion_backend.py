@@ -6374,6 +6374,67 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
 
 
+def test_a_cached_precast_encoder_is_not_charged_again(monkeypatch):
+    """The pre-cast checkpoint is staged with the commit te_prequant_hub_files recorded. Without
+    one the cache probes cannot tell it from a missing file, and a pick whose encoder was already
+    on disk was charged for it again."""
+    from models.inference import DiffusionDownloadPlanResponse
+
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_quant_prefetch_needed",
+        lambda self, fam, kwargs, **_: False,
+    )
+    _no_cache(monkeypatch)
+    # A resolved pre-cast encoder, reported with the commit the plan needs to probe the cache.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_te_prequant_plan_files",
+        staticmethod(
+            lambda fam, teq, token, shas_out = None: (
+                shas_out.update({"unsloth/FLUX.1-dev-FP8": "sha-fp8"})
+                or {"text_encoder": ("unsloth/FLUX.1-dev-FP8", [("encoder-FP8.pt", 13 * GB)])}
+                if shas_out is not None
+                else {}
+            )
+        ),
+    )
+    seen: dict[str, object] = {}
+
+    def _missing(repo_id, files, revision = None):
+        seen[repo_id] = revision
+        return set() if repo_id.endswith("-FP8") else set(files)
+
+    monkeypatch.setattr(
+        DiffusionBackend, "_files_missing_from_live_root", staticmethod(_missing)
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        text_encoder_quant = "fp8",
+    )
+
+    # The probe got a revision, which is the whole point: without one it charges for everything.
+    assert seen["unsloth/FLUX.1-dev-FP8"] == "sha-fp8"
+    encoder = next(e for e in plan["entries"] if e["repo_id"].endswith("-FP8"))
+    assert encoder["bytes"] == 0
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == (
+        plan["total_bytes"] - 7 * GB
+    )
+
+
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request -> no hosted checkpoint -> the dense encoder is exactly as before.
     _fake_hf_api(

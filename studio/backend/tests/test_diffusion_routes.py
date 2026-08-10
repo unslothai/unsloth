@@ -1871,6 +1871,74 @@ def test_a_failing_listing_is_not_retried_by_every_candidate():
     assert len(calls) == 2
 
 
+def test_companion_sizes_survives_an_unloadable_first_candidate(client, monkeypatch):
+    # An unsloth/MiniMax-H3-GGUF listing puts the Qwen3-VL encoder among the quant rows, and only
+    # the transformer partitions validate. Raised from the head candidate, which carries the
+    # precision check outside the per-row handler, that 400'd the batch and left every real
+    # transformer row disabled.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        if kwargs["gguf_filename"].startswith("qwen3vl"):
+            raise ValueError("not a transformer partition")
+        return {
+            "entries": [
+                {
+                    "repo_id": "black-forest-labs/FLUX.1-dev",
+                    "files": ["x"],
+                    "bytes": 7,
+                    "gguf_filename": None,
+                }
+            ],
+            "total_bytes": 7,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["qwen3vl_encoder.gguf", "flux1-dev-Q4_K_M.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    # The unloadable row is omitted; the real one still gets its size.
+    assert resp.json()["sizes"] == {"flux1-dev-Q4_K_M.gguf": 7}
+
+
+def test_companion_sizes_still_refuses_a_host_wide_precision_failure(client, monkeypatch):
+    # The head candidate carries the precision check on purpose: a scheme this host cannot honour
+    # is not one bad row, and must reach the picker as the 409 the load would give.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        raise RuntimeError("fp8 is not available on this host")
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["flux1-dev-Q4_K_M.gguf", "flux1-dev-Q6_K.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 409
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router
