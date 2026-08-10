@@ -65,6 +65,13 @@ class DiffusionFamily:
     # Hosted checkpoints for NON-DEFAULT bases as (base_repo, scheme, repo_id), base_repo lowercased: one family entry covers
     # variants whose weights differ. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
@@ -784,6 +791,18 @@ def family_prequant_repo(
     for entry_scheme, repo_id in fam.prequant_repos:
         if entry_scheme == scheme:
             return repo_id
+    return None
+
+
+def family_prequant_filename(fam: DiffusionFamily, scheme: str) -> Optional[str]:
+    """The preferred checkpoint filename this family declares for ``scheme``, or None.
+
+    ``None`` means "use the derived ``<Model>-<SCHEME>.pt`` name", which is every family but the
+    ones shipping a second artifact under the same repo and scheme. Not variant-keyed: the
+    filename says WHICH artifact, the repo says which base."""
+    for entry_scheme, filename in getattr(fam, "prequant_filenames", ()) or ():
+        if entry_scheme == scheme:
+            return filename
     return None
 
 
