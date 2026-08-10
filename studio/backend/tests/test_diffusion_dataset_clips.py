@@ -340,3 +340,61 @@ def test_deleting_an_image_keeps_a_clip_of_the_same_stem_captioned(client, ds_ro
     assert not (folder / "cat.png").exists()
     assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
     assert _diffusion_dataset_summary(folder).caption_count == 1
+
+
+# ── the start refusal ────────────────────────────────────────────────────────
+def test_start_names_clips_instead_of_asking_for_captions_that_are_there(tmp_path):
+    """A clip folder is listed now, so a user can pick it and press Start. Discovery reads
+    stills, so the raw refusal is "No captioned images found ... provide per-image .txt
+    captions" -- wrong twice over on a folder whose clips all have one. The route reports the
+    real reason instead."""
+    from core.training.diffusion_train_common import discover_image_caption_pairs
+    from routes.training import _dataset_preflight_detail
+
+    folder = tmp_path / "clip-style"
+    folder.mkdir()
+    for stem in ("a", "b"):
+        (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
+        (folder / f"{stem}.txt").write_text(f"clip {stem}", encoding = "utf-8")
+
+    # The folder IS captioned, by the summary the picker is built from.
+    assert _diffusion_dataset_summary(folder).caption_count == 2
+
+    with pytest.raises(ValueError) as excinfo:
+        discover_image_caption_pairs(folder)
+    raw = str(excinfo.value)
+    assert "No captioned images found" in raw
+
+    detail = _dataset_preflight_detail(str(folder), excinfo.value)
+    assert detail != raw
+    assert "2 video clips" in detail
+    assert "not supported yet" in detail
+    assert ".txt" not in detail
+
+
+def test_start_still_reports_an_uncaptioned_image_folder_unchanged(tmp_path):
+    """The clip branch must not swallow the ordinary refusal: no clips, same message."""
+    from core.training.diffusion_train_common import discover_image_caption_pairs
+    from routes.training import _dataset_preflight_detail
+
+    folder = tmp_path / "photo-style"
+    folder.mkdir()
+    _write_png(folder / "one.png")
+
+    with pytest.raises(ValueError) as excinfo:
+        discover_image_caption_pairs(folder)
+    assert _dataset_preflight_detail(str(folder), excinfo.value) == str(excinfo.value)
+
+
+def test_start_passes_every_other_preflight_failure_through(tmp_path):
+    """A corrupt image in a folder that also holds clips still reports the corrupt image."""
+    from routes.training import _dataset_preflight_detail
+
+    folder = tmp_path / "mixed"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(_MP4_BYTES)
+
+    corrupt = ValueError("Image cannot be decoded: bad.png (broken).")
+    assert _dataset_preflight_detail(str(folder), corrupt) == str(corrupt)
+    missing = FileNotFoundError("data_dir is not a directory: /nope")
+    assert _dataset_preflight_detail("/nope", missing) == str(missing)

@@ -2864,7 +2864,9 @@ async def start_diffusion_training(
                 verify_images = True,
             )
         except (FileNotFoundError, ValueError) as e:
-            raise HTTPException(status_code = 400, detail = str(e))
+            raise HTTPException(
+                status_code = 400, detail = _dataset_preflight_detail(config["data_dir"], e)
+            )
         if resuming:
             # The dataset half of the resume identity, now that the images are known -- and the
             # step target, which epochs mode only resolves here. Still before the GPU teardown.
@@ -3085,6 +3087,32 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
         image_count = images,
         clip_count = clips,
         caption_count = captions,
+    )
+
+
+def _dataset_preflight_detail(data_dir: str, error: Exception) -> str:
+    """Say why a clip dataset cannot start, instead of reporting it as uncaptioned.
+
+    ``discover_image_caption_pairs`` reads stills only, so a folder of properly captioned
+    clips comes back as "No captioned images found. Provide ... per-image .txt captions",
+    which is wrong twice over: the captions are there, and adding more would not help.
+    The dataset layer lists clip folders so they can be uploaded and captioned before a
+    clip-reading trainer exists; until one does, refuse with the actual reason. Once
+    discovery reads clips, the folder yields pairs and this branch is never reached."""
+    detail = str(error)
+    if not isinstance(error, ValueError) or "No captioned images found" not in detail:
+        return detail
+    try:
+        summary = _diffusion_dataset_summary(Path(data_dir).expanduser())
+    except OSError:
+        return detail
+    if summary.clip_count <= 0:
+        return detail
+    clips = f"{summary.clip_count} video clip" + ("" if summary.clip_count == 1 else "s")
+    return (
+        f"'{Path(data_dir).expanduser().name}' holds {clips} and no captioned images. "
+        "Training from clips is not supported yet, so this dataset cannot be trained on. "
+        "Choose a dataset of images, or add captioned images to this folder."
     )
 
 
