@@ -473,3 +473,34 @@ test("uses the flat list when the entries API is unavailable", async () => {
 
   assert.deepEqual(out.map((f) => f.name), ["a.png", "b.png"]);
 });
+
+test("the labeling grid is gated on images, not just its toggle", async () => {
+  // A mixed folder keeps its listing on clip_count alone, so deleting the last image leaves the
+  // grid with no toggle to close it unless the grid itself sits inside the same guard.
+  const source = await readFile(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const guard = "{selectedDataset.image_count > 0 && (";
+  const toggle = source.indexOf("<LabelingGridToggle");
+  const grid = source.indexOf("<DatasetLabelingGrid");
+  assert.ok(toggle > 0 && grid > 0);
+  // The guard opening the block the toggle sits in.
+  const start = source.lastIndexOf(guard, toggle);
+  assert.ok(start > 0, "the toggle is not inside an image_count guard");
+  // Walk to that block's matching close brace.
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  assert.ok(end > start, "unbalanced braces around the labeling grid guard");
+  assert.ok(grid > start && grid < end, "the grid renders outside the image_count guard");
+});

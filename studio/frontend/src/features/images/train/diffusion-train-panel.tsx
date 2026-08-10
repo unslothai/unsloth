@@ -1713,20 +1713,25 @@ export function DiffusionTrainPanel({
                       onChanged={() => void refreshInfo()}
                     />
                   )}
-                  {/* The grid renders thumbnails, so it is offered only where there are images. */}
+                  {/* The grid renders thumbnails, so it is offered only where there are images.
+                      One guard over the toggle AND the grid: gating only the toggle would leave
+                      an open grid with nothing to close it once a mixed folder's last image is
+                      deleted, since the clips keep the folder listed. */}
                   {selectedDataset.image_count > 0 && (
-                    <LabelingGridToggle
-                      count={selectedDataset.image_count}
-                      open={gridOpen}
-                      onToggle={() => setGridOpen((o) => !o)}
-                    />
-                  )}
-                  {gridOpen && (
-                    <DatasetLabelingGrid
-                      dataset={dataset}
-                      refreshKey={gridRefresh}
-                      onCountsChanged={() => void refreshInfo()}
-                    />
+                    <>
+                      <LabelingGridToggle
+                        count={selectedDataset.image_count}
+                        open={gridOpen}
+                        onToggle={() => setGridOpen((o) => !o)}
+                      />
+                      {gridOpen && (
+                        <DatasetLabelingGrid
+                          dataset={dataset}
+                          refreshKey={gridRefresh}
+                          onCountsChanged={() => void refreshInfo()}
+                        />
+                      )}
+                    </>
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
                     <p className="text-ui-11 leading-snug text-muted-foreground">
