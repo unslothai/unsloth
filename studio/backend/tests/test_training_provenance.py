@@ -1110,12 +1110,26 @@ def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
 
 @pytest.mark.parametrize("status", ["pending", "incomplete"])
 def test_unattested_current_provenance_without_hub_resources_can_resume(status):
-    assert (
-        resource_provenance_allows_resume(
-            {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
-        )
-        is True
-    )
+    config = {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
+
+    assert exact_resume_resource_requirements(config) == (False, False)
+    assert resource_provenance_allows_resume(config) is True
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"status": "pending"},
+        {"version": 2, "status": "pending"},
+    ],
+    ids = ["missing-version", "wrong-version"],
+)
+def test_malformed_pending_provenance_is_rejected_consistently(marker):
+    config = {RESOURCE_PROVENANCE_KEY: marker}
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "provenance is invalid"):
+        exact_resume_resource_requirements(config)
+    assert resource_provenance_allows_resume(config) is False
 
 
 def test_unattested_current_hub_dataset_cannot_resume_mutable_revision(tmp_path):
@@ -1193,6 +1207,30 @@ def test_pending_current_hub_pins_are_not_treated_as_attested(tmp_path):
     assert resource_provenance_allows_resume(config) is False
 
 
+def test_stop_and_save_before_attestation_allows_resume(monkeypatch):
+    """Regression for #8150: Resume hidden after Stop and Save on hub models."""
+    from core.training import resume
+
+    monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
+    config = {
+        "model_name": "unsloth/Qwen3.5-0.8B",
+        "hf_dataset": "org/dataset",
+        RESOURCE_PROVENANCE_KEY: {"version": 1, "status": "pending"},
+    }
+    run = {
+        "status": "stopped",
+        "final_step": 10,
+        "total_steps": 100,
+        "output_dir": "/outputs/run-8150",
+        "resumed_later": False,
+        "config_json": json.dumps(config),
+    }
+
+    assert exact_resume_resource_requirements(config) == (False, False)
+    assert resource_provenance_allows_resume(config) is True
+    assert resume.can_resume_run(run) is True
+
+
 @pytest.mark.parametrize(
     "marker",
     [
@@ -1206,7 +1244,7 @@ def test_malformed_provenance_is_rejected_while_legacy_is_unchanged(marker):
     assert resource_provenance_allows_resume({"model_name": "legacy/model"}) is True
 
 
-def test_resume_eligibility_rejects_unpinned_current_hub_and_preserves_legacy(monkeypatch):
+def test_resume_eligibility_allows_pending_before_attestation_and_preserves_legacy(monkeypatch):
     from core.training import resume
 
     monkeypatch.setattr(resume, "has_resume_state", lambda _path: True)
@@ -1230,7 +1268,7 @@ def test_resume_eligibility_rejects_unpinned_current_hub_and_preserves_legacy(mo
                 ),
             }
         )
-        is False
+        is True
     )
     assert (
         resume.can_resume_run(

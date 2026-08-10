@@ -24,8 +24,60 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any, Optional, Sequence
 
 BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
+
+
+def convrot_refusal(
+    group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
+) -> Optional[str]:
+    """Why a ConvRot build must not be quantised and saved, or None when it is fine.
+
+    An empty rotatable set means the group divides no quantized input axis (a group larger than
+    every Linear, say). The build would still stamp the v2 tag and an empty fqn list, which
+    ``rotation_metadata_error`` refuses at load time, so the only thing it produces is a
+    multi-gigabyte artifact nothing can ever open. Refuse before the hours, not after."""
+    if rotatable:
+        return None
+    return (
+        f"ConvRot group {group} divides the in_features of none of the {len(not_divisible)} "
+        "quantized linears, so the checkpoint would record an empty rotation and be refused at "
+        "load time. Pick a smaller power-of-4 group, or drop --convrot-groupsize."
+    )
+
+
+def upload_destination(
+    fam: Any,
+    scheme: str,
+    *,
+    rotated: bool,
+    override: Optional[str] = None,
+) -> str:
+    """The repo-root filename this build should publish under.
+
+    The loader asks for the family's declared ``prequant_filenames`` name first and the derived
+    ``<Model>-<SCHEME>.pt`` second, so a ROTATED artifact published under the legacy
+    ``transformer_<scheme>.pt`` is either never resolved at all, or resolved as the fallback by a
+    build too old to honour the rotation, which then refuses the v2 tag and drops to the dense
+    download. A rotated build therefore goes to the declared name or nowhere. Plain builds keep
+    the legacy name they have always used."""
+    if override:
+        return override
+    from core.inference.diffusion_prequant import prequant_filename
+
+    if not rotated:
+        return prequant_filename(scheme)
+    from core.inference.diffusion_families import family_prequant_filename
+
+    preferred = family_prequant_filename(fam, scheme)
+    if not preferred:
+        raise ValueError(
+            f"family {getattr(fam, 'name', fam)!r} declares no prequant_filenames entry for "
+            f"{scheme!r}, so a rotated checkpoint has no name the loader would ask for. Add the "
+            "entry to the family table, or pass --upload-filename."
+        )
+    return preferred
 
 
 def main(argv = None) -> int:
@@ -40,9 +92,26 @@ def main(argv = None) -> int:
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
     p.add_argument(
+        "--convrot-groupsize",
+        type = int,
+        default = 0,
+        help = "bake a ConvRot block-Hadamard activation rotation at this group size (a power of "
+        "4; 0 = off). Every quantized Linear whose in_features the group divides has its "
+        "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
+        "exact fqn list is recorded in the checkpoint and the loader rotates the "
+        "activations of that list and nothing else. Writes the v2 format tag.",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
+    p.add_argument(
+        "--upload-filename",
+        default = None,
+        help = "repo-root filename to publish under; defaults to the family's declared "
+        "prequant_filenames entry for a rotated build and the legacy transformer_<scheme>.pt "
+        "otherwise",
+    )
     args = p.parse_args(argv)
 
     sys.path.insert(0, str(BACKEND))
@@ -51,7 +120,7 @@ def main(argv = None) -> int:
     import diffusers
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import PREQUANT_FORMAT, prequant_filename
+    from core.inference.diffusion_prequant import prequant_format_for
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
@@ -75,6 +144,20 @@ def main(argv = None) -> int:
         print(f"error: unknown family '{args.family}'", flush = True)
         return 2
     transformer_cls = getattr(diffusers, fam.transformer_class)
+    # Resolved BEFORE the load, so a rotated build with nowhere resolvable to publish fails in a
+    # second rather than after the quantise and the multi-gigabyte save.
+    upload_dest = None
+    if args.upload_repo:
+        try:
+            upload_dest = upload_destination(
+                fam,
+                scheme,
+                rotated = bool(args.convrot_groupsize),
+                override = args.upload_filename,
+            )
+        except ValueError as exc:
+            print(f"error: {exc}", flush = True)
+            return 2
 
     print(f"== build prequant ({fam.name}/{scheme}, min_feat={args.min_features}) ==", flush = True)
     print(f"  loading dense transformer from {args.base} (subfolder=transformer) ...", flush = True)
@@ -89,15 +172,38 @@ def main(argv = None) -> int:
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
-    quantize_(
-        transformer,
-        _make_quant_config(scheme),
-        filter_fn = make_filter_fn(
-            args.min_features,
-            exclude_name_tokens = exclude_name_tokens,
-            require_bf16 = require_bf16,
-        ),
+    filter_fn = make_filter_fn(
+        args.min_features,
+        exclude_name_tokens = exclude_name_tokens,
+        require_bf16 = require_bf16,
     )
+
+    # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then
+    # sees the rotated distribution. The fqn list is recorded, never re-derived at load time.
+    rotation: dict = {}
+    if args.convrot_groupsize:
+        from core.inference.diffusion_convrot import (
+            rotatable_fqns,
+            rotate_linears_,
+            rotation_metadata,
+        )
+
+        group = int(args.convrot_groupsize)
+        rotatable, not_divisible = rotatable_fqns(transformer, filter_fn, group)
+        refusal = convrot_refusal(group, rotatable, not_divisible)
+        if refusal:
+            print(f"error: {refusal}", flush = True)
+            return 2
+        rotate_linears_(transformer, rotatable, group)
+        rotation = rotation_metadata(group, rotatable)
+        print(
+            f"  rotated {len(rotatable)} linears at ConvRot group {group}; "
+            f"{len(not_divisible)} quantized linears left plain (in_features not divisible)"
+            + (f", e.g. {not_divisible[0]}" if not_divisible else ""),
+            flush = True,
+        )
+
+    quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     # CPU state dict for a portable, GPU-free artifact.
     state_dict = {
@@ -123,8 +229,11 @@ def main(argv = None) -> int:
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
+    metadata.update(rotation)
     ckpt = {
-        "format": PREQUANT_FORMAT,
+        # v2 when a rotation is baked in, so a Studio predating the online half refuses the file
+        # rather than running the rotated weights against unrotated activations.
+        "format": prequant_format_for(metadata),
         "metadata": metadata,
         "state_dict": state_dict,
     }
@@ -139,7 +248,7 @@ def main(argv = None) -> int:
     if args.upload_repo:
         from huggingface_hub import HfApi
 
-        dest = prequant_filename(scheme)
+        dest = upload_dest
         print(f"  uploading -> {args.upload_repo}:{dest} ...", flush = True)
         api = HfApi(token = args.hf_token)
         api.create_repo(args.upload_repo, exist_ok = True)

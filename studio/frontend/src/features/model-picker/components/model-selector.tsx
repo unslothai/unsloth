@@ -56,6 +56,7 @@ import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
+  ModelDownloadFootprintResolver,
   ModelOption,
   ModelPickTarget,
   ModelSelectorChangeMeta,
@@ -146,6 +147,8 @@ interface ModelSelectorProps {
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
+  /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
@@ -337,6 +340,7 @@ function ModelSelectorContent({
   selectedConfig,
   selectedGgufVariant,
   onSelect,
+  resolveDownloadFootprint,
   onEject,
   onFoldersChange,
   onPickLocalModel,
@@ -359,6 +363,7 @@ function ModelSelectorContent({
   selectedConfig?: PerModelConfig | null;
   selectedGgufVariant?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
@@ -606,6 +611,7 @@ function ModelSelectorContent({
                 externalModels={externalModels}
                 value={value}
                 onSelect={handlePick}
+                resolveDownloadFootprint={resolveDownloadFootprint}
                 onFoldersChange={onFoldersChange}
                 onBrowseHub={onBrowseHub}
                 onModelsChange={onModelsChange}
@@ -684,6 +690,7 @@ export function ModelSelector({
   selectedConfig,
   selectedGgufVariant,
   onValueChange,
+  resolveDownloadFootprint,
   onEject,
   onFoldersChange,
   onPickLocalModel,
@@ -828,6 +835,7 @@ export function ModelSelector({
         selectedConfig={selectedConfig}
         selectedGgufVariant={selectedGgufVariant}
         onSelect={handleSelect}
+        resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}

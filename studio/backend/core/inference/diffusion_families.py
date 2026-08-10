@@ -65,6 +65,13 @@ class DiffusionFamily:
     # Hosted checkpoints for NON-DEFAULT bases as (base_repo, scheme, repo_id), base_repo lowercased: one family entry covers
     # variants whose weights differ. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
@@ -787,6 +794,18 @@ def family_prequant_repo(
     return None
 
 
+def family_prequant_filename(fam: DiffusionFamily, scheme: str) -> Optional[str]:
+    """The preferred checkpoint filename this family declares for ``scheme``, or None.
+
+    ``None`` means "use the derived ``<Model>-<SCHEME>.pt`` name", which is every family but the
+    ones shipping a second artifact under the same repo and scheme. Not variant-keyed: the
+    filename says WHICH artifact, the repo says which base."""
+    for entry_scheme, filename in getattr(fam, "prequant_filenames", ()) or ():
+        if entry_scheme == scheme:
+            return filename
+    return None
+
+
 # The release where diffusers' own requires-python went ">= 3.10.0", which makes 0.36.0 the newest
 # a supported Python 3.9 host can resolve.
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
@@ -1067,6 +1086,21 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
     return frozenset(r.strip().lower() for r in companions - loadable if r)
+
+
+def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:
+    """EVERY text-encoder set an sd.cpp load of *fam* could pick, unioned.
+
+    For the guard, not for a load. A load reads the GGUF header and picks one; a guard
+    reconstructing a checkpoint it cannot open has no header, and for FLUX.2-klein a renamed 9B
+    file carries no size token either, so the string fallback answers 4B and the 9B encoder the
+    load actually fetched is left unprotected. Naming both costs a delete that is refused and
+    saves one that strands an installed model.
+    """
+    sets = [fam.sd_cpp_text_encoders]
+    if fam.name == "flux.2-klein":
+        sets.append(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return tuple(dict.fromkeys(entry for group in sets for entry in group or ()))
 
 
 def sd_cpp_text_encoders_for(

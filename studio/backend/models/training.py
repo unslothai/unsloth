@@ -1074,11 +1074,14 @@ class DiffusionTrainingRunsResponse(BaseModel):
 
 
 class DiffusionDatasetSummary(BaseModel):
-    """One image-dataset folder under the Studio datasets root."""
+    """One dataset folder under the Studio datasets root: images, clips, or both."""
 
     name: str
     path: str
     image_count: int
+    # Clips, for the families that train from video. Defaults to 0 so an older backend's
+    # payload (and every image-only caller) stays valid.
+    clip_count: int = 0
     caption_count: int
 
 
@@ -1121,12 +1124,15 @@ class DiffusionTrainingInfoResponse(BaseModel):
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
-    """Result of uploading images/captions into a named dataset folder. Counts are
+    """Result of uploading images/clips/captions into a named dataset folder. Counts are
     for the whole folder after the upload, so repeat uploads show the running total."""
 
     name: str
     path: str
     image_count: int
+    # Clips, for the families that train from video. Defaults to 0 so an older backend's
+    # payload (and every image-only caller) stays valid.
+    clip_count: int = 0
     caption_count: int
     uploaded: int
 
@@ -1140,13 +1146,17 @@ class DiffusionDatasetImageRecord(BaseModel):
     filename: str
     caption: Optional[str] = None
     caption_source: Literal["sidecar", "metadata", "none"] = "none"
+    # Which kind of item this is. Clips are listed so a caller can see everything the folder
+    # holds under a stem, but they carry no pixel dimensions and the labeling grid skips them.
+    # Defaults to "image" so an older backend's payload still validates.
+    kind: Literal["image", "clip"] = "image"
     width: int
     height: int
     size_bytes: int
 
 
 class DiffusionDatasetImagesResponse(BaseModel):
-    """Every image in a dataset folder (including uncaptioned ones), for the labeling grid."""
+    """Every item in a dataset folder (including uncaptioned ones), for the labeling grid."""
 
     name: str
     path: str
@@ -1194,6 +1204,9 @@ class DiffusionDatasetImportResponse(BaseModel):
     name: str
     path: str
     image_count: int
+    # Clips, for the families that train from video. Defaults to 0 so an older backend's
+    # payload (and every image-only caller) stays valid.
+    clip_count: int = 0
     caption_count: int
     imported: int
     license: str
