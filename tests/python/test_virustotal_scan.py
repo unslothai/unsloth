@@ -992,15 +992,15 @@ class TestWorkflowOrdering:
         # used to sit there and is why the window existed at all.
         names = self._publish_steps()
         validate = names.index("Validate versioned release state")
-        assert names[validate + 1] == "Generate versioned updater metadata and provenance"
+        assert names[validate + 1] == "Generate versioned updater metadata"
         assert names[validate + 2] == "Publish versioned release assets"
 
     def test_release_notes_are_written_unconditionally(self):
-        # Validation writes the notes; metadata and provenance consume that same
-        # file before the release is created.
+        # Validation writes the notes; the metadata step consumes that same file
+        # before the assets land on the release.
         steps = self._publish_step_map()
         assert "desktop-release-notes.md" in steps["Validate versioned release state"]["run"]
-        metadata = steps["Generate versioned updater metadata and provenance"]["run"]
+        metadata = steps["Generate versioned updater metadata"]["run"]
         assert "desktop-release-notes.md" in metadata
 
     def test_a_missing_release_stops_the_publish(self):
