@@ -7462,7 +7462,12 @@ def test_a_commit_pinned_copy_with_no_ref_does_not_count_as_cached(monkeypatch):
     dropped a multi-GB entry the load then pulled inline."""
     probes: list = []
 
-    def _cache(repo_id, filename, cache_dir = None, revision = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+        revision = None,
+    ):
         probes.append(revision)
         # Present at the recorded commit, but nothing resolves refs/main to it.
         return "/cache/blob" if revision else None
