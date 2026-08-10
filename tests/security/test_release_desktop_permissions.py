@@ -240,6 +240,10 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
         if step.get("name") == "Bridge legacy desktop-latest clients once"
     )
     assert "inputs.bridge_legacy_channel" in bridge["if"]
+    # The bridge reads the manifest "Download updater metadata" fetches, and that
+    # step is gated on the same output. Dropping this conjunct lets a repair run
+    # that also bridges mutate the release and then die on a file it never got.
+    assert "steps.gate.outputs.proceed == 'true'" in bridge["if"]
     assert "gh release create desktop-latest" not in bridge["run"]
     assert "gh release upload desktop-latest" in bridge["run"]
     assert "--clobber" in bridge["run"]

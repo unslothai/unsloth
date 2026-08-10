@@ -325,8 +325,16 @@ jobs:
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
           test -n "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "latest.json") | .url')"
 
+      # The gate guard is load-bearing, not decoration: this step reads the
+      # manifest that "Download updater metadata" fetches, and that step is
+      # itself gated on proceed == 'true'. Before this workflow became
+      # dispatch-only the gate short-circuited to 'true' on every dispatch, so
+      # bridge_legacy_channel alone implied the download had run. It no longer
+      # does, and without this conjunct a repair_pointer run that also asks to
+      # bridge would upload a carried manifest and then read a file that was
+      # never downloaded, failing after it had already mutated the release.
       - name: Bridge legacy desktop-latest clients once
-        if: ${{ inputs.bridge_legacy_channel }}
+        if: ${{ steps.gate.outputs.proceed == 'true' && inputs.bridge_legacy_channel }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
