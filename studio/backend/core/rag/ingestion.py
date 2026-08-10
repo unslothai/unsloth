@@ -168,13 +168,24 @@ def _ocr_scanned_pages(
     return out, ocred
 
 
-def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
+def _replace_old_document(
+    conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
+) -> None:
     """Drop the document this ingestion replaced (stale embedder / empty prior
-    ingest), called only after the replacement completed successfully."""
+    ingest), called only after the replacement completed successfully.
+
+    Checked against the replacement inside the transaction that retires the old row: every
+    store helper commits, so a delete that removed the replacement between the completion and
+    this call would otherwise take the still-searchable document it was replacing with it.
+    """
     if replaces is None:
         return
     old_id, old_path = replaces
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if store.get_document(conn, document_id) is None:
+            conn.rollback()
+            return
         store.delete_document(conn, old_id)
         _remove_upload(old_path, keep_path = keep_path)
     except Exception:  # noqa: BLE001 - the new document is already live
@@ -248,7 +259,7 @@ def _run(
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _replace_old_document(conn, replaces, stored_path)
+            _replace_old_document(conn, replaces, stored_path, document_id)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
@@ -270,8 +281,12 @@ def _run(
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
+        # add_chunks commits, which releases the lock taken above, so retake it before reporting
+        # success: a delete landing in that gap must not be recorded as a completed ingestion.
+        if _abort_if_document_deleted(conn, job_id, document_id):
+            return
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
-        _replace_old_document(conn, replaces, stored_path)
+        _replace_old_document(conn, replaces, stored_path, document_id)
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})

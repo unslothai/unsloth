@@ -145,7 +145,10 @@ class ChatDeleteRequest(BaseModel):
 
 
 class ChatClearRequest(BaseModel):
-    ids: list[str] = Field(default_factory = list, max_length = 10_000)
+    # The client fences every legacy Dexie thread it holds, so this bound has to sit above what
+    # a migrated install can legitimately collect: a 422 here fails the whole clear, and the
+    # identical retry fails with it, leaving backend history behind after Clear all.
+    ids: list[str] = Field(default_factory = list, max_length = 200_000)
     operationId: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
 
 
