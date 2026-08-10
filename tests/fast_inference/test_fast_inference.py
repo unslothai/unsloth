@@ -83,7 +83,9 @@ def _metric(metrics, *names):
     return None
 
 
-@pytest.mark.skipif(not (cuda_available or xpu_available), reason = "fast_inference needs a CUDA or XPU GPU + vLLM")
+@pytest.mark.skipif(
+    not (cuda_available or xpu_available), reason = "fast_inference needs a CUDA or XPU GPU + vLLM"
+)
 def test_fast_inference():
     # Import here, not at module load: importing unsloth probes for an
     # accelerator and errors on CPU-only machines, so deferring keeps pytest
