@@ -110,14 +110,24 @@ def apply_tool_strip_patterns(
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
     strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
-    ``None``); every other pattern is removed unconditionally. A closed-pair pattern whose
-    close token is absent is skipped so an unclosed-marker stream stays linear."""
+    ``None``) and the match is not inside markdown code; every other pattern is removed
+    unconditionally. A closed-pair pattern whose close token is absent is skipped so an
+    unclosed-marker stream stays linear."""
     for pat in patterns:
         token = _PAT_REQUIRED_TOKEN.get(pat)
         if token is not None and token not in text:
             continue
-        if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
+        if pat in _REHEARSAL_STRIP_PATS:
+            # Same two gates the parser applies in _iter_bracket_spans, so a rehearsal that
+            # is not promoted to a call stays visible instead of vanishing from the answer.
+            spans = _code_spans(text)
+            text = pat.sub(
+                lambda m: m.group(0)
+                if (enabled_tool_names is not None and m.group(1) not in enabled_tool_names)
+                or any(s <= m.start() < e for s, e in spans)
+                else "",
+                text,
+            )
         else:
             text = pat.sub("", text)
     return text
@@ -165,6 +175,14 @@ _MISTRAL_BRACKET_RE = re.compile(
 # Rehearsal ``name[ARGS]{json}`` (no [TOOL_CALLS]); the lookbehind keeps the v11 call-id
 # from being taken as the function name.
 _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
+
+# Markdown code: a fenced block (closing fence optional so a streaming block counts) or
+# an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
+# documentation stays text instead of executing.
+_CODE_SPAN_RE = re.compile(
+    r"^[ \t]*(?:```+|~~~+).*?(?:^[ \t]*(?:```+|~~~+)[ \t]*$|\Z)|`[^`\n]*`",
+    re.DOTALL | re.MULTILINE,
+)
 
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
@@ -297,6 +315,18 @@ def _decode_array_items(text: str, body_start: int, body_end: int):
     return objs, ends
 
 
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Markdown code spans, used to keep a quoted rehearsal out of the call set.
+
+    A line-start fence cannot occur inside a call's JSON body (a raw newline is
+    invalid JSON there), so no tool-markup exclusion is needed; a stray inline span
+    can at worst hide a same-line rehearsal, which drops a call rather than
+    inventing one."""
+    if "`" not in text and "~~~" not in text:
+        return []
+    return [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+
+
 def _iter_bracket_spans(
     text: str,
     start: int = 0,
@@ -312,6 +342,12 @@ def _iter_bracket_spans(
     prose ``foo[ARGS]{..}`` (foo disabled) is neither parsed nor stripped. Explicit
     [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric.
 
+    A rehearsal inside markdown code (fenced block or inline span) is documentation
+    for the same reason -- the syntax has no sentinel, so quoting it would otherwise
+    BE a call -- and is likewise neither parsed nor stripped. Explicit markers stay
+    unconditional there too: a ```json block is still a real call for the templates
+    that emit one.
+
     Balance-only (no JSON validation) so strip and parse share one scan. The cursor
     jumps past each consumed span, so a marker inside consumed JSON is never
     re-matched and each regex re-searches only once its match falls behind: linear."""
@@ -323,6 +359,7 @@ def _iter_bracket_spans(
     )
     nexts = {kind: rx.search(text, start) for kind, rx in specs}
     cursor = start
+    code_spans: list | None = None  # computed on the first rehearsal candidate only
     while cursor < n:
         for kind, rx in specs:
             m = nexts[kind]
@@ -349,6 +386,13 @@ def _iter_bracket_spans(
             # Inactive-name rehearsal is prose: advance past its body without yielding.
             cursor = end + 1
             continue
+        if kind == "rehearsal":
+            if code_spans is None:
+                code_spans = _code_spans(text)
+            if any(s <= m.start() < e for s, e in code_spans):
+                # Quoted syntax, not a call: advance past its body without yielding.
+                cursor = end + 1
+                continue
         yield (m.start(), end + 1, kind, m)
         cursor = end + 1
 
