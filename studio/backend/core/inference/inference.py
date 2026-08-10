@@ -2278,15 +2278,15 @@ class InferenceBackend:
             chat_messages, None, markup_for_tokenizer(tokenizer)
         )
 
-        logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
+        logger.debug(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
-            logger.info(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
+            logger.debug(f"  {i}: {msg['role']} - {msg['content'][:50]}...")
 
         try:
             formatted_prompt = render_prompt_with_boundary(
                 tokenizer, chat_messages, continue_final_message = _continuing
             )
-            logger.info(f"Successfully applied tokenizer's native chat template")
+            logger.debug(f"Successfully applied tokenizer's native chat template")
             return formatted_prompt
         except Exception as e:
             error_msg = str(e).lower()

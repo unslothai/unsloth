@@ -8,6 +8,7 @@ each token) and takes ``_gen_lock`` before the unload round-trip.
 
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -244,6 +245,39 @@ def test_unload_pending_clears_after_unload(monkeypatch):
 
     # The flag must not leak past the unload, else every later generation bails.
     assert o._unload_pending is False
+
+
+def test_failed_load_resets_progress_heartbeat(monkeypatch):
+    o = _bare_orchestrator()
+    o._proc = None
+    o.load_generation = 0
+    monkeypatch.setattr(o, "_ensure_subprocess_alive", lambda: False)
+    monkeypatch.setattr(o, "_spawn_subprocess", lambda _config: None)
+    monkeypatch.setattr(
+        o, "_wait_response", lambda _expected, timeout = 300.0: {"success": False, "error": "nope"}
+    )
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", lambda *_args, **_kwargs: ([], {}))
+    monkeypatch.setattr(orch_mod, "get_device", lambda: SimpleNamespace(value = "cpu"))
+    monkeypatch.setattr("utils.transformers_version.needs_transformers_5", lambda _model: False)
+    monkeypatch.setattr("utils.transformers_version.sidecar_swap_kind", lambda: None)
+    resets = []
+    monkeypatch.setattr(orch_mod.progress_throttle, "reset", resets.append)
+
+    with pytest.raises(Exception, match = "nope"):
+        o.load_model(SimpleNamespace(identifier = "m", gguf_variant = None))
+
+    assert resets == [("inference-load", id(o))]
+
+
+def test_cancelled_load_resets_progress_heartbeat(monkeypatch):
+    o = _bare_orchestrator()
+    o.loading_models = {"m"}
+    monkeypatch.setattr(o, "_shutdown_subprocess", lambda timeout = 0.5: None)
+    resets = []
+    monkeypatch.setattr(orch_mod.progress_throttle, "reset", resets.append)
+
+    assert o.cancel_load("m") is True
+    assert resets == [("inference-load", id(o))]
 
 
 def test_generation_bails_when_unload_pending(monkeypatch):

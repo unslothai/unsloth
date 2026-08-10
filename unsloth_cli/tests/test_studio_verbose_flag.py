@@ -139,6 +139,23 @@ def test_run_verbose_does_not_duplicate_existing_llama_verbose(monkeypatch):
     assert captured[0].count("--log-verbose") == 1, captured[0]
 
 
+# ── --verbose forces DEBUG even when LOG_LEVEL is preset ──────────────
+
+
+def test_verbose_overrides_existing_log_level(monkeypatch):
+    # A launcher exporting LOG_LEVEL=INFO must not keep the demoted lines hidden:
+    # --verbose has to force DEBUG (setdefault would leave it at INFO).
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    monkeypatch.delenv("UNSLOTH_STUDIO_VERBOSE", raising = False)
+
+    _studio()._enable_verbose_access_logs()
+
+    import os as _os
+
+    assert _os.environ["UNSLOTH_STUDIO_VERBOSE"] == "1"
+    assert _os.environ["LOG_LEVEL"] == "DEBUG"
+
+
 # ── --verbose before a subcommand is rejected ─────────────────────────
 
 
