@@ -153,6 +153,28 @@ def test_the_h3_native_repo_is_a_recognised_bundle_repo():
     assert gguf.is_h3_bundle_repo(H3_GGUF_REPO)
 
 
+def test_minimax_h3_variant_labels_name_the_partition_and_build():
+    variants = [
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+            quant = "minimax_h3_fl2va_pruned-Q4_K_M",
+            size_bytes = 1,
+        ),
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_ref2va-Q4_K_M.gguf",
+            quant = "minimax_h3_ref2va-Q4_K_M",
+            size_bytes = 1,
+        ),
+    ]
+
+    gguf._apply_gguf_display_labels(variants)
+
+    assert [variant.display_label for variant in variants] == [
+        "Text & frames · Q4_K_M · Pruned",
+        "References · Q4_K_M · Full",
+    ]
+
+
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")

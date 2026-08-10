@@ -79,7 +79,11 @@ def _trainable_here() -> set[str]:
     return {i["name"] for i in family_train_infos()}
 
 
-def _report_clips(monkeypatch, count: int, images: int | None = None) -> None:
+def _report_clips(
+    monkeypatch,
+    count: int,
+    images: int | None = None,
+) -> None:
     """Make the dataset layer report ``count`` clips for every folder it summarises.
 
     ``images`` overrides the still count the real summariser found. The folders here are built
@@ -214,7 +218,10 @@ def test_a_mixed_folder_does_not_advertise_a_clip_family():
 
     def summary(name, images, clips_):
         return DiffusionDatasetSummary(
-            name = name, path = f"/ds/{name}", image_count = images, clip_count = clips_,
+            name = name,
+            path = f"/ds/{name}",
+            image_count = images,
+            clip_count = clips_,
             caption_count = clips_ + images,
         )
 
