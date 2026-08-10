@@ -1384,7 +1384,7 @@ class VideoBackend:
         WITHOUT its dense ``text_encoder/`` shards, so a decline there leaves the load to fetch
         62 GB inline. Reading the index first makes the skip as exact as the substitution.
 
-        A few KB, from the repo the load is about to pull anyway, pinned to the live cache root.
+        A few KB, from the repo the load is about to pull anyway, read from either cache root.
         None on anything unanswerable, which keeps the dense shards."""
         if not base:
             return None
@@ -1402,6 +1402,10 @@ class VideoBackend:
                         "modular_model_index.json",
                         hf_token,
                         cache_dir = hub_cache_dir(),
+                        # As every other video fetch does: the download plan drops a repo either
+                        # root serves whole, so a read pinned to the live one re-fetches after a
+                        # cache-folder change and can 401 on a gated base whose bytes are there.
+                        reuse_other_cache_root = True,
                     )
                 )
             with open(path, "r", encoding = "utf-8") as handle:
@@ -1522,6 +1526,9 @@ class VideoBackend:
                 hf_token,
                 cancel_event = cancel,
                 cache_dir = hub_cache_dir(),
+                # As every other video fetch does: the plan drops a repo either root serves whole,
+                # so pinning the live one re-downloads what the picker reported as no transfer.
+                reuse_other_cache_root = True,
             )
         except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
             if cancel.is_set():
