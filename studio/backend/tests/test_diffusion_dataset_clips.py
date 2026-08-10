@@ -292,7 +292,10 @@ def test_upload_refuses_an_image_and_a_clip_sharing_a_stem(client, ds_root):
         ],
     )
     assert r.status_code == 400, r.text
-    assert "cat" in r.json()["detail"]
+    # The wording names the kind of the file being refused, so the existing image-vs-image
+    # message is unchanged and the cross-kind one still reads truthfully.
+    assert "Duplicate clip name 'cat'" in r.json()["detail"]
+    assert "cat.png" in r.json()["detail"]
     assert list((ds_root / "mixed").iterdir()) == []
 
 

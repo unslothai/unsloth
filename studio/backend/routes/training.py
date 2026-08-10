@@ -3297,10 +3297,11 @@ async def upload_diffusion_dataset(
                 if clash is None:
                     clash = next((n for n in names if _shares_sidecar(n)), None)
                 if clash is not None:
+                    kind = "clip" if ext in _DIFFUSION_DATASET_CLIP_EXTS else "image"
                     raise HTTPException(
                         status_code = 400,
                         detail = (
-                            f"Duplicate name '{stem}'. '{clash}' is already in this "
+                            f"Duplicate {kind} name '{stem}'. '{clash}' is already in this "
                             f"dataset; two files sharing a name would share one '{stem}.txt' "
                             f"caption. Rename one before uploading."
                         ),
