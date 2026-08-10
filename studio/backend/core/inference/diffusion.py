@@ -2210,6 +2210,10 @@ class DiffusionBackend:
         if dit_prequant is not None:
             required_total += dit_prequant[2]
 
+        scoped_files: dict[str, list[str]] = {}
+        scoped_gguf: dict[str, Optional[str]] = {}
+        missing_checkpoints: set[str] = set()
+
         def add_missing_entry(
             repo: str,
             files: list[str],
@@ -2234,6 +2238,10 @@ class DiffusionBackend:
             base was swapped for an ungated mirror, which leaves the entry's repo id different
             from the id the caller picked.
             """
+
+            scope = scoped_files.setdefault(repo, [])
+            scope.extend(name for name in files if name not in scope)
+            scoped_gguf[repo] = scoped_gguf.get(repo) or gguf
             revision = revisions.get(repo)
             live = hub_cache_dir()
 
@@ -2243,6 +2251,11 @@ class DiffusionBackend:
             # per-file probes below remain necessary for size-corroborated unrelated commits and
             # for accurate remaining-byte accounting.
             if self._files_already_cached(repo, files, revision).issuperset(files):
+                for entry in entries:
+                    if entry["repo_id"] == repo:
+                        entry["files"].extend(name for name in scope if name not in entry["files"])
+                        entry["gguf_filename"] = scoped_gguf[repo]
+                        break
                 return
 
             def _where(name: str) -> Optional[str]:
@@ -2273,17 +2286,18 @@ class DiffusionBackend:
             missing = [n for n, w in where.items() if w is None or (split and w != "live")]
             if not missing:
                 return
+
+            if checkpoint:
+                missing_checkpoints.add(repo)
             for entry in entries:
                 if entry["repo_id"] != repo:
                     continue
                 newly_missing = [n for n in missing if n not in entry["files"]]
-                added = [n for n in files if n not in entry["files"]]
+                added = [n for n in scope if n not in entry["files"]]
                 entry["files"].extend(added)
                 entry["bytes"] += int(sum(declared_sizes.get(n, 0) for n in newly_missing))
-                entry["gguf_filename"] = entry["gguf_filename"] or gguf
-                # OR, never assign: a combined repo merges the companion base INTO the checkpoint
-                # entry, and a plain assignment would clear the flag the checkpoint call just set.
-                entry["checkpoint"] = entry["checkpoint"] or checkpoint
+                entry["gguf_filename"] = scoped_gguf[repo]
+                entry["checkpoint"] = repo in missing_checkpoints
                 return
             entries.append(
                 {
@@ -2291,10 +2305,10 @@ class DiffusionBackend:
                     # Stable across a warming cache so a second pick can adopt the same live
                     # scoped job. Cached names are cheap no-op hf_hub_download calls; only the
                     # genuinely missing subset contributes to bytes/preflight below.
-                    "files": list(files),
+                    "files": list(scope),
                     "bytes": int(sum(declared_sizes.get(name, 0) for name in missing)),
-                    "gguf_filename": gguf,
-                    "checkpoint": checkpoint,
+                    "gguf_filename": scoped_gguf[repo],
+                    "checkpoint": repo in missing_checkpoints,
                 }
             )
 

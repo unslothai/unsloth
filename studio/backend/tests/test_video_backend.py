@@ -2390,6 +2390,37 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     ]
     assert plan["total_bytes"] == 43
 
+    assert plan["required_bytes"] == 43
+    assert plan["checkpoint_bytes"] == 19
+    assert by_repo["unsloth/MiniMax-H3-GGUF"]["checkpoint"] is True
+    assert by_repo["Comfy-Org/MiniMax-H3"]["checkpoint"] is False
+
+    _plan_cache(monkeypatch, lambda name: name == "minimax_h3_fl2va-Q4_K_M.gguf")
+    warming = VideoBackend().download_plan(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+    warming_entry = next(e for e in warming["entries"] if e["repo_id"] == "unsloth/MiniMax-H3-GGUF")
+    assert warming_entry["files"] == by_repo["unsloth/MiniMax-H3-GGUF"]["files"]
+    assert warming_entry["checkpoint"] is False
+
+
+    _plan_cache(monkeypatch, lambda _name: True)
+    cached = VideoBackend().download_plan(
+        "unsloth/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+    assert cached == {
+        "entries": [],
+        "total_bytes": 0,
+        "required_bytes": 43,
+        "checkpoint_bytes": 19,
+    }
+
 
 _H3_BASE_SIBLINGS = [
     _PlanSibling("transformer/config.json", 1),

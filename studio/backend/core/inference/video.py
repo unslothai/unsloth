@@ -1984,6 +1984,7 @@ class VideoBackend:
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
         )
+        from core.inference.diffusion import DiffusionBackend
 
         validate_h3_transformer_filename(gguf_filename)
         wanted = (
@@ -1993,7 +1994,10 @@ class VideoBackend:
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
         grouped: dict[str, dict[str, Any]] = {}
+        missing_files: dict[str, set[str]] = {}
         total = 0
+        required_total = 0
+        checkpoint_bytes = 0
         try:
             api = HfApi(token = hf_token or None)
             for repo, filename in wanted:
@@ -2004,20 +2008,49 @@ class VideoBackend:
                 if match is None:
                     raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
                 size = int(match.size or 0)
+                required_total += size
+                if repo == repo_id and filename == gguf_filename:
+                    checkpoint_bytes = size
                 entry = grouped.setdefault(
                     repo,
-                    {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None},
+                    {
+                        "repo_id": repo,
+                        "files": [],
+                        "bytes": 0,
+                        "gguf_filename": None,
+                        "checkpoint": False,
+                    },
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
-                    entry["bytes"] += size
-                    total += size
+                    revision = getattr(info, "sha", None)
+                    if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
+                        missing_files.setdefault(repo, set()).add(filename)
+                        entry["bytes"] += size
+                        total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
-        return {"entries": list(grouped.values()), "total_bytes": total}
+            return {
+                "entries": [],
+                "total_bytes": 0,
+                "required_bytes": 0,
+                "checkpoint_bytes": 0,
+            }
+        entries = []
+        for repo, entry in grouped.items():
+            missing = missing_files.get(repo, set())
+            if not missing:
+                continue
+            entry["checkpoint"] = entry["gguf_filename"] in missing
+            entries.append(entry)
+        return {
+            "entries": entries,
+            "total_bytes": total,
+            "required_bytes": required_total,
+            "checkpoint_bytes": checkpoint_bytes,
+        }
 
     @staticmethod
     def _pick_looks_like_ltx23(

@@ -6280,6 +6280,24 @@ def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monke
     assert plan["checkpoint_bytes"] == 7 * GB
     assert entry["bytes"] == plan["required_bytes"] == 7 * GB + 2 * GB + 1300
 
+    assert entry["checkpoint"] is True
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_already_cached",
+        staticmethod(
+            lambda _repo, files, _revision = None: (
+                set(files) if files == ["model-Q4_K_M.gguf"] else set()
+            )
+        ),
+    )
+    warming = DiffusionBackend().download_plan(
+        combined, gguf_filename = "model-Q4_K_M.gguf", base_repo = combined
+    )
+    assert warming["entries"][0]["files"] == entry["files"]
+
+    assert warming["entries"][0]["checkpoint"] is False
+
 
 def _write_hub_cache(
     root,
