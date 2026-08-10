@@ -11,16 +11,45 @@ Unsloth Studio lets you run and train models locally.
 
 <p align="center">
   <a href="#-features">Features</a> •
-  <a href="#-unsloth-news">News</a> •
+  <a href="https://unsloth.ai/docs/new/changelog">News</a> •
   <a href="#-install">Quickstart</a> •
   <a href="#-free-notebooks">Notebooks</a> •
   <a href="https://unsloth.ai/docs">Documentation</a>
 </p>
-<br>
-<a href="https://unsloth.ai/docs/new/studio">
-<img alt="unsloth studio ui homepage" src="https://github.com/user-attachments/assets/53ae17a9-d975-44ef-9686-efb4ebd0454d" style="max-width: 100%; margin-bottom: 0;"></a>
 
 ## ⚡ Get started
+
+Download the native Unsloth desktop app for your operating system:
+<table>
+  <tr>
+    <td><b>Platform</b></td>
+    <td><b>Link</b></td>
+  </tr>
+  <tr>
+    <td><b>Windows</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Windows.exe'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>macOS</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-MacOS.dmg'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Linux.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (AppImage)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (Arm64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-ARM64.app.tar.gz'>Download</a></td>
+  </tr>
+</table>
+
+Download from [Unsloth](https://unsloth.ai/) or [GitHub Releases](https://github.com/unslothai/unsloth/releases).
+
+Or if you prefer to install manually:
 
 #### macOS, Linux, WSL:
 ```bash
