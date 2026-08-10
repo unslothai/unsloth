@@ -480,12 +480,16 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
     unavailable = scan.split("$cmdletsDown = [bool]$unavailable", 1)
     assert len(unavailable) == 2, "the cmdlet-unavailable branch no longer sets $cmdletsDown"
     before_control = unavailable[1].split("EICAR positive control", 1)[0]
-    assert "exit 0" not in before_control, (
-        "unavailable cmdlets still short-circuit the scan before the positive control"
-    )
+    assert (
+        "exit 0" not in before_control
+    ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
     # $status/$pref are unreadable then, so every check reading them is guarded.
-    for probe in ("$status.RealTimeProtectionEnabled", "$pref.MAPSReporting", "$pref.ExclusionPath"):
+    for probe in (
+        "$status.RealTimeProtectionEnabled",
+        "$pref.MAPSReporting",
+        "$pref.ExclusionPath",
+    ):
         guarded = scan.split("if (-not $cmdletsDown) {", 1)
         assert len(guarded) == 2
         assert probe in scan
