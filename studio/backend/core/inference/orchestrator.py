@@ -2157,9 +2157,7 @@ class InferenceOrchestrator:
                             and cancel_event.is_set()
                             and cancel_deadline is None
                         ):
-                            cancel_deadline = (
-                                time.monotonic() + _AUDIO_CANCEL_TEARDOWN_TIMEOUT
-                            )
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_TEARDOWN_TIMEOUT
                             deadline = min(deadline, cancel_deadline)
                         if (
                             worker_started

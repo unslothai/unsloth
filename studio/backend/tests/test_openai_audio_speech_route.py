@@ -158,8 +158,12 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "3")
     meta = {
-        "prompt": "p", "model": "m", "audio_type": "snac",
-        "sample_rate": 24000, "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+        "prompt": "p",
+        "model": "m",
+        "audio_type": "snac",
+        "sample_rate": 24000,
+        "duration_s": 0.1,
+        "created_at": "2026-01-01T00:00:00Z",
     }
     ids = [gallery.save(b"RIFFfake", meta)["id"] for _ in range(6)]
 
