@@ -301,7 +301,11 @@ class SyntheticDataKit:
             time.sleep(1)
         return
 
-    def _await_vllm_server(self, timeout, poll_interval = 1.0):
+    def _await_vllm_server(
+        self,
+        timeout,
+        poll_interval = 1.0,
+    ):
         """Block until the server is ready, or raise saying why it is not.
 
         Waiting on the readiness event alone cannot notice the child dying, so
@@ -315,17 +319,11 @@ class SyntheticDataKit:
                 return
             returncode = self.vllm_process.poll()
             if returncode is not None:
-                self._fail_vllm_server(
-                    f"exited with code {returncode} before it was ready"
-                )
+                self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
-                self._fail_vllm_server(
-                    "closed its stdout before it was ready"
-                )
+                self._fail_vllm_server("closed its stdout before it was ready")
             if time.monotonic() >= deadline:
-                self._fail_vllm_server(
-                    f"was not ready within {timeout} seconds"
-                )
+                self._fail_vllm_server(f"was not ready within {timeout} seconds")
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
@@ -345,7 +343,7 @@ class SyntheticDataKit:
             f"{what_happened}.\n"
             f"Nothing after this point can work: `synthetic-data-kit` reaches "
             f"the model over http://localhost:8000/v1, so ingest/create/"
-            f"save-as would each report \"VLLM server not available\", write "
+            f'save-as would each report "VLLM server not available", write '
             f"no file, and leave the failure to surface as a FileNotFoundError "
             f"much later on.\n"
             f"The cause is almost always in the server's own output below "

@@ -37,7 +37,13 @@ from unsloth.dataprep.synthetic import SyntheticDataKit
 class _FakeCapture:
     """Stands in for PipeCapture without a pipe or a reader thread."""
 
-    def __init__(self, ready = False, closed = False, lines = "", ready_after = None):
+    def __init__(
+        self,
+        ready = False,
+        closed = False,
+        lines = "",
+        ready_after = None,
+    ):
         self._ready = threading.Event()
         if ready:
             self._ready.set()
@@ -92,7 +98,7 @@ def _kit(stdout_capture, stderr_capture, process):
 
 
 REAL_STDERR_TAIL = (
-    "  File \"/usr/local/lib/python3.12/dist-packages/vllm/inputs/registry.py\", "
+    '  File "/usr/local/lib/python3.12/dist-packages/vllm/inputs/registry.py", '
     "line 9, in <module>\n"
     "    from transformers import BatchFeature, PretrainedConfig, ProcessorMixin\n"
     "ImportError: cannot import name 'ProcessorMixin' from 'transformers'"
@@ -201,6 +207,7 @@ def test_the_message_says_what_the_user_should_do_next():
 
 
 # --- the readiness probe --------------------------------------------------
+
 
 def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
     import requests
