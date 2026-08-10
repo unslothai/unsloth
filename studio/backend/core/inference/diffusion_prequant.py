@@ -42,8 +42,8 @@ PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
 def prequant_format_for(metadata: Any) -> str:
     """The on-disk format tag an offline builder should stamp for ``metadata``."""
     from .diffusion_convrot import declares_rotation
-
     return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
+
 
 # Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted repo checkpoint is first-party;
 # a ``kind == "path"`` can come from a request, so it is unpickled ONLY inside an operator-configured directory ALLOWLIST.
@@ -643,12 +643,7 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     return True
 
 
-def _validate_activation_rotation(
-    ckpt_format: Any,
-    meta: Any,
-    scheme: str,
-    logger: Any,
-) -> bool:
+def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
     """Reject a checkpoint whose activation rotation this build cannot honour EXACTLY.
 
     Three ways an artifact and a loader can disagree about the rotation, and all three end in the

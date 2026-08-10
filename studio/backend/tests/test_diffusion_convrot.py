@@ -57,7 +57,11 @@ class _Model(nn.Module):
         self.odd = nn.Linear(group + 1, 8)
 
 
-def _meta(fqns, group = GROUP, kind = CONVROT_KIND):
+def _meta(
+    fqns,
+    group = GROUP,
+    kind = CONVROT_KIND,
+):
     return {
         ROTATION_KEY: kind,
         ROTATION_GROUP_KEY: group,
@@ -330,7 +334,12 @@ class _FakeTransformer(nn.Module):
     def from_config(cls, config):
         return cls()
 
-    def load_state_dict(self, sd, strict = True, assign = False):
+    def load_state_dict(
+        self,
+        sd,
+        strict = True,
+        assign = False,
+    ):
         _FakeTransformer.calls["load_state_dict"] = {"strict": strict, "assign": assign}
 
 
@@ -363,9 +372,7 @@ def _ckpt(fmt, metadata):
 
 
 def test_loader_installs_the_rotation_the_checkpoint_records(monkeypatch, tmp_path):
-    loaded = _load_rotated(
-        monkeypatch, tmp_path, _ckpt(pq.PREQUANT_FORMAT_ROTATED, _meta(["a"]))
-    )
+    loaded = _load_rotated(monkeypatch, tmp_path, _ckpt(pq.PREQUANT_FORMAT_ROTATED, _meta(["a"])))
     assert loaded is not None
     assert is_rotated_linear(loaded.a) and not is_rotated_linear(loaded.b)
 

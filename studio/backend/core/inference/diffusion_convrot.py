@@ -96,7 +96,11 @@ def is_power_of_four(size: Any) -> bool:
 _HADAMARD_CACHE: dict = {}
 
 
-def build_convrot_hadamard(size: int, device: Any = "cpu", dtype: Any = None) -> Any:
+def build_convrot_hadamard(
+    size: int,
+    device: Any = "cpu",
+    dtype: Any = None,
+) -> Any:
     """The normalized regular Hadamard matrix ConvRot rotates by. Cached per (size, device, dtype).
 
     Built as ``kron(H4, H4, ...) / sqrt(size)``, which is both symmetric and orthogonal -- the

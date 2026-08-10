@@ -44,10 +44,10 @@ def main(argv = None) -> int:
         type = int,
         default = 0,
         help = "bake a ConvRot block-Hadamard activation rotation at this group size (a power of "
-               "4; 0 = off). Every quantized Linear whose in_features the group divides has its "
-               "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
-               "exact fqn list is recorded in the checkpoint and the loader rotates the "
-               "activations of that list and nothing else. Writes the v2 format tag.",
+        "4; 0 = off). Every quantized Linear whose in_features the group divides has its "
+        "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
+        "exact fqn list is recorded in the checkpoint and the loader rotates the "
+        "activations of that list and nothing else. Writes the v2 format tag.",
     )
     p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
