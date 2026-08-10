@@ -6412,13 +6412,15 @@ def test_a_cached_precast_encoder_is_not_charged_again(monkeypatch):
     )
     seen: dict[str, object] = {}
 
-    def _missing(repo_id, files, revision = None):
+    def _missing(
+        repo_id,
+        files,
+        revision = None,
+    ):
         seen[repo_id] = revision
         return set() if repo_id.endswith("-FP8") else set(files)
 
-    monkeypatch.setattr(
-        DiffusionBackend, "_files_missing_from_live_root", staticmethod(_missing)
-    )
+    monkeypatch.setattr(DiffusionBackend, "_files_missing_from_live_root", staticmethod(_missing))
 
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF",
@@ -6430,9 +6432,7 @@ def test_a_cached_precast_encoder_is_not_charged_again(monkeypatch):
     assert seen["unsloth/FLUX.1-dev-FP8"] == "sha-fp8"
     encoder = next(e for e in plan["entries"] if e["repo_id"].endswith("-FP8"))
     assert encoder["bytes"] == 0
-    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == (
-        plan["total_bytes"] - 7 * GB
-    )
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == (plan["total_bytes"] - 7 * GB)
 
 
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):

@@ -1888,9 +1888,7 @@ class DiffusionBackend:
             )
             if not sources:
                 return {}
-            files = te_prequant_hub_files(
-                sources, HfApi(token = hf_token or None), logger, shas_out
-            )
+            files = te_prequant_hub_files(sources, HfApi(token = hf_token or None), logger, shas_out)
             return {c: (sources[c].location, f) for c, f in files.items()}
         except Exception as exc:  # noqa: BLE001 -- an unresolvable pre-cast keeps the dense encoder
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
