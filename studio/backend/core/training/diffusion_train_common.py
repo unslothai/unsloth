@@ -329,8 +329,7 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     is_local_diffusers = bool(
         local
         and (
-            (local / "model_index.json").is_file()
-            or (local / "modular_model_index.json").is_file()
+            (local / "model_index.json").is_file() or (local / "modular_model_index.json").is_file()
         )
     )
     if name.endswith(".gguf") or ("gguf" in name and not is_local_diffusers):

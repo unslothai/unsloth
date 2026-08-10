@@ -1585,7 +1585,14 @@ def test_the_h3_latent_cache_gate_honours_the_explicit_override(monkeypatch):
         _h3_cache_run(monkeypatch, num_clips = 4)()
 
 
-def _write_rotated_clip(path, *, theta: int, width: int = 640, height: int = 360, seconds: int = 2):
+def _write_rotated_clip(
+    path,
+    *,
+    theta: int,
+    width: int = 640,
+    height: int = 360,
+    seconds: int = 2,
+):
     """A real H.264+AAC clip whose display matrix says ``theta``, coded ``width`` x ``height``."""
     av = pytest.importorskip("av")
     np = pytest.importorskip("numpy")
@@ -1713,5 +1720,4 @@ def test_the_advertised_h3_vram_floor_covers_the_measured_run_peak():
     A real run on this branch peaked at 77.76 GB, so the advertised floor may not sit under it:
     the chip is what a user sizes a host from."""
     from core.training.diffusion_train_common import _FAMILY_TRAIN_SPECS
-
     assert _FAMILY_TRAIN_SPECS["minimax-h3"]["qlora_vram_gb"] >= 78

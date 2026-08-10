@@ -357,7 +357,6 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
     matrix = None
     try:
         from av.sidedata.sidedata import Type
-
         entry = frame.side_data.get(Type.DISPLAYMATRIX)
         if entry is not None:
             raw = bytes(entry)
@@ -379,9 +378,7 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
         scale_y = math.hypot(conv(matrix[1]), conv(matrix[4]))
         if not scale_x or not scale_y:
             return 0
-        degrees = -math.degrees(
-            math.atan2(conv(matrix[1]) / scale_y, conv(matrix[0]) / scale_x)
-        )
+        degrees = -math.degrees(math.atan2(conv(matrix[1]) / scale_y, conv(matrix[0]) / scale_x))
     except Exception:  # noqa: BLE001 -- a degenerate matrix means "no rotation", not a failure
         return 0
     theta = int(-round(degrees)) % 360
