@@ -41,21 +41,42 @@ def _env_int(name: str, default: int) -> int:
 # and say how much was dropped. 0 disables the cap.
 _MAX_EXC_CHARS = _env_int("UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS", 16384)
 _EXC_TAIL_CHARS = 2048
+# The middleware logs the same exception twice: once rendered as a traceback under
+# "exception" and once as str(exc) under "error". Capping only the first still lets an
+# exception whose message embeds the request body through, so bound both.
+_MAX_ERROR_CHARS = 2048
+
+
+def _truncate_middle(text: str, limit: int, tail: int) -> str:
+    """Keep the head and the tail of `text`, saying how much was dropped.
+
+    The head holds the raising frame and the tail the exception type and message, so
+    both ends are worth keeping. `tail` is clamped so a cap smaller than the tail
+    cannot make the head negative and hand back nearly the whole string.
+    """
+    if limit <= 0 or len(text) <= limit:
+        return text
+    tail = max(1, min(tail, limit // 4))
+    head = limit - tail
+    dropped = len(text) - limit
+    return (
+        text[:head] + f"\n... [{dropped} chars omitted; "
+        "raise UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ...\n" + text[-tail:]
+    )
 
 
 def truncate_exception(event_dict: dict) -> dict:
-    """Structlog processor: bound the "exception" field to a readable size."""
+    """Structlog processor: bound the rendered exception and its message."""
     if _MAX_EXC_CHARS <= 0:
         return event_dict
     text = event_dict.get("exception")
-    if not isinstance(text, str) or len(text) <= _MAX_EXC_CHARS:
-        return event_dict
-    head = _MAX_EXC_CHARS - _EXC_TAIL_CHARS
-    dropped = len(text) - _MAX_EXC_CHARS
-    event_dict["exception"] = (
-        text[:head] + f"\n... [{dropped} chars of traceback omitted; "
-        "raise UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ...\n" + text[-_EXC_TAIL_CHARS:]
-    )
+    if isinstance(text, str):
+        event_dict["exception"] = _truncate_middle(text, _MAX_EXC_CHARS, _EXC_TAIL_CHARS)
+    error = event_dict.get("error")
+    if isinstance(error, str):
+        event_dict["error"] = _truncate_middle(
+            error, min(_MAX_ERROR_CHARS, _MAX_EXC_CHARS), _EXC_TAIL_CHARS
+        )
     return event_dict
 
 

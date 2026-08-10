@@ -108,3 +108,50 @@ def test_nested_binary_inside_a_dict_is_summarized():
     safe = safe_validation_errors(errors)
     jsonable_encoder(safe)
     assert "2 bytes of binary data" in str(safe[0]["input"]["f"])
+
+
+def test_a_huge_array_of_small_values_is_bounded():
+    # 200k integers are individually tiny but the list was copied whole.
+    errors = [{"type": "x", "loc": ("body",), "msg": "bad", "input": list(range(200_000))}]
+    safe = safe_validation_errors(errors)
+    out = safe[0]["input"]
+    assert len(out) <= 21, len(out)
+    assert "more items" in str(out[-1])
+    assert len(str(safe)) < 2000, len(str(safe))
+
+
+def test_a_huge_object_of_small_values_is_bounded():
+    errors = [
+        {"type": "x", "loc": ("body",), "msg": "bad", "input": {str(i): i for i in range(50_000)}}
+    ]
+    out = safe_validation_errors(errors)[0]["input"]
+    assert len(out) <= 21, len(out)
+    assert "more keys" in str(out["..."])
+
+
+def test_deep_nesting_does_not_explode():
+    value = payload = {}
+    for _ in range(20):
+        payload["next"] = {}
+        payload = payload["next"]
+    out = safe_validation_errors(
+        [{"type": "x", "loc": ("body",), "msg": "bad", "input": value}]
+    )[0]["input"]
+    assert "dict with" in str(out)
+
+
+def test_a_validator_message_quoting_the_value_is_bounded():
+    # models/training.py::_parse_lr raises f"... (got {v!r})".
+    msg = "learning_rate must be parseable as float (got '" + "9" * 500_000 + "')"
+    safe = safe_validation_errors([{"type": "x", "loc": ("body",), "msg": msg, "input": "x"}])
+    assert len(safe[0]["msg"]) < 300, len(safe[0]["msg"])
+    assert safe[0]["msg"].startswith("learning_rate must be parseable")
+
+
+def test_a_ctx_error_quoting_the_value_is_bounded():
+    exc = ValueError("got '" + "9" * 500_000 + "'")
+    safe = safe_validation_errors(
+        [{"type": "x", "loc": ("body",), "msg": "bad", "input": "x", "ctx": {"error": exc}}]
+    )
+    assert len(str(safe[0]["ctx"]["error"])) < 300
+    jsonable_encoder(safe)

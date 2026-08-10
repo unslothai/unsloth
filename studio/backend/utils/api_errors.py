@@ -196,18 +196,40 @@ def _summarize_validation_errors(errors) -> tuple:
 # Clients only need loc/msg/type, so the input is summarized rather than echoed. That
 # also stops a large but perfectly decodable body from being mirrored back and logged.
 _MAX_ECHOED_INPUT_CHARS = 200
+# A body that is a huge container of small values is just as unbounded as one huge
+# string: a JSON route handed an array of 200k integers would otherwise have every
+# element copied into the 422 body. Keep enough to identify the payload, drop the rest.
+_MAX_ECHOED_ITEMS = 20
+_MAX_ECHOED_DEPTH = 4
 
 
-def _summarize_error_input(value):
-    """Return a JSON-safe stand-in for a validation error's ``input`` value."""
+def _truncate_text(value: str) -> str:
+    if len(value) <= _MAX_ECHOED_INPUT_CHARS:
+        return value
+    return value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
+
+
+def _summarize_error_input(value, depth: int = 0):
+    """Return a JSON-safe, size-bounded stand-in for an error's ``input`` value."""
     if isinstance(value, (bytes, bytearray, memoryview)):
         return f"<{len(bytes(value))} bytes of binary data>"
-    if isinstance(value, str) and len(value) > _MAX_ECHOED_INPUT_CHARS:
-        return value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
+    if isinstance(value, str):
+        return _truncate_text(value)
     if isinstance(value, dict):
-        return {k: _summarize_error_input(v) for k, v in value.items()}
+        if depth >= _MAX_ECHOED_DEPTH:
+            return f"<dict with {len(value)} keys>"
+        items = list(value.items())
+        out = {k: _summarize_error_input(v, depth + 1) for k, v in items[:_MAX_ECHOED_ITEMS]}
+        if len(items) > _MAX_ECHOED_ITEMS:
+            out["..."] = f"({len(items) - _MAX_ECHOED_ITEMS} more keys)"
+        return out
     if isinstance(value, (list, tuple)):
-        return [_summarize_error_input(v) for v in value]
+        if depth >= _MAX_ECHOED_DEPTH:
+            return f"<sequence of {len(value)} items>"
+        out = [_summarize_error_input(v, depth + 1) for v in value[:_MAX_ECHOED_ITEMS]]
+        if len(value) > _MAX_ECHOED_ITEMS:
+            out.append(f"... ({len(value) - _MAX_ECHOED_ITEMS} more items)")
+        return out
     return value
 
 
@@ -221,11 +243,17 @@ def safe_validation_errors(errors) -> list:
         cleaned = dict(err)
         if "input" in cleaned:
             cleaned["input"] = _summarize_error_input(cleaned["input"])
-        # ctx can carry the triggering exception object, which is not JSON either.
+        # A validator that quotes the submitted value reaches "msg" too: models/
+        # training.py's _parse_lr raises f"... (got {v!r})", so a megabyte-long
+        # learning_rate would come back in full even with "input" summarized.
+        if isinstance(cleaned.get("msg"), str):
+            cleaned["msg"] = _truncate_text(cleaned["msg"])
+        # ctx can carry the triggering exception object, which is not JSON either,
+        # and whose str() quotes the same value.
         ctx = cleaned.get("ctx")
         if isinstance(ctx, dict):
             cleaned["ctx"] = {
-                k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                k: (v if isinstance(v, (int, float, bool, type(None))) else _truncate_text(str(v)))
                 for k, v in ctx.items()
             }
         safe.append(cleaned)

@@ -38,7 +38,25 @@ def test_head_and_tail_survive():
     out = log_config.truncate_exception({"exception": text})["exception"]
     assert out.startswith("TRACEBACK_HEAD_MARKER")
     assert out.endswith("EXC_TAIL_MARKER")
-    assert "chars of traceback omitted" in out
+    assert "chars omitted" in out
+
+
+def test_the_error_field_is_capped_too():
+    # request_failed logs str(exc) under "error" as well as the rendered traceback,
+    # so capping only the traceback still lets the same payload through.
+    text = "ERR_HEAD" + ("x" * 4_000_000) + "ERR_TAIL"
+    out = log_config.truncate_exception({"error": text})["error"]
+    assert len(out) < log_config._MAX_ERROR_CHARS + 200, len(out)
+    assert out.startswith("ERR_HEAD")
+    assert out.endswith("ERR_TAIL")
+
+
+def test_a_cap_smaller_than_the_tail_is_still_enforced(monkeypatch):
+    # head = cap - tail went negative, so text[:-2048] kept nearly everything.
+    monkeypatch.setattr(log_config, "_MAX_EXC_CHARS", 1024)
+    text = "H" * 4_000_000
+    out = log_config.truncate_exception({"exception": text})["exception"]
+    assert len(out) < 1024 + 200, len(out)
 
 
 def test_non_string_exception_field_is_ignored():
