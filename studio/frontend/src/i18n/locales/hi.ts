@@ -904,6 +904,9 @@ export const hi = {
         allowNetworkAccess: "canvas नेटवर्क एक्सेस की अनुमति दें",
         allowNetworkAccessDescription:
           "canvas पूर्वावलोकन को CDN से स्क्रिप्ट, स्टाइल, फ़ॉन्ट, मीडिया, और नेटवर्क संसाधन लोड करने दें। पूरी तरह ऑफ़लाइन पूर्वावलोकन के लिए बंद रखें।",
+        blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
+        blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
+        blockedBannerAction: "इस Canvas के लिए अनुमति दें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",

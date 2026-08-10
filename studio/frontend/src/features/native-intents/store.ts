@@ -12,26 +12,41 @@ interface NativeIntentState {
   // async Rust boundary, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
   pendingImageAttachments: PendingNativeAttachments;
+  pendingAudioAttachments: PendingNativeAttachments;
   // Image drops registering with Rust, before they have a queue to sit in. Not
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
   registeringImageDrops: number;
+  // Same for audio: cover the register-and-read window or a fast submit
+  // goes out without the clip.
+  registeringAudioDrops: number;
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
   imageDropFailures: Record<string, number>;
+  audioDropFailures: Record<string, number>;
   // Owner of a queued image batch, by composer identity. A remount means the
   // outgoing instance cannot hand the batch over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
+  // Same for audio: a new chat re-keys mid-read, so the clip needs a note
+  // to follow the composer.
+  audioDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
+  addAudioAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   takeAttachments: (targetKey: string) => NativeIntent[];
   takeImageAttachments: (targetKey: string) => NativeIntent[];
+  takeAudioAttachments: (targetKey: string) => NativeIntent[];
   beginImageDropRegistration: () => void;
   endImageDropRegistration: () => void;
+  beginAudioDropRegistration: () => void;
+  endAudioDropRegistration: () => void;
   failImageDropRegistration: (targetKey: string) => void;
+  failAudioDropRegistration: (targetKey: string) => void;
   noteImageDropOwner: (targetKey: string, identity: string) => void;
   claimImageAttachments: (identity: string, targetKey: string) => void;
+  noteAudioDropOwner: (targetKey: string, identity: string) => void;
+  claimAudioAttachments: (identity: string, targetKey: string) => void;
   clearModelIntent: (intentId?: string) => void;
 }
 
@@ -39,9 +54,13 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
   pendingAttachments: {},
   pendingImageAttachments: {},
+  pendingAudioAttachments: {},
   registeringImageDrops: 0,
+  registeringAudioDrops: 0,
   imageDropFailures: {},
+  audioDropFailures: {},
   imageDropOwners: {},
+  audioDropOwners: {},
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -63,6 +82,28 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     if (pendingImageAttachments !== current) {
       set({ pendingImageAttachments });
     }
+  },
+  addAudioAttachments: (targetKey, intents) => {
+    const current = get().pendingAudioAttachments;
+    const pendingAudioAttachments = enqueueNativeAttachments(
+      current,
+      targetKey,
+      intents,
+    );
+    if (pendingAudioAttachments !== current) {
+      set({ pendingAudioAttachments });
+    }
+  },
+  takeAudioAttachments: (targetKey) => {
+    const current = get().pendingAudioAttachments;
+    const [queued, pendingAudioAttachments] = dequeueNativeAttachments(
+      current,
+      targetKey,
+    );
+    if (pendingAudioAttachments !== current) {
+      set({ pendingAudioAttachments });
+    }
+    return queued;
   },
   takeAttachments: (targetKey) => {
     const current = get().pendingAttachments;
@@ -92,10 +133,25 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   endImageDropRegistration: () => {
     set({ registeringImageDrops: Math.max(0, get().registeringImageDrops - 1) });
   },
+  beginAudioDropRegistration: () => {
+    set({ registeringAudioDrops: get().registeringAudioDrops + 1 });
+  },
+  endAudioDropRegistration: () => {
+    set({ registeringAudioDrops: Math.max(0, get().registeringAudioDrops - 1) });
+  },
   failImageDropRegistration: (targetKey) => {
     const current = get().imageDropFailures;
     set({
       imageDropFailures: {
+        ...current,
+        [targetKey]: (current[targetKey] ?? 0) + 1,
+      },
+    });
+  },
+  failAudioDropRegistration: (targetKey) => {
+    const current = get().audioDropFailures;
+    set({
+      audioDropFailures: {
         ...current,
         [targetKey]: (current[targetKey] ?? 0) + 1,
       },
@@ -131,6 +187,37 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     const nextOwners = { ...owners };
     for (const key of stale) delete nextOwners[key];
     set({ pendingImageAttachments, imageDropOwners: nextOwners });
+  },
+  noteAudioDropOwner: (targetKey, identity) => {
+    if (!identity) return;
+    set({ audioDropOwners: { ...get().audioDropOwners, [targetKey]: identity } });
+  },
+  claimAudioAttachments: (identity, targetKey) => {
+    if (!identity) return;
+    const owners = get().audioDropOwners;
+    const stale = Object.keys(owners).filter(
+      (key) => owners[key] === identity && key !== targetKey,
+    );
+    if (stale.length === 0) return;
+    const queues = get().pendingAudioAttachments;
+    let pendingAudioAttachments = queues;
+    for (const key of stale) {
+      const queued = queues[key] ?? [];
+      if (queued.length > 0) {
+        pendingAudioAttachments = enqueueNativeAttachments(
+          pendingAudioAttachments,
+          targetKey,
+          queued,
+        );
+      }
+      if (key in pendingAudioAttachments) {
+        pendingAudioAttachments = { ...pendingAudioAttachments };
+        delete pendingAudioAttachments[key];
+      }
+    }
+    const nextOwners = { ...owners };
+    for (const key of stale) delete nextOwners[key];
+    set({ pendingAudioAttachments, audioDropOwners: nextOwners });
   },
   addIntent: (intent) => {
     if (intent.kind !== "model") {

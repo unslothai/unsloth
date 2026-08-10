@@ -931,6 +931,9 @@ export const de = {
         allowNetworkAccess: "Netzwerkzugriff für Canvas erlauben",
         allowNetworkAccessDescription:
           "Erlaubt Canvas-Vorschauen, Skripte, Stile, Schriftarten, Medien und Netzwerkressourcen von CDNs zu laden. Für vollständig offline nutzbare Vorschauen deaktiviert lassen.",
+        blockedBanner: "{count} externe Ressource von {hosts} blockiert.",
+        blockedBannerPlural: "{count} externe Ressourcen von {hosts} blockiert.",
+        blockedBannerAction: "Für dieses Canvas erlauben",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",

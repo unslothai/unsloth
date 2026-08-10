@@ -891,6 +891,9 @@ export const en = {
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
           "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+        blockedBanner: "Blocked {count} external resource from {hosts}.",
+        blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
+        blockedBannerAction: "Allow for this canvas",
       },
       data: "Data",
       exportHistory: "Export chat history",

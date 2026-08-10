@@ -1,5 +1,6 @@
 """Permission-boundary checks for the desktop release workflow."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -26,7 +27,50 @@ def test_only_publish_job_can_write_repository_contents():
     assert write_jobs == ["publish-release"]
 
 
+def _poll_loop_body(script):
+    """Return the body of the first live `while ...; do ... done` loop.
+
+    Assertions about a wait have to land inside the loop that waits, not
+    anywhere in the step, and that loop has to be one the shell actually
+    enters: `while false; do` keeps a textually perfect body while skipping
+    every API read and status check, and the step falls straight through to a
+    download that races the matrix. So the condition must be the unconditional
+    `:` or `true` that a poll exiting via `break` uses. Nesting is tracked by
+    depth; every opener in this workflow ends its line with `do`.
+    """
+    lines = script.split("\n")
+    opener = re.compile(r"\s*while\s+(?P<condition>.*?)\s*;\s*do\s*$")
+    starts = [
+        index
+        for index, line in enumerate(lines)
+        if (match := opener.match(line)) and match.group("condition") in (":", "true")
+    ]
+    assert starts, f"no live (`while :` / `while true`) poll loop in the wait step:\n{script}"
+
+    start = starts[0]
+    depth = 0
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if re.search(r"(?:^|;)\s*do\s*$", line):
+            depth += 1
+        if re.match(r"\s*done\b", line):
+            depth -= 1
+            if depth == 0:
+                return "\n".join(lines[start + 1 : index])
+    raise AssertionError(f"unterminated `while` loop in the wait step:\n{script}")
+
+
 def test_build_matrix_hands_off_assets_without_release_credentials():
+    """The build matrix signs bundles; only publish-release may release them.
+
+    The handoff is one-way and credential-free: the matrix uploads artifacts and
+    holds no release token, and publish-release downloads them. Since #8193 the
+    ordering is no longer expressed as `needs: build` (publish-release starts
+    alongside the matrix to queue for its runner in parallel) but by the "Wait
+    for the build matrix" step, which must be at least as strict. Both halves
+    are asserted below, so removing the wait does not silently reintroduce
+    publishing a partial release.
+    """
     jobs = _workflow()["jobs"]
     build = jobs["build"]
     publish = jobs["publish-release"]
@@ -48,10 +92,54 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert any(
         step.get("uses", "").startswith("actions/download-artifact@") for step in publish["steps"]
     )
-    assert "build" in publish["needs"]
+    # publish-release deliberately does not `needs: build`, so the wait step is
+    # the whole of the gate. It must cover every matrix leg by name, refuse to
+    # publish on a leg that did not succeed, and refuse to publish a leg whose
+    # job record never appeared, rather than defaulting to "finished".
+    assert publish["needs"] == ["prepare-version"]
+    wait = next(
+        step for step in publish["steps"] if step.get("name") == "Wait for the build matrix"
+    )
+    wait_run = wait["run"]
 
-    # The guard runs ahead of the VirusTotal scan and refuses a release that
-    # already carries desktop assets, so a version is never published twice.
+    matrix_legs = {f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]}
+    assert len(matrix_legs) == len(tauri_steps)
+    for leg in matrix_legs:
+        assert f"'{leg}'" in wait_run, leg
+
+    assert "refusing to publish, these build jobs did not succeed" in wait_run
+    assert "refusing to publish without confirming they ran" in wait_run
+    # Every one of those refusals has to be terminal.
+    assert wait_run.count("exit 1") >= 3
+
+    # Assert the mechanism, not just the error strings: those survive a step
+    # that no longer loops or no longer reads a conclusion, and then the
+    # download races the matrix. Everything below is checked inside the loop
+    # body, because a one-shot `gh api` read beside a dead `while` would satisfy
+    # the same substrings while waiting for nothing.
+    loop_body = _poll_loop_body(wait_run)
+    assert "actions/runs/${GITHUB_RUN_ID}/jobs" in loop_body, wait_run
+    assert ".status" in loop_body and ".conclusion" in loop_body, wait_run
+    # Not finished yet is "keep waiting"; finished but not `success` is a refusal.
+    assert re.search(r'!=\s*"completed"', loop_body), wait_run
+    assert re.search(r'!=\s*"success"', loop_body), wait_run
+    # A loop that never sleeps is a spin, and one that never breaks never ends.
+    assert re.search(r"^\s*sleep\b", loop_body, re.MULTILINE), wait_run
+    assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
+
+    names = [step.get("name") for step in publish["steps"]]
+    assert names.index("Wait for the build matrix") < names.index("Record desktop build provenance on the release")
+    # And it has to clear before the assets are pulled, or the download races the
+    # legs and publish-release dies on artifacts that do not exist yet.
+    download = next(
+        index
+        for index, step in enumerate(publish["steps"])
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert names.index("Wait for the build matrix") < download, names
+
+    # The guard refuses a release that already carries desktop assets, so a
+    # version is never published twice.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
@@ -66,6 +154,38 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert "gh release edit" in provenance["run"]
     assert not any("gh release create" in step.get("run", "") for step in publish["steps"])
+
+
+def test_post_publish_scan_job_holds_no_release_credentials():
+    """#8194 added a job that handles release bundles; it must not be able to release.
+
+    virustotal-scan downloads the published assets and uploads them to a third
+    party. It declares no `permissions` block, so it inherits the workflow's
+    `contents: read`, and it carries no repository token of any kind: the only
+    secret it sees is the VirusTotal key.
+    """
+    scan = _workflow()["jobs"]["virustotal-scan"]
+
+    assert "permissions" not in scan
+    assert "GITHUB_TOKEN" not in scan.get("env", {})
+    assert "GH_TOKEN" not in scan.get("env", {})
+
+    for step in scan["steps"]:
+        env = step.get("env", {})
+        assert "GITHUB_TOKEN" not in env, step.get("name")
+        assert "GH_TOKEN" not in env, step.get("name")
+        if step.get("uses", "").startswith("actions/checkout@"):
+            assert step["with"]["persist-credentials"] is False
+        # No `gh` calls: the job has no token to make them with.
+        assert "gh release" not in (step.get("run") or "")
+
+    secrets = {
+        value
+        for step in scan["steps"]
+        for value in step.get("env", {}).values()
+        if isinstance(value, str) and "secrets." in value
+    }
+    assert secrets == {"${{ secrets.VIRUS_TOTAL_API_TOKEN }}"}
 
 
 def test_versioned_release_hides_updater_signature_assets():

@@ -760,6 +760,13 @@ if backend_dir not in sys.path:
 """
         + _build_vision_check_inline_helpers()
         + r"""
+# Fresh interpreter, and AutoConfig.from_pretrained below may hit the Hub.
+try:
+    from utils.native_tls import activate_native_tls
+    activate_native_tls()
+except Exception:
+    pass
+
 try:
     from transformers import AutoConfig
 
@@ -2292,6 +2299,111 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
 )
 
 
+_FLOAT_PRECISION_QUANTS = frozenset({"BF16", "F16", "F32"})
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+
+
+def _select_known_quant_match(text: str):
+    fallback = None
+    for match in _GGUF_KNOWN_QUANT_RE.finditer(text):
+        if match.group(2).upper() in _FLOAT_PRECISION_QUANTS:
+            if fallback is None:
+                fallback = match
+            continue
+        return match
+    return fallback
+
+
+def _gguf_variant_stem(filename: str) -> str:
+    basename = filename.rsplit("/", 1)[-1]
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
+
+
+def _gguf_variant_token(filename: str) -> Optional[str]:
+    match = _select_known_quant_match(_gguf_variant_stem(filename))
+    if not match and "/" in filename:
+        for segment in reversed(filename.rsplit("/", 1)[0].split("/")):
+            parent_match = _select_known_quant_match(segment)
+            if parent_match:
+                match = parent_match
+                break
+    return f"{match.group(1) or ''}{match.group(2)}" if match else None
+
+
+def _gguf_variant_family(filename: str) -> str:
+    stem = _gguf_variant_stem(filename)
+    if "/" not in filename:
+        return stem or "gguf"
+    parents = filename.rsplit("/", 1)[0].strip("/")
+    return f"{parents}/{stem}" if parents and stem else stem or "gguf"
+
+
+def _gguf_bpw_suffix(filename: str) -> str:
+    """``-3.53bpw`` from whichever path segment names the quant, else ``""``.
+
+    MIRROR of ``hub.utils.gguf._gguf_bpw_suffix``; see ``_gguf_variant_key``. The quant-directory
+    layout carries the modifier upstairs (``IQ4_XS-3.53bpw/model.gguf``), so the basename alone
+    gave both bpw builds one key. The walk stops at the segment that named the quant.
+    """
+    path = filename.replace("\\", "/")
+    parents = path.rpartition("/")[0]
+    for segment in (_gguf_variant_family(path).rsplit("/", 1)[-1], *reversed(parents.split("/"))):
+        if not segment:
+            continue
+        match = re.search(r"-[0-9]+(?:\.[0-9]+)?bpw$", segment, re.IGNORECASE)
+        if match:
+            return match.group(0)
+        if _select_known_quant_match(segment) is not None:
+            return ""
+    return ""
+
+
+def _gguf_variant_key(filename: str) -> str:
+    """MIRROR of ``hub.utils.gguf.gguf_variant_key``; utils cannot import hub.
+
+    The two must change in lockstep: the hub builds the picker rows with its copy
+    and this one decides which file a chosen row loads, so a disagreement is a row
+    that resolves to another checkpoint's weights.
+    ``tests/test_gguf_variant_rows.py`` asserts they agree.
+    """
+    path = filename.replace("\\", "/")
+    quant = _gguf_variant_token(path)
+    if quant is None:
+        return _gguf_variant_family(path)
+    for segment in path.rpartition("/")[0].split("/"):
+        # A quant-named directory adds nothing the basename does not already say; a
+        # directory naming something else is a different checkpoint and qualifies.
+        if segment and _select_known_quant_match(segment) is None:
+            return _gguf_variant_family(path)
+    # ... and the bpw modifier stays on, so two builds of one base quant keep two identities.
+    return f"{quant}{_gguf_bpw_suffix(path)}"
+
+
+def _qualified_variant_name(filename: str, label: str) -> str:
+    """The name these listers advertise for *filename*, given its quant *label*.
+
+    The path-qualified key when a recognised quant token is qualified by a non-quant directory,
+    because there the label alone names several checkpoints at once and the consumers reading
+    these listers -- the /v1 local index, the remote VRAM preflight -- would never see the row
+    they are asked for.
+
+    The label everywhere else, including a bare quant at the repo root and a file with no
+    recognised quant token at all. This
+    module's label for those is the last hyphenated segment while the variant key is the whole
+    stem, and that difference is old, deliberate elsewhere, and nothing to do with several
+    checkpoints sharing a quant. Changing it here would rename every such row and break the pins
+    that hold them (``Qwen3.6-27B-MTP-001-of-002.gguf`` is listed as ``MTP``).
+    """
+    if _gguf_variant_token(filename) is None:
+        return label
+    key = _gguf_variant_key(filename)
+    # Only a PATH-qualified key. Without the slash the key is the bare quant token, and this
+    # module's label is the richer of the two: it carries the bpw modifier that keeps
+    # ``model-IQ4_XS-3.53bpw.gguf`` and ``model-IQ4_XS-3.97bpw.gguf`` separately selectable, which
+    # the token extractor drops. Swapping in the token would merge them.
+    return key if "/" in key else label
+
+
 def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
     normalized = path.replace("\\", "/")
     name = normalized.rsplit("/", 1)[-1]
@@ -2464,8 +2576,8 @@ def list_gguf_variants(
     variants: list[GgufVariantInfo] = []
     has_vision = False
 
-    quant_totals: dict[str, int] = {}  # quant -> total bytes
-    quant_first_file: dict[str, str] = {}  # quant -> first filename (display)
+    # (name, quant, size); grouped per shard FAMILY below, not summed across copies.
+    main_files: list[tuple[str, str, int]] = []
 
     for sibling in info.siblings:
         fname = sibling.rfilename
@@ -2481,17 +2593,15 @@ def list_gguf_variants(
         if _is_mtp_drafter(fname):
             continue
 
-        quant = _extract_quant_label(fname)
-        if _is_big_endian_gguf_path(fname, quant):
+        label = _extract_quant_label(fname)
+        if _is_big_endian_gguf_path(fname, label):
             continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        if quant not in quant_first_file:
-            quant_first_file[quant] = fname
+        main_files.append((fname, _qualified_variant_name(fname, label), size))
 
-    for quant, total_size in quant_totals.items():
+    for quant, (first_file, total_size) in _group_gguf_variant_files(main_files).items():
         variants.append(
             GgufVariantInfo(
-                filename = quant_first_file[quant],
+                filename = first_file,
                 quant = quant,
                 size_bytes = total_size,
             )
@@ -2501,6 +2611,29 @@ def list_gguf_variants(
     variants.sort(key = lambda v: -v.size_bytes)
 
     return variants, has_vision
+
+
+def _group_gguf_variant_files(entries: list[tuple[str, str, int]]) -> dict[str, tuple[str, int]]:
+    """``quant -> (first filename, size of that quant's shard family)``.
+
+    MIRROR of ``hub.utils.gguf.group_gguf_variant_files`` over ``(name, quant, size)`` triples.
+    Sizes are summed across the shards of ONE family, never across families: a repo shipping the
+    same quant twice (QwQ-32B's BF16 as ``QwQ-32B-BF16-*`` beside ``QwQ-32B.BF16-*``) would
+    otherwise charge both copies to a row the loader only ever opens one of, and
+    ``routes/inference.py`` bills this ``size_bytes`` to the VRAM guard, which then refuses a load
+    that fits. The family kept is the one holding the lexicographically first file, which is the
+    shard this lister advertises and the loader opens.
+    """
+    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    for name, quant, size in entries:
+        families.setdefault(quant, {}).setdefault(_gguf_variant_family(name), []).append(
+            (name, int(size or 0))
+        )
+    grouped: dict[str, tuple[str, int]] = {}
+    for quant, by_family in families.items():
+        chosen = min(by_family.values(), key = lambda members: min(n for n, _ in members))
+        grouped[quant] = (min(n for n, _ in chosen), sum(s for _, s in chosen))
+    return grouped
 
 
 def _resolve_gguf_dir(p: Path) -> Optional[Path]:
@@ -2544,8 +2677,7 @@ def list_local_gguf_variants(
         else _registered_custom_model_root(directory)
     )
 
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, str, int]] = []
     has_vision = False
 
     # Recurse so variant-specific subdirs (``BF16/...gguf``) are picked up. Result filenames
@@ -2562,20 +2694,18 @@ def list_local_gguf_variants(
         rel = f.relative_to(p).as_posix()
         if _is_local_mtp_drafter(f, root, rel):
             continue
-        quant = _extract_quant_label(rel)
-        if _is_big_endian_gguf_path(rel, quant):
+        label = _extract_quant_label(rel)
+        if _is_big_endian_gguf_path(rel, label):
             continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        if quant not in quant_first_file:
-            quant_first_file[quant] = rel
+        main_files.append((rel, _qualified_variant_name(rel, label), size))
 
     variants = [
         GgufVariantInfo(
-            filename = quant_first_file[q],
-            quant = q,
-            size_bytes = s,
+            filename = first_file,
+            quant = quant,
+            size_bytes = total_size,
         )
-        for q, s in quant_totals.items()
+        for quant, (first_file, total_size) in _group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda v: -v.size_bytes)
     return variants, has_vision
@@ -2649,6 +2779,7 @@ def _find_local_gguf_by_variant(
     # Recurse so variants under a quant-named subdir (``BF16/foo-BF16-00001-of-00002.gguf``)
     # are found. Match the relative path so the quant label can come from the dir name.
     matches = []
+    owned = []
     for f in _iter_gguf_files(p, recursive = True):
         rel = f.relative_to(p).as_posix()
         if _is_mmproj(f.name) or _is_local_mtp_drafter(f, root, rel):
@@ -2668,7 +2799,15 @@ def _find_local_gguf_by_variant(
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
+        # A repo holding several checkpoints at one quant offers a row per checkpoint,
+        # and only one of them is this variant's. Name order alone would hand a request
+        # for the repo-root ``Q6_K`` the alphabetically earlier ``distilled/`` copy.
+        if _variant_matches(variant, _gguf_variant_key(rel)):
+            owned.append(f)
     matches.sort()
+    owned.sort()
+    if owned:
+        return str(_local_gguf_load_path(owned[0]))
     if matches:
         return str(_local_gguf_load_path(matches[0]))
     return None
@@ -3475,6 +3614,12 @@ class ModelConfig:
                     is_lora = False,
                     is_gguf = True,
                     gguf_file = gguf_file,
+                    # The identity the CALLER asked for, carried through. Dropping it left the
+                    # load intent with no variant, so llama.cpp recorded the bare label off the
+                    # filename: /status named the root row for a qualified checkpoint, and the
+                    # deletion guard compared that bare label against the selected key and let
+                    # the delete through.
+                    gguf_variant = gguf_variant,
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
                     gguf_dspark_file = dspark_file,
@@ -3525,10 +3670,23 @@ class ModelConfig:
                             f"Available variants: {available}"
                         )
                 if not variant:  # auto-select best quant
-                    variant_filenames = [v.filename for v in variants]
+                    # ROOT rows when there are any. _pick_best_gguf keeps whichever filename it
+                    # met first among equals, so an LTX-style listing that puts distilled/...-Q6_K
+                    # before the root ...-Q6_K made a bare repo id load the distilled checkpoint --
+                    # while local_model_resolver, the auto-download map and /gguf-variants all
+                    # define a bare id as the root. This is the LOAD path, so it has to agree.
+                    root_rows = [
+                        v.filename
+                        for v in variants
+                        if "/" not in _qualified_variant_name(v.filename, v.quant)
+                    ]
+                    variant_filenames = root_rows or [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
                     if best:
-                        variant = _extract_quant_label(best)
+                        # The SAME identity the lister advertised for that file. Converting the
+                        # winner back to a bare label handed the load a name several checkpoints
+                        # answer to, and it then resolved whichever sorted first.
+                        variant = _qualified_variant_name(best, _extract_quant_label(best))
                     else:
                         variant = "Q4_K_M"  # Fallback — llama-server's own default
 

@@ -17,8 +17,9 @@ from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.gguf import (
-    extract_quant_label,
+    bare_quant_alias,
     extract_quant_token,
+    gguf_variant_key,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -131,7 +132,11 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    variant_key = (extract_quant_token(variant) or variant).lower()
+    # A path-qualified variant key names its own folder; its quant token belongs to
+    # sibling checkpoints too, so it must not reach for a <quant>/ dir it does not own.
+    variant_key = (
+        variant.lower() if "/" in variant else (extract_quant_token(variant) or variant).lower()
+    )
     removed = 0
     failures: list[str] = []
     for target_repo in target_repos:
@@ -197,6 +202,33 @@ def _remove_empty_snapshot_dirs(target_repos: list) -> tuple[int, list[str]]:
     return removed, failures
 
 
+def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
+    """The variant keys in *target_repo* that *variant* names, lowercased.
+
+    Its own key, always. Plus the unambiguous bare-quant alias the download side already admits
+    (``gguf_plan.plan_for_variant``): a repo filing its sole Q4_K_M under a shared container
+    (``weights/model-Q4_K_M.gguf``) qualifies that key, because the key is a pure function of the
+    path and cannot know the directory disambiguates nothing, so every stored pin and every
+    explicit ``repo:Q4_K_M`` names it by quant alone. Admitting the alias for the download and not
+    for the delete answered "not found" and left the weights on disk.
+
+    Only when it is unambiguous, exactly as the download side decides it: a repo that really does
+    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
+    does not name one of them and deleting the wrong one is unrecoverable.
+    """
+    wanted = (variant or "").strip().lower()
+    if not wanted or "/" in wanted:
+        return {wanted}
+    keys = {
+        gguf_variant_key(name).lower()
+        for _snap, _blob, name in _repo_file_matches(target_repo, _is_main_gguf_filename)
+    }
+    if wanted in keys:
+        return {wanted}
+    aliased = {key for key in keys if "/" in key and bare_quant_alias(key).lower() == wanted}
+    return aliased if len(aliased) == 1 else {wanted}
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -214,10 +246,11 @@ def _delete_gguf_variant_from_repos(
 
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
+        wanted_keys = _variant_keys_to_delete(target_repo, variant)
         matched = _repo_file_matches(
             target_repo,
-            lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant.lower(),
+            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
+            and gguf_variant_key(name).lower() in keys,
         )
 
         for snap, _blob, name in matched:
@@ -440,7 +473,7 @@ def reclaim_replaced_gguf_variant(
         matches = _repo_file_matches(
             target_repo,
             lambda name: _is_main_gguf_filename(name)
-            and extract_quant_label(name).lower() == variant_key,
+            and gguf_variant_key(name).lower() == variant_key,
         )
         for snap, blob, name in matches:
             # Prune only a file we can identify as a real, stale cache blob. A
@@ -656,6 +689,11 @@ def _video_blocks_delete(repo_id: str) -> Optional[str]:
             held = status.get(key)
             if held and _loaded_id_matches_repo(str(held), repo_id):
                 return "Unload the model before deleting"
+    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
+    # neither of the two ids above, so refuse those as well, exactly as the Images guard does.
+    for lid in getattr(backend, "loaded_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "Unload the model before deleting"
     for lid in getattr(backend, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "A Video model load is using this repo; wait for it to finish"
