@@ -86,15 +86,17 @@ _QUIET_POLL_PATHS = {
 # Only this group is shared. The other _QUIET_POLL_PATHS entries (/api/train/runs,
 # /api/models/checkpoints, /api/models/local, /api/rag/knowledge-bases, the download
 # polls) each report on a different subsystem, so they keep their own heartbeat.
-_LIVENESS_POLL_PATHS = frozenset({
-    "/api/health",
-    "/api/auth/status",
-    "/api/inference/status",
-    "/api/inference/monitor",
-    "/api/inference/images/status",
-    "/api/inference/video/status",
-    "/api/inference/audio/stt/status",
-})
+_LIVENESS_POLL_PATHS = frozenset(
+    {
+        "/api/health",
+        "/api/auth/status",
+        "/api/inference/status",
+        "/api/inference/monitor",
+        "/api/inference/images/status",
+        "/api/inference/video/status",
+        "/api/inference/audio/stt/status",
+    }
+)
 # Bucket key for the group above. Not a real (method, path, query, status), so it can
 # never collide with one.
 _LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)

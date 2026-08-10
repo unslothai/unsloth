@@ -463,8 +463,12 @@ def test_non_liveness_quiet_polls_keep_their_own_heartbeat(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
     mw = LoggingMiddleware(_status_app(200))
-    others = ("/api/train/runs", "/api/models/checkpoints", "/api/models/local",
-              "/api/rag/knowledge-bases")
+    others = (
+        "/api/train/runs",
+        "/api/models/checkpoints",
+        "/api/models/local",
+        "/api/rag/knowledge-bases",
+    )
     for _ in range(3):
         for path in others:
             _run(mw(_http_scope(path), _noop_receive, _drop))
