@@ -443,17 +443,31 @@ def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypat
     assert paths[0] in polled
 
 
-def test_health_and_auth_status_share_the_liveness_bucket(logs, monkeypatch):
-    # /api/health and /api/auth/status are the same "still up" signal as the
-    # inference status polls, so they must not each add a line of their own.
+def test_the_runtime_status_polls_share_the_liveness_bucket(logs, monkeypatch):
+    # /api/auth/status and the inference status polls are the same "still up" signal,
+    # so they must not each add a line of their own.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
     mw = LoggingMiddleware(_status_app(200))
-    for path in ("/api/health", "/api/auth/status", "/api/inference/monitor"):
+    for path in ("/api/auth/status", "/api/inference/status", "/api/inference/monitor"):
         _run(mw(_http_scope(path), _noop_receive, _drop))
 
     assert len(_paths_logged(logs)) == 1, _paths_logged(logs)
+
+
+def test_health_keeps_its_own_heartbeat(logs, monkeypatch):
+    # main.py waits up to a second for hardware detection and the desktop preflight
+    # has a two-second deadline, so a slow-but-successful /api/health is exactly the
+    # line worth keeping; it must not be suppressed by a cheap status poll.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    _run(mw(_http_scope("/api/inference/status"), _noop_receive, _drop))
+    _run(mw(_http_scope("/api/health"), _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 2, _paths_logged(logs)
 
 
 def test_a_parameterized_stt_status_keeps_its_own_line(logs, monkeypatch):

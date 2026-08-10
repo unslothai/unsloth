@@ -86,9 +86,11 @@ _QUIET_POLL_PATHS = {
 # Only this group is shared. The other _QUIET_POLL_PATHS entries (/api/train/runs,
 # /api/models/checkpoints, /api/models/local, /api/rag/knowledge-bases, the download
 # polls) each report on a different subsystem, so they keep their own heartbeat.
+# /api/health is deliberately NOT here: main.py waits up to a second for hardware
+# detection and the desktop preflight has a two-second deadline, so its latency is
+# worth seeing on its own rather than being stamped out by a cheap status poll.
 _LIVENESS_POLL_PATHS = frozenset(
     {
-        "/api/health",
         "/api/auth/status",
         "/api/inference/status",
         "/api/inference/monitor",
