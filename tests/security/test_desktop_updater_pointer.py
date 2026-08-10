@@ -53,7 +53,14 @@ def _step_run():
     return step["run"]
 
 
-def _release(tag, *, has_manifest = True, draft = False, prerelease = False, published_at = "2026-01-01T00:00:00Z"):
+def _release(
+    tag,
+    *,
+    has_manifest = True,
+    draft = False,
+    prerelease = False,
+    published_at = "2026-01-01T00:00:00Z",
+):
     return {
         "tag_name": tag,
         "draft": draft,
@@ -124,7 +131,7 @@ def test_the_newest_desktop_manifest_is_carried_onto_a_bundleless_release(tmp_pa
         manifest = _manifest("v0.1.52-beta"),
     )
     assert result.returncode == 0, result.stderr
-    assert 'gh release download v0.1.52-beta' in "\n".join(commands)
+    assert "gh release download v0.1.52-beta" in "\n".join(commands)
     assert any(
         line.startswith("gh release upload v0.1.53-beta") and "--clobber" in line
         for line in commands
