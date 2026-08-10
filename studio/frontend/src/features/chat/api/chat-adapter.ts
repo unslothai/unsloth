@@ -1199,12 +1199,14 @@ function serializeAssistantReplayMessages(
     );
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
+    const hasToolCalls = pendingToolCalls.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
     const hasReasoningContent =
-      includeReasoningContent && reasoningContent.length > 0;
-    const hasToolCalls = pendingToolCalls.length > 0;
+      includeReasoningContent &&
+      reasoningContent.length > 0 &&
+      (hasContent || hasToolCalls);
 
-    if (!force && !hasContent && !hasReasoningContent && !hasToolCalls) {
+    if (!force && !hasContent && !hasToolCalls) {
       return;
     }
 

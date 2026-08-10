@@ -36,14 +36,53 @@ const serializeAssistantReplayMessages = new Function(
   () => [],
   (text: string) => text,
   (text: string) => text,
-  () => null,
-  () => null,
+  (part: {
+    type?: string;
+    toolCallId?: string;
+    toolName?: string;
+    args?: unknown;
+  }) =>
+    part.type === "tool-call"
+      ? {
+          id: part.toolCallId,
+          type: "function",
+          function: {
+            name: part.toolName,
+            arguments: JSON.stringify(part.args ?? {}),
+          },
+        }
+      : null,
+  (part: {
+    type?: string;
+    toolCallId?: string;
+    toolName?: string;
+    result?: unknown;
+  }) =>
+    part.type === "tool-call" && part.result !== undefined
+      ? {
+          role: "tool",
+          content: String(part.result),
+          tool_call_id: part.toolCallId,
+          name: part.toolName,
+        }
+      : null,
   () => false,
-  () => false,
+  (part: { type?: string; result?: unknown }) =>
+    part.type === "tool-call" && part.result !== undefined,
   () => undefined,
   () => undefined,
 ) as (
-  message: { role: "assistant"; content: Array<{ type: string; text: string }> },
+  message: {
+    role: "assistant";
+    content: Array<{
+      type: string;
+      text?: string;
+      toolCallId?: string;
+      toolName?: string;
+      args?: unknown;
+      result?: unknown;
+    }>;
+  },
   includeReasoningContent?: boolean,
 ) => Array<Record<string, unknown>>;
 
@@ -70,4 +109,68 @@ test("external replay does not add the local reasoning extension", () => {
   assert.deepEqual(serializeAssistantReplayMessages(assistantTurn, false), [
     { role: "assistant", content: "Here is the answer." },
   ]);
+});
+
+test("a stopped reasoning-only turn remains an empty sentinel", () => {
+  assert.deepEqual(
+    serializeAssistantReplayMessages(
+      {
+        role: "assistant",
+        content: [{ type: "reasoning", text: "An unfinished thought." }],
+      },
+      true,
+    ),
+    [{ role: "assistant", content: "" }],
+  );
+});
+
+test("reasoning stays with the assistant segment around a local tool call", () => {
+  assert.deepEqual(
+    serializeAssistantReplayMessages(
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "I should inspect the file." },
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            args: { path: "notes.txt" },
+            result: "contents",
+          },
+          { type: "reasoning", text: "The file answers the question." },
+          { type: "text", text: "Here is the answer." },
+        ],
+      },
+      true,
+    ),
+    [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_content: "I should inspect the file.",
+        tool_calls: [
+          {
+            id: "call-1",
+            type: "function",
+            function: {
+              name: "read_file",
+              arguments: '{"path":"notes.txt"}',
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "contents",
+        tool_call_id: "call-1",
+        name: "read_file",
+      },
+      {
+        role: "assistant",
+        content: "Here is the answer.",
+        reasoning_content: "The file answers the question.",
+      },
+    ],
+  );
 });
