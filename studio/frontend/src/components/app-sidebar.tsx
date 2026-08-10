@@ -348,6 +348,7 @@ function NavItem({
   className,
   spinner,
   tooltip,
+  alwaysTooltip,
   onIntent,
   badge,
   overlay,
@@ -368,6 +369,10 @@ function NavItem({
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
+  // Show that tooltip on the expanded row too. An enabled row normally only shows one on
+  // the collapsed rail, where it stands in for the hidden label; a row that is still being
+  // measured has something to say the expanded row cannot show any other way.
+  alwaysTooltip?: boolean;
   // Trailing "New" pill text.
   badge?: string;
   // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
@@ -378,6 +383,7 @@ function NavItem({
       <div className="relative">
         <SidebarMenuButton
           tooltip={tooltip ?? label}
+          alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
           disabled={disabled}
           onClick={onClick}
           onPointerEnter={disabled ? undefined : onIntent}
@@ -556,7 +562,10 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      title={disabled ? tooltip : undefined}
+      // Whenever there is one. It used to be gated on `disabled`, on the assumption that a
+      // tooltip only ever explains a grey-out; a row that is still being measured is enabled
+      // and has something to say, and dropped it.
+      title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
@@ -2074,6 +2083,7 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
+                    alwaysTooltip={rowState.pending}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}

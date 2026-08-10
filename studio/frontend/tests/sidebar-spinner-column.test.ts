@@ -137,6 +137,47 @@ test("a pending row says what it is waiting for", async () => {
   assert.equal(pending.tooltip, "Checking this machine for training support...");
 });
 
+// Having the tooltip is not the same as showing it. Both renderers hide one by default for
+// an enabled row: SidebarMenuButton shows it only on the collapsed rail (it stands in for
+// the hidden label there), and MoreMenuItem used to set `title` only when disabled. A
+// pending row is enabled, so the explanation reached neither the expanded row nor the
+// flyout and the spinner stayed unexplained exactly where it is most visible.
+test("a pending row is marked so both renderers can show its tooltip", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  assert.equal(
+    resolveNavRowState({ pending: true, pendingTooltip: "Checking..." }).pending,
+    true,
+  );
+  assert.equal(resolveNavRowState({ disabled: true, tooltip: "x" }).pending, false);
+  assert.equal(resolveNavRowState({ spinner: true }).pending, false);
+});
+
+test("the expanded row and the flyout both show a pending tooltip", async () => {
+  const [sidebar, appSidebar] = await Promise.all([
+    readFile(new URL("../src/components/ui/sidebar.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
+  ]);
+
+  // The rail-only rule has to make an exception, or an enabled row is silent while expanded.
+  assert.match(
+    sidebar,
+    /hidden=\{isMobile \|\| \(!isDisabled && !alwaysTooltip && state !== "collapsed"\)\}/,
+    "SidebarMenuButton still hides every enabled row's tooltip while expanded",
+  );
+  assert.match(
+    appSidebar,
+    /alwaysTooltip=\{rowState\.pending\}/,
+    "the inline rows never ask for the exception",
+  );
+  // The flyout's title is not conditional on the grey-out any more.
+  assert.match(appSidebar, /^\s*title=\{tooltip\}$/m, "MoreMenuItem drops a pending title");
+  assert.ok(
+    !appSidebar.includes("title={disabled ? tooltip : undefined}"),
+    "MoreMenuItem still gates its title on disabled",
+  );
+});
+
 test("both capability rows carry a pending tooltip", async () => {
   const source = await readFile(
     new URL("../src/components/app-sidebar.tsx", import.meta.url),

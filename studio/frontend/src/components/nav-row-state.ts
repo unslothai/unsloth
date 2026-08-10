@@ -29,9 +29,21 @@ export function resolveNavRowState(row: NavRowState): {
   disabled?: boolean;
   tooltip?: string;
   spinner?: boolean;
+  /** Whether this tooltip belongs to a pending row, which both renderers hide by default. */
+  pending: boolean;
 } {
   if (row.pending) {
-    return { disabled: false, tooltip: row.pendingTooltip, spinner: true };
+    return {
+      disabled: false,
+      tooltip: row.pendingTooltip,
+      spinner: true,
+      pending: true,
+    };
   }
-  return { disabled: row.disabled, tooltip: row.tooltip, spinner: row.spinner };
+  return {
+    disabled: row.disabled,
+    tooltip: row.tooltip,
+    spinner: row.spinner,
+    pending: false,
+  };
 }
