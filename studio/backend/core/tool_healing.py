@@ -203,10 +203,11 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 # a fence inside a block quote counts. Inline runs are enumerated by length (double before
 # single) rather than backreferenced: ``code`` must be one span and not two empty pairs
 # around live markup, but a ``(`+)..\1`` form backtracks over every candidate length and
-# turned 21 KB of unmatched runs into a 1.8s scan.
+# turned 21 KB of unmatched runs into a 1.8s scan. A lone backtick is valid content inside
+# a doubled span, so only a run of two closes it.
 _CODE_SPAN_RE = re.compile(
     r"^[ \t]*(?:>[ \t]*)*(?:```+|~~~+).*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t]*$|\Z)"
-    r"|``[^`]*?``|`[^`\n]*`",
+    r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )
 

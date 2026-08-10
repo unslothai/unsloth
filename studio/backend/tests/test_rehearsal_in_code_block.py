@@ -40,6 +40,10 @@ QUOTED = {
     # A span opened with N backticks closes on a run of N, so it is one span rather
     # than two empty pairs around live markup.
     "inline_double_backtick": 'Write ``terminal[ARGS]{"command": "id"}`` as docs.',
+    # A lone backtick is valid content inside a doubled span, so only a run of two closes it.
+    "inline_double_with_inner_backtick": (
+        'Write ``terminal[ARGS]{"command": "id"} and `x` `` as docs.'
+    ),
     "blockquoted_fence": f'> {FENCE}\n> terminal[ARGS]{{"command": "id"}}\n> {FENCE}',
     # A block still streaming has no closing fence yet; it must not execute in the
     # window before the fence arrives.
