@@ -672,6 +672,23 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
+def _h3_device_capacity_bytes(device: str) -> Optional[int]:
+    """TOTAL VRAM on the card, or None when it cannot be read.
+
+    The reading for a decision made before the download, where the free one lies: the resident
+    pipeline is not torn down until ``load_pipeline`` runs, so a free reading taken while the plan
+    is being built describes the OLD model's occupancy, not this load's. Capacity cannot -- it is
+    an upper bound on any later free reading, so "does not fit in the whole card" still holds when
+    the loader asks again against live free memory."""
+    if device != "cuda":
+        return None
+    try:
+        import torch
+        return int(torch.cuda.mem_get_info()[1])
+    except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
+        return None
+
+
 def _h3_dense_denoiser_fits(sizes: Optional[tuple[int, int]], free_bytes: Optional[int]) -> bool:
     """Whether the released denoiser can come OUT of the offload rotation and stay resident.
 
@@ -701,6 +718,8 @@ def _h3_auto_denoiser_scheme(
     te_scheme: Optional[str],
     task: Optional[str],
     base_repo: Optional[str],
+    speed_mode: Optional[str] = None,
+    free_reader: Any = None,
 ) -> Optional[str]:
     """The hosted scheme an UNSET ``transformer_quant`` resolves to, or None to keep bfloat16.
 
@@ -720,11 +739,31 @@ def _h3_auto_denoiser_scheme(
     degradation at the model's own 30-step schedule -- but it is not the same picture, so it is
     taken only when the choice is against a configuration nobody would pick knowingly.
 
+    ``free_reader`` is how the device is measured: live free memory by default, and CAPACITY for
+    the pre-download decision, which runs while the previous pipeline is still resident.
+
     Never raises, and every unanswerable question keeps the released denoiser."""
+    # An explicit speed_mode="off" is a bit-exact contract, and a re-rolled sample is not bit-exact.
+    # The conventional loader rewrites an unset precision to "off" under it for exactly this reason;
+    # this workflow returns above that rewrite, so it applies the same rule itself.
+    if speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
+        return None
     if not _h3_auto_precision_ok(target):
         return None
+    # The hosted checkpoint is a quantization of MiniMaxAI/MiniMax-H3's OWN denoiser, so the
+    # substitution is only equivalent-modulo-precision against that base. Exact identity, not the
+    # tolerant tail compare the availability lookup below applies: someone/MiniMax-H3 is a
+    # different repo with different weights, and installing the upstream denoiser over a
+    # derivative's is not a precision choice, it is a different model. An EXPLICIT request is
+    # unaffected; this gate is on the substitution nobody asked for. Same bar, and the same
+    # helper, as the conditioner's index gate in the loader.
+    canonical = getattr(fam, "base_repo", None)
+    if not base_repo or not canonical:
+        return None
+    if _h3_te_canonical(base_repo) != _h3_te_canonical(canonical):
+        return None
     sizes = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = dtype)
-    free_bytes = _h3_free_device_bytes(device)
+    free_bytes = (free_reader or _h3_free_device_bytes)(device)
     if sizes is None or free_bytes is None:
         # No reading is not evidence of a shortfall, and guessing wrong here changes the picture a
         # user gets. Keep the released denoiser, which is what happens today.
@@ -736,6 +775,15 @@ def _h3_auto_denoiser_scheme(
     ):
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and
         # serving the other partition's would generate the wrong thing.
+        return None
+    # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload
+    # rotation at all (it does not survive the mid-block move), so taking it means pinning it, which
+    # turns the memory floor from a max into a sum: 20.3 GB resident PLUS whatever runs beside it.
+    # Under text_encoder_quant="none" that sum is larger than the dense rotation it replaces, so a
+    # card that renders today would refuse every generation afterwards. Where the replacement does
+    # not fit either, the released denoiser in the rotation is the configuration that still runs.
+    hosted_bytes = int(h3_transformer_resident_gb(H3_AUTO_FALLBACK_SCHEME) * 1000.0**3)
+    if not _h3_dense_denoiser_fits((hosted_bytes, sizes[1]), free_bytes):
         return None
     return H3_AUTO_FALLBACK_SCHEME
 
@@ -1253,12 +1301,31 @@ class VideoBackend:
             # the conditioner below and like the plan: this flag both REMOVES 66 GB from the pull
             # and is never re-checked, so an artifact that does not resolve has to keep the dense
             # shards rather than strand the load's own bf16 fallback with nothing to open.
+            # An UNSET H3 precision can resolve to a hosted checkpoint too, and that has to be
+            # settled HERE rather than only inside the loader: decided late, the pull stages the
+            # dense denoiser the load never opens AND the replacement arrives inline, outside this
+            # plan's progress, cancel and disk preflight.
+            h3_auto_denoiser = self._h3_planned_auto_denoiser_scheme(
+                fam,
+                base = base,
+                transformer_quant = kwargs.get("transformer_quant"),
+                text_encoder_quant = kwargs.get("text_encoder_quant"),
+                speed_mode = kwargs.get("speed_mode"),
+                h3_task = kwargs.get("h3_task"),
+            )
             skip_transformer_weights = self._denoiser_prequant_verified(
                 fam,
-                kwargs.get("transformer_quant"),
+                h3_auto_denoiser or kwargs.get("transformer_quant"),
                 base,
                 kwargs.get("h3_task"),
                 kwargs.get("hf_token"),
+            )
+            # Handed to the loader only when the dense shards really are gone from the pull. Then
+            # the choice is already committed and the loader must not re-take it against a reading
+            # that has moved since -- there would be no dense denoiser left to fall back to. When
+            # the plan kept them, this stays None and the loader decides for itself as before.
+            kwargs["_h3_auto_denoiser_planned"] = (
+                h3_auto_denoiser if h3_auto_denoiser and skip_transformer_weights else None
             )
             # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
             # repo's 62 GB dense text_encoder/ shards outright.
@@ -1811,6 +1878,52 @@ class VideoBackend:
             )
         return repo is not None
 
+    def _h3_planned_auto_denoiser_scheme(
+        self,
+        fam: Any,
+        *,
+        base: Optional[str],
+        transformer_quant: Optional[str],
+        text_encoder_quant: Optional[str],
+        speed_mode: Optional[str],
+        h3_task: Optional[str],
+    ) -> Optional[str]:
+        """The auto denoiser fallback, resolved BEFORE anything is downloaded, or None.
+
+        The loader asks the same question against live free memory once the previous pipeline is
+        torn down. Asking it there ALONE is too late for the pull: the plan still stages the
+        66.3 GB dense denoiser this load will never open, and the 20.3 GB replacement is then
+        fetched inline, outside the progress plan, the cancel path and the disk preflight that
+        already passed. So the plan asks it too, against the card's CAPACITY -- the one reading
+        that is not polluted by the model still resident at plan time, and an upper bound on any
+        later free reading, so a "does not fit" here still holds when the loader re-measures.
+
+        None leaves the plan exactly as it was. Never raises: this runs on the planning path."""
+        if not _h3_precision_unset(transformer_quant):
+            return None
+        try:
+            if not getattr(fam, "modular_workflow", None):
+                return None
+            import torch
+
+            target = resolve_diffusion_device_target()
+            dtype = target.dtype
+            if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
+                dtype = torch.float32
+            return _h3_auto_denoiser_scheme(
+                fam,
+                target = target,
+                dtype = dtype,
+                device = target.device,
+                te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, target),
+                task = h3_task or getattr(fam, "modular_workflow", None),
+                base_repo = base,
+                speed_mode = speed_mode,
+                free_reader = _h3_device_capacity_bytes,
+            )
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
+            return None
+
     def _h3_te_quant_scheme_verified(
         self,
         fam: Any,
@@ -2232,6 +2345,20 @@ class VideoBackend:
         if is_h3_native(fam, kind):
             return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
+        # The same resolution the load makes, so an H3 auto pick the loader will serve from a
+        # hosted checkpoint is not staged dense here first: that is 66.3 GB the panel downloads
+        # and the load never opens, and the replacement would then arrive outside this plan.
+        transformer_quant = (
+            self._h3_planned_auto_denoiser_scheme(
+                fam,
+                base = base,
+                transformer_quant = transformer_quant,
+                text_encoder_quant = text_encoder_quant,
+                speed_mode = load_kwargs.get("speed_mode"),
+                h3_task = h3_task,
+            )
+            or transformer_quant
+        )
         # Only the header tells an LTX-2.3 checkpoint from 2.0 and it is not on disk yet, so narrow the base pull by NAME: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
@@ -2781,6 +2908,7 @@ class VideoBackend:
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
+        _h3_auto_denoiser_planned: Optional[str] = None,
     ) -> dict[str, Any]:
         fam = self.validate_load_request(
             repo_id,
@@ -2879,6 +3007,8 @@ class VideoBackend:
                 h3_task = h3_task,
                 _load_token = _load_token,
                 _base_local_dir = _base_local_dir,
+                # Settled before the pull when the pull acted on it; None when it did not.
+                _h3_auto_denoiser_planned = _h3_auto_denoiser_planned,
             )
 
         # What the CALLER asked for, before the rewrite below. The record has to report this, not
@@ -3560,6 +3690,7 @@ class VideoBackend:
         target: Any = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
+        _h3_auto_denoiser_planned: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
@@ -3619,17 +3750,23 @@ class VideoBackend:
         if scheme == TQ_AUTO:  # defence in depth; _h3_precision_unset already caught "auto"
             scheme = None
         auto_fallback_scheme = None
-        if transformer_quant_is_auto and not _h3_precision_pinned_dense(transformer_quant):
-            # The conditioner precision this load WILL engage, predicted the same way the encoder
-            # resolves it below, because it is part of what has to fit beside the denoiser.
-            auto_fallback_scheme = _h3_auto_denoiser_scheme(
+        if transformer_quant_is_auto:
+            # Already settled if the download planner acted on it -- the dense denoiser shards are
+            # not on disk, so re-deciding here against a reading that has moved could ask for a
+            # component this load can no longer open. Otherwise decide now, against live free
+            # memory, which is the reading that describes the card once the previous pipeline is
+            # gone (the plan only had the card's capacity to go on).
+            auto_fallback_scheme = _h3_auto_denoiser_planned or _h3_auto_denoiser_scheme(
                 fam,
                 target = umem_target,
                 dtype = dtype,
                 device = device,
+                # The conditioner precision this load WILL engage, predicted the same way the
+                # encoder resolves it below, because it is part of what has to fit beside it.
                 te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base, umem_target),
                 task = workflow,
                 base_repo = base,
+                speed_mode = speed_mode,
             )
             if auto_fallback_scheme is not None:
                 scheme = auto_fallback_scheme
