@@ -219,8 +219,22 @@ def repo_holds_denoiser(repo) -> bool:
     return False
 
 
-def _cached_main_gguf_names(cache_scans) -> dict[str, list[str]]:
-    """``{repo_id_lower: [every cached main GGUF name]}`` for the family probe below.
+def _is_checkpoint_pick_name(name: str) -> bool:
+    """A cached file the loader would hand to ``detect_family_for_pick`` as the pick.
+
+    Both kinds it accepts: a main GGUF anywhere in the repo, and a TOP-LEVEL single-file
+    ``.safetensors``, which is how a transformer-only or whole-pipeline single_file pick is
+    cached. Restricted to the snapshot root because that is where a single-file pick lands; a
+    companion fetch's shards live under ``text_encoder/``, ``vae/`` and friends and say nothing
+    about which checkpoint is installed."""
+    lowered = name.lower()
+    if lowered.endswith(".gguf"):
+        return "mmproj" not in lowered
+    return "/" not in name and lowered.endswith(".safetensors")
+
+
+def _cached_checkpoint_pick_names(cache_scans) -> dict[str, list[str]]:
+    """``{repo_id_lower: [every cached file the loader could pick]}`` for the family probe below.
 
     Both diffusion loaders detect a family from the FILENAME as well as the repo id, so a
     perfectly runnable ``some-owner/custom`` holding ``flux-2-klein-4b-Q4_K_M.gguf`` is a
@@ -228,9 +242,9 @@ def _cached_main_gguf_names(cache_scans) -> dict[str, list[str]]:
     to fall back on: on an upgraded install no links have been recorded yet, so the family probe
     is the whole guard.
 
-    EVERY name, not the first: one generic repo can hold checkpoints of two different families in
-    separate subdirectories, and the loader will select either by file name. Probing one of them
-    left the other's base looking orphaned."""
+    EVERY name, and across EVERY cache root: one generic repo can hold checkpoints of two
+    different families, in separate subdirectories or in two remembered caches, and the loader
+    will select any of them by file name. Probing one left the others' bases looking orphaned."""
     names: dict[str, list[str]] = {}
     for scan in cache_scans or ():
         for repo in getattr(scan, "repos", ()) or ():
@@ -238,18 +252,15 @@ def _cached_main_gguf_names(cache_scans) -> dict[str, list[str]]:
                 if str(getattr(repo, "repo_type", "")) != "model":
                     continue
                 key = _normalise(str(getattr(repo, "repo_id", "") or ""))
-                if not key or key in names:
+                if not key:
                     continue
-                found = [
-                    name
-                    for name in dict.fromkeys(_snapshot_relative_names(repo))
-                    if name.lower().endswith(".gguf") and "mmproj" not in name.lower()
-                ]
-                if found:
-                    names[key] = found
+                found = names.setdefault(key, [])
+                for name in _snapshot_relative_names(repo):
+                    if _is_checkpoint_pick_name(name) and name not in found:
+                        found.append(name)
             except Exception:  # noqa: BLE001 -- one unreadable row never hides the rest
                 continue
-    return names
+    return {key: found for key, found in names.items() if found}
 
 
 def _denoiser_holding_repo_ids(cache_scans) -> set[str]:
@@ -396,12 +407,12 @@ def required_companion_asset_files(cache_scans) -> dict[str, set[str]]:
     ``Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf`` inside a chat GGUF repo, so removing that one quant
     strands the image checkpoint even though the repo still holds a Q8_0 nobody can substitute.
     """
-    gguf_names = _cached_main_gguf_names(cache_scans)
+    pick_names = _cached_checkpoint_pick_names(cache_scans)
     files: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         # Every cached GGUF, because one repo can hold checkpoints of two families and each opens
         # its own components.
-        for name in dict.fromkeys([None, *gguf_names.get(_normalise(repo_id), [])]):
+        for name in dict.fromkeys([None, *pick_names.get(_normalise(repo_id), [])]):
             fam = _detect_family(repo_id, name)
             if fam is None:
                 continue
@@ -542,14 +553,14 @@ def required_companion_bases(
     """
     ignored = {_normalise(r) for r in ignore_repo_ids}
     links = read_companion_links()
-    gguf_names = _cached_main_gguf_names(cache_scans)
+    pick_names = _cached_checkpoint_pick_names(cache_scans)
     component_only = _cached_component_only_repo_ids(cache_scans)
     required: dict[str, set[str]] = {}
     for repo_id in _cached_model_repo_ids(cache_scans):
         key = _normalise(repo_id)
         if key in ignored or key in component_only:
             continue
-        bases = _family_bases_for_names(repo_id, gguf_names.get(key, []))
+        bases = _family_bases_for_names(repo_id, pick_names.get(key, []))
         recorded = links.get(key)
         if recorded:
             bases |= _with_mirrors(recorded)
@@ -575,10 +586,15 @@ def _cached_component_only_repo_ids(cache_scans) -> set[str]:
     other on disk: Free up space would not list them and a delete was refused, until the user
     happened to remove one component first. A repo that does hold a denoiser is a model the user
     installed and still counts, which is what keeps a borrowed chat GGUF a dependent of nothing
-    and a checkpoint of itself."""
+    and a checkpoint of itself.
+
+    Through the same identity expansion the rest of this file uses, because an upgraded install
+    holds the component under the legacy repack id the native fetch fell back to
+    (``Comfy-Org/flux2-dev`` for ``unsloth/FLUX.2-dev-ComfyUI``). That id matches the flux.2-dev
+    family just as literally, so leaving it out kept the very caches this exclusion is for."""
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-        curated = {_normalise(r) for r in sd_cpp_companion_only_repo_ids()}
+        curated = {_normalise(r) for r in _with_mirrors(sd_cpp_companion_only_repo_ids())}
     except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
         logger.debug("sd.cpp companion table unavailable: %s", exc)
         return set()

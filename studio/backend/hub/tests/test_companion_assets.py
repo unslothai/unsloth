@@ -680,3 +680,55 @@ def test_every_cached_gguf_in_one_repo_pins_its_own_base(monkeypatch):
     )
     assert companion_cleanup.companion_dependents(klein) == ["some-owner/multi"]
     assert companion_cleanup.companion_dependents(dev) == ["some-owner/multi"]
+
+
+def test_copies_in_two_cache_roots_are_probed_together(monkeypatch):
+    """A remembered second cache holds its own copy of the same repo id. The probe kept the first
+    copy's names and skipped the rest, so a family only the second copy names lost its base."""
+    klein = "black-forest-labs/FLUX.2-klein-4B"
+    qwen = "Qwen/Qwen-Image"
+    scans = [
+        SimpleNamespace(
+            repos = [
+                _repo("some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)], cache = "/c1")
+            ]
+        ),
+        SimpleNamespace(
+            repos = [_repo("some-owner/custom", [("Qwen-Image-Q4_K_M.gguf", 9_000_000)], cache = "/c2")]
+        ),
+        SimpleNamespace(repos = [_repo(klein, [("model_index.json", 460)]), _repo(qwen, [("model_index.json", 460)])]),
+    ]
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
+    assert companion_cleanup.companion_dependents(klein) == ["some-owner/custom"]
+    assert companion_cleanup.companion_dependents(qwen) == ["some-owner/custom"]
+
+
+def test_a_single_file_safetensors_pick_pins_its_base(monkeypatch):
+    """The loader hands a top-level single-file .safetensors to detect_family_for_pick exactly
+    like a GGUF, so a cache holding only that file has a family. Probing GGUFs alone left the
+    checkpoint's base reclaimable, and deleting it broke the installed pick offline."""
+    dev = "black-forest-labs/FLUX.2-dev"
+    _install(
+        monkeypatch,
+        _repo("unsloth/custom", [("FLUX.2-dev-fp8.safetensors", 9_000_000)]),
+        _repo(dev, [("model_index.json", 460)]),
+    )
+    assert companion_cleanup.companion_dependents(dev) == ["unsloth/custom"]
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+
+
+def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
+    """An upgraded install holds the component under the repack id the native fetch fell back to.
+    That id matches its family just as literally, so without expanding the exclusion through the
+    same mirror identities the orphaned pair kept holding each other on disk."""
+    legacy = "Comfy-Org/flux2-dev"
+    vae = "unsloth/FLUX.2-VAE"
+    _install(
+        monkeypatch,
+        _repo(legacy, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]),
+        _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
+    )
+    assert companion_cleanup.companion_dependents(vae) == []
+    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    assert offered == {legacy, vae}
