@@ -1779,6 +1779,15 @@ class TestOpenAICompatibilityHelpers:
         assert _chat_passthrough_sse_out(line, include_usage = False) is None
         assert _chat_passthrough_sse_out(line, include_usage = True) == line
 
+        content_with_null_usage = (
+            'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"content":"hi"},'
+            '"finish_reason":null}],"usage":null}'
+        )
+        stripped = _chat_passthrough_sse_out(content_with_null_usage, include_usage = False)
+        assert stripped is not None
+        assert '"usage"' not in stripped
+        assert '"content":"hi"' in stripped.replace(" ", "")
+
     def test_developer_message_preserves_existing_system_prompt(self):
         payload = ChatCompletionRequest(
             messages = [

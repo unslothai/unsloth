@@ -1216,7 +1216,7 @@ def _cmpl_stream_event_out(event: bytes, include_usage: bool) -> Optional[bytes]
             obj = json.loads(payload)
         except Exception:
             continue
-        if not isinstance(obj, dict) or obj.get("usage") is None:
+        if not isinstance(obj, dict) or "usage" not in obj:
             continue
         # Standalone usage-only chunk (chat-style) -> drop the whole event.
         if obj.get("choices") == []:
@@ -1247,7 +1247,7 @@ def _chat_passthrough_sse_out(raw_line: str, include_usage: bool) -> Optional[st
         obj = json.loads(payload)
     except Exception:
         return raw_line
-    if not isinstance(obj, dict) or obj.get("usage") is None:
+    if not isinstance(obj, dict) or "usage" not in obj:
         return raw_line
     if obj.get("choices") == []:
         return None
