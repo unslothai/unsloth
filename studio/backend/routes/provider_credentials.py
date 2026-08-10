@@ -6,6 +6,11 @@
 from __future__ import annotations
 
 
+from contextlib import contextmanager
+from typing import Iterator
+
+from auth import storage as auth_storage
+
 import structlog
 from fastapi import HTTPException
 
@@ -13,6 +18,17 @@ from fastapi import HTTPException
 from storage import credential_secrets
 
 logger = structlog.get_logger(__name__)
+
+
+@contextmanager
+def current_credential_write(credential: tuple[str, str | None]) -> Iterator[None]:
+    """Reject a credential-derived write if password rotation revoked its request."""
+    subject, generation = credential
+    try:
+        with auth_storage.credential_generation_guard(subject, generation):
+            yield
+    except auth_storage.CredentialRotated as exc:
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
 
 
 def require_ui_session(via_api_key: bool) -> None:

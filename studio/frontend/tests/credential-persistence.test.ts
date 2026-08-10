@@ -316,6 +316,21 @@ test("HF credential API rejects a successful non-JSON response", async () => {
 });
 
 
+test("legacy training HF token gets a durable migration copy", async () => {
+  const { store } = installLocalStorageFake();
+  try {
+    const hfStore = await import(
+      "../src/features/hub/stores/hf-token-store.ts"
+    );
+    hfStore.stageLegacyHfTokenForMigration(" hf_durable ");
+    assert.equal(store.get("unsloth_hf_token_migration_v1"), "hf_durable");
+  } finally {
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
 test("HF store hydrates from the API without recreating plaintext storage", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
@@ -391,6 +406,52 @@ test("HF hydration does not overwrite an in-flight user edit", async () => {
     }
     assert.equal(hfStore.getHfToken(), "hf_user_edit");
     assert.equal(hfStore.useHfTokenStore.getState().isPersisting, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+test("a superseded successful HF write advances the rollback baseline", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let resolveFirst!: (response: Response) => void;
+  let resolveSecond!: (response: Response) => void;
+  let firstStarted!: () => void;
+  let secondStarted!: () => void;
+  const firstRequest = new Promise<void>((resolve) => { firstStarted = resolve; });
+  const secondRequest = new Promise<void>((resolve) => { secondStarted = resolve; });
+  const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+  const secondResponse = new Promise<Response>((resolve) => { resolveSecond = resolve; });
+  let requestCount = 0;
+  globalThis.fetch = (async () => {
+    requestCount += 1;
+    if (requestCount === 1) { firstStarted(); return firstResponse; }
+    secondStarted();
+    return secondResponse;
+  }) as typeof fetch;
+
+  try {
+    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    hfStore.useHfTokenStore.getState().setToken("hf_first");
+    await firstRequest;
+    hfStore.useHfTokenStore.getState().setToken("hf_second");
+    resolveFirst(new Response(JSON.stringify({ token: "hf_first", has_token: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    await secondRequest;
+    resolveSecond(new Response(JSON.stringify({ detail: "failed" }), {
+      status: 500, headers: { "Content-Type": "application/json" },
+    }));
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(hfStore.getHfToken(), "hf_first");
+    assert.match(hfStore.useHfTokenStore.getState().persistenceError ?? "", /failed/);
   } finally {
     globalThis.fetch = originalFetch;
     Reflect.deleteProperty(globalThis, "window");

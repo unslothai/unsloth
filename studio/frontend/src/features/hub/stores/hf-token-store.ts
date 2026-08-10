@@ -13,6 +13,7 @@ async function loadHfTokenApi(): Promise<HfTokenApi> {
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
+const HF_TOKEN_MIGRATION_KEY = "unsloth_hf_token_migration_v1";
 
 const HF_TOKEN_SYNC_KEY = "unsloth_hf_token_backend_revision";
 
@@ -31,6 +32,8 @@ function loadLegacyToken(): string {
   if (!canUseStorage()) return stagedLegacyToken;
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
+    const migrationCopy = window.localStorage.getItem(HF_TOKEN_MIGRATION_KEY);
+    if (migrationCopy !== null) return normalizeHfToken(migrationCopy);
     if (direct !== null) return normalizeHfToken(direct);
     const legacy = window.localStorage.getItem(LEGACY_TRAINING_KEY);
     if (!legacy) return stagedLegacyToken;
@@ -53,6 +56,10 @@ function removeLegacyToken(expectedToken: string): void {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
     if (direct !== null && normalizeHfToken(direct) === expected) {
       window.localStorage.removeItem(HF_TOKEN_KEY);
+    }
+    const migrationCopy = window.localStorage.getItem(HF_TOKEN_MIGRATION_KEY);
+    if (migrationCopy !== null && normalizeHfToken(migrationCopy) === expected) {
+      window.localStorage.removeItem(HF_TOKEN_MIGRATION_KEY);
     }
     const raw = window.localStorage.getItem(LEGACY_TRAINING_KEY);
     if (!raw) return;
@@ -96,6 +103,7 @@ function persistenceErrorMessage(error: unknown): string {
 
 function persistTokenToBackend(token: string): void {
   const revision = ++persistenceRevision;
+  const sessionRevision = authSessionRevision;
   useHfTokenStore.setState({ isPersisting: true, persistenceError: null });
   persistenceChain = persistenceChain
     .catch(() => undefined)
@@ -113,8 +121,9 @@ function persistTokenToBackend(token: string): void {
         const persistedToken = response.token
           ? normalizeHfToken(response.token)
           : "";
+        if (sessionRevision !== authSessionRevision) return;
+        lastPersistedToken = persistedToken;
         if (revision === persistenceRevision) {
-          lastPersistedToken = persistedToken;
           removeLegacyToken(legacyTokenBeforeSave);
           announcePersistedTokenChange();
           useHfTokenStore.setState({
@@ -176,6 +185,13 @@ export function stageLegacyHfTokenForMigration(value: string): void {
   const token = normalizeHfToken(value);
   if (!token) return;
   stagedLegacyToken ||= token;
+  if (canUseStorage()) {
+    try {
+      window.localStorage.setItem(HF_TOKEN_MIGRATION_KEY, token);
+    } catch {
+      // The in-memory copy still keeps this session working.
+    }
+  }
   if (!useHfTokenStore.getState().token) {
     useHfTokenStore.setState({ token });
   }

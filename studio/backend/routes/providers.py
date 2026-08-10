@@ -16,9 +16,17 @@ import uuid
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.authentication import authenticated_via_api_key, get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    get_current_subject,
+)
 
-from routes.provider_credentials import require_ui_session, resolve_provider_api_key_or_400
+from routes.provider_credentials import (
+    current_credential_write,
+    require_ui_session,
+    resolve_provider_api_key_or_400,
+)
 from core.inference.key_exchange import (
     get_public_key_fingerprint,
     get_public_key_pem,
@@ -114,7 +122,7 @@ async def list_provider_configs(_current_subject: str = Depends(get_current_subj
 @router.post("/", response_model = ProviderResponse, status_code = 201)
 async def create_provider_config(
     payload: ProviderCreate,
-    _current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Create a saved provider configuration and optional encrypted API key."""
@@ -134,20 +142,21 @@ async def create_provider_config(
 
     if api_key:
         credential_secrets.get_or_create_credential_encryption_key()
-    providers_db.create_provider(
-        id = provider_id,
-        provider_type = payload.provider_type,
-        display_name = payload.display_name,
-        base_url = base_url,
-        models = payload.models,
-        available_models = payload.available_models,
-    )
-    try:
-        if api_key:
-            credential_secrets.save_provider_api_key(provider_id, api_key)
-    except Exception:
-        providers_db.delete_provider(provider_id)
-        raise
+    with current_credential_write(credential):
+        providers_db.create_provider(
+            id = provider_id,
+            provider_type = payload.provider_type,
+            display_name = payload.display_name,
+            base_url = base_url,
+            models = payload.models,
+            available_models = payload.available_models,
+        )
+        try:
+            if api_key:
+                credential_secrets.save_provider_api_key(provider_id, api_key)
+        except Exception:
+            providers_db.delete_provider(provider_id)
+            raise
 
     row = providers_db.get_provider(provider_id)
     return _provider_response(row)
@@ -157,7 +166,7 @@ async def create_provider_config(
 async def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
-    _current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Update a saved provider configuration."""
@@ -185,36 +194,38 @@ async def update_provider_config(
         if not replacement_api_key:
             raise HTTPException(status_code = 400, detail = "API key cannot be empty")
 
-    if metadata_requested:
-        providers_db.update_provider(
-            id = provider_id,
-            display_name = payload.display_name,
-            base_url = payload.base_url,
-            is_enabled = payload.is_enabled,
-            models = payload.models,
-            available_models = payload.available_models,
-        )
-    try:
-        if replacement_api_key is not None:
-            credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
-        elif payload.clear_api_key:
-            credential_secrets.delete_provider_api_key(provider_id)
-    except Exception:
+    with current_credential_write(credential):
         if metadata_requested:
-            try:
-                providers_db.update_provider(
-                    id = provider_id,
-                    display_name = existing["display_name"],
-                    base_url = existing["base_url"],
-                    is_enabled = bool(existing["is_enabled"]),
-                    models = existing.get("models") or [],
-                    available_models = existing.get("available_models") or [],
-                )
-            except Exception:
-                logger.exception(
-                    "provider.update_metadata_rollback_failed", provider_id = provider_id
-                )
-        raise
+            providers_db.update_provider(
+                id = provider_id,
+                display_name = payload.display_name,
+                base_url = payload.base_url,
+                is_enabled = payload.is_enabled,
+                models = payload.models,
+                available_models = payload.available_models,
+            )
+        try:
+            if replacement_api_key is not None:
+                credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
+            elif payload.clear_api_key:
+                credential_secrets.delete_provider_api_key(provider_id)
+        except Exception:
+            if metadata_requested:
+                try:
+                    providers_db.update_provider(
+                        id = provider_id,
+                        display_name = existing["display_name"],
+                        base_url = existing["base_url"],
+                        is_enabled = bool(existing["is_enabled"]),
+                        models = existing.get("models") or [],
+                        available_models = existing.get("available_models") or [],
+                    )
+                except Exception:
+                    logger.exception(
+                        "provider.update_metadata_rollback_failed", provider_id = provider_id
+                    )
+            raise
+
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
@@ -225,29 +236,33 @@ async def update_provider_config(
 @router.delete("/{provider_id}", status_code = 204)
 async def delete_provider_config(
     provider_id: str,
-    _current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Idempotently delete a saved provider and its installation credential."""
     require_ui_session(via_api_key)
-    existing_api_key = credential_secrets.get_provider_api_key(provider_id)
-    credential_secrets.delete_provider_api_key(provider_id)
-    try:
-        providers_db.delete_provider(provider_id)
-    except Exception:
-        if existing_api_key:
-            try:
-                credential_secrets.save_provider_api_key(provider_id, existing_api_key)
-            except Exception:
-                logger.exception(
-                    "provider.delete_credential_rollback_failed", provider_id = provider_id
-                )
-        raise
+
+    # Decryption must not open the auth DB after the generation guard locks it.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        existing_api_key = credential_secrets.get_provider_api_key(provider_id)
+        credential_secrets.delete_provider_api_key(provider_id)
+        try:
+            providers_db.delete_provider(provider_id)
+        except Exception:
+            if existing_api_key:
+                try:
+                    credential_secrets.save_provider_api_key(provider_id, existing_api_key)
+                except Exception:
+                    logger.exception(
+                        "provider.delete_credential_rollback_failed", provider_id = provider_id
+                    )
+            raise
 
 
 def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
-    if not payload.provider_id:
+    if not payload.provider_id or payload.encrypted_api_key:
         return payload
     config = providers_db.get_provider(payload.provider_id)
     if config is None:

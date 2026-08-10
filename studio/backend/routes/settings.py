@@ -12,11 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from auth.authentication import (
     authenticated_via_api_key,
+    get_current_credential,
     get_current_subject,
 )
 from auth.storage import rotate_preview_link_secret
 
-from routes.provider_credentials import require_ui_session
+from routes.provider_credentials import current_credential_write, require_ui_session
 
 from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
@@ -146,21 +147,26 @@ def get_hugging_face_token(
 @router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def update_hugging_face_token(
     payload: HuggingFaceTokenPayload,
-    _current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
     require_ui_session(via_api_key)
-    credential_secrets.save_hf_token(payload.token)
+
+    # Warm the auth-owned key before the generation guard takes its write lock.
+    credential_secrets.get_or_create_credential_encryption_key()
+    with current_credential_write(credential):
+        credential_secrets.save_hf_token(payload.token)
     return HuggingFaceTokenResponse(token = payload.token, has_token = True)
 
 
 @router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def clear_hugging_face_token(
-    _current_subject: str = Depends(get_current_subject),
+    credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ) -> HuggingFaceTokenResponse:
     require_ui_session(via_api_key)
-    credential_secrets.delete_hf_token()
+    with current_credential_write(credential):
+        credential_secrets.delete_hf_token()
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 

@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import asyncio
 import importlib.util
 import sys
@@ -88,7 +90,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
                 display_name = "OpenAI",
                 encrypted_api_key = "first",
             ),
-            _current_subject = "alice",
+            credential = ("alice", None),
             via_api_key = False,
         )
     )
@@ -99,7 +101,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(display_name = "Renamed"),
-            _current_subject = "alice",
+            credential = ("alice", None),
             via_api_key = False,
         )
     )
@@ -110,7 +112,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(encrypted_api_key = "second"),
-            _current_subject = "alice",
+            credential = ("alice", None),
             via_api_key = False,
         )
     )
@@ -121,7 +123,7 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
         providers_route.update_provider_config(
             created.id,
             ProviderUpdate(clear_api_key = True),
-            _current_subject = "alice",
+            credential = ("alice", None),
             via_api_key = False,
         )
     )
@@ -132,12 +134,12 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
     asyncio.run(
         providers_route.delete_provider_config(
-            created.id, _current_subject = "alice", via_api_key = False
+            created.id, credential = ("alice", None), via_api_key = False
         )
     )
     asyncio.run(
         providers_route.delete_provider_config(
-            created.id, _current_subject = "alice", via_api_key = False
+            created.id, credential = ("alice", None), via_api_key = False
         )
     )
 
@@ -163,7 +165,7 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
             providers_route.update_provider_config(
                 "provider-1",
                 ProviderUpdate(display_name = "Must not persist", encrypted_api_key = "invalid"),
-                _current_subject = "alice",
+                credential = ("alice", None),
                 via_api_key = False,
             )
         )
@@ -187,7 +189,7 @@ def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeyp
             providers_route.update_provider_config(
                 "provider-1",
                 ProviderUpdate(display_name = "Also rolled back", encrypted_api_key = "valid"),
-                _current_subject = "alice",
+                credential = ("alice", None),
                 via_api_key = False,
             )
         )
@@ -212,7 +214,7 @@ def test_provider_delete_restores_key_when_provider_delete_fails(monkeypatch):
     with pytest.raises(RuntimeError, match = "provider delete failure"):
         asyncio.run(
             providers_route.delete_provider_config(
-                "provider-1", _current_subject = "alice", via_api_key = False
+                "provider-1", credential = ("alice", None), via_api_key = False
             )
         )
 
@@ -220,12 +222,39 @@ def test_provider_delete_restores_key_when_provider_delete_fails(monkeypatch):
     assert credential_secrets.get_provider_api_key("provider-1") == "sk-original"
 
 
+def test_credential_writes_reject_a_rotated_request(monkeypatch):
+    @contextmanager
+    def reject_stale(_subject, _generation):
+        raise auth_storage.CredentialRotated("revoked")
+        yield
+
+    monkeypatch.setattr(auth_storage, "credential_generation_guard", reject_stale)
+    with pytest.raises(HTTPException) as error:
+        settings_route.update_hugging_face_token(
+            settings_route.HuggingFaceTokenPayload(token = "hf_stale"),
+            credential = ("alice", "stale-generation"),
+            via_api_key = False,
+        )
+    assert error.value.status_code == 401
+    assert credential_secrets.get_hf_token() is None
+
+
+def test_explicit_provider_key_preserves_the_edited_target():
+    payload = ProviderModelsRequest(
+        provider_id = "provider-1",
+        provider_type = "custom",
+        encrypted_api_key = "encrypted-replacement",
+        base_url = "https://new.example/v1",
+    )
+    assert providers_route._bind_saved_provider_target(payload) is payload
+
+
 def test_provider_mutations_reject_api_key_authentication():
     with pytest.raises(HTTPException) as error:
         asyncio.run(
             providers_route.create_provider_config(
                 ProviderCreate(provider_type = "openai", display_name = "Forbidden"),
-                _current_subject = "alice",
+                credential = ("alice", None),
                 via_api_key = True,
             )
         )
@@ -338,17 +367,22 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
 
 
 def test_hugging_face_routes_are_global_and_idempotent():
+    jwt_secret = "current-jwt-secret"
+    auth_storage.create_initial_user("alice", "password-123", jwt_secret)
+    credential = ("alice", auth_storage.credential_generation(jwt_secret))
+    # Exercise a cold encryption-key cache while the real generation guard is active.
+    auth_storage._credential_encryption_key_cache = None
     saved = settings_route.update_hugging_face_token(
         settings_route.HuggingFaceTokenPayload(token = " 'hf_alice' "),
-        _current_subject = "alice",
+        credential = credential,
         via_api_key = False,
     )
     assert saved.token == "hf_alice"
     assert settings_route.get_hugging_face_token("alice", via_api_key = False).token == "hf_alice"
     assert settings_route.get_hugging_face_token("bob", via_api_key = False).token == "hf_alice"
 
-    assert settings_route.clear_hugging_face_token("alice", via_api_key = False).has_token is False
-    assert settings_route.clear_hugging_face_token("alice", via_api_key = False).has_token is False
+    assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
+    assert settings_route.clear_hugging_face_token(credential, via_api_key = False).has_token is False
 
 
 def test_hugging_face_secret_routes_reject_api_key_authentication():
@@ -359,14 +393,14 @@ def test_hugging_face_secret_routes_reject_api_key_authentication():
     with pytest.raises(HTTPException) as put_error:
         settings_route.update_hugging_face_token(
             settings_route.HuggingFaceTokenPayload(token = "hf_forbidden"),
-            _current_subject = "alice",
+            credential = ("alice", None),
             via_api_key = True,
         )
     assert put_error.value.status_code == 403
 
     with pytest.raises(HTTPException) as delete_error:
         settings_route.clear_hugging_face_token(
-            "alice",
+            ("alice", None),
             via_api_key = True,
         )
     assert delete_error.value.status_code == 403
