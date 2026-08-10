@@ -1960,9 +1960,7 @@ def test_an_unwritable_record_still_remembers_the_server_capability(tmp_path):
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
     sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
-    sdmod._write_install_record(
-        root, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
-    )
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t", ships_server = False)
     assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
     assert sdmod.installed_accelerator(root) == "cuda"
     assert sdmod.installed_ships_server(root) is False  # ... and not "unknown"
