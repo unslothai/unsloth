@@ -3,10 +3,9 @@
 
 """Contracts for the update popup's release-notes preview.
 
-The popup shows the newest GitHub release's announcement. Two risks are guarded
-here: showing a release the maintainers have not published, and showing the
-generated sections of a body (install instructions, the pull-request list, the
-build provenance) as though they were the announcement."""
+The popup shows the newest GitHub release's announcement. Two risks are guarded:
+showing a release the maintainers have not published, and showing a body's
+generated sections as though they were the announcement."""
 
 from __future__ import annotations
 
@@ -90,15 +89,12 @@ def sections(module, text: str) -> list[Section]:
     """Every document-level heading in `text`, with the lines beneath it.
 
     The shipped scanner decides what a heading is; this only groups its events.
-    Which lines it calls headings is the whole of what the block tests below
-    check, and it is what decides where a generated section starts and ends.
     """
     found: list[Section] = []
     bodies: list[list[str]] = []
     for event in module.scan_blocks(text):
         if isinstance(event, module.Heading):
-            # A setext heading is the paragraph above it, already collected as
-            # body lines, so the section above gives them back.
+            # A setext heading is the paragraph above it, already collected.
             if bodies and event.retract:
                 del bodies[-1][len(bodies[-1]) - event.retract :]
             title = event.title.strip()
@@ -245,9 +241,8 @@ def test_response_reports_no_notes_without_markdown(isolated_releases):
 
 
 def test_the_offered_version_is_echoed_not_looked_up(notes_module, serve_releases):
-    """The pip popup offers a PyPI version and the releases are tagged with the
-    Studio version, so no tag could match it. The version comes back untouched
-    so the UI can drop an answer to a version it has moved on from."""
+    """No tag could match the PyPI version the pip popup offers, so it comes
+    back untouched for the UI to match a stale answer against."""
     serve_releases(
         releases_payload(
             {
@@ -300,8 +295,7 @@ def test_the_newest_published_release_wins(notes_module, serve_releases):
 @pytest.mark.parametrize(
     "entry",
     [
-        # A release staged as a draft is not published yet. The tag is one the
-        # tag filter accepts, so the draft flag is what has to reject it.
+        # A draft whose tag the filter accepts, so the flag must reject it.
         {"tag_name": "v9.9.9", "draft": True},
         # A desktop build, which is where the drafts come from.
         {"tag_name": "desktop-v0.1.60-beta"},
@@ -336,8 +330,7 @@ def test_a_payload_without_releases_is_an_error_not_a_crash(notes_module, serve_
 
 def test_a_release_with_no_announcement_shows_none(notes_module, serve_releases):
     """v0.1.527-beta's body is only the generated list, so nothing survives
-    stripping. The popup must say so and link out rather than show the list, or
-    fall back to the previous release's notes."""
+    stripping: the popup links out rather than showing an older release."""
     serve_releases(
         releases_payload(
             {
@@ -432,15 +425,13 @@ def test_preview_keeps_identifier_underscores():
 
 
 def test_panel_prefers_the_page_the_notes_came_from():
-    """The release the notes were taken from is the page they are on, so it
-    wins over the caller's URL and over the generic changelog."""
+    """The page the notes came from wins over the caller's URL and the changelog."""
     src = PANEL.read_text(encoding = "utf-8")
     assert "notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl" in src
 
 
 def test_remote_failure_is_reported_so_the_ui_can_retry(notes_module, monkeypatch):
-    """An unreachable GitHub must not read as "no notes were published": one is
-    retryable and the other is not."""
+    """An unreachable GitHub is retryable; "no notes published" is not."""
     monkeypatch.delenv(notes_module.DISABLE_ENV_VAR, raising = False)
     # Port 9 (discard) refuses fast, standing in for an unreachable host.
     monkeypatch.setenv(notes_module.RELEASES_URL_ENV_VAR, "http://127.0.0.1:9/releases")
@@ -454,8 +445,7 @@ def test_remote_failure_is_reported_so_the_ui_can_retry(notes_module, monkeypatc
 
 
 def test_preview_keeps_comparison_operators():
-    """ "Support Python <3.15 and >3.9" must not lose its operators to the tag
-    strip, which would turn it into "Support Python 3.9"."""
+    """The tag strip must keep the operators in "Support Python <3.15 and >3.9"."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "/<\\/?[a-zA-Z][^>]*>/g" in src, "tag strip must require a name character"
 
@@ -472,8 +462,7 @@ def test_hook_treats_a_reported_failure_as_retryable():
 
 
 def test_comment_delimiter_in_inline_code_is_literal(notes_module):
-    """A note documenting `<!--` used to put the parser into comment state,
-    swallowing every release below it."""
+    """A note documenting `<!--` used to swallow every release below it."""
     text = "## 2.0\n\n- Type `<!--` to begin a comment\n\n## 1.0\n\n- older\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     assert find_section(notes_module, text, "1.0") is not None
@@ -481,8 +470,7 @@ def test_comment_delimiter_in_inline_code_is_literal(notes_module):
 
 
 def test_refresh_retries_a_cached_remote_failure(notes_module, serve_releases):
-    """Retry must reach the network again once connectivity returns, rather
-    than replaying the cached failure until its TTL expires."""
+    """Retry must reach the network again rather than replay the cached failure."""
     hits = serve_releases("", status = 500)
     notes_module.get_release_notes("2.0")
     notes_module.get_release_notes("2.0")
@@ -492,9 +480,8 @@ def test_refresh_retries_a_cached_remote_failure(notes_module, serve_releases):
 
 
 def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_releases):
-    """Unauthenticated callers get 60 requests an hour per IP, so a shared
-    address that has spent them gains nothing by retrying: the request is
-    refused and only pushes the reset further away."""
+    """A shared IP that has spent its 60 requests an hour gains nothing by
+    retrying: the request is refused and only pushes the reset further away."""
     reset = str(int(time.time()) + 900)
     hits = serve_releases(
         '{"message": "API rate limit exceeded"}',
@@ -509,9 +496,8 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
 
 def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
     """GitHub says not to request again before X-RateLimit-Reset, so the reset
-    wins over the back-off. Only the first wait on it used to be bounded, so the
-    fetch after that wait answered from the raw header: a skewed or proxied
-    value parked the popup, and Retry with it, for as long as it liked."""
+    wins over the back-off. Only the first wait used to be bounded, so the fetch
+    after it answered from the raw header and a skewed value parked the popup."""
     import email.message
     import urllib.error
 
@@ -535,10 +521,9 @@ def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
 
 
 def test_every_refusal_records_a_deadline_retry_has_to_wait_out(notes_module):
-    """A secondary rate limit answers 403 or 429 without `X-RateLimit-Remaining:
-    0`, and says how long to wait in `Retry-After` if it says at all. Only the
-    primary limit's path used to record a deadline, so Retry dropped the cached
-    failure and requested straight back into the limit."""
+    """A secondary limit answers 403 or 429 with no `X-RateLimit-Remaining: 0`,
+    and at most a `Retry-After`. Only the primary path recorded a deadline, so
+    Retry dropped the cached failure and requested straight back into it."""
     import email.message
     import urllib.error
 
@@ -568,9 +553,8 @@ def test_every_refusal_records_a_deadline_retry_has_to_wait_out(notes_module):
 
 def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases):
     """A release entry carries its whole body, so the page size and the byte cap
-    are one decision. Asking for the endpoint's maximum of 100 put the response
-    near 4 MiB against a 2 MiB cap, and the fetch then fails outright with the
-    wanted release sitting at the top of the page it just threw away."""
+    are one decision: the endpoint's maximum of 100 is near 4 MiB against a
+    2 MiB cap, and the fetch then fails outright."""
     import urllib.parse
 
     query = urllib.parse.urlparse(notes_module.RELEASES_API_URL).query
@@ -599,8 +583,8 @@ def test_the_page_asked_for_fits_under_the_read_cap(notes_module, serve_releases
     ["### macOS, Linux, WSL:", "### macOS / Linux / WSL", "### macOS/Linux/WSL"],
 )
 def test_platform_headings_split_on_a_slash_as_well_as_a_comma(notes_module, heading):
-    """The install block splits its commands across per-platform headings, and
-    the separator between the platforms is written either way."""
+    """The install block splits its commands across per-platform headings, whose
+    separator is written either way."""
     body = (
         "The announcement.\n\n"
         "### To update Unsloth or install a new Unsloth Studio, you must use:\n\n"
@@ -627,16 +611,14 @@ def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_rele
     )
     assert notes_module.get_release_notes("2.0")["matched"] is True
     serve_releases("", status = 304, reset = False)
-    # Expired rather than reset: the ETag and the last good release carry over,
-    # which is what a conditional request has to answer from.
+    # Expired, not reset: the ETag and last good release must carry over.
     notes_module._remote_cache.expires_at = 0
     payload = notes_module.get_release_notes("2.0")
     assert payload["matched"] is True and payload["tag"] == "v0.1.60-beta"
 
 
 def test_hook_never_returns_another_versions_notes():
-    """On the render where the offered version changes, state still describes
-    the previous one until the effect runs."""
+    """State still describes the previous version until the effect runs."""
     src = NOTES_HOOK.read_text(encoding = "utf-8")
     assert "notes.version === version" in src
     assert "load(version, true)" in src, "retry must ask the backend to bypass its cache"
@@ -644,8 +626,7 @@ def test_hook_never_returns_another_versions_notes():
 
 @pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
 def test_headings_and_fences_allow_commonmark_indentation(notes_module, indent):
-    """Markdown renders up to three leading spaces, so the parser must agree
-    or an indented release is unreachable and its notes join the one above."""
+    """Markdown renders up to three leading spaces, so the parser must agree."""
     text = f"## 1.0\n\nOne.\n\n{indent}## 2.0\n\nTwo.\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     fenced = f"## 1.0\n\n{indent}```\n{indent}## 9.9.9\n{indent}```\n\n- real\n"
@@ -664,8 +645,7 @@ def test_four_space_indentation_is_code_not_structure(notes_module):
 
 
 def test_desktop_notes_link_to_the_release_page_on_every_platform():
-    """manualReleaseUrl is Linux-package only, so in-app updates on macOS,
-    Windows and AppImage would otherwise link to the generic changelog."""
+    """manualReleaseUrl is Linux-package only; the rest need the release page."""
     hook = (FRONTEND / "hooks/use-tauri-update.ts").read_text(encoding = "utf-8")
     assert "const releasePageUrl = info ?" in hook
     banner = TAURI_BANNER.read_text(encoding = "utf-8")
@@ -676,8 +656,7 @@ def test_desktop_notes_link_to_the_release_page_on_every_platform():
 
 def test_preview_matches_how_markdown_renders_prose_and_links():
     """Three rendering mismatches the preview must not reintroduce: wrapped
-    paragraphs split into fragments, autolinks eaten as tags, and a lead cut
-    at an abbreviation."""
+    paragraphs split into fragments, autolinks eaten as tags, a lead cut short."""
     src = PREVIEW.read_text(encoding = "utf-8")
     # Contiguous prose lines accumulate and flush at a paragraph boundary.
     assert "collector.paragraph = collector.paragraph" in src
@@ -719,8 +698,7 @@ def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
     src = PANEL.read_text(encoding = "utf-8")
     assert "overflow-y-auto" in src, "release notes must scroll inside the popup"
     assert "max-h-" in src, "the scroller needs a bounded height"
-    # latest.json's `notes` is a static download blurb, the same every release,
-    # so falling back to it would put install boilerplate in the popup.
+    # latest.json's `notes` is install boilerplate, the same every release.
     assert "fallbackMarkdown" not in src
     assert "notes?.matched ? notes.markdown : null" in src
 
@@ -775,10 +753,8 @@ def test_preview_highlights_the_leading_sentence():
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_update_popup_is_wider_than_the_other_overlays(banner):
-    """The card is sized for three same-size buttons on one row.
-
-    Width moved from the shared overlay stack onto each overlay, so widening
-    the update popup does not widen the llama.cpp banner or download panel."""
+    """Sized for three same-size buttons on one row. Width moved from the shared
+    stack onto each overlay, so this does not widen the other overlays."""
     assert "max-w-[448px]" in banner.read_text(encoding = "utf-8")
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert "max-w-[400px]" not in provider, "stack must not cap overlay width"
@@ -814,8 +790,7 @@ def test_notes_toggle_shares_the_action_row(banner, toggle, action):
 
 
 def test_headings_inside_a_raw_html_block_are_not_releases(notes_module):
-    """<pre> content is literal, so a sample heading in it must not become a
-    section and must not cut the real section's body short."""
+    """<pre> content is literal, so a sample heading in it is not a section."""
     text = "## 1.0\n\n<pre>\n## 9.9.9\n</pre>\n\n- real note\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     assert "real note" in find_section(notes_module, text, "1.0").body
@@ -823,15 +798,13 @@ def test_headings_inside_a_raw_html_block_are_not_releases(notes_module):
 
 
 def test_details_blocks_still_contain_markdown(notes_module):
-    """<details> is a CommonMark type 6 block: headings inside it still count,
-    so collapsible sections keep working."""
+    """<details> is a type 6 block, so headings inside it still count."""
     text = "## 2.0\n\n<details>\n<summary>More</summary>\n\n- note\n\n</details>\n\n## 1.0\n\n- older\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
 
 
 def test_inline_raw_html_tag_does_not_open_a_block(notes_module):
-    """A block opens only at the start of a line. A tag named mid-sentence is
-    inline HTML and must not swallow the releases below it."""
+    """A block opens only at the start of a line; a tag mid-sentence is inline."""
     text = "## 2.0\n\n- Warn when a <script> tag is pasted\n\n## 1.0\n\n- older\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
 
@@ -844,23 +817,20 @@ def test_preview_skips_raw_html_blocks():
 
 
 def test_fence_inside_a_raw_html_block_is_literal(notes_module):
-    """Raw HTML contents are literal, so a stray ``` in a <pre> sample is not a
-    fence. Treating it as one left a block open and hid every later release."""
+    """A stray ``` in a <pre> sample is literal; as a fence it hid later releases."""
     text = "## 2.0\n\n<pre>\n```\n</pre>\n\n## 1.0\n\n- older\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
 
 
 def test_raw_html_block_closes_on_any_of_the_four_tags(notes_module):
-    """CommonMark ends a type 1 block at the first `</pre>`, `</script>`,
-    `</style>` or `</textarea>`: the closer need not match the opener."""
+    """A type 1 block ends at the first of the four closers, matched or not."""
     text = '## 1.0\n\n<script>\nconst sample = "</pre>";\n## 9.9.9\n</script>\n'
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "9.9.9"]
 
 
 @pytest.mark.parametrize("tag", ["details", "div", "table"])
 def test_type_6_blocks_run_until_a_blank_line(notes_module, tag):
-    """`<details>` holds Markdown only after a blank line closes the block, so
-    a heading pressed against the opening tag is not a release."""
+    """`<details>` holds Markdown only after a blank line closes the block."""
     packed = f"## 1.0\n\n<{tag}>\n## 9.9.9\n</{tag}>\n\n- note\n"
     assert [e.version for e in parse_sections(notes_module, packed)] == ["1.0"]
     spaced = f"## 1.0\n\n<{tag}>\n\n## 2.0\n\n- note\n"
@@ -868,15 +838,13 @@ def test_type_6_blocks_run_until_a_blank_line(notes_module, tag):
 
 
 def test_a_tag_only_line_cannot_interrupt_a_paragraph(notes_module):
-    """Type 7 blocks do not interrupt a paragraph, so prose followed by a bare
-    tag keeps the releases below it reachable."""
+    """Type 7 blocks do not interrupt a paragraph."""
     text = "## 2.0\n\nSome prose.\n<span>\n\n## 1.0\n\n- older\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
 
 
 def test_preview_joins_an_indented_continuation_line():
-    """Four spaces only start code outside a paragraph. Inside one the line is
-    a wrapped continuation, so it must not be dropped from the preview."""
+    """Four spaces only start code outside a paragraph; inside one it is a wrap."""
     src = PREVIEW.read_text(encoding = "utf-8")
     # Measured from the line's container, so an item's own indent does not count.
     assert "!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT" in src
@@ -885,8 +853,7 @@ def test_preview_joins_an_indented_continuation_line():
 
 
 def test_preview_code_spans_need_a_matching_closer():
-    """A closer is a run of the same length, so ``Use `` `x` `` `` keeps the
-    inner backticks the expanded notes show."""
+    """A closer is a run of the same length, so the inner backticks survive."""
     src = CODE_SPANS.read_text(encoding = "utf-8")
     assert "candidate === ticks" in src, "a closer is a run of the same length"
     assert "stripPadding" in src, "one space of padding is dropped, as in Markdown"
@@ -900,16 +867,14 @@ def test_preview_skips_thematic_breaks():
 
 
 def test_preview_keeps_quoted_examples_out_of_the_headlines():
-    """A quoted list is example output, not a change, so it never competes
-    with the release's own bullets."""
+    """A quoted list is example output, not a change."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "quoted: boolean" in src
     assert "if (!line.quoted)" in src, "quoted bullets never become headlines"
 
 
 def test_notes_panel_keeps_the_link_when_the_lookup_fails():
-    """Retry is not the only route: the changelog page can be reachable even
-    when the backend lookup is not."""
+    """The release page can be reachable when the backend lookup is not."""
     src = PANEL.read_text(encoding = "utf-8")
     error_branch = src[src.index('if (state === "error")') :]
     retry = error_branch.index("update-release-notes-retry")
@@ -917,15 +882,13 @@ def test_notes_panel_keeps_the_link_when_the_lookup_fails():
 
 
 def test_hook_waits_for_the_desktop_auth_token():
-    """The desktop popup can render before auto-auth installs its token, so a
-    missing token must not be recorded as a failed lookup."""
+    """A token not installed yet must not be recorded as a failed lookup."""
     src = NOTES_HOOK.read_text(encoding = "utf-8")
     assert "hasAuthToken()" in src and "AUTH_POLL_LIMIT" in src
 
 
 def test_a_body_staged_as_a_comment_reads_as_unpublished(notes_module, serve_releases):
-    """A release drafted inside <!-- --> renders as nothing, so the popup must
-    say no notes were published rather than show an empty surface."""
+    """A release drafted inside <!-- --> renders as nothing, so it is unpublished."""
     serve_releases(
         releases_payload(
             {
@@ -963,16 +926,14 @@ def test_visibility_check_only_hides_comments(notes_module, body, visible):
     ],
 )
 def test_processing_instructions_and_declarations_are_literal(notes_module, block):
-    """Raw block types 3 to 5 render literally, like <pre>, so a heading inside
-    one is a sample and not a release."""
+    """Raw block types 3 to 5 render literally, so a heading in one is a sample."""
     text = f"## 1.0\n\n{block}\n\n- real note\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     assert "real note" in find_section(notes_module, text, "1.0").body
 
 
 def test_headings_need_a_space_or_tab_after_the_hashes(notes_module):
-    """A non-breaking space pasted from rich text renders as ordinary text, so
-    the line must not end the release above it."""
+    """A non-breaking space after the hashes renders as text, not a heading."""
     text = "## 1.0\n\n- real note\n\n## 9.9.9\n\n- not a release\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     assert find_section(notes_module, text, "9.9.9") is None
@@ -982,8 +943,7 @@ def test_headings_need_a_space_or_tab_after_the_hashes(notes_module):
 
 
 def test_preview_skips_every_raw_block_form():
-    """The extractor tracks the same block forms as the parser, so a sample
-    bullet inside one cannot become the collapsed headline."""
+    """The extractor tracks the same block forms as the parser."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "RAW_BLOCKS" in src
     assert "CDATA" in src and "[A-Za-z]" in src
@@ -991,8 +951,7 @@ def test_preview_skips_every_raw_block_form():
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_expanded_popup_fits_a_short_viewport(banner):
-    """A window under roughly 430px high used to push the card's title and
-    dismiss control above the top of the screen."""
+    """A window under roughly 430px used to push the card's title off screen."""
     panel = PANEL.read_text(encoding = "utf-8")
     # The notes region shrinks inside the capped card, so header and actions stay on screen.
     assert "min-h-0 flex-1" in panel, "notes height must follow the viewport"
@@ -1001,8 +960,7 @@ def test_expanded_popup_fits_a_short_viewport(banner):
 
 
 def test_relative_release_body_links_point_at_the_repository():
-    """A release body's relative links are repository-relative. Rendered as-is
-    they resolve against Studio's origin, so the renderer blocks them."""
+    """Repository-relative links would resolve against Studio's own origin."""
     src = LINKS.read_text(encoding = "utf-8")
     assert "https://github.com/unslothai/unsloth/blob/main/" in src
     assert "https://raw.githubusercontent.com/unslothai/unsloth/main/" in src
@@ -1014,8 +972,7 @@ def test_relative_release_body_links_point_at_the_repository():
 
 @pytest.mark.parametrize("query", ["latest", "main", "not-a-version", "abc"])
 def test_unparseable_versions_are_rejected(notes_module, query):
-    """Sections are indexed only when their version parses, so a query that
-    cannot parse can never match and is a bad request, not an empty result."""
+    """A query that cannot parse is a bad request, not an empty result."""
     assert notes_module.is_supported_version_query(query) is False
 
 
@@ -1025,23 +982,20 @@ def test_real_versions_are_still_accepted(notes_module, query):
 
 
 def test_reference_style_images_resolve_to_the_raw_host():
-    """`![alt][arch]` with `[arch]: docs/arch.png` needs the raw file: the blob
-    URL is an HTML page, so the image would not load."""
+    """An image needs the raw file: the blob URL is an HTML page."""
     src = LINKS.read_text(encoding = "utf-8")
     assert "IMAGE_REFERENCE" in src
     assert "imageLabels" in src
 
 
 def test_collapsed_notes_surface_is_hidden_when_nothing_previews():
-    """Notes that are only a fenced command block preview as nothing, and an
-    empty muted strip is worse than no strip."""
+    """Notes that preview as nothing leave an empty strip, worse than none."""
     src = PANEL.read_text(encoding = "utf-8")
     assert "preview?.items.length === 0" in src
 
 
 def test_a_fence_closer_accepts_only_spaces_and_tabs(notes_module):
-    """A delimiter followed by a non-breaking space is code content, so it must
-    not close the block and let a sample heading through."""
+    """A delimiter followed by a non-breaking space is content, not a closer."""
     text = "## 1.0\n\n```\n```\u00a0\n## 9.9.9\n```\n\n- real note\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     plain = "## 1.0\n\n```\nx\n```\t\n\n## 2.0\n\n- two\n"
@@ -1061,8 +1015,7 @@ def test_code_spans_close_on_a_run_of_equal_length():
 
 
 def test_preview_decodes_entities_like_the_renderer():
-    """Streamdown renders `AT&amp;T` as AT&T, so the collapsed preview must
-    not show the raw entity."""
+    """Streamdown renders `AT&amp;T` as AT&T, so the raw entity must not show."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "NAMED_ENTITIES" in src and "decodeEntity" in src
     # Decoded before code spans are restored, so code keeps the literal text.
@@ -1077,16 +1030,14 @@ def test_release_notes_request_refreshes_an_expired_token():
 
 
 def test_preview_handles_the_desktop_updater_line_endings():
-    """The updater body arrives with CRLF, which used to hide fences from the
-    extractor and promote a code sample to a headline."""
+    """CRLF used to hide fences and promote a code sample to a headline."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "LINE_ENDINGS" in src
     assert "LINE_ENDINGS" in LINKS.read_text(encoding = "utf-8")
 
 
 def test_preview_renders_reference_links_as_text():
-    """`[text][label]` and `![alt][label]` render as a link and an image, so
-    the preview must not show their raw markup."""
+    """`[text][label]` renders as a link, so its raw markup must not show."""
     src = PREVIEW.read_text(encoding = "utf-8")
     assert "LINK_REFERENCE" in src and "IMAGE_REFERENCE" in src
     # A definition line renders as nothing, so it is not a preview item.
@@ -1094,15 +1045,13 @@ def test_preview_renders_reference_links_as_text():
 
 
 def test_preview_treats_escaped_punctuation_as_literal():
-    """`\\*not italic\\*` keeps its stars and an escaped backtick does not open
-    a code span."""
+    """`\\*not italic\\*` keeps its stars, and an escaped backtick opens no span."""
     assert "ESCAPE" in PREVIEW.read_text(encoding = "utf-8")
     assert "escaped(" in CODE_SPANS.read_text(encoding = "utf-8")
 
 
 def test_link_resolver_skips_every_code_form():
-    """Indented code and code spans crossing a line render as code, so their
-    contents must not be rewritten."""
+    """Indented code and cross-line code spans render as code, so leave them."""
     src = LINKS.read_text(encoding = "utf-8")
     assert "INDENTED_CODE" in src
     # Spans are scanned over the whole document, not line by line.
@@ -1112,20 +1061,17 @@ def test_link_resolver_skips_every_code_form():
 
 
 def test_badge_links_resolve_both_targets():
-    """`[![alt](img)](link)` is the badge idiom: the outer link used to stay
-    relative because the label was not allowed to nest."""
+    """`[![alt](img)](link)`: the outer link needs a nested label to resolve."""
     assert "NESTED_LABEL" in LINKS.read_text(encoding = "utf-8")
 
 
 def test_in_flight_requests_are_identified_not_just_versioned():
-    """Two requests for the same version could resolve out of order and leave
-    the panel showing the older result."""
+    """Two requests for one version could resolve out of order."""
     assert "requestIdRef" in NOTES_HOOK.read_text(encoding = "utf-8")
 
 
 def test_notes_repair_the_shared_previews_width_reset():
-    """MarkdownPreview clears max-width on every descendant, so a wide image
-    and the renderer's own link dialog escape the card."""
+    """MarkdownPreview clears max-width on descendants, so wide content escapes."""
     src = PANEL.read_text(encoding = "utf-8")
     assert "[&_img]:max-w-full" in src
     assert "[&_[data-streamdown=link-safety-modal]>*]:max-w-md" in src
@@ -1133,8 +1079,7 @@ def test_notes_repair_the_shared_previews_width_reset():
 
 @pytest.mark.parametrize("banner", [WEB_BANNER, TAURI_BANNER])
 def test_only_the_notes_region_scrolls(banner):
-    """The dismiss control sits inside the card, so scrolling the card itself
-    carried it off screen on a short viewport."""
+    """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
     assert "flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden" in src
     assert 'className="min-h-0 flex-1"' in src
@@ -1143,9 +1088,8 @@ def test_only_the_notes_region_scrolls(banner):
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
-    """A note that mentions `<!--` used to put the parser into comment state
-    for the rest of the file: the releases below it disappeared and their
-    notes were served under the newer version's heading."""
+    """A note that mentions `<!--` used to put the parser into comment state for
+    the rest of the file, hiding every release below it."""
     text = (
         "## 2026.8.0\n\n- Studio strips <!-- markers from pasted prompts.\n\n"
         "## 2026.7.5\n\n- SECRET: an older release\n"
@@ -1159,10 +1103,8 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
 
 
 def test_unmatched_backtick_runs_stay_linear(notes_module):
-    """Rescanning the suffix for every opener was quadratic: a line of runs of
-    1, 2, 3 ... backticks, none of which ever closes, took 7.7s at 321 KB and
-    is reparsed on every popup request, so one malformed remote changelog could
-    tie up backend workers."""
+    """Rescanning the suffix per opener was quadratic: 800 never-closing runs
+    took 7.7s at 321 KB, and notes are reparsed on every popup request."""
     line = "".join("`" * (i + 1) + "x" for i in range(800))
     assert len(line) > 300_000
     started = time.monotonic()
@@ -1172,8 +1114,7 @@ def test_unmatched_backtick_runs_stay_linear(notes_module):
 
 def test_a_base_exception_releases_the_single_flight_flag(notes_module, monkeypatch):
     """The flag was cleared only after `except Exception`, so a BaseException
-    (KeyboardInterrupt, SystemExit, CancelledError) stranded it and every later
-    caller then waited out the full deadline for the life of the process."""
+    stranded it and every later caller waited out the full deadline."""
     notes_module.reset_release_notes_cache()
 
     def explode():
@@ -1188,9 +1129,8 @@ def test_a_base_exception_releases_the_single_flight_flag(notes_module, monkeypa
 
 @pytest.mark.parametrize("marker", ["<!-->", "<!--->"])
 def test_an_empty_comment_does_not_swallow_later_releases(notes_module, marker):
-    """`<!-->` and `<!--->` are complete comments in CommonMark: the closer
-    overlaps the opener. Searching for `-->` past the opener missed them, so an
-    empty comment used as a section marker hid every release below it."""
+    """`<!-->` and `<!--->` are complete comments: the closer overlaps the
+    opener, so searching past it hid every release below."""
     text = f"## 2.0\n\n- new stuff\n\n{marker}\n\n## 1.0\n\n- old stuff\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     assert find_section(notes_module, text, "1.0") is not None
@@ -1206,8 +1146,7 @@ def test_an_unterminated_comment_still_hides_the_rest(notes_module):
 
 
 def test_a_closing_delimiter_takes_its_whole_line(notes_module):
-    """CommonMark keeps the closing line inside the block, so a heading glued
-    after `-->` or `</pre>` is not a release."""
+    """The closing line stays in the block, so a heading glued after it is not."""
     for text in (
         "## 1.0\n\n<!-- hidden -->## 9.9.9\n\n- note\n",
         "## 1.0\n\n<pre>\nx\n</pre>## 9.9.9\n\n- note\n",
@@ -1216,8 +1155,7 @@ def test_a_closing_delimiter_takes_its_whole_line(notes_module):
 
 
 def test_an_exact_heading_is_never_shadowed(notes_module):
-    """PEP 440 says 1.0 == 1.0.0, so the normalised match used to win even
-    when the file had a section spelled exactly as asked."""
+    """PEP 440 says 1.0 == 1.0.0, so the normalised match used to beat exact."""
     text = "## 1.0.0\n\n- padded\n\n## 1.0\n\n- exact\n"
     assert find_section(notes_module, text, "1.0").body == "- exact"
     assert find_section(notes_module, text, "1.0.0").body == "- padded"
@@ -1237,8 +1175,7 @@ def test_setext_headings_are_release_boundaries(notes_module):
 
 
 def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
-    """The code-span guard used to backtrack: 20k backticks took over a minute
-    and every request re-parsed the file."""
+    """The code-span guard used to backtrack: 20k backticks took over a minute."""
     import time
 
     text = "## 1.0\n\n- " + "`" * 20_000 + " <!--\n"
@@ -1248,8 +1185,7 @@ def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
 
 
 def test_the_remote_fetch_has_a_total_deadline(notes_module):
-    """The socket timeout resets on every read, so a trickling server could
-    hold a worker for minutes and still be treated as a success."""
+    """The socket timeout resets per read, so a trickle could hold a worker."""
     source = MODULE.read_text(encoding = "utf-8")
     assert "deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS" in source
     # read1 returns after one socket read, so the deadline is actually checked.
@@ -1267,15 +1203,13 @@ def test_truncated_notes_close_their_fence(notes_module):
 
 
 def test_the_opt_out_beats_the_developer_override():
-    """UNSLOTH_STUDIO_FAKE_UPDATE is a dev switch; the documented kill switch
-    still wins, and the value has to parse as a version."""
+    """The documented kill switch beats the dev switch, and the value must parse."""
     source = (BACKEND / "utils/update_status.py").read_text(encoding = "utf-8")
     assert "forced_version and not disabled and _is_version(forced_version)" in source
 
 
 def test_a_list_item_over_dashes_is_not_a_setext_heading(notes_module):
-    """`- first` followed by `---` is a list and a rule. Reading it as a
-    heading discarded the bullet and the rest of the section with it."""
+    """`- first` over `---` is a list and a rule, not a setext heading."""
     text = "## 1.0\n\n- first\n---\n\n- second\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     body = find_section(notes_module, text, "1.0").body
@@ -1286,8 +1220,7 @@ def test_a_list_item_over_dashes_is_not_a_setext_heading(notes_module):
 
 
 def test_a_backtick_in_a_fence_info_string_is_not_a_fence(notes_module):
-    """CommonMark forbids backticks in a backtick fence's info string, so such
-    a line is prose and must not swallow the releases below it."""
+    """A backtick fence's info string may hold no backtick, so that line is prose."""
     text = "## 2.0\n\n```bad`info\n\n## 1.0\n\n- old\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     # A tilde fence may hold backticks, and a normal fence still hides samples.
@@ -1300,9 +1233,8 @@ def test_a_backtick_in_a_fence_info_string_is_not_a_fence(notes_module):
 
 
 def test_preview_follows_commonmark_paragraph_rules():
-    """Only an ordered list starting at 1 may interrupt a paragraph, and an
-    unresolved reference keeps its brackets. A quote owns the paragraph its own
-    lines hold, so a marker written outside the quote interrupts nothing."""
+    """Only an ordered list starting at 1 may interrupt a paragraph, an
+    unresolved reference keeps its brackets, and a quote owns its own."""
     src = " ".join(PREVIEW.read_text(encoding = "utf-8").split())
     assert "const interrupts = collector.current === null" in src
     assert "!collector.quotedParagraph;" in src
@@ -1320,19 +1252,16 @@ def test_link_resolver_leaves_raw_blocks_and_escapes_alone():
 
 
 def test_code_span_closers_ignore_backslashes():
-    """Escapes are not processed inside a code span, so a run after a
-    backslash still closes it."""
+    """Escapes are not processed inside a code span, so a run after one closes."""
     src = CODE_SPANS.read_text(encoding = "utf-8")
     body = src[src.index("export function codeSpans") :]
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 
 def test_the_overlay_stack_fits_the_viewport():
-    """The update card's own cap does not account for a long download list stacked
-    beneath it. The cap is no longer the literal class `max-h-[calc(100dvh_-_2rem)]`
-    but `stackGeometry`, whose arithmetic is checked numerically in
-    studio/frontend/tests/monitor-stack-inset.test.ts; what has to hold here is that
-    the stack reads it rather than growing unbounded."""
+    """The card's own cap does not account for a download list stacked beneath
+    it. The cap is `stackGeometry` now, checked numerically in
+    studio/frontend/tests/monitor-stack-inset.test.ts; here the stack must read it."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
     assert stacks, "the bottom-right overlay stack is gone"
@@ -1347,8 +1276,7 @@ def test_the_overlay_stack_fits_the_viewport():
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
-    """The download panel shares the desktop stack, so the update card's own cap is
-    not enough there either, and the desktop branch has been left uncapped before."""
+    """The download panel shares the desktop stack, left uncapped before now."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
@@ -1356,8 +1284,8 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
 
 
 def test_the_stack_geometry_is_checked_numerically():
-    """The cap is arithmetic now, not a class name, so the node test owns it. Named
-    here so deleting it does not quietly leave the cap unchecked."""
+    """The cap is arithmetic now, so the node test owns it. Named here so
+    deleting that test does not quietly leave the cap unchecked."""
     geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
     src = geometry.read_text(encoding = "utf-8")
     assert (
@@ -1366,9 +1294,8 @@ def test_the_stack_geometry_is_checked_numerically():
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
-    """The notes come from the newest release, so the desktop banner asks with
-    the Studio version it is offering. `pypi_version` stays in latest.json: it
-    is the backend pin preflight checks, not a release-notes key."""
+    """The banner asks with the Studio version it offers. `pypi_version` stays
+    in latest.json as the backend pin preflight checks, not a notes key."""
     banner = TAURI_BANNER.read_text(encoding = "utf-8")
     assert "info?.version?.replace(LEADING_V" in banner
     assert "pypiVersion" not in banner, "notes are no longer keyed by the backend release"
@@ -1381,8 +1308,7 @@ def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
 
 
 def test_one_slow_read_cannot_outlast_the_fetch_budget(notes_module):
-    """The socket timeout is per operation, so slow headers followed by a slow
-    body could hold a worker for twice the advertised deadline."""
+    """The socket timeout is per operation, so two slow reads doubled the wait."""
     source = MODULE.read_text(encoding = "utf-8")
     assert "_limit_read(response, remaining)" in source
     assert "sock.settimeout(max(remaining, _RELEASES_MIN_READ_SECONDS))" in source
@@ -1390,8 +1316,7 @@ def test_one_slow_read_cannot_outlast_the_fetch_budget(notes_module):
 
 def test_a_heading_indented_into_a_list_item_is_not_a_release(notes_module):
     """CommonMark keeps a heading at the item's content column inside the item.
-    Treating it as a boundary truncated the real release and indexed a version
-    that does not exist. Checked against markdown-it (commonmark preset)."""
+    Checked against markdown-it (commonmark preset)."""
     text = "## 1.0\n\n- Example:\n  ## 9.9.9\n\n- after\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
     body = find_section(notes_module, text, "1.0").body
@@ -1402,8 +1327,7 @@ def test_a_heading_indented_into_a_list_item_is_not_a_release(notes_module):
 
 
 def test_a_closed_list_stops_holding_headings(notes_module):
-    """Only an open item nests a heading, so a dedented paragraph, heading,
-    break or fence hands the following indentation back to the document."""
+    """Only an open item nests a heading, so a dedented block hands it back."""
 
     def versions(text):
         return [e.version for e in parse_sections(notes_module, text)]
@@ -1417,8 +1341,7 @@ def test_a_closed_list_stops_holding_headings(notes_module):
 
 
 def test_a_version_line_is_not_an_ordered_list_marker(notes_module):
-    """`2.` needs whitespace after it to be a marker, or list tracking would
-    read every setext version as a list item and lose the heading."""
+    """`2.` needs whitespace after it, or every setext version reads as an item."""
     text = "2.0\n---\n\n- new\n\n1.0\n---\n\n- old\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     # An ordered item interrupts a paragraph only when it starts at 1.
@@ -1428,9 +1351,8 @@ def test_a_version_line_is_not_an_ordered_list_marker(notes_module):
 
 
 def test_a_wrapped_setext_heading_is_still_a_release(notes_module):
-    """CommonMark promotes the whole paragraph, so a heading that wraps keeps
-    the version in its first token. Reading only the last line left the release
-    unindexed and its notes unreachable."""
+    """CommonMark promotes the whole paragraph, so a wrapped heading keeps its
+    version in the first token. Reading only the last line lost the release."""
     text = "2026.7.5 - Release\nJuly 25\n---\n\n- note\n"
     entries = parse_sections(notes_module, text)
     assert [e.version for e in entries] == ["2026.7.5"]
@@ -1440,8 +1362,7 @@ def test_a_wrapped_setext_heading_is_still_a_release(notes_module):
 
 
 def test_a_lowercase_declaration_is_not_a_raw_block(notes_module):
-    """Only `<!` plus an uppercase letter opens one, so prose that mentions
-    `<!note` must not hide every release under it."""
+    """Only `<!` plus an uppercase letter opens one, so `<!note` is prose."""
     assert [e.version for e in parse_sections(notes_module, "<!note\n\n## 1.0\n\n- real\n")] == [
         "1.0"
     ]
@@ -1455,12 +1376,9 @@ def test_a_lowercase_declaration_is_not_a_raw_block(notes_module):
 
 def test_link_resolver_reads_html_containers_the_way_the_others_do():
     """A `<details>` or `<div>` with no blank line inside is a type 6 block, so
-    its contents render literally. Rewriting a link there mutates text the
-    reader sees verbatim, and a fence inside such a block was being taken for a
-    real fence, which stopped every link below it from resolving at all. The
-    backend parser and the collapsed preview already apply the type 6 and 7
-    rules, so the resolver has to share them or the three disagree on the same
-    notes."""
+    its contents are literal and a fence in it is not a fence, which stopped
+    every link below from resolving. The parser and the preview already apply
+    the type 6 and 7 rules, so the resolver has to share them."""
     links = LINKS.read_text(encoding = "utf-8")
     for source in (PREVIEW, LINKS):
         text = source.read_text(encoding = "utf-8")
@@ -1472,8 +1390,7 @@ def test_link_resolver_reads_html_containers_the_way_the_others_do():
 
 
 def test_an_escaped_mark_makes_an_image_a_link():
-    """`\\![alt](path)` renders as a link, so it resolves to the file's page on
-    GitHub rather than to the raw-content host."""
+    """`\\![alt](path)` renders as a link, so it resolves to the blob host."""
     links = LINKS.read_text(encoding = "utf-8")
     assert 'const image = bang === "!" && !isEscaped(line, offset);' in links
     # The reference pre-scan has to skip it too, or the definition flips host.
@@ -1482,9 +1399,8 @@ def test_an_escaped_mark_makes_an_image_a_link():
 
 def test_only_markdown_line_endings_split_the_changelog(notes_module):
     """str.splitlines also breaks on U+2028, U+2029, NEL, vertical tab and form
-    feed, none of which end a line in CommonMark. A separator sitting in prose
-    ahead of "## 9.9.9" made the parser index a release the renderer never shows
-    and truncate the notes above it."""
+    feed, none of which end a CommonMark line: one in prose indexed a release
+    the renderer never shows and truncated the notes above it."""
     text = "## 2.0\n\nnote with a separator  ## 9.9.9\n\n## 1.0\n\n- old\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["2.0", "1.0"]
     # The prose stays whole rather than being cut at the separator.
@@ -1500,12 +1416,9 @@ def test_only_markdown_line_endings_split_the_changelog(notes_module):
 
 
 def test_link_resolver_reads_comments_before_fences():
-    """A fence delimiter hidden inside an HTML comment is not a fence. Reading
-    it as one left the fence open, so every visible line below was classified as
-    code and none of its links were resolved, which is far worse than the
-    mutated-text case: the whole rest of the notes silently stops working. The
-    order matters both ways, so a comment opener inside a real fence is not a
-    comment either."""
+    """A fence delimiter inside an HTML comment is not a fence: reading it as one
+    left the fence open, so every link below went unresolved. The order matters
+    both ways, so a comment opener inside a real fence is not a comment."""
     links = LINKS.read_text(encoding="utf-8")
     # Fence state is read before comments are masked, the order the collapsed preview uses.
     assert "const fenceSource = inComment\n      ? null\n      : FENCE.exec(" in links
@@ -1517,14 +1430,11 @@ def test_link_resolver_reads_comments_before_fences():
 
 
 def test_preview_heading_and_quote_markers_follow_the_backend_rule():
-    """An ATX heading needs an ASCII space, a tab or the end of the line after
-    the marker, which is what _HEADING_PATTERN requires; `\\s` also matches a
-    non-breaking space, so prose beginning "## Important change" with one was
-    read as a heading and dropped, leaving a prose-only release with no
-    collapsed preview at all. A blockquote marker takes at most three leading
-    spaces for the same reason every other marker here does: accepting any run
-    let an indented code sample containing "> - sample output" shed its
-    indentation and be shown as the summary."""
+    """An ATX heading needs an ASCII space, tab or line end after the marker;
+    `\\s` also matches a non-breaking space, so prose was read as a heading and
+    dropped. A blockquote marker takes at most three leading spaces, or an
+    indented sample holding "> - sample output" sheds its indent into the
+    summary."""
     src = PREVIEW.read_text(encoding="utf-8")
     assert "const HEADING = /^#{1,6}(?:[ \\t]|$)/;" in src
     assert "const HEADING_LINE = /^ {0,3}#{1,6}(?:[ \\t]|$)/;" in src
@@ -1535,13 +1445,10 @@ def test_preview_heading_and_quote_markers_follow_the_backend_rule():
 
 
 def test_preview_collects_labels_only_from_real_definitions():
-    """A definition-shaped line inside an indented code block or a deep fence is
-    literal text, so CommonMark leaves a later "[Beta] support" unresolved with
-    its brackets showing. Recording the label anyway made toPlainText strip them
-    in the collapsed preview, so it disagreed with the expanded view. The
-    pre-scan skips the same code the collector pass skips; a real definition
-    takes at most three spaces of indentation, so the indent test cannot reject
-    one."""
+    """A definition-shaped line inside indented code or a deep fence is literal,
+    so recording its label made toPlainText strip brackets the expanded view
+    keeps. The pre-scan skips the same code the collector pass skips; a real
+    definition takes at most three spaces, so the indent test cannot reject one."""
     src = PREVIEW.read_text(encoding="utf-8")
     scan = src.index("const labels = new Set<string>();")
     collect = src.index("let deepFence: string | null = null;")
@@ -1553,9 +1460,8 @@ def test_preview_collects_labels_only_from_real_definitions():
 
 def test_an_html_block_to_the_left_of_a_list_item_closes_it(notes_module):
     """Types 1 to 6 interrupt a paragraph, so an unindented <div> after "- item"
-    closes the item and a following one-to-three-space-indented "## 2.0" is a
-    real document heading. It was read as a lazy paragraph continuation, so the
-    item stayed open and the release below the block was swallowed."""
+    closes the item and a shallowly indented "## 2.0" below it is a real heading.
+    Read as a lazy continuation, the item stayed open and swallowed it."""
     text = "## 3.0\n\n- item\n<div>\nhidden\n</div>\n\n  ## 2.0\n\n- two\n\n## 1.0\n\n- one\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["3.0", "2.0", "1.0"]
     # Without the block the heading really is nested, so it stays suppressed.
@@ -1567,12 +1473,10 @@ def test_an_html_block_to_the_left_of_a_list_item_closes_it(notes_module):
 
 
 def test_the_download_panel_can_shrink_inside_the_capped_stack():
-    """The bottom-right stack is capped to the viewport, and a flex item defaults
-    to min-height:auto, so this wrapper could not shrink below its own content.
-    On a short viewport the cap was then absorbed by the update card, whose
-    header and actions are fixed, rather than by the download list, which
-    scrolls. Only the shared-stack branch needs it; standalone is positioned
-    fixed and is not a flex item at all."""
+    """The stack is capped to the viewport and a flex item defaults to
+    min-height:auto, so this wrapper could not shrink and the cap was absorbed by
+    the fixed update card rather than the scrolling download list. Only the
+    shared-stack branch needs it; standalone is fixed and not a flex item."""
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding="utf-8"
     )
@@ -1587,8 +1491,8 @@ def run_scanner(tmp_path_factory):
     """Run the frontend's markdown scanners under node.
 
     Their job is to classify a line the way a CommonMark renderer would, which
-    only a real run can show. The sources are copied with their "@/lib" aliases
-    rewritten, because that alias resolves through Vite and not through node."""
+    only a real run can show. The "@/lib" alias resolves through Vite, not node,
+    so the copies have it rewritten."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is needed to run the TypeScript scanners")
@@ -1617,12 +1521,10 @@ def preview_leads(preview) -> list[str]:
 
 
 def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
-    """CommonMark measures indentation from the container, not the margin
-    (spec 0.31.2 section 5.2, list items). Under "- Details:" the content column
-    is 2, so a four-space line is only two columns in: a paragraph holding a
-    link, which GitHub renders and follows. The scanner measured from the margin
-    instead, called it an indented code block (section 4.4) and left the
-    destination relative, so the link resolved against Studio's own origin."""
+    """CommonMark measures indentation from the container (spec 0.31.2 section
+    5.2), so under "- Details:" a four-space line is two columns in: a paragraph
+    holding a link. Measuring from the margin called it code (section 4.4) and
+    left the destination relative to Studio's own origin."""
     resolved = run_scanner("links", "- Details:\n\n    [guide](docs/a.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in resolved
     # The same prose one column further in really is code, and stays untouched.
@@ -1634,11 +1536,9 @@ def test_a_link_indented_under_a_bullet_still_resolves(run_scanner):
 
 
 def test_an_indented_fence_does_not_swallow_the_bullets_below_it(run_scanner):
-    """A four-space line at document level is an indented code block, and a
-    top-level bullet is not indented enough to continue it, so the block ends
-    and the list renders. Promoting the line to a list-contained fence left a
-    block open with no closer, so every bullet after it was skipped and the
-    collapsed popup lost its summary."""
+    """A four-space line at document level is indented code, and a top-level
+    bullet does not continue it. Promoting it to a list-contained fence left a
+    block open with no closer, so every bullet after it was skipped."""
     swallowed = "Example:\n\n    ```\n\n- Added the exporter\n- Fixed the crash\n"
     assert preview_leads(run_scanner("preview", swallowed)) == [
         "Added the exporter",
@@ -1654,9 +1554,8 @@ def test_an_indented_fence_does_not_swallow_the_bullets_below_it(run_scanner):
 
 
 def test_a_table_only_release_previews_as_nothing(run_scanner):
-    """A release written as a GFM table renders as a grid, and the panel treats
-    notes that preview as nothing by staying collapsed rather than showing an
-    empty strip. Falling through to the prose collector put the raw
+    """A GFM table renders as a grid, so it previews as nothing and the panel
+    stays collapsed. Falling through to the prose collector put the raw
     "| Change | Detail | | --- | --- |" delimiters in the popup instead."""
     table = "| Change | Detail |\n| --- | --- |\n| Exporter | Added GGUF |\n"
     assert run_scanner("preview", table)["items"] == []
@@ -1669,11 +1568,9 @@ def test_a_table_only_release_previews_as_nothing(run_scanner):
 
 
 def test_a_fence_inside_a_list_item_ends_with_the_item(notes_module):
-    """A fence is scoped to its container: with no closer it runs to the end of
-    the containing block, not the document (spec 0.31.2 section 4.5). A
-    dedented "## 2.0" closes the list item, so it is a real release heading.
-    Document-wide fence state kept the block open and hid every release below
-    it, so one missing closing line emptied the rest of the changelog."""
+    """A fence is scoped to its container (spec 0.31.2 section 4.5), so with no
+    closer it ends with the item and a dedented "## 2.0" is a real heading.
+    Document-wide state kept the block open and hid every release below it."""
     text = "## 1.0\n\n- item\n  ```\n\n## 2.0\n\n- two\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     # A fence at document level still runs to the end of the file.
@@ -1687,10 +1584,9 @@ def test_a_fence_inside_a_list_item_ends_with_the_item(notes_module):
 
 
 def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
-    """The comment scanner restarted its code-span search at the first span for
-    every opener, so a line of N spans and N openers cost N squared. A 203 KiB
-    line is well inside the 2 MiB the fetcher accepts, and notes are reparsed on
-    every request, so one such line held a worker for over ten seconds."""
+    """The comment scanner restarted its code-span search per opener, so N spans
+    cost N squared. A 203 KiB line is well inside the 2 MiB accepted, and notes
+    are reparsed on every request, so one held a worker for over ten seconds."""
     line = "`a` <!--x--> " * 16_000
     assert len(line) < notes_module.RELEASES_MAX_BYTES
     started = time.monotonic()
@@ -1704,10 +1600,9 @@ def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
 
 
 def test_the_three_scanners_share_one_list_column_rule():
-    """The parser and both frontend scanners have to classify a line the same
-    way, and drifting apart on indentation is what put a paragraph link inside a
-    code block. The frontend pair reads its list columns from one module, ported
-    from the backend's own tracker."""
+    """The parser and both frontend scanners must classify a line the same way;
+    drifting on indentation is what put a paragraph link inside a code block.
+    The frontend pair shares one module, ported from the backend's tracker."""
     shared = LIST_COLUMNS.read_text(encoding="utf-8")
     assert "export function openLists(" in shared
     assert "_open_lists" in shared, "the backend function this mirrors"
@@ -1724,9 +1619,8 @@ def test_the_three_scanners_share_one_list_column_rule():
 
 
 def test_a_failed_fetch_keeps_retry_reachable():
-    """A release with no notes is reported as ready and a failed fetch as error,
-    and only the error is retryable. Rendering anything in the error branch
-    would replace the Retry button until the cache expired."""
+    """A release with no notes is ready and a failed fetch is error; only the
+    error is retryable, and rendering there would replace the Retry button."""
     src = " ".join(PANEL.read_text(encoding="utf-8").split())
     assert "const source = notes?.matched ? notes.markdown : null;" in src
     # Only NotesStatus renders retry, in the else of the markdown branch: an error has no markdown.
@@ -1742,12 +1636,9 @@ def test_a_failed_fetch_keeps_retry_reachable():
 
 
 def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
-    """CommonMark opens an HTML block (spec 0.31.2 section 4.6, type 2) only
-    when the line itself begins with `<!--`; one written mid-sentence is inline
-    raw HTML and cannot outlive the block it sits in. The link resolver carried
-    the unclosed state to every following line instead, so a note that merely
-    mentions the delimiter masked the relative links under it and they resolved
-    against Studio's own origin."""
+    """CommonMark opens an HTML block (spec 0.31.2 section 4.6, type 2) only when
+    the line begins with `<!--`; one mid-sentence is inline and cannot outlive
+    its block. Carrying the unclosed state on masked every link below it."""
     repo = "https://github.com/unslothai/unsloth/blob/main/docs/a.md"
     # A separate list item is a separate block, so the link below still renders.
     item = run_scanner("links", "- Type <!-- to begin a comment\n- See [docs](docs/a.md)\n")
@@ -1767,10 +1658,8 @@ def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
 
 def test_a_bare_level_two_marker_ends_the_release(notes_module, run_scanner):
     """An ATX heading's opening sequence may be followed by the end of the line
-    (spec 0.31.2 section 4.2), so a bare `##` is an empty level-two heading. The
-    scanners required whitespace after the hashes, so everything below such a
-    line stayed inside the release above it and the popup showed unrelated notes
-    under that version."""
+    (spec 0.31.2 section 4.2), so a bare `##` is an empty level-two heading.
+    Requiring whitespace kept everything below it inside the release above."""
     text = "## 2.0\n\n- new thing\n\n##\n\n- SECRET: not part of 2.0\n"
     entry = find_section(notes_module, text, "2.0")
     assert "new thing" in entry.body
@@ -1786,12 +1675,10 @@ def test_a_bare_level_two_marker_ends_the_release(notes_module, run_scanner):
 
 
 def test_a_comment_between_bullets_closes_the_list(notes_module, run_scanner):
-    """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one
-    written at the margin under a bullet is not indented enough to continue that
-    item and closes the list. The scanners blanked the line before list tracking
-    saw it, which reads as a blank line and leaves the item open, so the release
-    heading below it looked like nested item content and the new release was
-    merged into the one above."""
+    """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one at
+    the margin under a bullet closes the list. Blanking the line before list
+    tracking saw it reads as a blank line, which leaves the item open and made
+    the release heading below look like nested content."""
     text = "## 1.0\n\n- old item\n<!-- separator -->\n  ## 2.0\n\n- new item\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     assert "new item" not in find_section(notes_module, text, "1.0").body
@@ -1814,11 +1701,9 @@ def test_a_comment_between_bullets_closes_the_list(notes_module, run_scanner):
 
 
 def test_a_parenthesised_link_destination_still_resolves(run_scanner):
-    """A destination may hold parentheses while they balance (spec 0.31.2
-    section 6.3), so `[x]((draft).md)` points at `(draft).md`. The resolver's
-    destination expression stopped at the first paren, matched an empty
-    destination and left the markdown alone, so the link resolved against
-    Studio's own origin instead of the repository."""
+    """A destination may hold parentheses while they balance (spec 0.31.2 section
+    6.3), so `[x]((draft).md)` points at `(draft).md`. Stopping at the first
+    paren matched an empty destination and left the link relative."""
     leading = run_scanner("links", "[details]((draft).md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/(draft).md" in leading
     # An image resolves against the raw host the same way.
@@ -1845,11 +1730,9 @@ def test_a_parenthesised_link_destination_still_resolves(run_scanner):
 
 
 def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
-    """A fence is measured from its container and not from the margin (spec
-    0.31.2 section 4.5), so `> ~~~` and a fence three columns under a nested
-    bullet open one. Reading the margin instead never saw them, so the sample
-    inside was treated as prose and a relative link written in a code block was
-    rewritten into the text the reader sees verbatim."""
+    """A fence is measured from its container (spec 0.31.2 section 4.5), so
+    `> ~~~` and one under a nested bullet both open a fence. Reading the margin
+    never saw them, so a link in a code block was rewritten into verbatim text."""
     quoted = run_scanner("links", "> ~~~\n> [guide](docs/a.md)\n> ~~~\n")
     assert "[guide](docs/a.md)" in quoted and "github.com" not in quoted
     nested = run_scanner("links", "- a\n  - b\n    ~~~\n    [x](docs/x.md)\n    ~~~\n")
@@ -1871,10 +1754,9 @@ def test_a_fence_inside_a_container_still_hides_its_sample(run_scanner):
 
 
 def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
-    """Type 1 and type 6 blocks are measured from their container the same way,
-    so a `<details>` under a nested bullet and a `<pre>` inside a quote both
-    show their contents verbatim. Missing the opener treated the body as
-    Markdown and rewrote the literal examples in it."""
+    """Type 1 and type 6 blocks are measured from their container too, so a
+    `<details>` under a nested bullet and a `<pre>` in a quote are verbatim.
+    Missing the opener rewrote the literal examples inside them."""
     nested = run_scanner("links", "- a\n  - b\n    <details>\n    [x](docs/x.md)\n    </details>\n")
     assert "[x](docs/x.md)" in nested and "github.com" not in nested
     quoted = run_scanner("links", "> <pre>\n> [x](docs/x.md)\n> </pre>\n")
@@ -1888,12 +1770,9 @@ def test_an_html_block_inside_a_container_is_literal_too(run_scanner):
 
 
 def test_an_underline_left_of_an_item_is_lazy_text_of_it(notes_module, run_scanner):
-    """A setext underline may never be a lazy continuation line (spec 0.31.2
-    section 4.3), so `===` written left of an open list item is read as more of
-    the item's paragraph rather than as a block that closes it. Rejecting every
-    underline-shaped line ended the list there, which promoted the nested
-    "## 2.0" below it to a document-level heading and indexed a release the
-    renderer never shows."""
+    """A setext underline may never be a lazy continuation (spec 0.31.2 section
+    4.3), so `===` left of an open item is more of the item's paragraph.
+    Rejecting it ended the list and promoted the nested "## 2.0" to a release."""
     nested = "## 1.0\n- old note\n===\n  ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, nested)] == ["1.0"]
     # A row of dashes is a thematic break, closing the item, so the heading is the next release.
@@ -1908,12 +1787,10 @@ def test_an_underline_left_of_an_item_is_lazy_text_of_it(notes_module, run_scann
 
 
 def test_a_quote_keeps_its_paragraph_to_itself(notes_module, run_scanner):
-    """Lazy continuation runs the other way too: a marker written outside a
-    blockquote is not text of the quote's paragraph, so `2. item` under
-    `> quote` opens a list even though an ordered marker past 1 may not
-    interrupt a paragraph (spec 0.31.2 section 5.2). Lending the quote's
-    paragraph to the document left the list closed, so the heading indented to
-    the item's content column read as a release of its own."""
+    """A marker written outside a blockquote is not text of the quote's
+    paragraph, so `2. item` under `> quote` opens a list even though an ordered
+    marker past 1 may not interrupt one (spec 0.31.2 section 5.2). Lending the
+    paragraph to the document left the list closed and the heading exposed."""
     quoted = "## 1.0\n> quote\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, quoted)] == ["1.0"]
     # A quote holding a heading leaves no paragraph, nor does an empty one, so the list opens.
@@ -1930,11 +1807,9 @@ def test_a_quote_keeps_its_paragraph_to_itself(notes_module, run_scanner):
 
 
 def test_indented_code_before_an_ordered_marker_still_opens_a_list(notes_module):
-    """An indented code block ends at the first line that is not indented enough
-    to continue it, and no paragraph is open for the marker below to continue,
-    so `2. item` opens a list whatever its start number. Reading it as text of
-    the code block instead would leave the list closed and index the heading at
-    the item's content column as a release."""
+    """An indented code block ends at the first line not indented enough, and no
+    paragraph is open, so `2. item` opens a list whatever its start number.
+    Reading it as code text left the list closed and the nested heading exposed."""
     joined = "## 1.0\n\n    code\n2. item\n   ## 2.0\n- new\n"
     assert [e.version for e in parse_sections(notes_module, joined)] == ["1.0"]
     # A blank line between the two changes nothing: the list opens either way.
@@ -1946,12 +1821,10 @@ def test_indented_code_before_an_ordered_marker_still_opens_a_list(notes_module)
 
 
 def test_a_fence_written_as_an_item_first_content_opens_in_that_item(run_scanner):
-    """A block written straight after a list marker is the item's own first
-    content, measured from the column that content starts (spec 0.31.2 section
-    5.2), so "- ```md" opens a fence. Reading the whole line instead never saw
-    one, so the code sample below it was treated as prose: the resolver rewrote
-    a destination the reader sees verbatim, and the preview offered the info
-    string as a headline bullet."""
+    """A block straight after a marker is the item's own first content, measured
+    from where that content starts (spec 0.31.2 section 5.2), so "- ```md" opens
+    a fence. Reading the whole line never saw one, so the sample below was
+    treated as prose and rewritten, and its info string became a headline."""
     sample = run_scanner("links", "- ```md\n  [example](docs/a.md)\n  ```\n")
     assert "[example](docs/a.md)" in sample and "github.com" not in sample
     ordered = run_scanner("links", "1. ~~~\n   [example](docs/a.md)\n   ~~~\n")
@@ -1968,11 +1841,9 @@ def test_a_fence_written_as_an_item_first_content_opens_in_that_item(run_scanner
 
 
 def test_an_html_block_ends_with_the_item_it_was_written_in(notes_module, run_scanner):
-    """An HTML block holds no lazy continuation line, so one opened on a list
-    item's continuation line ends where the item does, exactly as a fence there
-    does. Ending it only on a blank line let it run past the item and swallow
-    the next release heading, so those notes could never be found, and the
-    collapsed preview lost every bullet below it."""
+    """An HTML block takes no lazy continuation line, so one opened on an item's
+    continuation line ends with the item, as a fence there does. Ending it only
+    on a blank line let it swallow the next release heading."""
     text = "## 1.0\n\n- item\n\n  <div>\n## 2.0\n\n- new thing\n"
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0", "2.0"]
     assert "new thing" in find_section(notes_module, text, "2.0").body
@@ -1991,12 +1862,10 @@ def test_an_html_block_ends_with_the_item_it_was_written_in(notes_module, run_sc
 
 
 def test_a_comment_may_close_on_a_later_line_of_its_paragraph(run_scanner):
-    """A comment written mid-sentence is inline raw HTML belonging to the
-    paragraph around it, so its `-->` may arrive on a later line of that same
-    paragraph and everything between renders as nothing. Ending the comment at
-    its own line left a backtick inside it pairing with a real one below, which
-    hid a following link from the resolver, and left the collapsed preview
-    quoting text the popup body does not show."""
+    """A comment written mid-sentence belongs to its paragraph, so its `-->` may
+    arrive on a later line of it and everything between renders as nothing.
+    Ending it at its own line left a backtick inside pairing with a real one
+    below, hiding a link, and left the preview quoting hidden text."""
     carried = run_scanner("links", "Note <!-- ` open\nstill --> see [d](docs/a.md) and `x`\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs/a.md" in carried
     # Text inside the comment renders as nothing, so it is left alone.
@@ -2017,11 +1886,9 @@ def test_a_comment_may_close_on_a_later_line_of_its_paragraph(run_scanner):
 
 
 def test_only_punctuation_is_escapable_in_a_link_destination(run_scanner):
-    """CommonMark escapes ASCII punctuation and nothing else (spec 0.31.2
-    section 2.4), so the backslash in `docs\\alpha.md` is a character of the
-    path. Dropping every backslash rewrote it to a path that does not exist,
-    and a URL parser reads what is left as a separator, so a Windows or
-    namespaced path pointed at the wrong file either way."""
+    """CommonMark escapes ASCII punctuation and nothing else (spec 0.31.2 section
+    2.4), so the backslash in `docs\\alpha.md` is a character of the path.
+    Dropping it rewrote a Windows or namespaced path to the wrong file."""
     kept = run_scanner("links", "[guide](docs\\alpha.md)\n")
     assert "https://github.com/unslothai/unsloth/blob/main/docs%5Calpha.md" in kept
     # An escaped backslash is one literal backslash, which survives the same.
@@ -2036,12 +1903,9 @@ def test_only_punctuation_is_escapable_in_a_link_destination(run_scanner):
 
 
 def test_one_definition_does_not_hide_the_next(run_scanner):
-    """Definitions may run consecutively (spec 0.31.2 section 4.7): a block of
-    them is how a changelog collects its link targets. A definition is not
-    paragraph text, so it opens no paragraph for the next one to be unable to
-    interrupt. The resolver counted one as prose, which left every definition
-    after the first outside the set of lines a definition may start on, so only
-    the first was rewritten and the rest resolved against Studio's own origin.
+    """Definitions may run consecutively (spec 0.31.2 section 4.7) and none is
+    paragraph text, so none opens a paragraph the next cannot interrupt.
+    Counting one as prose left every definition after the first unresolved.
     The backend already reads the line this way."""
     text = (
         "- AMD support is here, see [the AMD guide][amd] and the\n"
@@ -2062,12 +1926,10 @@ def test_one_definition_does_not_hide_the_next(run_scanner):
 
 
 def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
-    """A multiline comment is ordinarily closed by a `-->` written on a line of
-    its own, and a wrapped line may open with emphasis. The guard asking whether
-    the closer is reachable read any line whose first character was punctuation
-    as the start of a new block, so neither shape counted as more of the
-    paragraph carrying the comment. The comment then never closed, and the
-    collapsed popup showed the author's internal note to the user."""
+    """A multiline comment is usually closed by a `-->` on a line of its own, and
+    a wrapped line may open with emphasis. Reading any leading punctuation as a
+    new block meant neither continued the paragraph, so the comment never closed
+    and the popup showed the author's internal note."""
     closer = run_scanner(
         "preview",
         "- DoRA training is available in Studio. <!-- TODO confirm the exact\n"
@@ -2095,12 +1957,9 @@ def test_a_comment_closed_on_its_own_line_still_closes(run_scanner):
 
 def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run_scanner):
     """A comment is an HTML block (spec 0.31.2 section 4.6, type 2), so one
-    written as a list item's first content opens inside that item, exactly as a
-    fence written there does. The scanners looked for the opener at the margin
-    of the line as written, so a marker in front of it hid the block: the
-    resolver rewrote a destination inside raw HTML, which Streamdown then shows
-    the reader as a literal URL, and the preview quoted the hidden note back at
-    them as though the bullet were Markdown."""
+    written as an item's first content opens inside that item, as a fence does.
+    Looking for the opener at the margin let a marker in front of it hide the
+    block, so the resolver rewrote hidden text and the preview quoted it."""
     item = run_scanner("links", "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n")
     assert item == "- <!-- new --> AMD support, see [the guide](docs/amd.md)\n"
     # Every marker opens an item, and a nested one is still an item.
@@ -2124,8 +1983,7 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run
     assert [e.version for e in parse_sections(notes_module, text)] == ["1.0"]
 
 
-# Real bodies, so the classification is checked against how the releases are
-# actually written rather than against a shape invented for the test.
+# Real bodies, so the classification is checked against how releases are written.
 @pytest.mark.parametrize(
     "tag,kept,dropped",
     [
@@ -2143,7 +2001,7 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run
         ),
         (
             # The install block sits between two content sections, so truncating
-            # at the first generated heading would lose the Keyv notice below it.
+            # at the first generated heading would lose the Keyv notice below.
             "v0.1.526-beta",
             [
                 "## August 7th Update",
@@ -2206,16 +2064,15 @@ def test_real_release_bodies_keep_their_announcement(notes_module, tag, kept, dr
 
 
 def test_the_build_provenance_the_workflow_appends_is_dropped(notes_module):
-    """release-desktop.yml appends this block to the release body when it
-    uploads the assets, so it can arrive under an announcement."""
+    """release-desktop.yml appends this block, so it arrives under announcements."""
     body = "The announcement.\n\n### Build provenance\n\n- workflow run 123\n"
     stripped = notes_module.strip_release_body(body)
     assert stripped == "The announcement."
 
 
 def test_a_generated_heading_inside_a_sample_is_not_one(notes_module):
-    """A release that documents the notes format writes `## What's Changed` in
-    a fenced block. Reading it as the footer would cut the announcement there."""
+    """A release documenting the notes format writes `## What's Changed` in a
+    fence, and reading it as the footer would cut the announcement there."""
     body = (
         "The announcement.\n\n"
         "```md\n## What's Changed\n```\n\n"
@@ -2228,8 +2085,7 @@ def test_a_generated_heading_inside_a_sample_is_not_one(notes_module):
 
 
 def test_a_heading_that_only_reads_like_boilerplate_is_kept(notes_module):
-    """The classification is a reviewed list, not a substring sweep: these are
-    announcements whose titles happen to contain the same words."""
+    """A reviewed list, not a substring sweep: these titles only share words."""
     for title in (
         "## What changed in Gemma 4",
         "## Updating models is now 2x faster",
@@ -2240,10 +2096,8 @@ def test_a_heading_that_only_reads_like_boilerplate_is_kept(notes_module):
 
 
 def test_an_install_block_introduced_by_a_paragraph_is_dropped(notes_module):
-    """`v0.1.43-beta` heads the install block "### To update Unsloth or install
-    a new Unsloth Studio, you must use:" and `v0.1.471-beta` writes the same
-    sentence with no hashes. A paragraph has no level to compare against, so
-    the block runs to the next heading that is not a platform heading."""
+    """`v0.1.471-beta` writes the install sentence with no hashes. A paragraph
+    has no level, so its block runs to the next non-platform heading."""
     body = (
         "The announcement.\n\n"
         "To update Unsloth or install a new Unsloth Studio, you must use the below.\n"
@@ -2259,8 +2113,7 @@ def test_an_install_block_introduced_by_a_paragraph_is_dropped(notes_module):
 
 
 def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
-    """The commands are split across platform headings whether the block above
-    them is a heading or a paragraph, so those headings go with it either way."""
+    """Platform headings go with the block whether it opened as heading or prose."""
     body = (
         "Intro.\n\n"
         "To update Unsloth, use the commands below:\n\n"
@@ -2273,19 +2126,16 @@ def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
 
 
 def test_only_a_paragraph_of_its_own_opens_an_install_block(notes_module):
-    """The same words inside the announcement are prose about the release, not
-    instructions: `v0.1.39-beta` tells readers to "use `2026.5.2` or directly
-    call `curl ...` to update" mid-sentence, and every generated "What's
-    Changed" entry is a `* Update ...` line. Neither opens a paragraph at
-    document level, so neither may swallow the announcement below it."""
+    """The same words inside the announcement are prose, not instructions:
+    `v0.1.39-beta` says "call `curl ...` to update" mid-sentence, and generated
+    entries are `* Update ...` lines. Neither opens a document-level paragraph."""
     continuation = (
         "Unsloth Studio 2026.5.2 is out.\n"
         "To update Unsloth, run the installer.\n\n"
         "## Fixes\n\n- a real fix\n"
     )
     stripped = notes_module.strip_release_body(continuation)
-    # The second line continues the paragraph above it rather than opening one,
-    # so the announcement it is part of survives whole.
+    # The second line continues the paragraph rather than opening one.
     assert "Unsloth Studio 2026.5.2 is out." in stripped
     assert "To update Unsloth, run the installer." in stripped
     assert "- a real fix" in stripped
@@ -2296,9 +2146,8 @@ def test_only_a_paragraph_of_its_own_opens_an_install_block(notes_module):
 
 
 def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module):
-    """A heading section drops its subheadings with it, but a paragraph has no
-    level, so the next heading resumes the announcement whatever its depth.
-    `v0.1.471-beta` writes the whole announcement at level 3 below one."""
+    """A heading section drops its subheadings, but a paragraph has no level, so
+    the next heading resumes the announcement whatever its depth."""
     body = (
         "Intro.\n\n"
         "To update Unsloth, use the command below:\n"

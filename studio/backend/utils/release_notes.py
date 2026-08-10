@@ -1,15 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Release notes for the update popup, sourced from the GitHub releases.
+"""Release notes for the update popup, taken from the newest GitHub release.
 
-The newest published release is the source, so the popup follows each new
-release with no file to edit and no rebuild. Only the announcement itself is
-shown: the install instructions, the generated "What's Changed" list, "New
-Contributors", the "Full Changelog" line and the appended build provenance are
-stripped out, wherever in the body a maintainer wrote them.
+Only the announcement is shown: the install instructions, the generated "What's
+Changed" and "New Contributors" lists, the "Full Changelog" line and the
+appended build provenance are stripped, wherever they were written.
 
-The fetch is lazy, cached, and skipped entirely when update checks are off.
+The fetch is lazy, cached, and skipped when update checks are off.
 """
 
 from __future__ import annotations
@@ -28,11 +26,9 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-# The page is deliberately small. A release entry carries its whole body, and
-# the newest ones run about 40 KiB each, so the endpoint's maximum of 100 would
-# be near 4 MiB, twice the cap below, and the fetch would fail outright. 30 is
-# about 1.2 MiB at that rate, and the newest Studio release sits at the top of
-# the list, so the depth is not what is scarce here.
+# A release entry carries its whole body, about 40 KiB lately, so the endpoint's
+# maximum of 100 would be near 4 MiB, twice the cap below, and the fetch would
+# fail outright. 30 is about 1.2 MiB, and the newest release is at the top.
 RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
 RELEASES_TIMEOUT_SECONDS = 3
@@ -41,24 +37,23 @@ _RELEASES_CHUNK_BYTES = 64 * 1024
 _RELEASES_MIN_READ_SECONDS = 0.05
 RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
-# Unauthenticated callers get 60 requests an hour per IP. A shared address that
-# has spent them should back off for a while rather than retry every 5 minutes.
-# Used when the response carries no reset to wait for.
+# Unauthenticated callers get 60 requests an hour per IP, so an address that has
+# spent them backs off rather than retrying every 5 minutes. Used when the
+# response carries no reset to wait for.
 RELEASES_RATE_LIMITED_TTL_SECONDS = 15 * 60
 # GitHub says not to request again before X-RateLimit-Reset, so its reset wins
-# over the back-off above. The unauthenticated window is an hour, which is the
-# ceiling a skewed or proxied header is held to rather than trusted outright.
+# over the back-off above. The window is an hour, so a skewed or proxied header
+# is held to that ceiling rather than trusted outright.
 RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
-# The repo also publishes llama.cpp prebuilts (`b8475`) and legacy month tags
-# (`February-2026`) as ordinary releases, and desktop drafts as `desktop-v...`.
-# Only a Studio version tag is an announcement the popup should ever show.
+# The repo also publishes llama.cpp prebuilts (`b8475`), legacy month tags
+# (`February-2026`) and `desktop-v...` drafts. Only a Studio version tag is an
+# announcement the popup should show.
 _RELEASE_TAG_PATTERN = re.compile(r"^v\d+(?:\.\d+)+")
 
-# CommonMark requires a space, tab or line end after the hashes: a non-breaking
-# space copied from rich text renders as text, not a heading, but a bare `##` is
-# an empty heading and still ends the section above.
+# CommonMark needs a space, tab or line end after the hashes: a non-breaking
+# space is text, a bare `##` an empty heading that still ends the section above.
 _HEADING_PATTERN = re.compile(r"^ {0,3}(?P<hashes>#{1,6})(?:[ \t]+(?P<title>.*?))?[ \t]*$")
 # A heading may close with its own run of hashes, which is not part of the title.
 _CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t])#+[ \t]*$")
@@ -66,12 +61,12 @@ _CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t])#+[ \t]*$")
 _TITLE_MARKUP = re.compile(r"[`*_~]|\[|\]\([^)]*\)|<[^>]*>")
 _FULL_CHANGELOG_LINE = re.compile(r"^ {0,3}\*{0,2}full changelog\*{0,2}\s*:", re.IGNORECASE)
 _FENCE_PATTERN = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<rest>.*)$")
-# CommonMark type 1 HTML blocks: contents are literal until a closing tag,
-# which the spec says need not be the one that opened the block.
+# CommonMark type 1 HTML blocks: literal until a closing tag, which the spec
+# says need not be the one that opened the block.
 _RAW_HTML_OPEN = re.compile(r"^ {0,3}<(pre|script|style|textarea)(?=[\s>]|$)", re.IGNORECASE)
 _RAW_HTML_CLOSE = re.compile(r"</(pre|script|style|textarea)\s*>", re.IGNORECASE)
-# Types 3 to 5 (processing instructions, declarations, CDATA) are literal too,
-# each ending on its own delimiter. Comments open mid-line, so are separate.
+# Types 3 to 5 are literal too, each ending on its own delimiter. Comments open
+# mid-line, so they are handled separately.
 _RAW_BLOCKS = (
     (_RAW_HTML_OPEN, _RAW_HTML_CLOSE),
     (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
@@ -79,16 +74,14 @@ _RAW_BLOCKS = (
     # A declaration needs an uppercase letter, so `<!note` stays ordinary text.
     (re.compile(r"^ {0,3}<![A-Z]"), re.compile(r">")),
 )
-# Type 6 blocks run to the next blank line, so `<details>` only holds Markdown
-# once a blank line has closed the block. Open and close tags both start one.
+# Type 6 runs to the next blank line, so `<details>` holds Markdown only after
+# one. Open and close tags both start a block.
 _HTML_BLOCK_OPEN = re.compile(r"^ {0,3}</?([a-zA-Z][a-zA-Z0-9-]*)(?=[\s/>]|$)")
-# Blocks that break into an open paragraph, so none is open after them and one
-# they are written below is closed rather than continued.
+# Blocks that break into an open paragraph, closing it rather than continuing it.
 _INTERRUPTS = re.compile(
     r"^ {0,3}(?:#{1,6}([ \t]|$)|(?:\*[ \t]*){3,}$|(?:-[ \t]*){3,}$|(?:_[ \t]*){3,}$)"
 )
-# A definition is a block of its own but may not interrupt a paragraph, so it
-# ends the one above it only when there is none to continue.
+# A definition is a block of its own but may not interrupt a paragraph.
 _LINK_DEFINITION = re.compile(r"^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:")
 # Blocks that are not paragraph text, so a following underline is not setext.
 _PARAGRAPH_TEXT = re.compile(r"^ {0,3}(?![-*+>]([ \t]|$)|\d{1,9}[.)]([ \t]|$))\S")
@@ -97,12 +90,12 @@ _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 # A quoted paragraph continues on unmarked lines, which belong to the quote.
 _BLOCK_QUOTE = re.compile(r"^ {0,3}>")
 _QUOTE_MARKER = re.compile(r"^ {0,3}>[ \t]?")
-# A heading at an item's content column belongs to that item, not the document.
-# The marker needs whitespace after it, so `2.0` is a version, not an item.
+# A heading at an item's content column belongs to that item. The marker needs
+# whitespace after it, so `2.0` is a version, not an item.
 _LIST_ITEM = re.compile(r"^[ \t]*(?P<marker>[-*+]|\d{1,9}[.)])(?P<space>[ \t]+|$)")
 _THEMATIC_BREAK = re.compile(r"^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$")
-# Content indented more than this after a marker is an indented code block, so
-# the item's content starts one column past the marker instead.
+# Past this the content after a marker is indented code, so the item's content
+# starts one column past the marker instead.
 _MAX_ITEM_PADDING = 4
 _HTML_BLOCK_TAGS = frozenset(
     """
@@ -113,8 +106,7 @@ menuitem nav noframes ol optgroup option p param search section summary table
 tbody td tfoot th thead title tr track ul
 """.split()
 )
-# Type 7: any other complete tag alone on a line. It cannot interrupt a
-# paragraph, so it only counts after a break.
+# Type 7: any other complete tag alone on a line; it cannot interrupt a paragraph.
 _HTML_ATTRIBUTE = (
     r"""(?:\s+[a-zA-Z_:][a-zA-Z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)"""
 )
@@ -124,32 +116,29 @@ _HTML_TAG_ONLY_LINE = re.compile(
 _COMMENT_BLOCK_OPEN = re.compile(r"^ {0,3}<!--")
 _COMMENT_OPEN = "<!--"
 _COMMENT_CLOSE = "-->"
-# Stands in for a line the renderer hides. `#` is a block of its own, so list
-# tracking reads it like a comment: never a marker, never a lazy continuation.
+# Stands in for a line the renderer hides: `#` is a block of its own, so list
+# tracking never reads it as a marker or a lazy continuation.
 _HIDDEN_BLOCK = "#"
 _SAFE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.!+-]{0,63}$")
 
-# Sections GitHub or the release workflow generates, which are not the
-# announcement. Matched on the normalised title, so `## What's Changed in
-# Unsloth-Zoo` and a curly apostrophe are the same heading as `## What's
-# Changed`. Deliberately narrow rather than a substring sweep: "What changed in
-# Gemma 4" is an announcement, and it differs only in the apostrophe.
+# Sections GitHub or the release workflow generates. Matched on the normalised
+# title, so `## What's Changed in Unsloth-Zoo` and a curly apostrophe still
+# match. Narrow rather than a substring sweep: "What changed in Gemma 4" is an
+# announcement one apostrophe away.
 _GENERATED_TITLES = frozenset({"what's changed", "whats changed", "new contributors"})
 _GENERATED_PREFIXES = ("what's changed in ", "whats changed in ")
 _GENERATED_SUFFIXES = ("zoo changes", "notebooks changes", "changelog")
-# The install/upgrade block, written a different way in almost every release:
-# "Updating / installing Unsloth", "To update Unsloth or install a new Unsloth
-# Studio, you must use", "To update Studio", "Update Unsloth via `pip install
-# ...`". Naming Unsloth is what separates those from "Updating models is now 2x
+# The install block, worded differently in almost every release ("Updating /
+# installing Unsloth", "To update Studio", "Update Unsloth via `pip install`").
+# Naming Unsloth or Studio separates those from "Updating models is now 2x
 # faster", which is a change and not instructions.
 _UPGRADE_PREFIXES = ("update", "updating", "to update", "how to update")
 _UPGRADE_SUBJECTS = ("unsloth", "studio")
 _UPGRADE_TITLES = frozenset({"update instructions", "install instructions"})
 _PROVENANCE = "build provenance"
-# Platform headings the upgrade block splits its commands across. They are
-# written as siblings of it as often as as children, so heading level alone
-# does not say where the block ends.
-# A slash or a comma between the platforms, however it is spaced.
+# Platform headings the install block splits its commands across, written as its
+# siblings as often as its children, so level alone does not end the block. The
+# separator is a slash or a comma, however it is spaced.
 _PLATFORM_SEPARATOR = re.compile(r"\s*[/,]\s*")
 _PLATFORM_TITLES = frozenset(
     {
@@ -224,9 +213,8 @@ def reset_release_notes_cache() -> None:
 def is_supported_version_query(version: str) -> bool:
     """Whether `version` is shaped like a version the popup could be offering.
 
-    The version no longer selects the release, but it is echoed back so the UI
-    can drop a response to a request it has already moved on from, and a query
-    that is not a version (`latest`, `main`, a path) is rejected outright."""
+    The version is echoed back rather than used to select a release, so the UI
+    can drop a stale response. `latest`, `main` or a path is rejected outright."""
     candidate = version.strip()
     if not _SAFE_VERSION_PATTERN.match(candidate):
         return False
@@ -237,9 +225,8 @@ def _markdown_lines(text: str) -> list[str]:
     """``text`` split the way CommonMark ends lines.
 
     str.splitlines also breaks on U+2028, U+2029, NEL, vertical tab and form
-    feed, none of which end a line in Markdown. A separator sitting in prose
-    before "## What's Changed" would otherwise read as a heading the renderer
-    never shows, and cut the announcement there.
+    feed, none of which end a Markdown line: one in prose would otherwise turn
+    the text after it into a heading and cut the announcement there.
     """
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
@@ -249,12 +236,10 @@ class Text:
     """A line that is not a heading, as the scanner read it."""
 
     line: str
-    # A `**Full Changelog**: ...` line written at document level, which GitHub
-    # appends below the generated sections.
+    # A document-level `**Full Changelog**: ...` line, which GitHub appends.
     is_full_changelog: bool = False
-    # The first line of a paragraph written at document level. An install block
-    # is introduced by one as often as by a heading, so it is where such a block
-    # can begin.
+    # First line of a document-level paragraph: an install block is introduced
+    # by one as often as by a heading, so this is where such a block can begin.
     opens_paragraph: bool = False
 
 
@@ -267,37 +252,31 @@ class Heading:
     # The heading's own source lines, in order.
     lines: tuple[str, ...]
     # Lines already emitted as `Text` that turned out to be this heading. Only
-    # a setext heading retracts: its title is the paragraph above the underline.
+    # setext retracts: its title is the paragraph above the underline.
     retract: int = 0
 
 
 def strip_release_body(text: str) -> str:
     """The announcement in a release body, with the generated sections removed.
 
-    Each boilerplate section is excised where it stands rather than the body
-    being truncated at the first one: maintainers write the install block second
-    of twelve sections as often as last, so truncating there would throw the
-    rest of the announcement away.
+    Each section is excised where it stands rather than the body being truncated
+    at the first one: maintainers write the install block second of twelve
+    sections as often as last, so truncating there loses the rest.
 
-    A section runs to the next heading at its own level or shallower, so the
-    subheadings under a dropped one go with it. The install block is the
-    exception: its platform headings (`### Windows:`) are written as siblings as
-    often as children, so they keep the drop open until a heading that is not
-    one of them appears.
-
-    The install block is also introduced by an ordinary paragraph as often as by
-    a heading: `v0.1.43-beta` opens with "### To update Unsloth or install a new
-    Unsloth Studio, you must use:" and `v0.1.471-beta` writes the same sentence
-    with no hashes. A paragraph has no level, so the block it opens runs to the
-    next heading that is not one of the platform headings under it.
+    A section runs to the next heading at its own level or shallower, so its
+    subheadings go with it. The install block is the exception twice over: its
+    platform headings (`### Windows:`) are written as siblings as often as
+    children, so they keep the drop open, and it is introduced by an ordinary
+    paragraph as often as by a heading. A paragraph has no level, so the block
+    it opens runs to the next heading that is not a platform heading.
     """
     kept: list[str] = []
-    # Level of the boilerplate heading whose section is being dropped, and
-    # whether it was the install block, whose platform siblings go with it.
+    # Level of the boilerplate heading being dropped, and whether it was the
+    # install block, whose platform siblings go with it.
     drop_level: int | None = None
     drop_upgrade = False
-    # Set instead while the install block being dropped was introduced by a
-    # paragraph, which has no level for the rules above to compare against.
+    # Set instead when a paragraph, which has no level to compare against,
+    # opened the install block.
     drop_prose = False
 
     for event in scan_blocks(text):
@@ -313,25 +292,21 @@ def strip_release_body(text: str) -> str:
                 kept.append(event.line)
             continue
 
-        # A setext heading is the paragraph above the underline, which has
-        # already been kept line by line, so take those lines back first. A
-        # paragraph inside a dropped block was never kept, so there is nothing
-        # to take back and the lines below it must not be disturbed.
+        # A setext heading is the paragraph above the underline, already kept
+        # line by line, so take it back. Inside a drop nothing was kept.
         if event.retract and drop_level is None and not drop_prose:
             del kept[len(kept) - event.retract :]
 
         title = _normalise_title(event.title)
         if drop_prose:
-            # The platform headings the paragraph's commands are split across
-            # belong to it however they were nested; any other heading is the
-            # announcement resuming, so it ends the block.
+            # Platform headings belong to the block however they were nested;
+            # any other heading is the announcement resuming.
             if _is_platform(title):
                 continue
             drop_prose = False
         elif drop_level is not None:
-            # A platform heading belongs to the install block above it however
-            # it was nested, and any deeper heading is a subheading of whatever
-            # is being dropped.
+            # A platform heading belongs to the install block however it was
+            # nested, and a deeper heading is a subheading of the dropped one.
             if (drop_upgrade and event.level >= drop_level and _is_platform(title)) or (
                 event.level > drop_level
             ):
@@ -352,23 +327,22 @@ def strip_release_body(text: str) -> str:
 def scan_blocks(text: str):
     """Walk `text` as CommonMark blocks, yielding `Text` and `Heading` events.
 
-    Only headings the renderer would show reach the caller: one inside a fenced
-    block, a comment, a raw HTML block or a list item is sample or nested
-    content and arrives as ordinary text.
+    Only headings the renderer would show are `Heading`: one inside a fence, a
+    comment, a raw HTML block or a list item arrives as ordinary text.
     """
     # A Windows editor can leave a BOM on the first line, hiding a heading.
     text = text.lstrip("﻿")
     open_fence: str | None = None
     # Content column of the list item the open block belongs to, 0 at document
-    # level. A fence and an HTML block are scoped to their container, so the
-    # item's end closes them. Only one of the three is ever open.
+    # level: a fence or HTML block is scoped to its container, so the item's end
+    # closes it. Only one of the three is ever open.
     block_column = 0
     in_comment = False
     in_raw_html: int | None = None
     in_html_block = False
     after_paragraph = False
-    # The open paragraph a later underline would turn into a heading: as the
-    # renderer reads it, and as it was written.
+    # The open paragraph a later underline turns into a heading: as the renderer
+    # reads it, and as it was written.
     paragraph: list[str] = []
     paragraph_source: list[str] = []
     in_quote = False
@@ -380,11 +354,9 @@ def scan_blocks(text: str):
         structural = ""
         opened_block = False
         in_block = open_fence is not None or in_html_block or in_raw_html is not None or in_comment
-        # A fence, comment or HTML block inside a list item runs only to the end
-        # of that item, so a line dedented out of the item closes both. Lazy
-        # continuation reaches into none of them. A raw block or comment inside an
-        # item also ends on a blank line: the item takes the break, so what
-        # follows is a block of the item's own.
+        # A fence, comment or HTML block inside an item ends with the item, so a
+        # dedented line closes both, and none of them takes a lazy continuation.
+        # A raw block or comment there also ends on a blank line the item takes.
         leaves = (
             _indent_width(line) < block_column
             if line.strip()
@@ -396,12 +368,10 @@ def scan_blocks(text: str):
             in_raw_html = None
             in_comment = False
             block_column = 0
-            # The paragraph the line could have continued is block content, so
-            # it closes the item rather than reading as more of it.
+            # The paragraph it could have continued is block content.
             after_paragraph = False
-        # A fence written as a list item's first content opens inside that item, so
-        # an opener is read past a marker on the same line. Only an opener: fenced
-        # content is literal and a closer carries no marker.
+        # A fence written as an item's first content opens inside it, so an opener
+        # is read past a marker. Only an opener: fenced content is literal.
         fence_line = line if open_fence else _item_content(line, after_paragraph)
         # Raw HTML first: its contents are literal, so a fence in it is not one.
         if in_raw_html is not None:
@@ -420,33 +390,28 @@ def scan_blocks(text: str):
         elif open_fence:
             visible = ""
         else:
-            # A block already open owns this line, so it is content rather than a
-            # block written at the column it happens to start in.
+            # A block already open owns this line, so it is content.
             hidden = in_comment or in_raw_html is not None
-            # A comment is an HTML block too, so one written as a list item's first
-            # content opens inside it exactly as a fence does: the opener is read
-            # past a marker on the same line.
+            # A comment is an HTML block too, so it opens inside an item as a
+            # fence does: the opener is read past a marker on the same line.
             block_open = (
                 not in_comment
                 and _COMMENT_BLOCK_OPEN.match(_item_content(line, after_paragraph)) is not None
             )
             # Commented-out sections are not rendered, so they are not releases.
             visible, in_comment = _strip_comments(line, in_comment, block_open)
-            # An HTML block written as a list item's first content opens inside
-            # that item, as a fence does, so an opener is read past a marker on the
-            # same line. The marker stays, so its item is still tracked. A comment
-            # blanks its own line, so that line is read as written: the block
-            # renders as nothing, but the item it is content of still opens.
+            # The marker stays, so the item is still tracked. A comment blanks its
+            # own line, so the raw line is used: the block renders as nothing, but
+            # the item it is content of still opens.
             source = line if block_open else visible
             content = _item_content(source, after_paragraph)
             marker = source[: len(source) - len(content)]
             # Nor is anything inside a raw HTML block such as <pre>.
             stripped, in_raw_html = _strip_raw_html(content, in_raw_html)
             opened_block = in_raw_html is not None or (block_open and in_comment)
-            # Taken before the opener is hidden: it renders as nothing, but its
-            # indent still closes a list item it sits left of, and a marker on its
-            # line still opens one. A comment or raw block keeps only those, since
-            # the text it hides is not Markdown and must open no list.
+            # Taken before the opener is hidden: it renders nothing, but its indent
+            # still closes items left of it and a marker on its line still opens
+            # one. Only those survive; what it hides is not Markdown.
             if block_open or stripped != content:
                 if not hidden:
                     structural = _hidden_structure(line, marker)
@@ -470,14 +435,13 @@ def scan_blocks(text: str):
             and paragraph != []
             and _SETEXT_UNDERLINE.match(visible) is not None
             and (visible.strip()[:1] == "-")
-            # Never a boundary inside a list item: dedented the dashes are a
-            # thematic break, and at the content column the heading is nested.
+            # Never a boundary in a list item: dedented the dashes are a break,
+            # at the content column the heading is nested.
             and not lists.columns
         )
         if setext:
             # The whole paragraph is the heading, already emitted line by line,
-            # so the caller takes those lines back. A dashed underline is a
-            # level 2 heading.
+            # so the caller takes those lines back. Dashes mean level 2.
             yield Heading(
                 level = 2,
                 title = " ".join(paragraph),
@@ -491,8 +455,8 @@ def scan_blocks(text: str):
         # A dashed underline is not a list marker, so track lists after setext.
         lazy_marker = _lazy_marker(structural, lists, after_paragraph, quoted)
         lists = _open_lists(structural, lists, after_paragraph, quoted)
-        # Taken after the opening line closed the items it is dedented out of,
-        # so the block belongs to the item it is really written inside.
+        # Taken after the opener closed the items it is dedented out of, so the
+        # block belongs to the item it is really written inside.
         if opened_block:
             block_column = lists.columns[-1] if lists.columns else 0
         elif open_fence is None and not in_html_block and in_raw_html is None and not in_comment:
@@ -500,19 +464,16 @@ def scan_blocks(text: str):
         # At an open item's content column a heading is nested, not a boundary.
         if lists.columns and _indent_width(visible) >= lists.columns[0]:
             match = None
-        # The line at its own nesting level: past the container's indentation
-        # and past a marker on the same line, so `- ## 2.0` reads as a heading.
+        # The line at its own nesting level, past the container's indentation and
+        # any marker, so `- ## 2.0` reads as a heading.
         column = lists.columns[-1] if lists.columns else 0
         content = _strip_indent(visible, column)
         if (item := _LIST_ITEM.match(content)) is not None:
             content = content[item.end() :]
-        # Only ordinary text continues a paragraph. Indented code counts four
-        # spaces past the container, so an item's own indent does not count.
+        # Indented code is four spaces past the container, not past the margin.
         indented_code = not after_paragraph and _indent_width(visible) - column >= 4
-        # An underline ends the paragraph it underlines, so it needs one open in
-        # its own container: the quote above owns its own, and a row left of an
-        # open item is lazy text of the item's paragraph. Three dashes are a
-        # thematic break either way, which `_INTERRUPTS` already ends on.
+        # An underline needs a paragraph open in its own container: a quote owns
+        # its own, and a row left of an open item is lazy text of that item.
         underline = (
             _SETEXT_UNDERLINE.match(visible) is not None
             and after_paragraph
@@ -520,9 +481,8 @@ def scan_blocks(text: str):
             and _indent_width(visible) >= column
         )
         after_paragraph = (
-            # Read inside its container, so an empty item and a fence written as an
-            # item's own content leave no paragraph open below them. A marker the
-            # paragraph above swallows is its text, not an item.
+            # Read inside its container, so an empty item or a fence written as its
+            # content leaves no paragraph. A swallowed marker is text, not an item.
             (bool(content.strip()) or lazy_marker)
             and match is None
             and _HEADING_PATTERN.match(content) is None
@@ -532,8 +492,7 @@ def scan_blocks(text: str):
             and (after_paragraph or _LINK_DEFINITION.match(visible) is None)
             and not underline
         )
-        # A quote's paragraph runs on over plain text and owns every line of it.
-        # An empty quote holds none, so the line below starts the document's.
+        # A quote owns every line of its paragraph; an empty quote holds none.
         flush_left = visible.lstrip(" \t")
         quote_line = _BLOCK_QUOTE.match(visible) is not None
         in_quote = (
@@ -542,22 +501,19 @@ def scan_blocks(text: str):
             else in_quote and _continues_paragraph(visible, column)
         )
         if quote_line:
-            # The only paragraph a quote line leaves open is the quote's own,
-            # and a quote holding a heading or nothing at all leaves none.
+            # A quote line leaves only the quote's own paragraph open, if any.
             after_paragraph = in_quote
-        # Whose paragraph the line below would continue. A quote owns the one its
-        # own lines hold, so a marker outside the quote is a block of its own
-        # rather than more of the text above it.
+        # Whose paragraph the line below continues: a quote owns its own, so a
+        # marker outside the quote opens a block rather than continuing it.
         quoted = quote_line or in_quote
-        # The lines a later underline turns into one heading. A paragraph opens
-        # only on plain text and then runs on until something interrupts it.
+        # The lines a later underline turns into one heading: a paragraph opens
+        # on plain text and runs until something interrupts it.
         continues = (
             not _interrupts_paragraph(flush_left)
             if paragraph
             else _PARAGRAPH_TEXT.match(flush_left) is not None
         )
-        # A paragraph inside an open item is that item's, and only one written
-        # at document level can be the heading a later underline makes of it.
+        # Only a document-level paragraph can become a setext heading.
         in_paragraph = after_paragraph and not in_quote and not lists.columns and continues
         # Nothing is accumulated yet, so this line is the paragraph's first.
         opens_paragraph = in_paragraph and not paragraph
@@ -577,8 +533,8 @@ def scan_blocks(text: str):
             )
             continue
 
-        # An empty heading has no title, so it ends the section above and, being
-        # neither generated nor an upgrade block, starts a kept one.
+        # An empty heading ends the section above and, being neither generated nor
+        # an upgrade block, starts a kept one.
         yield Heading(
             level = len(match.group("hashes")),
             title = match.group("title") or "",
@@ -616,8 +572,8 @@ def _is_upgrade(title: str) -> bool:
 def _is_platform(title: str) -> bool:
     """Whether `title` is one of the install block's per-platform headings.
 
-    The platforms are separated by a slash as readily as by a comma, and with
-    or without spaces around it, so the separators are read as one thing.
+    The platforms are separated by a slash as readily as by a comma, spaced or
+    not, so the separators are read as one thing.
     """
     return _PLATFORM_SEPARATOR.sub(", ", title).strip(" ,") in _PLATFORM_TITLES
 
@@ -625,13 +581,12 @@ def _is_platform(title: str) -> bool:
 def get_release_notes(version: str, refresh: bool = False) -> dict[str, Any]:
     """Return the newest release's notes for the update popup.
 
-    `version` is the version the popup is offering. It is echoed back rather
-    than used to select a release: the pip popup offers a PyPI version
-    (`2026.8.7`) and the releases are tagged with the Studio version
-    (`v0.1.60-beta`), so no tag could ever match it.
+    `version` is echoed back, not used to select a release: the pip popup offers
+    a PyPI version (`2026.8.7`) and releases are tagged with the Studio version
+    (`v0.1.60-beta`), so no tag could match it.
 
-    `refresh` retries a cached failure, so the UI's retry action is not stuck
-    behind the failure TTL once connectivity returns.
+    `refresh` retries a cached failure, so the UI's retry is not stuck behind
+    the failure TTL once connectivity returns.
     """
     version = version.strip()
     if not is_supported_version_query(version):
@@ -660,17 +615,15 @@ def get_latest_release(refresh: bool = False) -> ReleaseSource:
     global _remote_cache, _remote_fetching
 
     if refresh:
-        # Only a cached failure is dropped, so retries cannot hammer GitHub, and
-        # a rate-limit lockout is never dropped: retrying into it spends nothing
-        # and only delays the reset.
+        # Only a cached failure is dropped, never a rate-limit lockout: retrying
+        # into one spends nothing and only delays the reset.
         with _cache_condition:
             rate_limited = _rate_limited_until > time.time()
             if _remote_cache and _remote_cache.source.release is None and not rate_limited:
                 _remote_cache = None
 
-    # A caller waits for an in-flight fetch only as long as it may take, then
-    # answers without notes rather than holding a worker behind a stalled
-    # upstream.
+    # A caller waits only as long as a fetch may take, then answers without notes
+    # rather than holding a worker behind a stalled upstream.
     deadline = time.monotonic() + RELEASES_TIMEOUT_SECONDS + 1
     while True:
         now = time.monotonic()
@@ -821,17 +774,14 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
     global _rate_limited_until
 
     if error.code == 304 and _remote_last_good is not None:
-        # Nothing changed since the last fetch, so the release we have still
-        # stands and costs no parsing.
+        # Nothing changed, so the release already held still stands.
         return _remote_last_good, RELEASES_SUCCESS_TTL_SECONDS
 
     if error.code in (403, 429):
         now = time.time()
-        # GitHub's order: Retry-After first, which is how a secondary limit says
-        # how long to wait; then the primary limit's reset; then a plain back-off
-        # for a refusal that says neither. Whichever it is, the deadline is
-        # recorded, or Retry drops the cached failure and requests straight into
-        # the limit.
+        # GitHub's order: Retry-After, which is how a secondary limit states its
+        # wait, then the primary limit's reset, then a plain back-off. Every one
+        # records a deadline, or Retry requests straight back into the limit.
         after = _epoch_header(error.headers.get("Retry-After"))
         reset = (
             _epoch_header(error.headers.get("X-RateLimit-Reset"))
@@ -845,8 +795,8 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
         else:
             deadline = now + RELEASES_RATE_LIMITED_TTL_SECONDS
         # The deadline itself is bounded, not just the first wait on it: the next
-        # fetch answers from this deadline, so capping only the TTL left a skewed
-        # header parking the popup for as long as it liked.
+        # fetch answers from it, so capping only the TTL left a skewed header
+        # parking the popup for as long as it liked.
         _rate_limited_until = min(deadline, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
         ttl = max(_rate_limited_until - now, 0.0)
         return (
@@ -937,8 +887,8 @@ def _next_fence_state(open_fence: str | None, marker: str, rest: str) -> str | N
 
 def _code_span_ranges(line: str) -> list[tuple[int, int]]:
     """Code span bounds. A run of backticks closes only on a run of its length."""
-    # Collect the runs once: rescanning per opener is quadratic on a line of
-    # distinct unmatched runs, and notes are reparsed on every request.
+    # Collected once: rescanning per opener is quadratic on a line of distinct
+    # unmatched runs, and notes are reparsed on every request.
     runs: list[tuple[int, int]] = []
     index = 0
     while index < len(line):
@@ -992,13 +942,11 @@ def _is_escaped(line: str, index: int) -> bool:
 def _strip_comments(line: str, in_comment: bool, block_open: bool) -> tuple[str, bool]:
     """Return the line with HTML-comment spans removed, and the trailing state.
 
-    Only a comment that starts a line opens a block and hides the lines below
-    it. One written mid-sentence is inline HTML: it hides the rest of its own
-    line at most, so a note mentioning `<!--` cannot swallow later releases.
-    Delimiters inside inline code are literal and hide nothing.
-
-    "Starts a line" is read inside the container, so `block_open` is decided by
-    the caller from the item's content rather than from the raw line.
+    Only a comment that starts a line opens a block. One written mid-sentence is
+    inline HTML and hides the rest of its own line at most, so a note mentioning
+    `<!--` cannot swallow later releases, and a delimiter in inline code hides
+    nothing. "Starts a line" is read inside the container, so the caller decides
+    `block_open` from the item's content.
     """
     if in_comment:
         close = line.find(_COMMENT_CLOSE)
@@ -1013,9 +961,9 @@ def _strip_comments(line: str, in_comment: bool, block_open: bool) -> tuple[str,
     visible: list[str] = []
     index = 0
     spans = _code_span_ranges(line)
-    # Spans are ordered and disjoint and each opener sits at or past the one
-    # before, so the search resumes rather than restarts: restarting per opener is
-    # quadratic, and a long line of code spans is reparsed on every request.
+    # Spans are ordered and disjoint and openers only move forward, so the search
+    # resumes rather than restarts: restarting per opener is quadratic, and a long
+    # line of code spans is reparsed on every request.
     cursor = 0
     while index < len(line):
         opening = line.find(_COMMENT_OPEN, index)
@@ -1042,11 +990,10 @@ def _strip_comments(line: str, in_comment: bool, block_open: bool) -> tuple[str,
 def _hidden_structure(line: str, marker: str = "") -> str:
     """`line` as list tracking sees it once the renderer hides its text.
 
-    A comment or a raw HTML block renders nothing, but it is still a block
-    written at its own column, so it closes the items it sits to the left of.
-    Only the indentation survives: what is inside the block is not Markdown and
-    must not open a list of its own. `marker` is the part of the line that opens
-    a list item the block is the content of, which survives with it."""
+    The block renders nothing but still sits at its own column, so it closes the
+    items to its left. Only the indentation survives: its contents are not
+    Markdown. `marker` is the part of the line opening the item it is content
+    of, which survives with it."""
     if marker:
         return marker + _HIDDEN_BLOCK
     if not line.strip():
@@ -1080,9 +1027,8 @@ def _strip_indent(line: str, columns: int) -> str:
 def _interrupts_paragraph(line: str) -> bool:
     """Whether `line` starts a block that can break into an open paragraph.
 
-    A quote marker always can. A list item can only when it has content, and an
-    ordered one only when it starts at 1: anything else is text of the
-    paragraph it appears to interrupt."""
+    A quote marker always can. A list item only when it has content, and an
+    ordered one only when it starts at 1; anything else is paragraph text."""
     if _BLOCK_QUOTE.match(line):
         return True
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
@@ -1098,20 +1044,18 @@ def _item_content(line: str, after_paragraph: bool) -> str:
     """`line` read from the content column of a list item that opens on it.
 
     A block written as an item's first content sits inside that item, so
-    ``- ```` opens a fence even though its marker is not within three columns of
-    the container. The padding is capped the way `_open_lists` caps it, or
+    ``- ```` opens a fence. The padding is capped as `_open_lists` caps it, or
     ``-     ```` would read as a fence rather than the indented code it is. A
-    marker the paragraph above swallows opens no item, so its line is returned
-    whole, as is one four columns past its container. Ported to the frontend as
-    `itemContent` in markdown-list-columns.ts."""
+    swallowed marker opens no item, so its line is returned whole, as is one
+    four columns past its container. Ported to the frontend as `itemContent`
+    in markdown-list-columns.ts."""
     if _indent_width(line) >= 4 or (after_paragraph and not _interrupts_paragraph(line)):
         return line
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
     if item is None:
         return line
     padding = _indent_width(item.group("space"))
-    # Over-indented content starts one column past the marker; the rest of the
-    # padding is the content's own indentation.
+    # Over-indented content starts one column past the marker.
     over = padding - 1 if padding > _MAX_ITEM_PADDING else 0
     return " " * over + line[item.end() :]
 
@@ -1126,18 +1070,15 @@ def _quote_content(line: str) -> str:
 def _may_be_lazy(line: str) -> bool:
     """Whether `line` can continue a paragraph it is indented out of.
 
-    Only plain text can: a heading, a fence, a break or an HTML block starts a
-    block of its own, which closes the item instead. An underline is not one of
-    them: it may never be lazy, so `===` written left of an open item is read as
-    more of the item's paragraph. Nor is a definition, which is a block of its
-    own but may not interrupt a paragraph. A row of dashes still closes the
-    item, as `_INTERRUPTS` reads three or more as the thematic break they are."""
+    Only plain text can: a heading, fence, break or HTML block closes the item
+    instead. An underline may never be lazy, so `===` left of an open item is
+    more of the item's paragraph, and nor may a definition interrupt one. Three
+    dashes still close the item, as `_INTERRUPTS` reads them as a break."""
     return (
         _PARAGRAPH_TEXT.match(line) is not None
         and _INTERRUPTS.match(line) is None
         and _FENCE_PATTERN.match(line) is None
-        # Types 1 to 6 interrupt a paragraph, so a `<div>` left of an open item
-        # closes it. Type 7 cannot, and is deliberately excluded.
+        # Types 1 to 6 interrupt a paragraph; type 7 cannot, so it is excluded.
         and not _opens_html_block(line, True)
     )
 
@@ -1145,9 +1086,9 @@ def _may_be_lazy(line: str) -> bool:
 def _continues_paragraph(line: str, column: int) -> bool:
     """Whether `line` reads as more of a paragraph open in its container.
 
-    Measured from `column`, where that container's content starts: four columns
-    past it the line is an indented code block, which may not interrupt a
-    paragraph, so indentation alone never closes the one above it."""
+    Measured from `column`, where the container's content starts: four columns
+    past it the line is indented code, which may not interrupt a paragraph, so
+    indentation alone never closes the one above it."""
     inner = _strip_indent(line, column)
     return _indent_width(inner) >= 4 or _may_be_lazy(inner)
 
@@ -1157,9 +1098,8 @@ def _close_dedented(
 ) -> tuple[int, ...]:
     """`columns` with every item `line` is written to the left of closed.
 
-    Read inside the container the item sits in, not from the margin: a line that
-    only looks indented there is lazy text of the item's paragraph, which leaves
-    the item open rather than closing it."""
+    Read inside the container, not from the margin: lazy text of the item's own
+    paragraph leaves the item open rather than closing it."""
     while columns and indent < columns[-1]:
         outer = columns[-2] if len(columns) > 1 else 0
         if after_paragraph and _continues_paragraph(line, outer):
@@ -1172,8 +1112,8 @@ def _lazy_marker(line: str, state: _ListState, after_paragraph: bool, quoted: bo
     """Whether a marker-shaped `line` is really text of the paragraph above it.
 
     Only a marker inside the paragraph's own item interrupts it; one to the left
-    closes that item and opens a sibling. A quote owns the paragraph its lines
-    hold, so a marker written outside the quote opens a list of its own."""
+    closes that item. A quote owns its paragraph, so a marker written outside
+    the quote opens a list of its own."""
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
     columns = state.columns
     return (
@@ -1193,15 +1133,13 @@ def _open_lists(
 ) -> _ListState:
     """The list items still open after `line`.
 
-    A dedented line closes an item, unless it is a lazy paragraph continuation.
-    A new marker nests under a deeper column and replaces a sibling. `quoted`
-    marks a paragraph the blockquote above owns: a marker written outside the
-    quote is not text of it, so it opens a list of its own.
+    A dedented line closes an item unless it is a lazy paragraph continuation.
+    A new marker nests deeper and replaces a sibling. `quoted` marks a paragraph
+    the quote above owns, so a marker outside the quote opens a list of its own.
     """
     columns = state.columns
     if not line.strip():
-        # A blank line leaves the list open, unless the item is still empty: an
-        # item may begin with one blank line, and later content is outside it.
+        # An item may begin with one blank line; later content is outside it.
         return _ListState(columns[:-1] if state.empty_item else columns)
     indent = _indent_width(line)
     item = None if _THEMATIC_BREAK.match(line) else _LIST_ITEM.match(line)
@@ -1210,8 +1148,8 @@ def _open_lists(
         # A lazy continuation or an underline, so the open items are untouched.
         return state
     columns = _close_dedented(columns, line, indent, after_paragraph)
-    # Four columns past its container the marker is an indented code block, or
-    # lazy text of the paragraph above it, so it opens no list of its own.
+    # Four columns past its container the marker is code, or lazy text, so it
+    # opens no list of its own.
     if item is None or indent - (columns[-1] if columns else 0) >= 4:
         return _ListState(columns)
     marker = item.group("marker")
@@ -1276,9 +1214,8 @@ def _renders_visibly(markdown: str) -> bool:
         if not in_comment and (_FENCE_PATTERN.match(line) or opens_raw):
             # A code block or raw HTML block renders even when it is empty.
             return True
-        # No containers are tracked here, so the opener is read at the margin. The
-        # answer does not turn on it: an item renders its marker whatever the block
-        # inside hides, so a commented-out item renders something either way.
+        # No containers are tracked, so the opener is read at the margin. It does
+        # not matter: an item renders its marker whatever the block inside hides.
         visible, in_comment = _strip_comments(
             line, in_comment, _COMMENT_BLOCK_OPEN.match(line) is not None
         )
@@ -1297,8 +1234,7 @@ def _notes_response(
     source: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    # A body that renders as nothing once the generated sections are out counts
-    # as an unannounced release, not as empty notes.
+    # A body that renders as nothing is an unannounced release, not empty notes.
     if markdown and not _renders_visibly(markdown):
         markdown = None
 

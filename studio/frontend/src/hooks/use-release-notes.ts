@@ -5,8 +5,8 @@ import { authFetch, hasAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// The notes are the newest release's, not the offered version's, but the
-// version is still carried so a response the popup has moved on from is dropped.
+// The newest release's notes. The version is carried only so a response the
+// popup has moved on from can be dropped.
 export interface ReleaseNotes {
   version: string;
   markdown: string | null;

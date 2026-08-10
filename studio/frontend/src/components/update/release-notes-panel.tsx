@@ -71,9 +71,8 @@ export function ReleaseNotesPanel({
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  // No fallback body: the desktop updater's `notes` is latest.json's static
-  // download blurb, identical every release, so it is the install boilerplate
-  // the backend now strips rather than anything about this release.
+  // No fallback body: the updater's `notes` is latest.json's static download
+  // blurb, the same install boilerplate the backend now strips.
   const source = notes?.matched ? notes.markdown : null;
   // Notes target the repository, so relative links must point back at it.
   const markdown = useMemo(
@@ -94,8 +93,7 @@ export function ReleaseNotesPanel({
     }
   }, [open, markdown]);
 
-  // The release the notes came from wins: it is the page the notes are on.
-  // Then the caller's URL, then the generic changelog the API returns.
+  // The page the notes are on wins, then the caller's URL, then the API's.
   const notesUrl = notes?.htmlUrl ?? releaseNotesUrl ?? notes?.releaseNotesUrl;
   const link = notesUrl ? (
     <NotesLink href={notesUrl} isRelease={notesUrl === notes?.htmlUrl} />
@@ -245,8 +243,7 @@ function NotesStatus({
     );
   }
 
-  // The release published no notes: link out rather than show another
-  // release's, or the generated list of pull requests.
+  // The release published no notes: link out rather than show the generated list.
   return (
     <NotesMessage action={link}>
       {release

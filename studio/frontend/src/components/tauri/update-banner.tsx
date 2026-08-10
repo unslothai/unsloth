@@ -69,8 +69,7 @@ export function UpdateBanner({
   const currentVersion = formatVersion(info?.currentVersion);
   const latestVersion = formatVersion(info?.version);
   const Icon = showFailure ? CircleAlert : Download;
-  // The Studio version being offered. Notes come from the newest release
-  // rather than being keyed by this, but it still scopes the expanded state.
+  // The Studio version offered. Not a notes key; it scopes the expanded state.
   const notesTargetVersion = info?.version?.replace(LEADING_V, "") ?? null;
   const notesOpen =
     notesTargetVersion !== null && notesVersion === notesTargetVersion;
