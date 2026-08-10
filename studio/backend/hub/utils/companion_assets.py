@@ -516,11 +516,17 @@ def known_companion_base_ids() -> set[str]:
 
 
 def _mirror_pair_ids() -> set[str]:
+    # The WHOLE table, gated and ungated. Gating decides whether a fetch may override a user's
+    # cache; it says nothing about whether a base can strand companions, and most of the table
+    # is ungated (Klein 4B and base-4B, HiDream Dev / Fast, SDXL Turbo, ...). Reading only the
+    # gated half would drop those from the curated ids, so before a companion link is recorded
+    # the cleanup would not recognise them and could offer an installed checkpoint's companions
+    # for deletion.
     try:
-        from core.inference.diffusion_families import _GATED_MIRROR_PAIRS
+        from core.inference.diffusion_families import _MIRROR_PAIRS
     except Exception:  # noqa: BLE001
         return set()
-    return {rid for pair in _GATED_MIRROR_PAIRS for rid in pair}
+    return {rid for pair in _MIRROR_PAIRS for rid in pair}
 
 
 def is_companion_base(repo_id: str) -> bool:
