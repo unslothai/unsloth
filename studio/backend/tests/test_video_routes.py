@@ -1286,10 +1286,14 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
     # at all is still refused BEFORE staging, which is the failure this route check was added for
     # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
     #
-    # The int8 half needs a torchao that can actually run a dense quant scheme; without one the
-    # route answers 409 and is RIGHT to. Backend CI installs no torchao, so assert nothing there
-    # rather than assert the wrong thing. Same guard as tests/test_diffusion_quant_pad.py.
-    pytest.importorskip("torchao")
+    # The host-level precision gate is a DIFFERENT question from the one under test, and on a
+    # box with no CUDA and no torchao it answers 409 before the partition check is ever reached.
+    # Stubbing it keeps the availability refusal (a 400, raised by validate_load_request below)
+    # under test everywhere, including the Backend CI matrix that installs no torchao. Same stub
+    # the neighbouring route tests use; test_video_h3_te_quant.py covers the gate itself.
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
         backend,
