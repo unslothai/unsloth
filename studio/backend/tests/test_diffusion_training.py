@@ -648,9 +648,7 @@ def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
     source = "black-forest-labs/FLUX.1-dev"
     mirror = "unsloth/FLUX.1-dev"
     # The vendor repo looks cached, which is what made the old code keep it.
-    monkeypatch.setattr(
-        diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base
-    )
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
     if no_mirror_env:
         monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     else:
