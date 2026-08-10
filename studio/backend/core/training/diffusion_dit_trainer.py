@@ -1850,7 +1850,11 @@ def run_dit_lora_training(
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
-    _assert_gated_access(cfg.base_model, cfg.hf_token)
+    # The repo this run will FETCH, which is what the start route preflights. Checking the
+    # canonical id instead would raise here for a gated base that normalization already
+    # redirected to its ungated mirror -- after the route had answered 200 and freed the
+    # resident models, so the request fails as a dead job rather than as a fast 400.
+    _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
@@ -2093,7 +2097,10 @@ def _train_dit(
     # every bundle this run saves. The identity built before the load says "unresolved" on the
     # first run of an uncached repo, and an unresolved revision is not comparable, so a later
     # resume could not tell that the repo had moved underneath it.
-    identity = with_resolved_revision(identity, fetch_cfg.base_model)
+    # The CANONICAL base, matching identity_for_config: a mirror's commit is a different string
+    # for the same weights, so recording it would refuse the resume as soon as the fetch repo
+    # changed. A canonical repo that was never fetched simply stays "unresolved" here.
+    identity = with_resolved_revision(identity, cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
     # ...and the precision the frozen base ended up in. base_precision is still the request at

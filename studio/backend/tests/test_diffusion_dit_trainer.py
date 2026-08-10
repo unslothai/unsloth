@@ -195,6 +195,43 @@ def test_gated_access_requires_token():
     _assert_gated_access("black-forest-labs/FLUX.2-klein-4B", None)  # Klein is open
 
 
+def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
+    """A gated base redirected to its ungated mirror must not be refused by name.
+
+    The start route preflights the FETCH repo, so a child that checked the canonical id
+    would raise for a request the route had already answered 200 to, after freeing the
+    resident models: a dead job instead of a fast 400.
+    """
+    from core.inference import diffusion_families
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "core.training.diffusion_dit_trainer._assert_gated_access",
+        lambda base, token: seen.append(base),
+    )
+    monkeypatch.setattr(
+        diffusion_families, "prefer_ungated_mirror",
+        lambda base, token = None: "unsloth/FLUX.1-dev"
+        if base.lower() == "black-forest-labs/flux.1-dev" else base,
+    )
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = str(tmp_path / "empty"),  # the next step after the gate, so it stops here
+        output_dir = str(tmp_path / "out"),
+    )
+    with pytest.raises(Exception):  # noqa: B017, PT011 -- the dataset, not the gate
+        run_dit_lora_training(cfg)
+    assert seen == ["unsloth/FLUX.1-dev"]
+
+    # Control: with no mirror selected the canonical id is still what gets checked, so a
+    # genuinely gated fetch without a token keeps failing here rather than mid-download.
+    seen.clear()
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        run_dit_lora_training(cfg)
+    assert seen == ["black-forest-labs/FLUX.1-dev"]
+
+
 def test_family_train_infos_lists_dit_families(dit_train_host):
     infos = {i["name"]: i for i in family_train_infos()}
     for fam in ("sdxl", "flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):

@@ -2362,34 +2362,43 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
 
 
-def test_mirror_backed_identity_names_the_source_but_reads_the_fetched_revision(
-    monkeypatch, run_dir
-):
-    """Resume metadata stays canonical while revision checks follow the bytes that loaded."""
+def test_a_mirror_backed_run_records_the_canonical_revision(monkeypatch, run_dir):
+    """The revision must not move when the FETCH repo does.
+
+    ``prefer_ungated_mirror`` picks between the canonical repo and its byte-identical
+    mirror on local cache state, so recording whichever one loaded would give the same
+    logical base two different ``rev-`` values: evict the upstream snapshot, or resume on
+    another machine, and the checkpoint is refused as "a different base model revision".
+    Every checkpoint written before mirrors existed holds the canonical value, so it has
+    to stay the canonical one.
+    """
     import dataclasses
 
     from core.training import diffusion_train_extras as dte
 
     source = "black-forest-labs/FLUX.2-klein-base-9B"
     mirror = "unsloth/FLUX.2-klein-base-9B"
-    cfg = dataclasses.replace(
-        _Run(run_dir).cfg,
-        base_model = source,
-        fetch_base_model = mirror,
-        resolved_family = "flux.2-klein",
+    base = dataclasses.replace(
+        _Run(run_dir).cfg, base_model = source, resolved_family = "flux.2-klein"
     )
     seen = []
 
     def _revision(ref):
         seen.append(ref)
-        return "rev-mirror123"
+        # Only the canonical repo has a ref here: the mirror would answer differently.
+        return "rev-canonical1" if ref == source else "rev-mirror123"
 
     monkeypatch.setattr(dte, "source_revision", _revision)
-    identity = dc.identity_for_config(cfg)
 
-    assert identity.base_model == source
-    assert identity.base_revision == "rev-mirror123"
-    assert seen == [mirror]
+    via_mirror = dc.identity_for_config(dataclasses.replace(base, fetch_base_model = mirror))
+    direct = dc.identity_for_config(dataclasses.replace(base, fetch_base_model = None))
+
+    assert via_mirror.base_model == source
+    assert seen == [source, source]
+    assert via_mirror.base_revision == "rev-canonical1"
+    # The whole point: the two are interchangeable, so neither refuses the other's bundle.
+    assert direct.mismatch_reason(via_mirror) is None
+    assert via_mirror.mismatch_reason(direct) is None
 
 
 def test_both_trainers_pin_the_revision_after_the_load():

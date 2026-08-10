@@ -569,8 +569,6 @@ def identity_for_config(
     from core.training.diffusion_train_extras import source_revision
 
     targets = tuple(resolved_targets) if resolved_targets else _resolve_lora_targets(cfg)
-    # Keep the canonical base in metadata, but read the revision from the repo that loads.
-    revision_base_model = getattr(cfg, "fetch_base_model", None) or cfg.base_model
     return CheckpointIdentity(
         family = str(getattr(cfg, "resolved_family", "") or ""),
         base_model = str(cfg.base_model or ""),
@@ -603,7 +601,15 @@ def identity_for_config(
         base_precision = str(getattr(cfg, "base_precision", "") or ""),
         resolution = int(cfg.resolution),
         kind = kind,
-        base_revision = source_revision(revision_base_model),
+        # The CANONICAL base, never the mirror the fetch happened to use. Which of the two
+        # prefer_ungated_mirror picks depends on local cache state, so a mirror revision here
+        # would change identity when the upstream snapshot is evicted, or on a second machine,
+        # and refuse the checkpoint for "a different base model revision" though the weights
+        # are byte identical. It would also refuse every checkpoint written before mirrors
+        # existed. When the canonical repo has no local ref the value is "unresolved", which
+        # mismatch_reason already treats as not comparable -- the same thing it does on the
+        # first run of any uncached repo.
+        base_revision = source_revision(cfg.base_model),
         dataset_fingerprint = dataset_fingerprint(dataset_pairs) if dataset_pairs else None,
     )
 
