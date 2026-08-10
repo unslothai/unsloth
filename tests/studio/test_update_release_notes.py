@@ -102,9 +102,7 @@ def sections(module, text: str) -> list[Section]:
             if bodies and event.retract:
                 del bodies[-1][len(bodies[-1]) - event.retract :]
             title = event.title.strip()
-            found.append(
-                Section(version = title.split()[0] if title else "", heading = title, body = "")
-            )
+            found.append(Section(version = title.split()[0] if title else "", heading = title, body = ""))
             bodies.append([])
             continue
         if bodies:
@@ -302,9 +300,10 @@ def test_the_newest_published_release_wins(notes_module, serve_releases):
 @pytest.mark.parametrize(
     "entry",
     [
-        # A desktop build is staged as a draft before it is published.
-        {"tag_name": "desktop-v0.1.60-beta", "draft": True},
-        # A published draft-shaped tag is still not the announcement.
+        # A release staged as a draft is not published yet. The tag is one the
+        # tag filter accepts, so the draft flag is what has to reject it.
+        {"tag_name": "v9.9.9", "draft": True},
+        # A desktop build, which is where the drafts come from.
         {"tag_name": "desktop-v0.1.60-beta"},
         # llama.cpp prebuilts and the legacy month tags are ordinary releases.
         {"tag_name": "b8475"},
@@ -535,7 +534,7 @@ def test_hook_never_returns_another_versions_notes():
     the previous one until the effect runs."""
     src = NOTES_HOOK.read_text(encoding = "utf-8")
     assert "notes.version === version" in src
-    assert "refresh" in src, "retry must ask the backend to bypass its cache"
+    assert "load(version, true)" in src, "retry must ask the backend to bypass its cache"
 
 
 @pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
@@ -555,9 +554,7 @@ def test_four_space_indentation_is_code_not_structure(notes_module):
     ] == ["1.0"]
     assert [
         e.version
-        for e in parse_sections(notes_module, 
-            "## 1.0\n\n    ```\n    sample\n\n## 2.0\n\n- two\n"
-        )
+        for e in parse_sections(notes_module, "## 1.0\n\n    ```\n    sample\n\n## 2.0\n\n- two\n")
     ] == ["1.0", "2.0"]
 
 
@@ -617,8 +614,8 @@ def test_panel_is_scrollable_and_shows_only_the_stripped_notes():
     src = PANEL.read_text(encoding = "utf-8")
     assert "overflow-y-auto" in src, "release notes must scroll inside the popup"
     assert "max-h-" in src, "the scroller needs a bounded height"
-    # latest.json's `notes` is this same body unstripped, so falling back to it
-    # would put the generated pull-request list in the popup.
+    # latest.json's `notes` is a static download blurb, the same every release,
+    # so falling back to it would put install boilerplate in the popup.
     assert "fallbackMarkdown" not in src
     assert "notes?.matched ? notes.markdown : null" in src
 
@@ -780,8 +777,6 @@ def test_preview_joins_an_indented_continuation_line():
     assert "!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT" in src
     # A fence indented into a list item is a block, not a wrapped line.
     assert "opensDeepFence" in src
-
-
 
 
 def test_preview_code_spans_need_a_matching_closer():
@@ -1050,10 +1045,7 @@ def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
         "## 2026.8.0\n\n- Studio strips <!-- markers from pasted prompts.\n\n"
         "## 2026.7.5\n\n- SECRET: an older release\n"
     )
-    assert [e.version for e in parse_sections(notes_module, text)] == [
-        "2026.8.0",
-        "2026.7.5",
-    ]
+    assert [e.version for e in parse_sections(notes_module, text)] == ["2026.8.0", "2026.7.5"]
     assert "SECRET" not in find_section(notes_module, text, "2026.8.0").body
     assert find_section(notes_module, text, "2026.7.5") is not None
     # A comment that starts a line is still a block and still hides its body.
@@ -1135,8 +1127,7 @@ def test_setext_headings_are_release_boundaries(notes_module):
     assert find_section(notes_module, text, "2.0").body == "- new"
     # A rule between sections is still a rule, and a setext h1 is not a release.
     assert [
-        e.version
-        for e in parse_sections(notes_module, "## 2.0\n\n- a\n\n---\n\n## 1.0\n\n- b\n")
+        e.version for e in parse_sections(notes_module, "## 2.0\n\n- a\n\n---\n\n## 1.0\n\n- b\n")
     ] == ["2.0", "1.0"]
 
 
@@ -1197,9 +1188,7 @@ def test_a_backtick_in_a_fence_info_string_is_not_a_fence(notes_module):
     # A tilde fence may hold backticks, and a normal fence still hides samples.
     assert [
         e.version
-        for e in parse_sections(notes_module, 
-            "## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n"
-        )
+        for e in parse_sections(notes_module, "## 2.0\n\n```md\n## 9.9.9\n```\n\n## 1.0\n\n- old\n")
     ] == ["2.0", "1.0"]
     for source in (PREVIEW, LINKS):
         assert "info string" in source.read_text(encoding = "utf-8")
@@ -1266,9 +1255,9 @@ def test_the_stack_geometry_is_checked_numerically():
     here so deleting it does not quietly leave the cap unchecked."""
     geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
     src = geometry.read_text(encoding = "utf-8")
-    assert (
-        "stackGeometry(null, W, H).maxHeight, H - 32" in src
-    ), "nothing pins the no-obstacle cap to the 2rem the class used to spell"
+    assert "stackGeometry(null, W, H).maxHeight, H - 32" in src, (
+        "nothing pins the no-obstacle cap to the 2rem the class used to spell"
+    )
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
@@ -1348,9 +1337,9 @@ def test_a_wrapped_setext_heading_is_still_a_release(notes_module):
 def test_a_lowercase_declaration_is_not_a_raw_block(notes_module):
     """Only `<!` plus an uppercase letter opens one, so prose that mentions
     `<!note` must not hide every release under it."""
-    assert [
-        e.version for e in parse_sections(notes_module, "<!note\n\n## 1.0\n\n- real\n")
-    ] == ["1.0"]
+    assert [e.version for e in parse_sections(notes_module, "<!note\n\n## 1.0\n\n- real\n")] == [
+        "1.0"
+    ]
     # A real declaration still hides its own block.
     assert [
         e.version for e in parse_sections(notes_module, "<!DOCTYPE\n## 9.9.9\n>\n\n## 1.0\n")
@@ -1642,9 +1631,9 @@ def test_a_failed_fetch_keeps_retry_reachable():
     hook = " ".join(
         (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding="utf-8").split()
     )
-    assert (
-        "const failed = !next || (!next.matched && next.error !== null);" in hook
-    ), "the distinction this relies on"
+    assert "const failed = !next || (!next.matched && next.error !== null);" in hook, (
+        "the distinction this relies on"
+    )
 
 
 def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
@@ -2045,7 +2034,6 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run
                 "## What's Changed",
                 "## New Contributors",
                 "Full Changelog",
-                "Desktop build provenance",
             ],
         ),
         (
@@ -2088,20 +2076,36 @@ def test_a_comment_written_as_an_item_first_content_is_a_block(notes_module, run
             ],
         ),
         (
-            # A body written entirely at level 3 is all announcement.
+            # A body written entirely at level 3 is all announcement, and the
+            # install block is introduced by a paragraph rather than a heading.
             "v0.1.471-beta",
             ["### Better context length algorithm", "### Training & General Fixes"],
-            ["## What's Changed", "## New Contributors"],
+            [
+                "## What's Changed",
+                "## New Contributors",
+                "To update Unsloth or install a new Unsloth Studio",
+                "Ensure your version is",
+                "curl -fsSL https://unsloth.ai/install.sh",
+                "irm https://unsloth.ai/install.ps1",
+            ],
         ),
     ],
 )
 def test_real_release_bodies_keep_their_announcement(notes_module, tag, kept, dropped):
-    body = (BODIES / f"{tag}.md").read_text(encoding = "utf-8")
+    body = (BODIES / f"{tag}.md").read_text(encoding="utf-8")
     stripped = notes_module.strip_release_body(body)
     for text in kept:
         assert text in stripped, f"{tag} lost {text!r}"
     for text in dropped:
         assert text not in stripped, f"{tag} kept {text!r}"
+
+
+def test_the_build_provenance_the_workflow_appends_is_dropped(notes_module):
+    """release-desktop.yml appends this block to the release body when it
+    uploads the assets, so it can arrive under an announcement."""
+    body = "The announcement.\n\n### Build provenance\n\n- workflow run 123\n"
+    stripped = notes_module.strip_release_body(body)
+    assert stripped == "The announcement."
 
 
 def test_a_generated_heading_inside_a_sample_is_not_one(notes_module):
@@ -2128,3 +2132,73 @@ def test_a_heading_that_only_reads_like_boilerplate_is_kept(notes_module):
     ):
         body = f"Intro.\n\n{title}\n\n- a real change\n"
         assert "a real change" in notes_module.strip_release_body(body), title
+
+
+def test_an_install_block_introduced_by_a_paragraph_is_dropped(notes_module):
+    """`v0.1.43-beta` heads the install block "### To update Unsloth or install
+    a new Unsloth Studio, you must use:" and `v0.1.471-beta` writes the same
+    sentence with no hashes. A paragraph has no level to compare against, so
+    the block runs to the next heading that is not a platform heading."""
+    body = (
+        "The announcement.\n\n"
+        "To update Unsloth or install a new Unsloth Studio, you must use the below.\n"
+        "Ensure your version is `2026.6.9` for the latest.\n\n"
+        "MacOS, Linux, WSL:\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"
+        "Windows:\n```\nirm https://unsloth.ai/install.ps1 | iex\n```\n\n"
+        "### Better context length algorithm\n\n- a real change\n"
+    )
+    stripped = notes_module.strip_release_body(body)
+    assert stripped == (
+        "The announcement.\n\n### Better context length algorithm\n\n- a real change"
+    )
+
+
+def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
+    """The commands are split across platform headings whether the block above
+    them is a heading or a paragraph, so those headings go with it either way."""
+    body = (
+        "Intro.\n\n"
+        "To update Unsloth, use the commands below:\n\n"
+        "#### macOS, Linux, WSL:\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"
+        "#### Windows:\n```\nirm https://unsloth.ai/install.ps1 | iex\n```\n\n"
+        "## Fixes\n\n1. a real fix\n"
+    )
+    stripped = notes_module.strip_release_body(body)
+    assert stripped == "Intro.\n\n## Fixes\n\n1. a real fix"
+
+
+def test_only_a_paragraph_of_its_own_opens_an_install_block(notes_module):
+    """The same words inside the announcement are prose about the release, not
+    instructions: `v0.1.39-beta` tells readers to "use `2026.5.2` or directly
+    call `curl ...` to update" mid-sentence, and every generated "What's
+    Changed" entry is a `* Update ...` line. Neither opens a paragraph at
+    document level, so neither may swallow the announcement below it."""
+    continuation = (
+        "Unsloth Studio 2026.5.2 is out.\n"
+        "To update Unsloth, run the installer.\n\n"
+        "## Fixes\n\n- a real fix\n"
+    )
+    stripped = notes_module.strip_release_body(continuation)
+    # The second line continues the paragraph above it rather than opening one,
+    # so the announcement it is part of survives whole.
+    assert "Unsloth Studio 2026.5.2 is out." in stripped
+    assert "To update Unsloth, run the installer." in stripped
+    assert "- a real fix" in stripped
+
+    for line in ("* Update Studio icons by @someone", "> To update Unsloth, run it"):
+        body = f"Intro.\n\n{line}\n\n## Fixes\n\n- a real fix\n"
+        assert "a real fix" in notes_module.strip_release_body(body), line
+
+
+def test_a_paragraph_install_block_does_not_swallow_deeper_headings(notes_module):
+    """A heading section drops its subheadings with it, but a paragraph has no
+    level, so the next heading resumes the announcement whatever its depth.
+    `v0.1.471-beta` writes the whole announcement at level 3 below one."""
+    body = (
+        "Intro.\n\n"
+        "To update Unsloth, use the command below:\n"
+        "```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"
+        "###### Deeply nested announcement\n\n- a real change\n"
+    )
+    stripped = notes_module.strip_release_body(body)
+    assert stripped == "Intro.\n\n###### Deeply nested announcement\n\n- a real change"

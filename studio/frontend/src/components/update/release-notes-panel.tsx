@@ -71,9 +71,9 @@ export function ReleaseNotesPanel({
   const { state, notes, retry } = useReleaseNotes({ version, enabled: true });
   const scrollRef = useRef<HTMLElement | null>(null);
 
-  // No fallback body: the desktop updater's `notes` is this same release body
-  // unstripped, so taking it would show the generated PR list the backend
-  // deliberately removes.
+  // No fallback body: the desktop updater's `notes` is latest.json's static
+  // download blurb, identical every release, so it is the install boilerplate
+  // the backend now strips rather than anything about this release.
   const source = notes?.matched ? notes.markdown : null;
   // Notes target the repository, so relative links must point back at it.
   const markdown = useMemo(

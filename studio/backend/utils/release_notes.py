@@ -28,7 +28,10 @@ from packaging.version import InvalidVersion, Version
 
 from .update_status import DISABLE_ENV_VAR, RELEASE_NOTES_URL
 
-RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=30"
+# 100 is the endpoint's maximum and costs the same one request as the default
+# 30, so the page is deep enough that a run of non-Studio releases cannot
+# push the newest announcement off it.
+RELEASES_API_URL = "https://api.github.com/repos/unslothai/unsloth/releases?per_page=100"
 RELEASES_URL_ENV_VAR = "UNSLOTH_RELEASES_URL"
 RELEASES_TIMEOUT_SECONDS = 3
 RELEASES_MAX_BYTES = 2 * 1024 * 1024
@@ -240,6 +243,10 @@ class Text:
     # A `**Full Changelog**: ...` line written at document level, which GitHub
     # appends below the generated sections.
     is_full_changelog: bool = False
+    # The first line of a paragraph written at document level. An install block
+    # is introduced by one as often as by a heading, so it is where such a block
+    # can begin.
+    opens_paragraph: bool = False
 
 
 @dataclass(frozen = True)
@@ -268,38 +275,61 @@ def strip_release_body(text: str) -> str:
     exception: its platform headings (`### Windows:`) are written as siblings as
     often as children, so they keep the drop open until a heading that is not
     one of them appears.
+
+    The install block is also introduced by an ordinary paragraph as often as by
+    a heading: `v0.1.43-beta` opens with "### To update Unsloth or install a new
+    Unsloth Studio, you must use:" and `v0.1.471-beta` writes the same sentence
+    with no hashes. A paragraph has no level, so the block it opens runs to the
+    next heading that is not one of the platform headings under it.
     """
     kept: list[str] = []
     # Level of the boilerplate heading whose section is being dropped, and
     # whether it was the install block, whose platform siblings go with it.
     drop_level: int | None = None
     drop_upgrade = False
+    # Set instead while the install block being dropped was introduced by a
+    # paragraph, which has no level for the rules above to compare against.
+    drop_prose = False
 
     for event in scan_blocks(text):
         if isinstance(event, Text):
-            if drop_level is None and not event.is_full_changelog:
+            if (
+                drop_level is None
+                and not drop_prose
+                and event.opens_paragraph
+                and _is_upgrade(_normalise_title(event.line))
+            ):
+                drop_prose = True
+            if drop_level is None and not drop_prose and not event.is_full_changelog:
                 kept.append(event.line)
             continue
 
         # A setext heading is the paragraph above the underline, which has
-        # already been kept line by line, so take those lines back first.
-        if event.retract and drop_level is None:
+        # already been kept line by line, so take those lines back first. A
+        # paragraph inside a dropped block was never kept, so there is nothing
+        # to take back and the lines below it must not be disturbed.
+        if event.retract and drop_level is None and not drop_prose:
             del kept[len(kept) - event.retract :]
 
-        if drop_level is not None:
+        title = _normalise_title(event.title)
+        if drop_prose:
+            # The platform headings the paragraph's commands are split across
+            # belong to it however they were nested; any other heading is the
+            # announcement resuming, so it ends the block.
+            if _is_platform(title):
+                continue
+            drop_prose = False
+        elif drop_level is not None:
             # A platform heading belongs to the install block above it however
             # it was nested, and any deeper heading is a subheading of whatever
             # is being dropped.
-            if (
-                drop_upgrade
-                and event.level >= drop_level
-                and _is_platform(_normalise_title(event.title))
-            ) or event.level > drop_level:
+            if (drop_upgrade and event.level >= drop_level and _is_platform(title)) or (
+                event.level > drop_level
+            ):
                 continue
             drop_level = None
             drop_upgrade = False
 
-        title = _normalise_title(event.title)
         upgrade = _is_upgrade(title)
         if upgrade or _is_generated(title):
             drop_level = event.level
@@ -519,7 +549,10 @@ def scan_blocks(text: str):
         )
         # A paragraph inside an open item is that item's, and only one written
         # at document level can be the heading a later underline makes of it.
-        if after_paragraph and not in_quote and not lists.columns and continues:
+        in_paragraph = after_paragraph and not in_quote and not lists.columns and continues
+        # Nothing is accumulated yet, so this line is the paragraph's first.
+        opens_paragraph = in_paragraph and not paragraph
+        if in_paragraph:
             paragraph = [*paragraph, visible.strip()]
             paragraph_source = [*paragraph_source, line]
         else:
@@ -531,6 +564,7 @@ def scan_blocks(text: str):
                 is_full_changelog = bool(
                     _FULL_CHANGELOG_LINE.match(visible) and not lists.columns and not quoted
                 ),
+                opens_paragraph = opens_paragraph,
             )
             continue
 

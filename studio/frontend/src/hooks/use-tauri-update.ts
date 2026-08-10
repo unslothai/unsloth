@@ -24,9 +24,9 @@ export interface UpdateInfo {
   currentVersion: string;
   // Backend release this build pins, which preflight checks against.
   pypiVersion?: string;
-  // latest.json's `notes`, which is the release body before the backend strips
-  // its generated sections. The popup fetches the stripped notes itself, so
-  // this is carried for the updater's own metadata rather than displayed.
+  // latest.json's `notes`: a static download blurb the release workflow writes,
+  // the same text every release. Carried for the updater's own metadata, not
+  // shown, since the popup fetches the release's own notes.
   body?: string;
   date?: string;
 }
