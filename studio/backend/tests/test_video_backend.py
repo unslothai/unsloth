@@ -2003,7 +2003,11 @@ def test_predownload_base_refuses_a_snapshot_split_across_roots(monkeypatch):
         def __init__(self, token = None):
             pass
 
-        def model_info(self, repo, files_metadata = True):
+        def model_info(
+            self,
+            repo,
+            files_metadata = True,
+        ):
             return types.SimpleNamespace(
                 siblings = [
                     _sibling("model_index.json", 1),
