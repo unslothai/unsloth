@@ -2216,9 +2216,7 @@ def test_an_untouched_tree_still_starts_the_server_after_the_download(tmp_path, 
     server = root / "sd-bin" / "sd-server"
     server.write_bytes(b"cuda-build")
 
-    backend, started, run = _server_load_backend(
-        tmp_path, monkeypatch, root, server, lambda: None
-    )
+    backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
     run()
 
     assert started == [str(server)]
