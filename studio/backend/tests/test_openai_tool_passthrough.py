@@ -45,6 +45,7 @@ from routes.inference import (
     _build_openai_passthrough_body,
     _build_passthrough_payload,
     _clamp_finish_reason,
+    _chat_passthrough_sse_out,
     _cmpl_stream_event_out,
     _coalesce_consecutive_user_turns,
     _drop_empty_assistant_sentinels,
@@ -1256,11 +1257,14 @@ class TestBuildPassthroughPayloadToolChoice:
         assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
         assert schema["properties"]["largeScript"]["maxLength"] == 65536
 
-    def test_stream_omits_usage_options_when_client_did_not_request_them(self):
-        args = self._args()
-        args["stream"] = True
-        body = _build_passthrough_payload(**args)
-        assert "stream_options" not in body
+    def test_stream_requests_usage_upstream_even_when_client_omits_it(self):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [ChatMessage(role = "user", content = "hi")],
+            stream = True,
+        )
+        passthrough_body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+        assert passthrough_body["stream_options"] == {"include_usage": True}
 
     def test_stream_forwards_include_usage_when_client_requests_it(self):
         args = self._args()
@@ -1271,7 +1275,7 @@ class TestBuildPassthroughPayloadToolChoice:
         )
         assert body.get("stream_options") == {"include_usage": True}
 
-    def test_stream_forwards_include_usage_false_when_client_requests_it(self):
+    def test_stream_upstream_usage_requested_even_when_client_sets_false(self):
         args = self._args()
         args["stream"] = True
         body = _build_passthrough_payload(
@@ -1279,6 +1283,15 @@ class TestBuildPassthroughPayloadToolChoice:
             stream_options = {"include_usage": False},
         )
         assert body.get("stream_options") == {"include_usage": False}
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [ChatMessage(role = "user", content = "hi")],
+            stream = True,
+            stream_options = {"include_usage": False},
+        )
+        passthrough_body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+        assert passthrough_body["stream_options"] == {"include_usage": True}
 
     def test_response_format_without_tools_omits_tool_fields(self):
         args = self._args()
@@ -1757,6 +1770,14 @@ class TestOpenAICompatibilityHelpers:
         assert entry["completion_tokens"] == 6
         assert entry["total_tokens"] == 10
         assert entry["context_usage"] == 0.1
+
+    def test_chat_passthrough_monitor_reads_usage_before_client_strip(self):
+        line = (
+            'data: {"id":"chatcmpl-test","choices":[],"usage":{"prompt_tokens":4,'
+            '"completion_tokens":6,"total_tokens":10}}'
+        )
+        assert _chat_passthrough_sse_out(line, include_usage = False) is None
+        assert _chat_passthrough_sse_out(line, include_usage = True) == line
 
     def test_developer_message_preserves_existing_system_prompt(self):
         payload = ChatCompletionRequest(
@@ -5733,6 +5754,27 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_monitor_records_usage_when_client_omits_include_usage(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}',
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+                    'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}',
+                ],
+                stream_options = None,
+            )
+
+            assert '"usage"' not in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["prompt_tokens"] == 11
+            assert entry["completion_tokens"] == 7
+            assert entry["total_tokens"] == 18
+            assert entry["reply"] == "hello"
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -6499,7 +6541,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         asyncio.run(_run())
 
     def test_passthrough_finish_without_done_closes_stream_early(self, monkeypatch):
-        # Some llama-server builds emit the finish chunk and then hold the HTTP
+        # Some llama-server builds emit finish + usage and then hold the HTTP
         # stream open without sending [DONE]; the terminal classifier must end
         # the client stream promptly instead of hanging on the open socket.
         async def _run():
@@ -6515,7 +6557,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             async def fake_items(*_args, **_kwargs):
                 yield 'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}'
                 yield 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}'
-                await asyncio.Event().wait()  # upstream never closes
+                yield 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}'
+                await asyncio.Event().wait()  # upstream never closes after usage
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
@@ -6563,8 +6606,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = "".join(chunks)
 
             assert '"finish_reason":"stop"' in body.replace(" ", "")
+            assert '"usage"' not in body.replace(" ", "")
             assert body.endswith("data: [DONE]\n\n")
             [entry] = monitor.snapshot()
+            assert entry["prompt_tokens"] == 1
+            assert entry["completion_tokens"] == 1
             assert entry["status"] == "completed"
             assert monitor.active_count() == 0
 

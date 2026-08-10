@@ -1228,6 +1228,34 @@ def _cmpl_stream_event_out(event: bytes, include_usage: bool) -> Optional[bytes]
     return _rewrite_cmpl_id(b"\n".join(lines) if changed else event)
 
 
+def _chat_passthrough_sse_out(raw_line: str, include_usage: bool) -> Optional[str]:
+    """Filter one chat-completion SSE ``data:`` line for the downstream client.
+
+    The API monitor always records usage from llama-server (we request
+    ``stream_options.include_usage`` upstream even when the client omits it).
+    Clients that did not opt in must not see a trailing ``choices: []`` usage
+    chunk or an inline ``usage`` field on a content chunk.
+    """
+    if include_usage:
+        return raw_line
+    if not raw_line.startswith("data:"):
+        return raw_line
+    payload = raw_line[5:].strip()
+    if not payload or payload == "[DONE]":
+        return raw_line
+    try:
+        obj = json.loads(payload)
+    except Exception:
+        return raw_line
+    if not isinstance(obj, dict) or obj.get("usage") is None:
+        return raw_line
+    if obj.get("choices") == []:
+        return None
+    stripped = dict(obj)
+    stripped.pop("usage", None)
+    return "data: " + json.dumps(stripped, separators = (",", ":"), ensure_ascii = False)
+
+
 def _classify_llama_generation_error(exc: Exception) -> Optional[bool]:
     """Classify an error raised while consuming the GGUF generator.
 
@@ -21832,6 +21860,12 @@ def _build_openai_passthrough_body(
         stream_options = payload.stream_options,
         markup = getattr(llama_backend, "markup_profile", None),
     )
+    if payload.stream:
+        # External OpenAI clients (e.g. Tencent Code Buddy) often stream without
+        # stream_options.include_usage, which leaves the API monitor's token
+        # columns blank. Always ask llama-server for the trailing usage chunk;
+        # _chat_passthrough_sse_out withholds it from clients that did not opt in.
+        body["stream_options"] = {"include_usage": True}
     if _continue_final_message(payload):
         # llama-server rejects both flags set true.
         body["continue_final_message"] = True
@@ -22252,6 +22286,7 @@ async def _openai_passthrough_stream_admitted(
                 StreamToolCallHealer(_allowed_tools, body.get("tools")) if _allowed_tools else None
             )
             healed_call_index = 0
+            relay_include_usage = _wants_stream_usage(payload)
 
             def _synthetic_finish_line() -> str:
                 healed = healer is not None and healer.healed
@@ -22604,8 +22639,14 @@ async def _openai_passthrough_stream_admitted(
                         if monitor_event == "error":
                             saw_stream_error = True
                         # Relay to preserve llama-server's native id,
-                        # finish_reason, delta.tool_calls, and usage chunks.
-                        yield out_line + "\n\n"
+                        # finish_reason, and delta.tool_calls; usage is withheld
+                        # unless the client opted in (monitor still saw it above).
+                        client_line = _chat_passthrough_sse_out(
+                            out_line,
+                            relay_include_usage,
+                        )
+                        if client_line is not None:
+                            yield client_line + "\n\n"
                         if monitor_event == "done":
                             monitor_done = True
                             break
@@ -22614,9 +22655,7 @@ async def _openai_passthrough_stream_admitted(
                             if out_line is raw_line
                             else _openai_passthrough_sse_line_terminal_state(out_line)
                         )
-                        if terminal_state == "usage" or (
-                            terminal_state == "finish" and not _wants_stream_usage(payload)
-                        ):
+                        if terminal_state == "usage":
                             done_line = _SSE_DONE_LINE
                             _monitor_openai_sse_line(
                                 monitor_id,
