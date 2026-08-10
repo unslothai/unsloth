@@ -3077,12 +3077,57 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     )
 
 
+def _listed_dataset_clip_count(summary: DiffusionDatasetSummary) -> int:
+    """How many trainable CLIPS a listed dataset folder holds, as the dataset layer reports it.
+
+    Read off the summary with a 0 default rather than recounted here. Counting clips is the
+    dataset layer's job, and while that layer is still image-only the summary carries no clip
+    count at all, so every folder answers 0 -- which is precisely the state
+    ``_ui_trainable_families`` below has to detect. When the layer starts reporting clips this
+    starts returning them, with no edit here."""
+    try:
+        return int(getattr(summary, "clip_count", 0) or 0)
+    except (TypeError, ValueError):  # a non-numeric count is no evidence of a clip dataset
+        return 0
+
+
+def _ui_trainable_families(datasets: list[DiffusionDatasetSummary]) -> list[dict]:
+    """The trainable families to ADVERTISE in the Train picker, given the datasets this same
+    response lists as selectable.
+
+    ``family_train_infos()`` describes every family that has a trainer, which is the right
+    answer for the API: ``/diffusion/start`` accepts any of them and must keep doing so. It is
+    the wrong answer for the picker, because the picker offers a family and a dataset together.
+    The families in ``CLIP_TRAINED_FAMILIES`` train from captioned video clips and from nothing
+    else, so while every selectable dataset is stills, choosing one of them can only end in
+    Start failing with "No captioned video clips found" -- an option that cannot be completed
+    from the UI it is offered in.
+
+    Gated on the LISTED datasets rather than on a family name or a feature flag, so this needs
+    no follow-up edit: the moment the dataset layer lists a folder of clips, the family that
+    trains on clips is advertised alongside it, and if the clip listing were ever withdrawn the
+    advertisement withdraws with it. Nothing here decides whether clips are listable; it only
+    reads what the listing already said."""
+    from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES, family_train_infos
+
+    infos = family_train_infos()
+    if any(_listed_dataset_clip_count(s) > 0 for s in datasets):
+        return infos
+    return [
+        i for i in infos if str(i.get("name") or "").strip().lower() not in CLIP_TRAINED_FAMILIES
+    ]
+
+
 @router.get("/diffusion/info", response_model = DiffusionTrainingInfoResponse)
 async def diffusion_training_info(current_subject: str = Depends(get_current_subject)):
     """Describe where diffusion training reads/writes, and list usable dataset folders.
 
     A dataset folder is any direct child of the datasets root that contains at least one
-    image. The UI uses this to offer a picker instead of a blind free-text path."""
+    image. The UI uses this to offer a picker instead of a blind free-text path.
+
+    The family list is the trainable set NARROWED to what these datasets can feed: see
+    ``_ui_trainable_families``. Only the advertisement narrows -- ``/diffusion/start`` still
+    accepts every family that has a trainer."""
     from utils.paths import datasets_root, outputs_root
 
     def scan() -> DiffusionTrainingInfoResponse:
@@ -3105,9 +3150,7 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
                 continue
             if summary.image_count > 0:
                 found.append(summary)
-        from core.training.diffusion_train_common import family_train_infos
-
-        families = [DiffusionTrainableFamily(**info) for info in family_train_infos()]
+        families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
