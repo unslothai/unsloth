@@ -208,8 +208,6 @@ pub(super) async fn backend_desktop_auth_status(
 ) -> BackendProbe {
     let root_status = backend_root_status(health, expected_studio_root_id);
     let owner_match = backend_desktop_owner_match(health);
-    let verified_owner = owner_match == crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp;
-    let same_root_external = root_status == BackendRootStatus::SameRoot && !verified_owner;
 
     match root_status {
         BackendRootStatus::AmbiguousRoot | BackendRootStatus::ExpectedUnavailable => {
@@ -227,25 +225,32 @@ pub(super) async fn backend_desktop_auth_status(
         BackendRootStatus::SameRoot => {}
     }
 
-    if same_root_external
-        && matches!(
-            owner_match,
-            crate::desktop_backend_owner::HealthOwnerMatch::PreviousApp
-                | crate::desktop_backend_owner::HealthOwnerMatch::OtherDesktopOwner
-        )
-    {
-        return BackendProbe::ExternalConflict {
-            port,
-            reason: "desktop_owned_backend_active".to_string(),
-        };
+    // The root id is intentionally exposed by the unauthenticated health
+    // endpoint, so matching it alone cannot prove that a responder is safe to
+    // receive the desktop secret. Only ownership metadata tied to this app
+    // instance provides that proof. Any other same-root responder is a
+    // conflict and never receives the desktop-login probe or the secret: one
+    // asserting ownership belongs to another desktop app instance; one
+    // asserting none cannot be verified at all and could be a local spoof.
+    match owner_match {
+        crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp => {}
+        crate::desktop_backend_owner::HealthOwnerMatch::PreviousApp
+        | crate::desktop_backend_owner::HealthOwnerMatch::OtherDesktopOwner => {
+            return BackendProbe::ExternalConflict {
+                port,
+                reason: "desktop_owned_backend_active".to_string(),
+            };
+        }
+        crate::desktop_backend_owner::HealthOwnerMatch::None => {
+            return BackendProbe::ExternalConflict {
+                port,
+                reason: "desktop_ownership_unverified".to_string(),
+            };
+        }
     }
 
     if let Some(reason) = backend_capability_stale_reason(health) {
-        return if same_root_external {
-            BackendProbe::ExternalConflict { port, reason }
-        } else {
-            BackendProbe::Old { port, reason }
-        };
+        return BackendProbe::Old { port, reason };
     }
 
     let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
@@ -260,31 +265,19 @@ pub(super) async fn backend_desktop_auth_status(
     let Ok(response) = response else {
         let reason = backend_capability_stale_reason(health)
             .unwrap_or_else(|| "desktop_login_probe_failed".to_string());
-        return if same_root_external {
-            BackendProbe::ExternalConflict { port, reason }
-        } else {
-            BackendProbe::Old { port, reason }
-        };
+        return BackendProbe::Old { port, reason };
     };
 
     match response.status() {
         reqwest::StatusCode::UNAUTHORIZED => BackendProbe::Ready { port },
-        reqwest::StatusCode::NOT_FOUND => {
-            let reason = "desktop_login_not_found".to_string();
-            if same_root_external {
-                BackendProbe::ExternalConflict { port, reason }
-            } else {
-                BackendProbe::Old { port, reason }
-            }
-        }
+        reqwest::StatusCode::NOT_FOUND => BackendProbe::Old {
+            port,
+            reason: "desktop_login_not_found".to_string(),
+        },
         _ => {
             let reason = backend_capability_stale_reason(health)
                 .unwrap_or_else(|| "desktop_login_probe_failed".to_string());
-            if same_root_external {
-                BackendProbe::ExternalConflict { port, reason }
-            } else {
-                BackendProbe::Old { port, reason }
-            }
+            BackendProbe::Old { port, reason }
         }
     }
 }

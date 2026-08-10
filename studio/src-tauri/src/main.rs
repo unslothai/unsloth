@@ -18,6 +18,8 @@ mod native_intents;
 mod native_path_policy;
 mod preflight;
 mod process;
+#[cfg(test)]
+mod test_support;
 mod update;
 mod windows_job;
 mod x11_threads;

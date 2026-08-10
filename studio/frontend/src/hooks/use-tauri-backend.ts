@@ -80,6 +80,12 @@ function externalConflictMessage(preflight: DesktopPreflightResult) {
       : "A desktop-owned Unsloth server for this install is already running. Quit the other desktop app instance, then try again.";
   }
 
+  if (preflight.reason === "desktop_ownership_unverified") {
+    return preflight.port
+      ? `An unverified Unsloth server claiming this install is running on port ${preflight.port}. It did not prove desktop ownership, so the desktop app will not attach to it or send it credentials. Stop that server, then try again.`
+      : "An unverified Unsloth server claiming this install is running. It did not prove desktop ownership, so the desktop app will not attach to it or send it credentials. Stop that server, then try again.";
+  }
+
   if (preflight.reason === "desktop_owned_backend_starting") {
     return "The desktop-owned Unsloth backend is still starting. Wait a moment, then try again.";
   }

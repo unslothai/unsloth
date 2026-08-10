@@ -61,6 +61,11 @@ fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflic
             "An Unsloth server is already running on port {}, and this app cannot confirm which install it belongs to. Stop that server, then try again.",
             conflict.port
         ),
+        "desktop_ownership_unverified" => format!(
+            "An unverified Unsloth server claiming this install is running on port {}. It did not prove desktop ownership, so the desktop app will not attach to it or send it credentials. Stop that server, then try again.",
+            conflict.port
+        ),
+
         _ => format!(
             "An Unsloth server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
             conflict.port
@@ -819,40 +824,12 @@ mod tests {
     }
 
     async fn command_test_backend(health_body: String) -> u16 {
-        let mut listener = None;
-        for port in 8888u16..=8908 {
-            if let Ok(bound) = TcpListener::bind(("127.0.0.1", port)).await {
-                listener = Some(bound);
-                break;
-            }
-        }
-        let listener = listener.expect("test needs a free desktop preflight port");
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            for _ in 0..2 {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut buffer = [0; 2048];
-                let Ok(n) = stream.read(&mut buffer).await else {
-                    return;
-                };
-                let request = String::from_utf8_lossy(&buffer[..n]);
-                let (status, body) = if request.starts_with("GET /api/health ") {
-                    ("200 OK", health_body.as_str())
-                } else if request.starts_with("POST /api/auth/desktop-login ") {
-                    ("401 Unauthorized", "")
-                } else {
-                    ("404 Not Found", "")
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(response.as_bytes()).await;
-            }
-        });
-        port
+        crate::test_support::LoopbackTestServer::bind_candidate_port(
+            health_body,
+            "401 Unauthorized",
+        )
+        .await
+        .port
     }
 
     #[test]
@@ -908,7 +885,10 @@ mod tests {
             .expect_err("external non-owned backend should block mutation");
 
         assert!(err.contains(&format!("port {external_port}")));
-        assert!(err.contains("Stop that server"));
+        // An ownerless same-root responder is no longer trusted as an
+        // attachable backend: the unauthenticated root id is not a secret and
+        // no ownership was proven, so it is reported as an unverified server.
+        assert!(err.contains("did not prove desktop ownership"));
     }
 
     /// Stub backend for the launcher probe. `liveness` of `None` models a backend older

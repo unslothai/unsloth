@@ -297,8 +297,6 @@ pub async fn desktop_preflight_result_with_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
 
     #[test]
     fn choose_preflight_classifies_core_cases() {
@@ -760,32 +758,9 @@ exit 1
     }
 
     async fn backend_server(health_body: impl Into<String>, route_status: &'static str) -> u16 {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let health_body = health_body.into();
-
-        tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut buffer = [0; 2048];
-                let n = stream.read(&mut buffer).await.unwrap();
-                let request = String::from_utf8_lossy(&buffer[..n]);
-                let (status, body) = if request.starts_with("GET /api/health ") {
-                    ("200 OK", health_body.as_str())
-                } else if request.starts_with("POST /api/auth/desktop-login ") {
-                    (route_status, "")
-                } else {
-                    ("404 Not Found", "")
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-            }
-        });
-
-        port
+        crate::test_support::LoopbackTestServer::bind(health_body.into(), route_status)
+            .await
+            .port
     }
 
     async fn probe_test_backend(
@@ -869,18 +844,50 @@ exit 1
     }
 
     #[tokio::test]
-    async fn compatible_same_root_without_desktop_owner_is_ready() {
+    async fn compatible_same_root_without_desktop_owner_is_external_conflict() {
+        // The health root id is exposed to unauthenticated callers, so a
+        // same-root responder without ownership metadata could be a local
+        // spoof. It must be a conflict, never a backend that receives the
+        // desktop secret.
         let probe = probe_test_backend(
             desktop_ready_health_with_owner(EXPECTED_ROOT_ID, false),
             "401 Unauthorized",
         )
         .await;
 
-        assert!(matches!(probe, BackendProbe::Ready { .. }));
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_ownership_unverified"
+        ));
+    }
+
+    #[tokio::test]
+    async fn other_owner_same_root_backend_is_desktop_owned_conflict() {
+        // A responder asserting ownership by a different desktop app instance
+        // keeps the desktop-owned conflict reason: unlike an ownerless
+        // responder, it provably belongs to another owner, so the guidance is
+        // to quit the other instance.
+        let probe = probe_test_backend(
+            format!(
+                r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}", "desktop_owner":{{"kind":"tauri","token_sha256":"{}"}}}}"#,
+                crate::desktop_backend_owner::token_sha256("another-desktop-owner-token")
+            ),
+            "401 Unauthorized",
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_owned_backend_active"
+        ));
     }
 
     #[tokio::test]
     async fn stale_same_root_without_desktop_owner_is_external_conflict() {
+        // Ownership verification runs before the capability gate: an unproven
+        // same-root responder is a conflict no matter which version it claims.
         let probe = probe_test_backend(
             format!(
                 r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.1","desktop_protocol_version":1,"desktop_manageability_version":2,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{EXPECTED_ROOT_ID}"}}"#,
@@ -894,8 +901,41 @@ exit 1
             BackendProbe::ExternalConflict {
                 reason,
                 ..
-            } if reason == "desktop_backend_version_too_old"
+            } if reason == "desktop_ownership_unverified"
         ));
+    }
+
+    #[tokio::test]
+    async fn ownerless_same_root_conflict_is_decided_before_any_auth_probe() {
+        // Regression for the backend-spoof phishing path: an ownerless
+        // responder that echoes the expected root id must be rejected from the
+        // unauthenticated health body alone, before preflight sends anything
+        // to /api/auth/desktop-login.
+        install_test_owner();
+        let server = crate::test_support::LoopbackTestServer::bind(
+            desktop_ready_health_with_owner(EXPECTED_ROOT_ID, false),
+            "401 Unauthorized",
+        )
+        .await;
+        let port = server.port;
+
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
+        let health = backend_health(&client, port).await.unwrap();
+        let probe =
+            backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_ownership_unverified"
+        ));
+        let seen = server.requests.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "ownerless same-root responders must be rejected before any desktop-login probe"
+        );
+        assert!(seen[0].starts_with("GET /api/health "));
     }
 
     #[tokio::test]
