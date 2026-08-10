@@ -1834,10 +1834,10 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
 
     assert reconciled == {
-            "retired": [],
-            "deleted": [store.kb_scope("knowledge")],
-            "restored": [],
-        }
+        "retired": [],
+        "deleted": [store.kb_scope("knowledge")],
+        "restored": [],
+    }
     assert folder_sync.list_folders(store.kb_scope("knowledge")) == []
     assert folder_sync.scope_retired(store.kb_scope("knowledge")) is True
     assert not os.path.exists(stored_path)
@@ -2142,9 +2142,7 @@ def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeyp
 
     scope = store.project_scope("p1")
     # the row delete has committed and another client has already created the id again
-    monkeypatch.setattr(
-        chat_history, "get_chat_project", lambda project_id: {"id": project_id}
-    )
+    monkeypatch.setattr(chat_history, "get_chat_project", lambda project_id: {"id": project_id})
 
     chat_history._delete_project_rag_sources("p1")
 
