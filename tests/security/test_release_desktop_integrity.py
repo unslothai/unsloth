@@ -37,6 +37,12 @@ def _step(workflow, job, name):
     return _steps(workflow, job)[_step_index(workflow, job, name)]
 
 
+def test_windows_release_build_restores_but_does_not_save_rust_cache():
+    cache = _step(_workflow(), "build", "Rust cache")
+    assert cache["with"]["workspaces"] == "studio/src-tauri -> target"
+    assert cache["with"]["save-if"] == "${{ matrix.platform != 'windows-latest' }}"
+
+
 def _write_fake_gh(path: Path):
     """Record gh arguments and return configured statuses."""
     path.write_text(
