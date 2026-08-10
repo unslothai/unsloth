@@ -142,18 +142,19 @@ def looks_like_quant(variant: Optional[str]) -> bool:
     """
     import re
 
+    from hub.utils.gguf import is_h3_denoiser_variant_key
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE
 
     if not variant:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
-    # A path-qualified variant key (``distilled/model-Q6_K``) is one of OUR advertised rows: a
-    # repo with several checkpoints at one quant keys each on its path. No foreign tag has that
-    # shape -- Ollama's is ``:latest``, LiteLLM's namespace sits before the colon -- so it must
-    # be read as an explicit checkpoint request and MISS when absent. Falling through instead
-    # served the caller a different checkpoint under the model id they asked for.
-    if "/" in label.replace("\\", "/"):
+    # A qualified variant key is one of OUR advertised rows: usually a path such as
+    # ``distilled/model-Q6_K``, but H3 uses a root-level full stem such as
+    # ``minimax_h3_ref2va_pruned-Q6_K``. It must be an explicit request and MISS when absent.
+    # Falling through instead served the caller a different checkpoint under the requested id.
+    normalized = label.replace("\\", "/")
+    if "/" in normalized or is_h3_denoiser_variant_key(normalized):
         return True
     return _GGUF_KNOWN_QUANT_RE.fullmatch(label) is not None
 
@@ -233,7 +234,7 @@ def _auth_denied(repo_id: str, hf_token: Optional[str]) -> bool:
     return False
 
 
-def _gguf_variants(siblings) -> dict[str, int]:
+def _gguf_variants(siblings, repo_id: str = "") -> dict[str, int]:
     """Quant label -> bytes the download will actually fetch.
 
     Mirrors list_gguf_variants for the selectable labels: companions (mmproj/MTP)
@@ -242,7 +243,7 @@ def _gguf_variants(siblings) -> dict[str, int]:
     quant, so the disk reserve is measured against what the worker fetches.
     """
     from hub.utils.gguf import extract_quant_label as canonical_quant_label
-    from hub.utils.gguf import gguf_variant_key
+    from hub.utils.gguf import _is_selectable_repo_gguf, gguf_variant_key
     from hub.utils.gguf_plan import build_gguf_variant_plans
     from utils.models.model_config import (
         _extract_quant_label,
@@ -251,7 +252,11 @@ def _gguf_variants(siblings) -> dict[str, int]:
         _is_mtp_drafter,
     )
 
-    siblings = list(siblings or [])
+    siblings = [
+        sibling
+        for sibling in (siblings or [])
+        if _is_selectable_repo_gguf(repo_id, getattr(sibling, "rfilename", "") or "")
+    ]
     plans = build_gguf_variant_plans(siblings)
     sizes: dict[str, int] = {}
     for sibling in siblings:
@@ -450,7 +455,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     # The same filter admission uses, not a bare .gguf test: mmproj, MTP drafters and
     # big-endian builds are companions, not quants. Answering otherwise would hold an
     # ordinary foreign label at model_download_busy for an unrelated download.
-    servable = bool(_gguf_variants(getattr(info, "siblings", None)))
+    servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
         _mark_not_servable(repo_id, hf_token)
     return servable
@@ -628,7 +633,7 @@ async def _admit_and_start(
         _release(active)
         return _gated_refusal(repo_id)
 
-    variants = _gguf_variants(getattr(info, "siblings", None))
+    variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
         _mark_not_servable(repo_id, hf_token)

@@ -63,6 +63,22 @@ def test_remove_empty_variant_dirs_never_touches_populated_folder(tmp_path):
     assert len(list((snap / "UD-IQ1_M").iterdir())) == 2
 
 
+def test_remove_empty_variant_dirs_does_not_fold_an_h3_stem_to_its_quant(tmp_path):
+    snap = tmp_path / "snapshots" / "rev0"
+    sibling_dir = snap / "UD-Q2_K_XL"
+    sibling_dir.mkdir(parents = True)
+    repo = SimpleNamespace(repo_path = str(tmp_path))
+
+    removed, failures = deletion._remove_empty_variant_dirs(
+        [repo],
+        "minimax_h3_fl2va_pruned-UD-Q2_K_XL",
+    )
+
+    assert removed == 0
+    assert failures == []
+    assert sibling_dir.is_dir()
+
+
 def test_remove_empty_variant_dirs_surfaces_real_failure(tmp_path, monkeypatch):
     _make_snapshot(tmp_path)
     repo = SimpleNamespace(repo_path = str(tmp_path))

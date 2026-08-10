@@ -15,7 +15,6 @@ import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
-  artifactForRepoId,
   canonicalKeyFor,
   catalogGroupFitsDevice,
   catalogToModelOptions,
@@ -221,31 +220,24 @@ const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
   "unsloth/MiniMax-H3-GGUF",
-  "leejet/MiniMax-H3-GGUF",
   ...OLD_PIPELINE_MODELS,
 ]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
 
-// H3 publishes the ordinary and reference denoisers as separately loadable GGUFs.
-// Curating both repos must keep their bundled file menus on the matching partition.
-assert.equal(
-  artifactForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
-    .ggufFilenamePrefix,
-  "minimax_h3_fl2va",
-);
-assert.equal(
-  artifactForRepoId("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
-    .ggufFilenamePrefix,
-  "minimax_h3_ref2va",
+// H3 publishes both denoiser partitions in its official bundle. One artifact lets the lister's
+// partition-aware labels expose both in Recommended and On Device without a community mirror.
+const h3Group = groupForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG);
+assert.ok(h3Group);
+assert.deepEqual(
+  h3Group.artifacts
+    .filter((artifact) => artifact.format === "gguf")
+    .map((artifact) => artifact.repoId),
+  ["unsloth/MiniMax-H3-GGUF"],
 );
 assert.equal(
   curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
-  "MiniMax H3 (GGUF - Text and frames)",
-);
-assert.equal(
-  curatedDisplayNameFor("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG),
-  "MiniMax H3 (GGUF - References)",
+  "MiniMax H3 (GGUF)",
 );
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────

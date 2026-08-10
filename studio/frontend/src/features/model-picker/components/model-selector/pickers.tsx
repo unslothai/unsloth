@@ -1179,7 +1179,6 @@ function GgufVariantExpander({
   onDevice = false,
   allowPin = false,
   onHasVision,
-  filenamePrefix,
 }: {
   repoId: string;
   /** Snapshot the cached listing pinned this repo to, if any. */
@@ -1221,8 +1220,6 @@ function GgufVariantExpander({
   allowPin?: boolean;
   /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
-  /** A curated artifact may expose one partition of a bundled GGUF repo. */
-  filenamePrefix?: string;
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
@@ -1276,41 +1273,8 @@ function GgufVariantExpander({
       .then((res) => {
         if (canceled) return;
         const normalized = normalizeGgufVariantsResponse(res);
-        setVariants(
-          filenamePrefix
-            ? normalized.variants.filter((variant) =>
-                variant.filename
-                  .replace(/\\/g, "/")
-                  .split("/")
-                  .at(-1)
-                  ?.toLowerCase()
-                  .startsWith(filenamePrefix.toLowerCase()),
-              )
-            : normalized.variants,
-        );
-        // Only if it survived the filter. defaultVariant is a QUANT key chosen across the
-        // WHOLE repo, and a prefix subset need not contain it: the H3 catalog's ref2va group
-        // offers 6 quants against fl2va's 8. Kept as-is, effectiveRecommended's
-        // budget-unavailable branch returns a key with no visible row, so nothing reads as
-        // recommended and the sorter falls through to largest-first. Null says "no
-        // recommendation for this subset", which is the truth; inventing one is
-        // pick_best_gguf's job and it never saw the subset.
-        setDefaultVariant(
-          filenamePrefix &&
-            normalized.defaultVariant != null &&
-            !normalized.variants.some(
-              (variant) =>
-                variant.quant === normalized.defaultVariant &&
-                variant.filename
-                  .replace(/\\/g, "/")
-                  .split("/")
-                  .at(-1)
-                  ?.toLowerCase()
-                  .startsWith(filenamePrefix.toLowerCase()),
-            )
-            ? null
-            : normalized.defaultVariant,
-        );
+        setVariants(normalized.variants);
+        setDefaultVariant(normalized.defaultVariant);
         setHasVision(normalized.hasVision);
         onHasVision?.(normalized.hasVision);
         setNativeContext(normalized.contextLength);
@@ -1328,7 +1292,7 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken, filenamePrefix]);
+  }, [repoId, localSource, refreshKey, hfToken]);
 
   // Covers Unix absolute (/), Windows drive (C:\, D:/), UNC (\\server), relative (./, ../), tilde (~/)
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2146,13 +2110,6 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  const curatedGgufFilenamePrefix = useCallback(
-    (repoId: string) =>
-      catalog
-        ? artifactForRepoId(repoId, catalog)?.artifact.ggufFilenamePrefix
-        : undefined,
-    [catalog],
-  );
   // What the backend actually holds, not the dropdown highlight, which can be a
   // staged pick. The selection alone was wrong: an image or video load evicts
   // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
@@ -3987,7 +3944,6 @@ export function HubModelPicker({
         {expanderOpen && (
           <GgufVariantExpander
             repoId={c.repo_id}
-            filenamePrefix={curatedGgufFilenamePrefix(c.repo_id)}
             loadId={c.load_id}
             cachePath={c.cache_path}
             onDevice={true}
@@ -5129,7 +5085,6 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 repoId={id}
-                                filenamePrefix={curatedGgufFilenamePrefix(id)}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
@@ -5250,7 +5205,6 @@ export function HubModelPicker({
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               repoId={id}
-                              filenamePrefix={curatedGgufFilenamePrefix(id)}
                               onSelect={onSelect}
                               resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
@@ -5360,7 +5314,6 @@ export function HubModelPicker({
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 repoId={id}
-                                filenamePrefix={curatedGgufFilenamePrefix(id)}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}

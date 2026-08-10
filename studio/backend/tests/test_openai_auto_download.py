@@ -257,9 +257,12 @@ def test_looks_like_quant_separates_quants_from_foreign_tags():
     assert auto_dl.looks_like_quant("UD-Q6_K_XL")
     assert auto_dl.looks_like_quant("q4_k_m")
     assert auto_dl.looks_like_quant("F16")
+    assert auto_dl.looks_like_quant("minimax_h3_ref2va_pruned-Q6_K")
     # Ollama-style tags are not quants and must not read as a GGUF reference.
     assert not auto_dl.looks_like_quant("latest")
     assert not auto_dl.looks_like_quant("8b")
+    assert not auto_dl.looks_like_quant("8b-instruct-q4_0")
+    assert not auto_dl.looks_like_quant("7b-chat-v1.5-q8_0")
     assert not auto_dl.looks_like_quant(None)
 
 

@@ -20,6 +20,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    is_qualified_gguf_variant_key,
     quant_token_with_bpw,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
@@ -135,9 +136,13 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     Returns (count removed, removal failures other than a concurrent refill)."""
     # A qualified variant key names its own folder; its quant token belongs to sibling
     # checkpoints too, so it must not reach for a <quant>/ dir it does not own. Qualification
-    # has two shapes: a path (``distilled/...-Q6_K``) and a bpw modifier (``IQ4_XS-3.53bpw``,
-    # whose token-only ``IQ4_XS/`` folder, if it exists, is a different build's).
-    qualified = "/" in variant or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    # includes a path (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier
+    # (``IQ4_XS-3.53bpw``, whose token-only ``IQ4_XS/`` folder, if it exists, is a
+    # different build's).
+    qualified = (
+        is_qualified_gguf_variant_key(variant)
+        or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
+    )
     variant_key = (
         variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
     )
