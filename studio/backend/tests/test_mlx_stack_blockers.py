@@ -262,3 +262,57 @@ def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
     assert blocker.endswith("...)"), blocker
     # Still says which module and which error, which is the whole point of the line.
     assert blocker.startswith("mlx.core does not import (ImportError:")
+
+
+def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
+    """Version metadata is read from disk, and an interrupted install can leave junk."""
+    junk = "1.0\n" + "y" * 500
+    _fake_versions(monkeypatch, {"mlx": junk, "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
+    blocker = mr.mlx_stack_blockers()[0]
+    assert "\n" not in blocker
+    assert len(blocker) < 200, f"{len(blocker)} chars reaches the tooltip"
+    assert blocker.startswith("mlx 1.0 y")
+
+
+# A repair that installed and then failed its own validation has still changed the
+# environment, so the verdict beside it was measured against a stack that no longer exists:
+# it can name a package the install has since put there.
+def _fake_hardware(monkeypatch, calls: list[str]):
+    """Stand the real hardware module's re-detection down, keeping the module identity."""
+    from contextlib import nullcontext
+
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "detect_hardware", lambda: calls.append("detect"))
+    monkeypatch.setattr(hw, "owning_detection_epoch", lambda epoch: nullcontext())
+    monkeypatch.setattr(hw, "current_detection_epoch", lambda: None)
+    return hw
+
+
+def test_a_repair_that_failed_validation_still_remeasures(monkeypatch):
+    called: list[str] = []
+    _fake_hardware(monkeypatch, called)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda: False)
+    monkeypatch.setattr(mr, "_environment_mutated", True)
+    mr._run_repair_and_redetect()
+    assert called == ["detect"], "the stale detail was left describing a replaced stack"
+
+
+def test_a_repair_that_never_ran_does_not_remeasure(monkeypatch):
+    """Nothing changed, so re-running the mlx imports would cost latency for nothing."""
+    called: list[str] = []
+    _fake_hardware(monkeypatch, called)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda: False)
+    monkeypatch.setattr(mr, "_environment_mutated", False)
+    mr._run_repair_and_redetect()
+    assert called == []
+
+
+def test_a_successful_repair_still_remeasures(monkeypatch):
+    called: list[str] = []
+    _fake_hardware(monkeypatch, called)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda: True)
+    monkeypatch.setattr(mr, "_environment_mutated", True)
+    mr._run_repair_and_redetect()
+    assert called == ["detect"]

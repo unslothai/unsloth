@@ -132,6 +132,10 @@ _repair_started_at: Optional[float] = None
 _WORKER_BUDGET_S = _REPAIR_TIMEOUT_S + 300
 # Indirected so the tests can drive the budget without sleeping through it.
 _repair_clock = time.monotonic
+# True once the install subprocess has actually run, which is what tells a repair that
+# changed the environment and then failed its own validation apart from one that never
+# touched it. Single-writer: the _attempted latch allows one repair per process.
+_environment_mutated = False
 
 
 def is_apple_silicon() -> bool:
@@ -148,17 +152,27 @@ def mlx_available() -> bool:
 
 # An import error is free-form and can be a paragraph: a compiled-against-the-wrong-
 # transformers ImportError carries the hint text, and a dyld failure carries a list of
-# paths tried. The blocker line ends up in /api/health and in the Train row's native
-# tooltip, neither of which can render a paragraph, so it is folded to one line and cut.
-_BLOCKER_TEXT_CAP = 120
+# paths tried, and an interrupted install can leave malformed version metadata behind.
+# The blocker line ends up in /api/health and in the Train row's native tooltip, neither
+# of which can render a paragraph, so everything read from outside is folded and cut.
+# Each piece read from outside, and the finished line. Both, because a blocker can hold
+# two of them: a malformed version and the error parsing it are individually short enough
+# and together are not.
+_BLOCKER_PART_CAP = 80
+_BLOCKER_LINE_CAP = 200
+
+
+def _bounded(text: str, cap: int = _BLOCKER_PART_CAP) -> str:
+    """One line, capped, with an ellipsis marking anything dropped."""
+    folded = " ".join(str(text).split())
+    if len(folded) > cap:
+        folded = folded[: cap - 3].rstrip() + "..."
+    return folded
 
 
 def _one_line(exc: BaseException) -> str:
-    """An exception's message as one bounded line, ellipsis marking anything dropped."""
-    text = " ".join(str(exc).split())
-    if len(text) > _BLOCKER_TEXT_CAP:
-        text = text[: _BLOCKER_TEXT_CAP - 3].rstrip() + "..."
-    return text
+    """An exception's message as one bounded line."""
+    return _bounded(str(exc))
 
 
 def _mlx_runtime_import_blocker() -> Optional[str]:
@@ -196,10 +210,11 @@ def _mlx_version_blockers() -> list[str]:
             continue
         try:
             if Version(installed) < Version(minimum):
-                blockers.append(f"{name} {installed} is older than {minimum}")
+                blockers.append(f"{name} {_bounded(installed)} is older than {minimum}")
         except Exception as exc:
             blockers.append(
-                f"{name} {installed} is unreadable ({type(exc).__name__}: {_one_line(exc)})"
+                f"{name} {_bounded(installed)} is unreadable "
+                f"({type(exc).__name__}: {_one_line(exc)})"
             )
     return blockers
 
@@ -219,9 +234,9 @@ def mlx_stack_blockers() -> list[str]:
     """
     versions = _mlx_version_blockers()
     if versions:
-        return versions
+        return [_bounded(line, _BLOCKER_LINE_CAP) for line in versions]
     blocker = _mlx_runtime_import_blocker()
-    return [blocker] if blocker else []
+    return [_bounded(blocker, _BLOCKER_LINE_CAP)] if blocker else []
 
 
 def mlx_stack_available() -> bool:
@@ -404,6 +419,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     Best-effort; returns True iff the resulting stack meets unsloth-zoo's minimums
     (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held
     at its pinned version so the install can never upgrade it underneath Unsloth."""
+    global _environment_mutated
     # Prepare the constraint inside the try: this runs on a daemon thread, so an
     # exception here (e.g. tempfile.mkstemp failing on a full disk or bad TMPDIR)
     # must leave Unsloth chat-only, not crash the background self-heal thread.
@@ -468,6 +484,9 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             return False
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
+    # The install has run, so the environment is not the one detection measured, whatever
+    # the validation below says about it.
+    _environment_mutated = True
     importlib.invalidate_caches()
     if not mlx_stack_available():
         logger.warning(
@@ -480,7 +499,14 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
 
 
 def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
-    if not attempt_mlx_repair():
+    repaired = attempt_mlx_repair()
+    # Re-detect after a failed validation too, as long as the install ran. That path has
+    # already changed the environment, and the verdict beside it was measured before the
+    # change: its detail can name a package the install has since put there, or an import
+    # error the install has since replaced. The verdict itself stays chat-only, correctly.
+    # A repair that never ran (opted out, uv refused, subprocess died) is skipped, since
+    # re-detecting there would re-run the mlx imports on a stack nothing has touched.
+    if not repaired and not _environment_mutated:
         return
     try:
         from utils.hardware import hardware as hw
@@ -495,10 +521,18 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
             # existed and the _attempted latch blocks any later repair. Re-detect under
             # the live epoch, or a now-capable Mac stays chat-only until a restart.
             hw.detect_hardware()
-        logger.info(
-            "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
-            hw.CHAT_ONLY,
-        )
+        if repaired:
+            logger.info(
+                "MLX self-heal succeeded; Train/Export enabled (reload the page). "
+                "chat_only=%s",
+                hw.CHAT_ONLY,
+            )
+        else:
+            logger.info(
+                "MLX self-heal installed but the stack is still unusable; re-measured so "
+                "the reason matches what is now on disk: %s",
+                hw.CHAT_ONLY_DETAIL,
+            )
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("MLX installed but hardware re-detection failed: %s", exc)
 
