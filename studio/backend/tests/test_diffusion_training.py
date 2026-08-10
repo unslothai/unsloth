@@ -696,6 +696,8 @@ def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch
     # And an image family never sees that one: its stills are exactly what it trains on.
     r = client.post("/api/train/diffusion/start", json = _BODY)
     assert r.status_code == 200, r.text
+
+
 @pytest.mark.parametrize(
     ("hf_token", "authorization"),
     [(None, None), ("  hf_test  ", "Bearer hf_test")],

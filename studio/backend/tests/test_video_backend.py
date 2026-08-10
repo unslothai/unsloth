@@ -6493,6 +6493,8 @@ def test_the_video_sidecar_records_the_negative_prompt_that_ran(monkeypatch, tmp
 
     assert saved and saved[-1]["negative_prompt"] is None
     assert saved[-1]["prompt"] == "a fox runs through snow"
+
+
 def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):
     """An H3 native run is an sd-cli run out of the managed tree, so it takes the same reader claim
     the one-shot image path takes. Without it an image-engine request sees no readers, starts an
