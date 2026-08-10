@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,8 +47,11 @@ ART.mkdir(parents = True, exist_ok = True)
 PLAYWRIGHT_BROWSER = os.environ.get("STUDIO_PLAYWRIGHT_BROWSER", "chromium").lower()
 PLAYWRIGHT_CHANNEL = os.environ.get("STUDIO_PLAYWRIGHT_CHANNEL") or None
 
-# The web check fires 5s after mount and the llama.cpp one after 1s.
+# The web check fires 5s after mount and the llama.cpp one after 1s; this is
+# the ceiling on waiting for them, not the wait itself.
 SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
+# What the cards need after they mount, to animate in and lay out.
+SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
 
 LATEST = "2099.1.0"
 
@@ -312,7 +316,20 @@ def measure(page, label: str) -> dict:
 
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
-    page.wait_for_timeout(SETTLE_MS)
+    # Both cards are on a timer, the app one at 5s and llama.cpp at 1s, so wait
+    # for them rather than for the worst case: this step runs 24 times and the
+    # job it shares has minutes, not tens of minutes, to spare.
+    for testid in ("web-update-banner", "llama-update-banner"):
+        try:
+            page.wait_for_selector(
+                f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS
+            )
+        except PlaywrightTimeoutError:
+            # Let the caller's own checks report the missing card; a bare
+            # timeout here would say nothing about which one or where.
+            pass
+    # The banners animate in, and a box measured mid-transition is not the box.
+    page.wait_for_timeout(SETTLED_MS)
     landed = page.evaluate("location.pathname")
     if landed.startswith(("/login", "/onboarding", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {landed}")
