@@ -4156,7 +4156,9 @@ class VideoBackend:
                     # and take it out of the rotation. Nothing else changes: the encoder and the VAEs
                     # keep their hooks and still offload around it.
                     from .diffusion_prequant import pin_prequantized_module
-                    denoiser_pinned = pin_prequantized_module(manager, denoiser, device, logger = logger)
+                    denoiser_pinned = pin_prequantized_module(
+                        manager, denoiser, device, logger = logger
+                    )
                 elif denoiser is not None and effective_speed != SPEED_OFF:
                     # The RELEASED bfloat16 denoiser, for a different reason: not correctness, speed.
                     # Which is why speed=off skips this branch and keeps the rotation: taking a module

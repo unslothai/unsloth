@@ -1090,7 +1090,14 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
 
 
-def _h3_placement_probe(monkeypatch, *, free_gb, te_gb, denoiser_gb, speed = "default"):
+def _h3_placement_probe(
+    monkeypatch,
+    *,
+    free_gb,
+    te_gb,
+    denoiser_gb,
+    speed = "default",
+):
     """Drive just the placement decision: does this load install the CPU-offload rotation?"""
     from core.inference import video as vid
 
@@ -1123,11 +1130,8 @@ def test_speed_off_keeps_the_rotation_even_on_a_card_that_could_hold_everything(
     the rotation's ability to absorb a much longer clip for throughput. An explicit speed_mode=off
     is the one request that says do not make that trade."""
     from core.inference import video as vid
-
     assert (
-        _h3_placement_probe(
-            monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66, speed = vid.SPEED_OFF
-        )
+        _h3_placement_probe(monkeypatch, free_gb = 183, te_gb = 40, denoiser_gb = 66, speed = vid.SPEED_OFF)
         is False
     )
 
