@@ -1105,7 +1105,12 @@ class SdCppDiffusionBackend:
                 repo, names, shas.get(repo)
             ).issuperset(names):
                 continue
-            repo_bytes = int(sum(sizes.get((repo, n), 0) for n in names))
+            # Sized from what will really transfer: a family whose VAE or text encoder shares the
+            # checkpoint's repo would otherwise charge a second quant for assets already on disk.
+            transferring = DiffusionBackend._files_missing_from_live_root(
+                repo, names, shas.get(repo)
+            )
+            repo_bytes = int(sum(sizes.get((repo, n), 0) for n in transferring))
             total += repo_bytes
             is_checkpoint_repo = repo == fetch_repo_id
             entries.append(
@@ -1115,8 +1120,12 @@ class SdCppDiffusionBackend:
                     "bytes": repo_bytes,
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
                     "gguf_filename": gguf_filename if is_checkpoint_repo else None,
+                    # Zero once the checkpoint itself is cached: the entry stays, but its bytes
+                    # are all companion now, and the row must not be charged for the GGUF twice.
                     "gguf_bytes": (
-                        int(sizes.get((repo, gguf_filename), 0)) if is_checkpoint_repo else 0
+                        int(sizes.get((repo, gguf_filename), 0))
+                        if is_checkpoint_repo and gguf_filename in transferring
+                        else 0
                     ),
                 }
             )

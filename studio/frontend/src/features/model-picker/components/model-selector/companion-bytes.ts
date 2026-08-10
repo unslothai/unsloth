@@ -49,7 +49,7 @@ function resolverId(resolve: CompanionBytesResolver): number {
 export function useCompanionBytes(
   repoId: string,
   ggufFilenames: string[],
-): ReadonlyMap<string, number> {
+): { bytes: ReadonlyMap<string, number>; pending: boolean } {
   const resolve = useContext(CompanionBytesContext);
   // The rows AND the settings they were planned under, so a precision change cannot leave the
   // previous answer satisfying the check below while its replacement is still in flight.
@@ -82,5 +82,11 @@ export function useCompanionBytes(
   }, [resolve, key, repoId]);
 
   // Keyed, so an answer for rows this render no longer shows is dropped instead of applied to them.
-  return answer !== null && answer.key === key ? answer.bytes : NO_COMPANION_BYTES;
+  const settled = answer !== null && answer.key === key;
+  // Pending is not the same as "no companions": until the batch lands, the checkpoint size on its
+  // own is the very understatement this exists to remove, so a row must not offer it as the total.
+  return {
+    bytes: settled ? answer.bytes : NO_COMPANION_BYTES,
+    pending: key !== null && !settled,
+  };
 }

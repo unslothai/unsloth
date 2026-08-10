@@ -2073,6 +2073,39 @@ class DiffusionBackend:
         return wanted if _hits(fallback_root) == wanted else set()
 
     @staticmethod
+    def _files_missing_from_live_root(
+        repo_id: str, files: list[str], revision: Optional[str] = None
+    ) -> set[str]:
+        """Of ``files``, the ones the LIVE cache root does not already hold at ``revision``.
+
+        For SIZING only; ``_files_already_cached`` still decides what to stage, and stays
+        all-or-nothing because a set split across the two roots is complete in neither. A retained
+        entry is pinned to ``hub_cache_dir()``, so what it actually transfers is what that one root
+        is missing: an LTX-2.3 or MiniMax-H3 entry keeps its cached companions in the file list for
+        job adoption while a second quant of the same family is charged only for the checkpoint.
+
+        Everything, on any doubt: an unreadable cache must over-advertise, never under-advertise."""
+        wanted = set(files)
+        if not revision or not wanted:
+            return wanted
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            root = hub_cache_dir()
+        except Exception:  # noqa: BLE001 — no hub package / unreadable settings: charge for it all
+            return wanted
+        missing = set()
+        for name in wanted:
+            try:
+                hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
+            except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
+                missing.add(name)
+                continue
+            if not (isinstance(hit, str) and Path(hit).is_file()):
+                missing.add(name)
+        return missing
+
+    @staticmethod
     def _current_sha(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
         """``repo_id``'s current commit, or None when the Hub does not say.
 

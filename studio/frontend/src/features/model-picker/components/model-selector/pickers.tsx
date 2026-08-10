@@ -1335,7 +1335,8 @@ function GgufVariantExpander({
       isLocalPath ? [] : (displayVariants ?? []).map((variant) => variant.filename),
     [isLocalPath, displayVariants],
   );
-  const companionBytes = useCompanionBytes(repoId, companionQueryFilenames);
+  const { bytes: companionBytes, pending: companionBytesPending } =
+    useCompanionBytes(repoId, companionQueryFilenames);
   const showsCompanionBytes = useMemo(
     () => [...companionBytes.values()].some((bytes) => bytes > 0),
     [companionBytes],
@@ -1423,6 +1424,8 @@ function GgufVariantExpander({
         const expectedBytes = ggufVariantExpectedBytes(v);
         // A folder has no download to resume; a quant short a shard has no files to load.
         const unusableLocal = isLocalPath && v.partial === true;
+        // A downloaded quant costs nothing more, so it stays clickable while the batch runs.
+        const awaitingSize = companionBytesPending && v.downloaded !== true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
@@ -1430,7 +1433,7 @@ function GgufVariantExpander({
             <button
               type="button"
               {...variantList.getOptionProps(variantOptionKey, false)}
-              disabled={unusableLocal}
+              disabled={unusableLocal || awaitingSize}
               onClick={() =>
                 handleVariantClick(
                   v.quant,
@@ -1441,7 +1444,7 @@ function GgufVariantExpander({
               }
               className={cn(
                 "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
-                unusableLocal &&
+                (unusableLocal || awaitingSize) &&
                   "cursor-default opacity-50 hover:bg-transparent dark:hover:bg-transparent",
               )}
             >
@@ -1488,9 +1491,13 @@ function GgufVariantExpander({
                 )}
                 <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                   <SizeText
-                    value={formatBytes(
-                      v.size_bytes + (companionBytes.get(v.filename) ?? 0),
-                    )}
+                    value={
+                      awaitingSize
+                        ? "…"
+                        : formatBytes(
+                            v.size_bytes + (companionBytes.get(v.filename) ?? 0),
+                          )
+                    }
                   />
                 </span>
               </span>

@@ -3045,6 +3045,53 @@ def test_a_cached_precast_encoder_is_neither_staged_nor_charged(monkeypatch):
     )
 
 
+def test_a_second_ltx23_quant_is_not_charged_for_the_extras_it_shares(monkeypatch):
+    """The 2.3 extras live in the checkpoint's own entry, so the all-or-nothing repo filter keeps
+    that entry whole once a new GGUF is missing. Sized from the whole entry it charged the second
+    quant 3.5 GB for VAEs and connectors the first one already fetched."""
+    from core.inference.diffusion import DiffusionBackend
+    from models.inference import DiffusionDownloadPlanResponse
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _PlanInfo(
+                {
+                    "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+                    "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+                }[repo_id],
+                sha = f"sha-{repo_id}",
+            )
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    # Everything in the checkpoint repo except the GGUF itself came with the first quant.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_missing_from_live_root",
+        staticmethod(
+            lambda repo_id, files, revision = None: (
+                {n for n in files if n.endswith(".gguf")}
+                if repo_id == "unsloth/LTX-2.3-GGUF"
+                else set(files)
+            )
+        ),
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+    )
+
+    ckpt = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/LTX-2.3-GGUF")
+    # The file list is untouched, so the scoped job still matches; only the sizing narrows.
+    assert "vae/ltx-2.3-22b-distilled_video_vae.safetensors" in ckpt["files"]
+    assert ckpt["bytes"] == 12_000_000_000
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == (
+        plan["total_bytes"] - 12_000_000_000
+    )
+    assert "_file_sizes" not in ckpt
+
+
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):
     # No fp8 request means the dense encoder IS the encoder: dropping it would break the load.
     _cuda_bf16_target(monkeypatch)

@@ -111,6 +111,23 @@ test("an answer is scoped to the settings it was planned under", () => {
   );
 });
 
+test("a row cannot be picked before its size is known", () => {
+  // Until the batch lands there is no companion figure, so the row would show the GGUF-only size
+  // and still be clickable: picking there stages the full plan, which is the original bug.
+  assert.ok(
+    pickers.includes("const awaitingSize = companionBytesPending && v.downloaded !== true;"),
+    "rows must know they are still waiting on a size",
+  );
+  assert.ok(
+    pickers.includes("disabled={unusableLocal || awaitingSize}"),
+    "a row awaiting its size must not be selectable",
+  );
+  assert.ok(
+    /awaitingSize\s*\?\s*"…"/.test(pickers),
+    "and must not present the checkpoint-only number as the total",
+  );
+});
+
 test("an abandoned expander stops its batch", () => {
   // Collapsing must cancel the request, not just the setState: one abandoned 63-quant batch keeps
   // the backend planning every candidate against the Hub.

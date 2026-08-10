@@ -1558,7 +1558,16 @@ class VideoBackend:
                 return 0
             entry = entries.setdefault(
                 repo,
-                {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None, "gguf_bytes": 0},
+                {
+                    "repo_id": repo,
+                    "files": [],
+                    "bytes": 0,
+                    "gguf_filename": None,
+                    "gguf_bytes": 0,
+                    # Kept for _drop_cached_entries, which re-totals from the files that are
+                    # actually missing; stripped before the plan is returned.
+                    "_file_sizes": {},
+                },
             )
             seen = set(entry["files"])
             added = 0
@@ -1568,6 +1577,7 @@ class VideoBackend:
                 seen.add(name)
                 entry["files"].append(name)
                 entry["bytes"] += int(size)
+                entry["_file_sizes"][name] = int(size)
                 added += int(size)
                 # Per file: an LTX-2.3 pick puts its VAEs in this same entry, as companions.
                 if gguf and name == gguf:
@@ -1644,17 +1654,29 @@ class VideoBackend:
 
         Entries are what the Downloads panel lists, so a repo on disk must not read as a download,
         and a second quant of the same family must not be charged again for the encoders and VAEs
-        the first one fetched. The total is recomputed, never decremented, so it cannot drift."""
+        the first one fetched. A retained entry keeps its whole file list, which the scoped job key
+        is matched on, but is sized from the files that will really transfer: an LTX-2.3 or
+        MiniMax-H3 checkpoint shares one entry with its companions, so all-or-nothing sizing
+        charged a second quant for VAEs and an encoder already on disk. The total is recomputed,
+        never decremented, so it cannot drift from the rows that remain."""
         from core.inference.diffusion import DiffusionBackend
 
-        kept = [
-            entry
-            for entry in entries
-            if not entry["files"]
-            or not DiffusionBackend._files_already_cached(
-                entry["repo_id"], entry["files"], shas.get(entry["repo_id"])
-            ).issuperset(entry["files"])
-        ]
+        kept: list[dict[str, Any]] = []
+        for entry in entries:
+            sizes = entry.pop("_file_sizes", None) or {}
+            files, repo = entry["files"], entry["repo_id"]
+            if files and DiffusionBackend._files_already_cached(
+                repo, files, shas.get(repo)
+            ).issuperset(files):
+                continue
+            missing = DiffusionBackend._files_missing_from_live_root(
+                repo, files, shas.get(repo)
+            )
+            if sizes and missing != set(files):
+                entry["bytes"] = int(sum(sizes.get(name, 0) for name in missing))
+                if entry["gguf_filename"] not in missing:
+                    entry["gguf_bytes"] = 0
+            kept.append(entry)
         return {"entries": kept, "total_bytes": int(sum(e["bytes"] for e in kept))}
 
     @staticmethod
@@ -1700,11 +1722,13 @@ class VideoBackend:
                         "bytes": 0,
                         "gguf_filename": None,
                         "gguf_bytes": 0,
+                        "_file_sizes": {},
                     },
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
                     entry["bytes"] += size
+                    entry["_file_sizes"][filename] = size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
                     entry["gguf_bytes"] = size
