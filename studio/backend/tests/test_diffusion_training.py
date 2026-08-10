@@ -252,6 +252,46 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_the_joint_losses_reach_status_and_history():
+    """MiniMax-H3 trains video and audio against one objective, and the combined loss can hold
+    steady while one half degrades. The trainer emits ``video_loss`` / ``audio_loss`` per step
+    for exactly that, so the service has to carry them: an emission the queue drops is a
+    diagnostic that silently does not exist.
+
+    Also pinned here: they stay index-aligned with ``steps``. A family that reports only the
+    combined loss contributes nulls rather than short arrays, so the two curves can be drawn
+    against the same x axis as the loss."""
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {
+            "type": "progress",
+            "step": 1,
+            "total_steps": 2,
+            "loss": 0.5,
+            "video_loss": 0.4,
+            "audio_loss": 0.1,
+        }
+    )
+    st = svc.status()
+    assert st["video_loss"] == 0.4 and st["audio_loss"] == 0.1
+    assert st["metric_video_loss"] == [0.4] and st["metric_audio_loss"] == [0.1]
+
+    # A step that reports only the combined loss keeps the series aligned rather than short.
+    svc._apply_event({"type": "progress", "step": 2, "total_steps": 2, "loss": 0.4})
+    st = svc.status()
+    assert st["metric_steps"] == [1, 2]
+    assert len(st["metric_video_loss"]) == len(st["metric_steps"])
+    assert len(st["metric_audio_loss"]) == len(st["metric_steps"])
+
+    # And a single-modality family reports neither, so the whole series is null and the chart
+    # can tell "not a joint run" from "a joint run whose audio loss was zero".
+    solo = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    solo._apply_event({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.5})
+    st = solo.status()
+    assert st["video_loss"] is None and st["audio_loss"] is None
+    assert st["metric_video_loss"] == [None] and st["metric_audio_loss"] == [None]
+
+
 def test_progress_nulls_non_finite_floats_for_strict_json():
     # A divergent step can push loss / avg_loss / learning_rate to NaN or Infinity, which strict JSON forbids, so the service must null them.
     import json

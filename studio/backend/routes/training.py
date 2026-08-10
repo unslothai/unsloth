@@ -2965,6 +2965,8 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         loss = snap.pop("metric_loss", []),
         lr = snap.pop("metric_lr", []),
         grad_norm = snap.pop("metric_grad_norm", []),
+        video_loss = snap.pop("metric_video_loss", []),
+        audio_loss = snap.pop("metric_audio_loss", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
 
@@ -3200,6 +3202,21 @@ def _listed_dataset_clip_count(summary: DiffusionDatasetSummary) -> int:
         return 0
 
 
+def _listed_dataset_trains_clips(summary: DiffusionDatasetSummary) -> bool:
+    """Whether a listed folder could actually start a clip run, not merely whether it holds clips.
+
+    The same two conditions ``_image_dataset_refusal`` applies at Start, read off the summary the
+    listing already built: clips present, and no stills mixed in with them. Kept beside the count
+    helper above so the advertisement and the refusal cannot drift into disagreeing about which
+    folders a clip family can use."""
+    if _listed_dataset_clip_count(summary) <= 0:
+        return False
+    try:
+        return int(getattr(summary, "image_count", 0) or 0) <= 0
+    except (TypeError, ValueError):  # a non-numeric count is no evidence either way; be strict
+        return False
+
+
 def _ui_trainable_families(datasets: list[DiffusionDatasetSummary]) -> list[dict]:
     """The trainable families to ADVERTISE in the Train picker, given the datasets this same
     response lists as selectable.
@@ -3216,11 +3233,17 @@ def _ui_trainable_families(datasets: list[DiffusionDatasetSummary]) -> list[dict
     no follow-up edit: the moment the dataset layer lists a folder of clips, the family that
     trains on clips is advertised alongside it, and if the clip listing were ever withdrawn the
     advertisement withdraws with it. Nothing here decides whether clips are listable; it only
-    reads what the listing already said."""
+    reads what the listing already said.
+
+    "Has clips" is not enough on its own. ``_image_dataset_refusal`` turns a MIXED folder away
+    from a clip family, so counting clips alone advertises the family on the strength of a
+    folder Start will then refuse -- an option that still cannot be completed, just one that
+    fails later and with a different message. The qualifying folder is one that would survive
+    that refusal: clips and no stills."""
     from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES, family_train_infos
 
     infos = family_train_infos()
-    if any(_listed_dataset_clip_count(s) > 0 for s in datasets):
+    if any(_listed_dataset_trains_clips(s) for s in datasets):
         return infos
     return [
         i for i in infos if str(i.get("name") or "").strip().lower() not in CLIP_TRAINED_FAMILIES
