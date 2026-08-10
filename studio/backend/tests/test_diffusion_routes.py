@@ -1854,7 +1854,12 @@ def test_one_producer_per_listing_when_candidates_race():
     lock = threading.Lock()
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             with lock:
                 calls.append(repo_id)
             # Slow enough that the other three are inside plan_model_info while this one produces.
@@ -1868,10 +1873,7 @@ def test_one_producer_per_listing_when_candidates_race():
     async def _race():
         with shared_plan_metadata():
             return await asyncio.gather(
-                *(
-                    asyncio.to_thread(plan_model_info, api, "unsloth/LTX-2.3-GGUF")
-                    for _ in range(4)
-                )
+                *(asyncio.to_thread(plan_model_info, api, "unsloth/LTX-2.3-GGUF") for _ in range(4))
             )
 
     seen = asyncio.run(_race())
