@@ -1892,7 +1892,7 @@ export function AppSidebar() {
                   className={cn(
                     // min-w-0 so a narrow sidebar truncates the wordmark instead of pushing the search icon over.
                     "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
-                    chatDisabled && "pointer-events-none opacity-50",
+                    chatDisabled && "pointer-events-none",
                   )}
                   aria-label={t("shell.aria.home")}
                   aria-disabled={chatDisabled}

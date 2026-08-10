@@ -98,6 +98,8 @@ def test_desktop_artwork_uses_plain_unsloth_lockups() -> None:
     sidebar = read(FRONTEND / "src/components/app-sidebar.tsx")
     assert "/circle-logo-small.png" in sidebar
     assert "unsloth" in sidebar
+
+    assert 'chatDisabled && "pointer-events-none opacity-50"' not in sidebar
     assert not (FRONTEND / "public/studio.png").exists()
 
     branding = TAURI / "windows/branding"
