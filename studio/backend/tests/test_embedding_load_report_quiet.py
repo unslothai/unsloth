@@ -121,3 +121,67 @@ def test_a_caller_that_already_disabled_bars_stays_disabled():
         assert enabled_probe() is False
     finally:
         hf_logging.enable_progress_bar()
+
+
+def test_a_concurrent_thread_is_not_captured():
+    # The filters sit on process-global loggers; another in-process load must keep
+    # its own report rather than have it swallowed and attributed to the embedder.
+    import threading
+
+    log, sink = _attach_sink()
+    try:
+        with _quiet_transformers_load() as report:
+            t = threading.Thread(target = lambda: log.warning(_SERIOUS))
+            t.start()
+            t.join()
+        assert sink.messages == [_SERIOUS], sink.messages
+        assert report.reports == []
+    finally:
+        log.removeHandler(sink)
+        log.propagate = True
+
+
+def test_reports_are_re_emitted_when_the_load_fails():
+    # A load that raises after transformers wrote its report is exactly when a
+    # MISSING line matters, so it must not be lost with the exception.
+    from core.rag import embeddings as emb
+
+    log, sink = _attach_sink()
+    emitted = []
+    real_warning = emb.logger.warning
+    emb.logger.warning = lambda msg, *a, **k: emitted.append(msg % a if a else msg)
+    try:
+        try:
+            with _quiet_transformers_load() as report:
+                try:
+                    log.warning(_SERIOUS)
+                    raise RuntimeError("weight tying blew up")
+                finally:
+                    emb._emit_load_reports(report)
+        except RuntimeError:
+            pass
+        assert any("MISSING" in m for m in emitted), emitted
+    finally:
+        emb.logger.warning = real_warning
+        log.removeHandler(sink)
+        log.propagate = True
+
+
+def test_a_hub_only_progress_disable_survives():
+    # transformers' enable_progress_bar() also enables the Hub's bars, which would
+    # undo unsloth's patch_ipykernel_hf_xet disable.
+    from huggingface_hub.utils import (
+        are_progress_bars_disabled,
+        disable_progress_bars,
+        enable_progress_bars,
+    )
+    from transformers.utils import logging as hf_logging
+
+    hf_logging.enable_progress_bar()   # transformers on, Hub-only disable after it
+    disable_progress_bars()
+    try:
+        with _quiet_transformers_load():
+            pass
+        assert are_progress_bars_disabled() is True
+    finally:
+        enable_progress_bars()

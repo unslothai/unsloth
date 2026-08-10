@@ -188,8 +188,14 @@ class _CaptureLoadReport(logging.Filter):
     def __init__(self) -> None:
         super().__init__()
         self.reports: list[str] = []
+        # These filters sit on process-global loggers, so a concurrent load on another
+        # thread would otherwise have its report swallowed and attributed here. Only
+        # capture what the thread that opened the context emits.
+        self.thread_id = threading.get_ident()
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if threading.get_ident() != self.thread_id:
+            return True
         try:
             msg = record.getMessage()
         except Exception:  # noqa: BLE001 - a broken record must not break loading
@@ -229,6 +235,17 @@ def _quiet_transformers_load():
     # versions (is_progress_bar_enabled in 4.x/5.x, are_progress_bars_disabled in
     # some builds), so accept either and skip the restore when neither exists rather
     # than re-enabling a bar the caller had deliberately turned off.
+    # transformers' enable_progress_bar() also calls the Hub's enable_progress_bars(),
+    # so restoring the transformers flag would clobber a Hub-only disable that someone
+    # else installed (unsloth does exactly that in patch_ipykernel_hf_xet for the
+    # broken hf-xet/ipykernel pair). Snapshot the Hub state separately and put it back.
+    hub_bars_off = None
+    try:
+        from huggingface_hub.utils import are_progress_bars_disabled
+        hub_bars_off = bool(are_progress_bars_disabled())
+    except Exception:  # noqa: BLE001 - no Hub, or a version without the probe
+        hub_bars_off = None
+
     reenable = False
     hf_logging = None
     try:
@@ -255,6 +272,25 @@ def _quiet_transformers_load():
                 hf_logging.enable_progress_bar()
             except Exception:  # noqa: BLE001
                 pass
+            if hub_bars_off:
+                try:
+                    from huggingface_hub.utils import disable_progress_bars
+                    disable_progress_bars()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
+def _emit_load_reports(report) -> None:
+    """Re-emit what the filter swallowed, as one record on our own logger: debug for
+    the expected legacy-key notice, warning for anything that could change the
+    embeddings. Drains the list so a retry does not report the same lines twice."""
+    serious = report.is_serious()
+    for text in report.reports:
+        if serious:
+            logger.warning("embedding model load report: %s", text)
+        else:
+            logger.debug("embedding model load report: %s", text)
+    report.reports.clear()
 
 
 def _st_accepts_local_files_only(st_cls) -> bool:
@@ -301,15 +337,13 @@ def _get(model_name: str | None = None):
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             with _quiet_transformers_load() as report:
-                _model = SentenceTransformer(load_target, **st_kwargs)
-            for text in report.reports:
-                # Re-emit what the filter swallowed, as one record on our own logger:
-                # debug for the expected legacy-key notice, warning for anything that
-                # could actually change the embeddings.
-                if report.is_serious():
-                    logger.warning("embedding model load report: %s", text)
-                else:
-                    logger.debug("embedding model load report: %s", text)
+                # The re-emit runs in finally: a load that raises after transformers
+                # wrote its report is exactly when a MISSING or MISMATCH line matters,
+                # and letting the exception skip the loop would swallow it.
+                try:
+                    _model = SentenceTransformer(load_target, **st_kwargs)
+                finally:
+                    _emit_load_reports(report)
             _name = name
         return _model
 
