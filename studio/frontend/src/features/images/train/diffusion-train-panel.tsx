@@ -139,8 +139,12 @@ const FAMILY_PRESETS: FamilyPreset[] = [
   },
   {
     name: "z-image",
-    label: "Z-Image-Turbo (6B)",
-    base_repos: ["unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"],
+    label: "Z-Image (6B)",
+    base_repos: [
+      "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+      "Tongyi-MAI/Z-Image-Turbo",
+      "Tongyi-MAI/Z-Image",
+    ],
     defaults: { rank: 16, lr: 0.0001, resolution: 768 },
     vram_note: "The smallest and fastest. A good first pick.",
     params: "6B",
