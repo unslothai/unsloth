@@ -31,10 +31,9 @@ type BlockedState = { code: string; uris: string[]; hosts: string[] };
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
 
 // Reports from before a swap belong to the old canvas, so start over rather
-// than appending to them. The cap is checked BEFORE the duplicate scan: past it
-// this is O(1) per message, so a canvas posting unique URIs cannot make the
-// parent rescan every stored string. Returning `current` unchanged is what lets
-// React bail out of the re-render as well as the allocation.
+// than append. The cap is checked BEFORE the duplicate scan, so past it a
+// canvas posting unique URIs cannot make the parent rescan every stored string;
+// returning `current` unchanged lets React bail out of the re-render too.
 function appendBlocked(
   current: BlockedState,
   code: string,
@@ -52,10 +51,9 @@ function appendBlocked(
   };
 }
 
-// A non-HTTP(S) violation is reported as a bare scheme or keyword ("eval",
-// "blob"), which the permissive CSP widens too. Dropping those left the canvas
-// blank with no prompt, the failure the banner exists to prevent, so label them
-// with the token itself.
+// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the
+// permissive CSP widens too. Dropping those left the canvas blank with no
+// prompt, so label them with the token itself.
 const BLOCKED_KEYWORD = /^[a-z-]+$/;
 
 function blockedHost(uri: string): string | null {
@@ -105,21 +103,19 @@ export function ArtifactHtmlFrame({
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
   // Carries the code it was reported for, so a canvas swapped in place cannot
-  // inherit the previous one's banner. Same reason the grant below stores code:
-  // the [src] effect that used to clear this runs a render too late, and the
-  // button in that stale render already closes over the new code.
+  // inherit the previous one's banner. Clearing it from the [src] effect ran a
+  // render too late, and that stale render is the one carrying the button.
   const [blocked, setBlocked] = useState<BlockedState>({
     code,
     uris: [],
     hosts: [],
   });
   const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
-  // Granted by the banner button alone, and only for the exact code on screen
-  // when it was clicked. Nothing the canvas sends may set it, or a blocked page
-  // could talk its way onto the network. Comparing against the current code here
-  // rather than resetting in an effect is what keeps the grant from leaking: an
-  // effect runs after the DOM is updated, so the first render carrying new code
-  // would still build src with allow_network=1 from the previous canvas' grant.
+  // Granted by the banner button alone, and only for the code on screen when it
+  // was clicked; nothing the canvas sends may set it, or a blocked page could
+  // talk its way onto the network. Compared during render rather than reset in
+  // an effect, which runs after the DOM is updated and so would let the first
+  // render carrying new code reuse the previous canvas' allow_network=1.
   const [grantedCode, setGrantedCode] = useState<string | null>(null);
   const grantedForCanvas = grantedCode === code;
   const networkAllowed = networkAccessEnabled || grantedForCanvas;
@@ -155,24 +151,20 @@ export function ArtifactHtmlFrame({
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
       if (event.data?.type === "unsloth:artifact-blocked") {
-        // event.source survives the swap navigation, so a report from the
-        // outgoing canvas would otherwise be tagged with the incoming code and
-        // prompt a grant for a canvas that never hit the CSP. The frame stamps
-        // the load it was served for; anything else is from a document we have
-        // already navigated away from.
+        // event.source survives the swap navigation, so without the frame's
+        // stamp a report from the outgoing canvas would be tagged with the
+        // incoming code and prompt a grant for a canvas that never hit the CSP.
         if (event.data.v !== codeVersion) return;
         const uri = event.data.blockedURI;
         // A report carries the full URL, and the canvas can post these directly
         // rather than going through the CSP. The entry cap bounds how many are
-        // kept but not their size, so bound it here or a handful of reports can
-        // park megabytes in parent state.
+        // kept but not their size, so a handful could park megabytes otherwise.
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }
-        // The permissive CSP keeps these three at 'none', so the grant cannot
-        // fix them. Prompting anyway talks the user into widening the policy
-        // for nothing, and the banner then hides itself because the grant is
-        // on, leaving a still-broken canvas and no way back to the prompt.
+        // The grant cannot fix these three, and prompting anyway widens the
+        // policy for nothing, then hides the banner because the grant is on,
+        // leaving a broken canvas and no way back to the prompt.
         if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
         const host = blockedHost(uri);
         if (!host) return;
