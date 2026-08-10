@@ -440,6 +440,11 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             )
             return False
         logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
+        # Before the wait, not after it. Every package is passed with
+        # --reinstall-package, so uv removes and replaces them as it goes: a timeout or a
+        # non-zero exit part way through leaves a stack neither the one detection measured
+        # nor the one asked for. Nothing before this line touches the environment.
+        _environment_mutated = True
         result = subprocess.run(
             cmd,
             env = _mlx_install_env(),
@@ -472,6 +477,12 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             # resolve. Only rebuilding the environment fixes it, so name the command
             # that does. uv's own text says to run `uv venv`, which would build an
             # environment Unsloth does not manage.
+            #
+            # uv gave up before resolving an interpreter, so it installed nothing and the
+            # stack is exactly as detection last measured it. Take the mark back: a
+            # re-detect here would re-run the mlx imports for a verdict that cannot have
+            # changed, on a host where those imports are already suspect.
+            _environment_mutated = False
             logger.warning(
                 "MLX self-heal could not use the Unsloth environment at %s: uv did not "
                 "recognise it as a virtual environment. This usually means the venv's "
@@ -484,9 +495,6 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
             return False
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
-    # The install has run, so the environment is not the one detection measured, whatever
-    # the validation below says about it.
-    _environment_mutated = True
     importlib.invalidate_caches()
     if not mlx_stack_available():
         logger.warning(

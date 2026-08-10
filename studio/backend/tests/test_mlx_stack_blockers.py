@@ -316,3 +316,57 @@ def test_a_successful_repair_still_remeasures(monkeypatch):
     monkeypatch.setattr(mr, "_environment_mutated", True)
     mr._run_repair_and_redetect()
     assert called == ["detect"]
+
+
+# uv passes every package with --reinstall-package, so it removes and replaces them as it
+# goes: a timeout or a non-zero exit part way through has already changed the stack.
+@pytest.mark.parametrize(
+    "outcome",
+    ["timeout", "nonzero"],
+)
+def test_an_install_that_died_part_way_still_counts_as_mutating(monkeypatch, outcome):
+    import subprocess as sp
+
+    monkeypatch.setattr(mr, "_environment_mutated", False)
+    monkeypatch.setattr(mr, "_uv_install_cmd", lambda *a, **k: ["uv", "pip", "install"])
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+    monkeypatch.setattr(mr, "_mlx_install_env", dict)
+
+    def run(*a, **k):
+        if outcome == "timeout":
+            raise sp.TimeoutExpired(cmd = "uv", timeout = 1)
+        return sp.CompletedProcess(args = "uv", returncode = 1, stdout = "boom")
+
+    monkeypatch.setattr(mr.subprocess, "run", run)
+    assert mr.attempt_mlx_repair() is False
+    assert mr._environment_mutated is True, (
+        "a half-applied reinstall leaves the pre-repair detail describing a stack that "
+        "is no longer on disk"
+    )
+
+
+def test_a_venv_uv_refuses_is_not_marked_mutated(monkeypatch):
+    """uv gave up before resolving an interpreter, so it installed nothing."""
+    import subprocess as sp
+
+    monkeypatch.setattr(mr, "_environment_mutated", False)
+    monkeypatch.setattr(mr, "_uv_install_cmd", lambda *a, **k: ["uv", "pip", "install"])
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+    monkeypatch.setattr(mr, "_mlx_install_env", dict)
+    monkeypatch.setattr(
+        mr.subprocess,
+        "run",
+        lambda *a, **k: sp.CompletedProcess(
+            args = "uv", returncode = 2, stdout = mr._UNRESOLVED_PYTHON_MARKER + " at /x",
+        ),
+    )
+    assert mr.attempt_mlx_repair() is False
+    assert mr._environment_mutated is False
+
+
+def test_uv_missing_never_marks_the_environment(monkeypatch):
+    monkeypatch.setattr(mr, "_environment_mutated", False)
+    monkeypatch.setattr(mr, "_uv_install_cmd", lambda *a, **k: None)
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+    assert mr.attempt_mlx_repair() is False
+    assert mr._environment_mutated is False
