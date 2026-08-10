@@ -6431,7 +6431,6 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
     assert 55_000_000_000 < explicit_base["bytes"] < 60_000_000_000
 
 
-
 def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkeypatch):
     # The plan drives the download manager, so it must agree with the load: a declined prequant
     # stages neither its .pt nor the base transformer/ shards the dense build wanted.
