@@ -4916,6 +4916,10 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
+    """Only a hub that can still append to the partial earns the same-transport reprieve."""
+    # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
+    # be a no-op here.
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -4927,7 +4931,11 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
         only_blob_hashes = frozenset({"q4-main"}),
         companion_blob_hashes = companion,
     )
-    (blobs / "shared-mmproj.incomplete").write_bytes(b"resumable")
+    partial = blobs / "shared-mmproj.incomplete"
+    partial.write_bytes(b"resumable")
+    # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
+    old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
+    os.utime(partial, (old, old))
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4939,7 +4947,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     )
 
     assert purged == 0
-    assert (blobs / "shared-mmproj.incomplete").exists()
+    assert partial.exists()
 
 
 def test_prepare_cache_for_transport_protects_peer_companion(monkeypatch, tmp_path):
