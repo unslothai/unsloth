@@ -3693,7 +3693,16 @@ class VideoBackend:
                                 "available. Load the GGUF artifact instead."
                             )
 
-                generator = torch.Generator(device = "cpu" if fam.modular_workflow else state.device)
+                # MPS seeds from the CPU generator too. Diffusers' own guidance is that Metal
+                # reproduces a seed only through a CPU generator, and it keeps this path off
+                # whatever torch.Generator(device="mps") does on the older releases install.sh
+                # leaves in place. The pipelines move the noise to the device themselves.
+                generator_device = (
+                    "cpu"
+                    if fam.modular_workflow or str(state.device) == "mps"
+                    else state.device
+                )
+                generator = torch.Generator(device = generator_device)
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))

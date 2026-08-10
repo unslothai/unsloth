@@ -8,6 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
+import dataclasses
 import sys
 import threading
 import time
@@ -99,6 +100,7 @@ class _FakePipe:
             "num_frames": num_frames,
             "frame_rate": frame_rate,
             "sigmas": sigmas,
+            "generator": generator,
             **kwargs,
         }
         if callback_on_step_end is not None:
@@ -920,6 +922,25 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     from core.inference.video_ltx2 import LTX23_DISTILLED_SIGMAS
 
     assert call["sigmas"] == list(LTX23_DISTILLED_SIGMAS)
+
+
+@pytest.mark.parametrize(
+    "device, expected", [("mps", "cpu"), ("cuda", "cuda")]
+)
+def test_generate_seeds_metal_from_a_cpu_generator(fake_runtime, tmp_path, device, expected):
+    # Metal reproduces a seed only through a CPU generator, and this also keeps the path off
+    # whatever torch.Generator(device="mps") does on the older torch releases install.sh keeps.
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    backend._state = dataclasses.replace(backend._state, device = device)
+    backend.generate(prompt = "a sloth", seed = 7)
+    assert backend._state.pipe.last_kwargs["generator"].device == expected
 
 
 def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeypatch):
