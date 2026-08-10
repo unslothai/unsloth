@@ -686,16 +686,13 @@ function VideoGate({ children }: { children: ReactNode }) {
 /**
  * Capability gate in front of the generator.
  *
- * The root guard never bounces /video: not on the browser-platform guess, and not on a measured
- * chat-only verdict either, because chat-only hosts are both where the explanation below has
+ * The root guard never bounces /video: a chat-only host is both where the explanation below has
  * something to say (a CPU-only box) and where video works anyway (Apple Silicon whose only
- * problem is MLX). So the page answers for itself: spin while the answer is out, explain when
- * it is no.
+ * problem is MLX). So the page answers for itself: spin while the answer is out, explain a no.
  *
- * That answer is /api/system/hardware's alone, which settles detection before replying. It must
- * not also wait on the chat-only verdict: /api/health holds that back for the whole MLX self-heal,
- * and video runs on Metal without MLX, so this page would spin through a reinstall that cannot
- * change its answer.
+ * That answer is /api/system/hardware's alone, which settles detection before replying. Waiting
+ * on the chat-only verdict too would spin through an MLX self-heal /api/health holds it back for,
+ * which cannot change a Metal answer.
  */
 export function VideoPage({ active = true }: { active?: boolean }) {
   const hardware = useHardwareInfo();

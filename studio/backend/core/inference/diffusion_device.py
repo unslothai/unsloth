@@ -54,14 +54,13 @@ def force_float32_rope(
 ) -> int:
     """Drop the float64 intermediate in RoPE frequency tables on a device without float64.
 
-    LTX-2's rotary embeddings build ``theta ** linspace(0, 1, n)`` in float64 and cast straight
-    back to float32. Metal implements no float64, so torch raises and generation dies before the
-    first step. The modules gate that intermediate on a ``double_precision`` attribute; clearing
-    it costs at most 6 float32 ULP, measured across the theta/dim combinations these models use,
-    against a value the next line truncates to float32 anyway.
+    LTX-2 builds ``theta ** linspace(0, 1, n)`` in float64 and casts straight back to float32;
+    Metal has no float64, so torch raises before the first step. The modules gate that
+    intermediate on a ``double_precision`` attribute, and clearing it costs at most 6 float32 ULP
+    against a value the next line truncates anyway.
 
-    Returns the number of modules changed. A no-op wherever float64 works, so CUDA/XPU/CPU keep
-    the upstream computation bit-for-bit.
+    Returns the number of modules changed; a no-op wherever float64 works, so CUDA/XPU/CPU stay
+    bit-for-bit.
     """
     if target.supports_float64:
         return 0
@@ -92,20 +91,17 @@ def install_decoder_sync(
     """Cap the memory a video VAE decode holds on Metal, by synchronising once it is running out.
 
     Wan's VAE decodes one latent frame per call in a loop that never forces a commit, and Metal
-    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until the
-    OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive commit
-    (a low watermark far below the observed peak changed nothing) bounds it.
+    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until
+    the OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive
+    commit bounds it.
 
-    Fires per decoder call -- per frame on Wan, per tile on the VAEs that decode a whole tensor at
-    once -- and only above the threshold, so a decode with room to spare pays only the memory read.
-    Synchronising waits on work already enqueued, so what it costs is the pipelining, not the decode.
+    Fires per decoder call and only above the threshold, so a decode with room to spare pays only
+    the memory read; synchronising costs the pipelining, not the decode.
 
-    The threshold needs ``torch.mps.recommended_max_memory()``, which arrived in torch 2.5 while
-    install.sh keeps an existing venv's torch as far back as 2.4. An unreadable budget must not
-    fail the load, and skipping the hook would leave the unbounded decode it exists to stop, so
-    fall back to synchronising every call -- measured to hold the same decode at 4.90 GiB for no
-    wall-clock cost. Every probe is best-effort for the same reason: a memory reading that raises
-    mid-decode is not worth losing the generation over.
+    ``torch.mps.recommended_max_memory()`` arrived in torch 2.5 while install.sh keeps an existing
+    venv's torch as far back as 2.4, so an unreadable budget falls back to synchronising every
+    call (measured to hold the same decode at 4.90 GiB for no wall-clock cost) rather than
+    failing the load or dropping the bound. Every probe is best-effort for the same reason.
     """
     if target.device != "mps":
         return False

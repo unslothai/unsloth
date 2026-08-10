@@ -35,8 +35,8 @@ export function isDetectionDeferred(data: HealthVerdict): boolean {
 /** The Video row's tooltip, or undefined when the row stays navigable.
  *
  * Only the chat-only reasons that leave no video device at all. Apple Silicon runs video on Metal
- * whether or not the MLX training stack is healthy, so "mlx_unavailable" is not one of them; those
- * hosts reach VideoPage, which reports the backend's own video verdict.
+ * with or without a healthy MLX stack, so "mlx_unavailable" is not one of them: those hosts reach
+ * VideoPage, which reports the backend's video verdict.
  */
 export function videoNavHint(
   chatOnlyMeasured: boolean,

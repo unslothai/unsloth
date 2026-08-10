@@ -2894,8 +2894,8 @@ class VideoBackend:
             if effective_speed not in (SPEED_OFF, SPEED_MAX)
             else False
         )
-        # Sets a flag the pipelines read when they first build their frequency tables, so it only
-        # has to happen before generation, not before placement.
+        # Sets a flag the pipelines read when they first build their frequency tables, so it need
+        # only happen before generation, not before placement.
         force_float32_rope(pipe, target, logger = logger)
         speed_optims: tuple = ()
         for view in views:
@@ -3926,10 +3926,8 @@ class VideoBackend:
                                 "available. Load the GGUF artifact instead."
                             )
 
-                # MPS seeds from the CPU generator too. Diffusers' own guidance is that Metal
-                # reproduces a seed only through a CPU generator, and it keeps this path off
-                # whatever torch.Generator(device="mps") does on the older releases install.sh
-                # leaves in place. The pipelines move the noise to the device themselves.
+                # MPS seeds from the CPU generator too: diffusers reproduces a Metal seed only
+                # that way, and the pipelines move the noise to the device themselves.
                 generator_device = (
                     "cpu" if fam.modular_workflow or str(state.device) == "mps" else state.device
                 )

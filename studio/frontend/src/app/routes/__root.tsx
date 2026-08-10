@@ -112,11 +112,9 @@ function isChatOnlyAllowed(pathname: string): boolean {
     return true;
   // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
-  // Video follows /export: the page explains an unsupported host itself, using the backend's own
-  // video verdict (no GPU, no PyTorch, no Metal device). A measured chat-only host is exactly
-  // where that explanation belongs -- and on Apple Silicon it is also where video works, MLX
-  // being irrelevant to it -- so a direct link or a reload has to reach VideoPage's gate instead
-  // of bouncing to /chat. It self-gates on videoSupported, so nothing loads.
+  // Video follows /export: the page explains an unsupported host itself from the backend's video
+  // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
+  // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
   return false;
 }

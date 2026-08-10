@@ -238,8 +238,8 @@ def _has_torch() -> bool:
 def _torch_mps_available() -> bool:
     """True when torch exposes a usable Metal (MPS) device.
 
-    Apple Silicon alone is not enough: a torch built without MPS, or one whose import is broken,
-    leaves the pipelines nowhere to run. Never raises -- a probe failure reads as "no MPS".
+    Apple Silicon alone is not enough: a torch built without MPS, or one that fails to import,
+    leaves the pipelines nowhere to run. Never raises; a failed probe reads as no MPS.
     """
     if not _has_torch():
         return False
@@ -769,10 +769,9 @@ def clear_gpu_cache():
 def _clear_mps_cache() -> None:
     """Return torch's MPS reservations to the shared pool.
 
-    MLX manages its own memory, but Apple Silicon also runs torch MPS (diffusion/video), and
-    torch's MPS caching allocator keeps freed buffers reserved from the shared pool. Those bytes
-    read as used system memory, so a teardown that skips this leaves the next load budgeting
-    against a pool that looks smaller than it is.
+    MLX manages its own memory, but Apple Silicon also runs torch MPS (diffusion/video), whose
+    caching allocator keeps freed buffers reserved. Those bytes read as used system memory, so
+    skipping this leaves the next load budgeting against a pool that looks smaller than it is.
     """
     try:
         import torch
