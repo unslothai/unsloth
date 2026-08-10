@@ -523,8 +523,7 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
             hw.detect_hardware()
         if repaired:
             logger.info(
-                "MLX self-heal succeeded; Train/Export enabled (reload the page). "
-                "chat_only=%s",
+                "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
                 hw.CHAT_ONLY,
             )
         else:
