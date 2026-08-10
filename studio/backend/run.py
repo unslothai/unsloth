@@ -125,6 +125,12 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# Before any import below can pull torch: the AOTriton gate is read once when torch loads its
+# C++ extension, and a closed gate leaves ROCm on the O(N^2) SDPA math path (#8225). Stdlib only.
+from utils.rocm_attention import enable_rocm_aotriton_attention
+
+enable_rocm_aotriton_attention()
+
 # First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 
