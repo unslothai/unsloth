@@ -41,7 +41,12 @@ RELEASES_SUCCESS_TTL_SECONDS = 30 * 60
 RELEASES_FAILURE_TTL_SECONDS = 5 * 60
 # Unauthenticated callers get 60 requests an hour per IP. A shared address that
 # has spent them should back off for a while rather than retry every 5 minutes.
+# Used when the response carries no reset to wait for.
 RELEASES_RATE_LIMITED_TTL_SECONDS = 15 * 60
+# GitHub says not to request again before X-RateLimit-Reset, so its reset wins
+# over the back-off above. The unauthenticated window is an hour, which is the
+# ceiling a skewed or proxied header is held to rather than trusted outright.
+RELEASES_RATE_LIMIT_MAX_SECONDS = 60 * 60
 RELEASE_NOTES_MAX_CHARS = 20_000
 
 # The repo also publishes llama.cpp prebuilts (`b8475`) and legacy month tags
@@ -817,9 +822,13 @@ def _http_error_source(error: urllib.error.HTTPError) -> tuple[ReleaseSource, fl
         if error.headers.get("X-RateLimit-Remaining") == "0":
             reset = _epoch_header(error.headers.get("X-RateLimit-Reset"))
             if reset is not None:
-                _rate_limited_until = reset
-                # Capped so a clock skew cannot park the popup indefinitely.
-                ttl = min(max(reset - time.time(), 0.0), RELEASES_RATE_LIMITED_TTL_SECONDS)
+                now = time.time()
+                # The deadline itself is bounded, not just the first wait on it:
+                # the next fetch answers from this deadline, so capping only the
+                # TTL left a skewed header parking the popup for as long as it
+                # liked.
+                _rate_limited_until = min(reset, now + RELEASES_RATE_LIMIT_MAX_SECONDS)
+                ttl = max(_rate_limited_until - now, 0.0)
         return (
             ReleaseSource(
                 release = None,

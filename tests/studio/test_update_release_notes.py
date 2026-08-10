@@ -507,6 +507,33 @@ def test_a_rate_limit_is_not_retried_until_it_resets(notes_module, serve_release
     assert hits["count"] == 1, "refresh must not bypass a rate-limit lockout"
 
 
+def test_a_rate_limit_deadline_is_bounded_not_just_its_first_wait(notes_module):
+    """GitHub says not to request again before X-RateLimit-Reset, so the reset
+    wins over the back-off. Only the first wait on it used to be bounded, so the
+    fetch after that wait answered from the raw header: a skewed or proxied
+    value parked the popup, and Retry with it, for as long as it liked."""
+    import email.message
+    import urllib.error
+
+    def refused(seconds_out: float):
+        headers = email.message.Message()
+        headers["X-RateLimit-Remaining"] = "0"
+        headers["X-RateLimit-Reset"] = str(int(time.time() + seconds_out))
+        return urllib.error.HTTPError("url", 403, "rate limited", headers, None)
+
+    ceiling = notes_module.RELEASES_RATE_LIMIT_MAX_SECONDS
+    for seconds_out in (ceiling, 365 * 24 * 60 * 60):
+        notes_module.reset_release_notes_cache()
+        _, first = notes_module._http_error_source(refused(seconds_out))
+        # The wait the next fetch answers with, once the first one has expired.
+        _, next_wait = notes_module._fetch_latest_release()
+        assert first <= ceiling and next_wait <= ceiling
+    # A reset inside the ceiling is honoured rather than rounded up to it.
+    notes_module.reset_release_notes_cache()
+    _, short = notes_module._http_error_source(refused(120))
+    assert 60 <= short <= 180
+
+
 def test_a_cached_release_answers_an_unchanged_response(notes_module, serve_releases):
     """GitHub answers a conditional request with 304 and no body, which is the
     release already held rather than a failure."""
