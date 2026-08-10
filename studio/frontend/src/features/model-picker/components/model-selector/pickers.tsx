@@ -40,6 +40,7 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
+  ggufVariantDisplayLabel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
@@ -1435,7 +1436,10 @@ function GgufVariantExpander({
                 <span
                   className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
                 >
-                  {v.quant}
+                  {/* The key is the selection identity and can be path-qualified
+                      ("distilled/ltx-2.3-22b-distilled-Q6_K"); the label is what that reads
+                      as ("Q6_K · distilled"). Everything below still keys on v.quant. */}
+                  {ggufVariantDisplayLabel(v)}
                 </span>
                 {unusableLocal ? (
                   <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
