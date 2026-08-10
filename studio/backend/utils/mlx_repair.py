@@ -198,7 +198,9 @@ def _mlx_version_blockers() -> list[str]:
             if Version(installed) < Version(minimum):
                 blockers.append(f"{name} {installed} is older than {minimum}")
         except Exception as exc:
-            blockers.append(f"{name} {installed} is unreadable ({type(exc).__name__}: {_one_line(exc)})")
+            blockers.append(
+                f"{name} {installed} is unreadable ({type(exc).__name__}: {_one_line(exc)})"
+            )
     return blockers
 
 
