@@ -235,7 +235,8 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
         for step in job["steps"]
         if step.get("name") == "Mark published release as GitHub latest"
     )
-    assert "make_latest=true" in promote["run"]
+    # The API documents make_latest as a string, so -f, not -F.
+    assert "-f make_latest=true" in promote["run"]
     assert "releases/latest" in promote["run"]
 
     bridge = next(

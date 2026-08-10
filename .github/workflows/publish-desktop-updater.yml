@@ -294,7 +294,7 @@ jobs:
         run: |
           set -euo pipefail
           release_id="$(python3 -c 'import json,os,pathlib; print(json.loads(pathlib.Path(os.environ["RUNNER_TEMP"], "source-release.json").read_text())["id"])')"
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F make_latest=true >/dev/null
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -f make_latest=true >/dev/null
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
           test -n "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "latest.json") | .url')"
 

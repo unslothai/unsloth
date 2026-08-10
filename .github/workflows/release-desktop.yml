@@ -1974,7 +1974,7 @@ jobs:
           fi
 
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-            -F make_latest=true > "$RUNNER_TEMP/promoted-release.json"
+            -f make_latest=true > "$RUNNER_TEMP/promoted-release.json"
           gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-release.json"
           python3 - "$RUNNER_TEMP/latest-release.json" <<'PY'
           import json
