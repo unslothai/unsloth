@@ -1989,6 +1989,24 @@ def test_hv15_720p_repo_gets_720p_family_defaults():
     assert fam480.resolution_presets[0] == (832, 480)
 
 
+def test_every_video_fetch_reads_either_cache_root():
+    """The download plan drops a repo either cache root serves whole, so a fetch pinned to the
+    live one advertises no transfer and then downloads the file anyway after a cache-folder
+    change. Asserted over the sources because the miss is always one call site nobody updated."""
+    import re
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parents[1] / "core" / "inference"
+    for name in ("video.py", "video_ltx2.py", "video_minimax_h3.py"):
+        source = (root / name).read_text(encoding = "utf-8")
+        for call in re.finditer(
+            r"hf_hub_download_with_xet_fallback\((?:[^()]|\([^()]*\))*\)", source
+        ):
+            assert "reuse_other_cache_root" in call.group(0), (
+                f"{name}: {call.group(0)[:80]} must reuse the other cache root"
+            )
+
+
 def test_predownload_base_refuses_a_snapshot_split_across_roots(monkeypatch):
     """reuse_other_cache_root resolves each file through whichever root holds it, so a moved cache
     can serve the manifest from the old root and a companion from the live one. Handing back the

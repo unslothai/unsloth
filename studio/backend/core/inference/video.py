@@ -962,6 +962,9 @@ class VideoBackend:
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
+                        # The plan drops a repo either root serves whole, and this pull runs
+                        # before _resolve_checkpoint_path, so it decides what actually transfers.
+                        reuse_other_cache_root = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
