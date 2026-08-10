@@ -863,6 +863,9 @@ export const ja = {
         showAllQuantizations: "すべての量子化オプションを表示",
         showAllQuantizationsDescription:
           "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
+        showMemoryBar: "VRAM 使用量バーを表示",
+        showMemoryBarDescription:
+          "ダウンロード済みモデルの行の下に、推定 VRAM 使用量を表示します。内訳は重み、実際に読み込まれるコンテキスト長での KV キャッシュ、および投機的デコードの下書き用に確保される領域です。",
       },
       menu: {
         title: "チャットメニュー",
@@ -1860,5 +1863,14 @@ export const ja = {
     tour: {
       guidedTour: "ガイドツアー",
     },
+  },
+  modelMemory: {
+    readout:
+      "重み {model} + コンテキスト {context} = 使用可能な VRAM {budget} 中 {total}",
+    readoutWithSpec:
+      "重み {model} + KV {kv} + MTP 下書き {spec} = 使用可能な VRAM {budget} 中 {total}",
+    kvRate: "KV は事前確保、約 {rate}/トークン",
+    oomLikely: "現在の設定ではメモリ不足になる可能性があります",
+    tooLarge: "大きすぎて読み込めません — より小さい量子化オプションをお試しください",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

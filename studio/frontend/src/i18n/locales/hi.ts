@@ -881,6 +881,9 @@ export const hi = {
         showAllQuantizations: "सभी क्वांटाइज़ेशन दिखाएँ",
         showAllQuantizationsDescription:
           "चालू: “On Device” के सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
+        showMemoryBar: "VRAM उपयोग बार दिखाएँ",
+        showMemoryBarDescription:
+          "हर डाउनलोड किए गए मॉडल की पंक्ति के नीचे उसका अनुमानित VRAM उपयोग दिखाएँ: वेट्स, जिस कॉन्टेक्स्ट लंबाई पर वह लोड होगा उस पर KV कैश, और स्पेकुलेटिव ड्राफ़्ट के लिए आरक्षित मेमोरी।",
       },
       menu: {
         title: "चैट मेन्यू",
@@ -1915,5 +1918,14 @@ export const hi = {
     tour: {
       guidedTour: "गाइडेड टूर",
     },
+  },
+  modelMemory: {
+    readout:
+      "वेट्स {model} + कॉन्टेक्स्ट {context} = {budget} उपयोग-योग्य VRAM में से {total}",
+    readoutWithSpec:
+      "वेट्स {model} + KV {kv} + MTP ड्राफ़्ट {spec} = {budget} उपयोग-योग्य VRAM में से {total}",
+    kvRate: "KV आरक्षित, ~{rate}/टोकन",
+    oomLikely: "मौजूदा सेटिंग्स के साथ मेमोरी कम पड़ सकती है",
+    tooLarge: "लोड करने के लिए बहुत बड़ा — कोई छोटा क्वांटाइज़ेशन आज़माएँ",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

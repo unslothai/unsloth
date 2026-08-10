@@ -873,6 +873,9 @@ export const ko = {
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
           "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+        showMemoryBar: "VRAM 사용량 막대 표시",
+        showMemoryBarDescription:
+          "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -1908,5 +1911,14 @@ export const ko = {
     tour: {
       guidedTour: "가이드 투어",
     },
+  },
+  modelMemory: {
+    readout:
+      "가중치 {model} + 컨텍스트 {context} = 사용 가능한 VRAM {budget} 중 {total}",
+    readoutWithSpec:
+      "가중치 {model} + KV {kv} + MTP 초안 {spec} = 사용 가능한 VRAM {budget} 중 {total}",
+    kvRate: "KV 사전 예약, 약 {rate}/토큰",
+    oomLikely: "현재 설정에서는 메모리 부족이 발생할 수 있습니다",
+    tooLarge: "너무 커서 로드할 수 없습니다 — 더 작은 양자화를 사용해 보세요",
   },
 } satisfies DeepPartialMessageTree<typeof en>;
