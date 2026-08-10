@@ -829,6 +829,7 @@ function isAnthropicRefusalMessage(message: RunMessage): boolean {
 type SerializedMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: OpenAIMessageContent | null;
+  reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
     type: "function";
@@ -1176,6 +1177,7 @@ function attachAssistantThoughtSignature(
 
 function serializeAssistantReplayMessages(
   message: RunMessage,
+  includeReasoningContent = false,
 ): SerializedMessage[] {
   if (isAnthropicRefusalMessage(message)) {
     // Prune refused assistant turn from outbound history; the
@@ -1186,6 +1188,7 @@ function serializeAssistantReplayMessages(
   const imageParts = collectImageParts(message);
   const messages: SerializedMessage[] = [];
   const pendingTextParts: string[] = [];
+  const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let imagePartsPending = imageParts.length > 0;
@@ -1196,9 +1199,12 @@ function serializeAssistantReplayMessages(
     );
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
+    const reasoningContent = pendingReasoningParts.join("\n");
+    const hasReasoningContent =
+      includeReasoningContent && reasoningContent.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
 
-    if (!force && !hasContent && !hasToolCalls) {
+    if (!force && !hasContent && !hasReasoningContent && !hasToolCalls) {
       return;
     }
 
@@ -1217,6 +1223,9 @@ function serializeAssistantReplayMessages(
         assistantMessage.content = null;
       }
     }
+    if (hasReasoningContent) {
+      assistantMessage.reasoning_content = reasoningContent;
+    }
 
     messages.push(assistantMessage);
     if (pendingToolResults.length > 0) {
@@ -1224,12 +1233,21 @@ function serializeAssistantReplayMessages(
     }
 
     pendingTextParts.length = 0;
+    pendingReasoningParts.length = 0;
     pendingToolCalls = [];
     pendingToolResults = [];
     imagePartsPending = false;
   };
 
   for (const part of message.content ?? []) {
+    if (part.type === "reasoning") {
+      if (pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+      pendingReasoningParts.push(part.text);
+      continue;
+    }
+
     if (part.type === "text") {
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
@@ -1272,7 +1290,10 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
-function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
+function toOpenAIMessages(
+  message: RunMessage,
+  includeReasoningContent = false,
+): SerializedMessage[] {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -1282,7 +1303,7 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message);
+    return serializeAssistantReplayMessages(message, includeReasoningContent);
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1444,7 +1465,7 @@ export async function buildOutboundMessagesForTokenCount(
   }
 
   const outboundMessages = survivingMessages
-    .flatMap(toOpenAIMessages)
+    .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
@@ -3991,7 +4012,9 @@ export function createOpenAIStreamAdapter(
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .flatMap(toOpenAIMessages)
+        .flatMap((message) =>
+          toOpenAIMessages(message, !isExternalRequest),
+        )
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );

@@ -1864,6 +1864,45 @@ class TestDropEmptyAssistantSentinels:
         for m in out:
             assert m.get("content"), m
 
+    def test_local_message_builders_preserve_assistant_reasoning(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "hello back",
+                    "reasoning_content": "Answer the greeting briefly.",
+                },
+                {"role": "user", "content": "why is quantum mechanics random?"},
+            ],
+        )
+
+        assert req.messages[1].reasoning_content == "Answer the greeting briefly."
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert passthrough[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert gguf[1]["reasoning_content"] == "Answer the greeting briefly."
+
+    def test_reasoning_only_assistant_turn_is_not_treated_as_a_stop_sentinel(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The response stopped before its final answer.",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        )
+
+        passthrough = _openai_messages_for_passthrough(req)
+        gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        assert [message["role"] for message in passthrough] == ["user", "assistant", "user"]
+        assert [message["role"] for message in gguf] == ["user", "assistant", "user"]
+
 
 class TestGgufVisionMessages:
     _PNG_B64 = (

@@ -1019,6 +1019,13 @@ class ChatMessage(BaseModel):
     content: Optional[Union[str, list[ContentPart]]] = Field(
         None, description = "Message content (string or multimodal parts)"
     )
+    reasoning_content: Optional[str] = Field(
+        None,
+        description = (
+            "Assistant reasoning from an earlier turn, replayed to local chat templates "
+            "that consume the OpenAI-compatible reasoning_content field."
+        ),
+    )
     tool_call_id: Optional[str] = Field(
         None,
         description = "OpenAI tool-result messages: id of the tool call this result belongs to.",

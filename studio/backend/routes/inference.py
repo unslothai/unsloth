@@ -18633,8 +18633,9 @@ def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
     for m in messages:
         if m.get("role") == "assistant":
             has_content = bool(m.get("content"))
+            has_reasoning = bool(m.get("reasoning_content"))
             has_tool_calls = bool(m.get("tool_calls"))
-            if not has_content and not has_tool_calls:
+            if not has_content and not has_reasoning and not has_tool_calls:
                 continue
         out.append(m)
     return out
@@ -18762,7 +18763,11 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             m_clean["tool_calls"] = cleaned
         else:
             m_clean.pop("tool_calls", None)
-        if not m_clean.get("content") and not m_clean.get("tool_calls"):
+        if (
+            not m_clean.get("content")
+            and not m_clean.get("reasoning_content")
+            and not m_clean.get("tool_calls")
+        ):
             continue  # assistant turn now empty, drop
         sanitized_assistant.append(m_clean)
 
