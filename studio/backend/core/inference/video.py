@@ -1469,7 +1469,7 @@ class VideoBackend:
 
     @staticmethod
     def _h3_te_quant_hub_files(
-        scheme: Optional[str], api: Any
+        scheme: Optional[str], api: Any, shas_out: Optional[dict[str, str]] = None
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
         """``(repo_id, [(rfilename, size)])`` for the hosted quantized conditioner, or ``(None, [])``.
 
@@ -1483,9 +1483,10 @@ class VideoBackend:
         if filename is None:
             return None, []
         try:
-            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
+            info = plan_model_info(api, H3_TE_QUANT_REPO)
         except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
             return None, []
+        _record_plan_sha(shas_out, H3_TE_QUANT_REPO, info)
         files = [
             (s.rfilename, int(getattr(s, "size", 0) or 0))
             for s in (info.siblings or [])
@@ -1908,7 +1909,9 @@ class VideoBackend:
             # one (it is nothing but model_info calls, wrapped in the try below), so the few-KB
             # index read is in keeping.
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
-                self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
+                self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token),
+                api,
+                shas,
             )
             if h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)

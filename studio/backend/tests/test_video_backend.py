@@ -2007,6 +2007,26 @@ def test_every_video_fetch_reads_either_cache_root():
             ), f"{name}: {call.group(0)[:80]} must reuse the other cache root"
 
 
+def test_every_plan_helper_records_the_revision_it_read(monkeypatch):
+    """A repo with no recorded commit can never be dropped: both cache probes need one. Each
+    helper that lists a repo for the plan has to hand its sha back, and the H3 conditioner was the
+    last one that did not, so a cached 27 GB artifact was charged again."""
+    calls: dict[str, str] = {}
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _PlanInfo([_PlanSibling("h3_te-int8.safetensors", 27)], sha = "sha-h3-te")
+
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3_te.h3_te_quant_filename",
+        lambda scheme: "h3_te-int8.safetensors",
+    )
+    repo, files = VideoBackend._h3_te_quant_hub_files("int8", _Api(), calls)
+
+    assert files and repo
+    assert calls == {repo: "sha-h3-te"}
+
+
 def test_predownload_base_refuses_a_snapshot_split_across_roots(monkeypatch):
     """reuse_other_cache_root resolves each file through whichever root holds it, so a moved cache
     can serve the manifest from the old root and a companion from the live one. Handing back the
