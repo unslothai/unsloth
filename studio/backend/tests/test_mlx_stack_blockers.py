@@ -357,7 +357,9 @@ def test_a_venv_uv_refuses_is_not_marked_mutated(monkeypatch):
         mr.subprocess,
         "run",
         lambda *a, **k: sp.CompletedProcess(
-            args = "uv", returncode = 2, stdout = mr._UNRESOLVED_PYTHON_MARKER + " at /x",
+            args = "uv",
+            returncode = 2,
+            stdout = mr._UNRESOLVED_PYTHON_MARKER + " at /x",
         ),
     )
     assert mr.attempt_mlx_repair() is False
