@@ -509,9 +509,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
 
     # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
-    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split(
-        "<header", 1
-    )[0]
+    decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
         'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
