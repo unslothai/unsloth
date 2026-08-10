@@ -65,6 +65,47 @@ DLOPEN_LIBS=(
   librsvg-2.so.2
 )
 
+stamp_appimage_bundle_type() {
+  local binary_path="$1"
+
+  python3 - "$binary_path" <<'PY'
+import pathlib
+import sys
+
+binary_path = pathlib.Path(sys.argv[1])
+deb_marker = b"__TAURI_BUNDLE_TYPE_VAR_DEB"
+appimage_marker = b"__TAURI_BUNDLE_TYPE_VAR_APP"
+binary = binary_path.read_bytes()
+
+deb_count = binary.count(deb_marker)
+appimage_count = binary.count(appimage_marker)
+if deb_count != 1 or appimage_count != 0:
+    sys.exit(
+        f"Expected exactly one Tauri deb bundle marker and no AppImage marker in "
+        f"{binary_path}; found deb={deb_count}, appimage={appimage_count}"
+    )
+
+binary_path.write_bytes(binary.replace(deb_marker, appimage_marker, 1))
+
+stamped = binary_path.read_bytes()
+if stamped.count(deb_marker) != 0 or stamped.count(appimage_marker) != 1:
+    sys.exit(f"Failed to stamp the Tauri AppImage bundle marker in {binary_path}")
+PY
+}
+
+# Dependency pairs ("soname path") for one ELF.
+#
+# ldd renders a normal dependency as `name => /path (0x..)`, but an ABSOLUTE DT_NEEDED
+# as `/path (0x..)` with no arrow at all. Matching only the arrow form silently skips
+# those, which is how an absolute libsqlite3.so reference reached a shipped bundle: the
+# file was never copied, and on the target the loader went looking for a build-host
+# directory. Both forms are parsed here so every caller sees the same thing.
+ldd_pairs() {  # elf -> "soname target" per line
+  ldd "$1" 2>/dev/null | sed -n \
+    -e 's|^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$|\1 \2|p' \
+    -e 's|^[[:space:]]*\(/[^[:space:]]*\)[[:space:]]*(0x.*$|\1 \1|p'
+}
+
 log() { printf '[portable-appimage] %s\n' "$*"; }
 die() { printf '[portable-appimage] %s\n' "$*" >&2; exit 1; }
 
@@ -116,6 +157,24 @@ assert_portable_appdir() {
     find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0
   )
 
+  # ldd resolves an absolute DT_NEEDED happily ON THE BUILD HOST, because the path is
+  # right there -- so the closure check above cannot see this class of fault at all.
+  # Check the entries themselves: any '/' means the loader will bypass RUNPATH and go
+  # looking for a build-host directory on the user's machine.
+  local absneeded=0 obj dep
+  while IFS= read -r -d '' obj; do
+    for dep in $(patchelf --print-needed "$obj" 2>/dev/null || true); do
+      case "$dep" in
+        */*) printf 'Absolute DT_NEEDED in %s: %s\n' "$obj" "$dep" >&2
+             absneeded=$((absneeded + 1)) ;;
+      esac
+    done
+  done < <(
+    printf '%s\0' "$root/usr/bin/unsloth-studio"
+    find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0
+  )
+  [[ "$absneeded" -eq 0 ]] || die "$absneeded absolute DT_NEEDED entry(ies) -- these bypass RUNPATH"
+
   [[ "$failed" -eq 0 ]] || die "Portable AppImage closure is incomplete (see above)"
   log "closure verified complete: $(find "$libdir" -name '*.so*' | wc -l) libraries"
 }
@@ -154,6 +213,12 @@ icon_file="$app_dir/usr/share/icons/hicolor/128x128/apps/unsloth-studio.png"
 for required_path in "$desktop_file" "$icon_file" "$binary_file"; do
   [[ -f "$required_path" ]] || die "The deb is missing an AppImage input: $required_path"
 done
+
+# tauri-bundler stamps the executable copied into a deb so the updater selects the
+# deb installer. This one is going into an AppImage, so stamp the equal-length
+# AppImage marker. Without it the app logs "APPDIR ... but this application was not
+# detected as an AppImage" and the updater rejects its own download as an invalid deb.
+stamp_appimage_bundle_type "$binary_file"
 
 libdir="$app_dir/usr/lib/unsloth"
 webkit_exec="$app_dir/usr/libexec/unsloth-webkit"
@@ -212,7 +277,7 @@ while [[ ${#queue[@]} -gt 0 ]]; do
     seen[$soname]=1
     cp -L "$target" "$libdir/$soname"
     queue+=("$libdir/$soname")
-  done < <(ldd "$current" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
+  done < <(ldd_pairs "$current")
 done
 log "bundled ${#seen[@]} libraries"
 
@@ -242,6 +307,24 @@ for helper_dir in "${webkit_search[@]}"; do
     break
   fi
 done
+
+# WebKit also dlopens an "injected bundle" -- the library it loads into every web
+# process to run the API's JS glue -- from a second compiled-in absolute path, under
+# $prefix/lib/webkit2gtk-4.1/injected-bundle. Without it the window opens but every
+# page logs "Error loading the injected bundle" and the app's JS bridge is dead.
+# Bundle it under the same fixed link as the helpers so one symlink serves both.
+for injected_dir in \
+  "${webkit_prefix:-}/lib/webkit2gtk-4.1/injected-bundle" \
+  /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/injected-bundle \
+  /usr/lib64/webkit2gtk-4.1/injected-bundle; do
+  if [[ -d "$injected_dir" ]]; then
+    mkdir -p "$webkit_exec/injected-bundle"
+    cp -a "$injected_dir/." "$webkit_exec/injected-bundle/"
+    chmod -R u+w "$webkit_exec/injected-bundle"
+    log "bundled WebKit injected bundle from $injected_dir"
+    break
+  fi
+done
 # Anything we copy in can pull further dependencies: the WebKit helpers, and the
 # GIO modules / pixbuf loaders copied below. Walking only the main binary leaves
 # exactly the partial closure this design exists to avoid, so walk every one.
@@ -259,7 +342,7 @@ walk_closure() {  # dir -> copies missing deps of every ELF under it into $libdi
       cp -L "$target" "$libdir/$soname"
       # Newly copied library may itself pull more in.
       walk_one "$libdir/$soname"
-    done < <(ldd "$obj" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
+    done < <(ldd_pairs "$obj")
   done < <(find "$root" -type f \( -name '*.so*' -o -perm -u+x \) -print0)
 }
 
@@ -274,7 +357,7 @@ walk_one() {  # single ELF -> copies its missing deps, transitively
     seen[$soname]=1
     cp -L "$target" "$libdir/$soname"
     walk_one "$libdir/$soname"
-  done < <(ldd "$obj" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
+  done < <(ldd_pairs "$obj")
 }
 
 # MiniBrowser is WebKit's own test harness, not something the app ever launches.
@@ -386,6 +469,36 @@ if command -v patchelf >/dev/null 2>&1; then
         gdk-pixbuf-query-loaders > "$pixbuf_dir/loaders.cache" 2>/dev/null ) || true
     sed -i "s|$pixbuf_dir/|./|g" "$pixbuf_dir/loaders.cache" 2>/dev/null || true
   fi
+  # DT_NEEDED entries that are ABSOLUTE PATHS.
+  #
+  # A dependency is normally recorded as a bare soname and resolved through
+  # RUNPATH/ld.so.cache, but a linker invoked with a full path can record that path
+  # instead. The loader then ignores RUNPATH entirely for that entry and opens the
+  # absolute path, which on the target does not exist -- so the bundle fails to start
+  # with a missing-library error naming a build-host directory. Seen with libsoup,
+  # libtinysparql and libwebkit2gtk all recording an absolute libsqlite3.so.
+  #
+  # The file is already bundled under its basename by the closure walk, so rewriting
+  # the entry to that basename makes it resolve through $ORIGIN like everything else.
+  while IFS= read -r -d '' obj; do
+    for dep in $(patchelf --print-needed "$obj" 2>/dev/null || true); do
+      case "$dep" in
+        */*)
+          dep_base="$(basename -- "$dep")"
+          if [[ -e "$libdir/$dep_base" ]]; then
+            patchelf --replace-needed "$dep" "$dep_base" "$obj" 2>/dev/null \
+              && log "rewrote absolute DT_NEEDED in $(basename -- "$obj"): $dep_base"
+          else
+            die "absolute DT_NEEDED $dep in $obj, and $dep_base is not bundled"
+          fi
+          ;;
+      esac
+    done
+  done < <(
+    printf '%s\0' "$binary_file"
+    find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0
+  )
+
   # Prove the rewrite happened. Every `patchelf ... || true` above is a place a
   # read-only file or an unsupported object silently keeps its build-host RUNPATH,
   # which produces a bundle that works only on the machine that built it.
@@ -439,16 +552,24 @@ WEBKIT_LINK_PATH="/tmp/.unsloth-webkit-$(id -u 2>/dev/null || echo 0)"
 python3 - "$libdir" "$WEBKIT_LINK_PATH" <<'PYEOF'
 import pathlib, re, sys
 libdir, link = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
-pat = re.compile(rb'[\x20-\x7e]*/libexec/webkit2gtk-4\.[01]\x00')
+# Two compiled-in absolute paths: the helper directory and the injected bundle.
+patterns = [
+    (re.compile(rb'[\x20-\x7e]*/libexec/webkit2gtk-4\.[01]\x00'), link),
+    # The literal carries a trailing slash in some builds, so accept either form.
+    (re.compile(rb'[\x20-\x7e]*/lib/webkit2gtk-4\.[01]/injected-bundle/?\x00'),
+     link + b'/injected-bundle'),
+]
 for so in libdir.glob('libwebkit2gtk-*.so*'):
     blob = bytearray(so.read_bytes())
     hits = 0
-    for m in list(pat.finditer(blob)):
+    for pat, replacement in patterns:
+      for m in list(pat.finditer(blob)):
         original = m.group()[:-1]
-        if len(link) > len(original):
-            print(f"  cannot patch: {link!r} longer than {original!r}", file=sys.stderr)
+        if len(replacement) > len(original):
+            print(f"  cannot patch: {replacement!r} longer than {original!r}", file=sys.stderr)
             sys.exit(1)
-        blob[m.start():m.start() + len(m.group())] = link + b'\x00' * (len(m.group()) - len(link))
+        blob[m.start():m.start() + len(m.group())] = (
+            replacement + b'\x00' * (len(m.group()) - len(replacement)))
         hits += 1
     if hits:
         so.write_bytes(bytes(blob))
@@ -493,6 +614,21 @@ if [ "${UNSLOTH_SOFTWARE_RENDER:-0}" = "1" ]; then
   export LIBGL_ALWAYS_SOFTWARE=1
   export WEBKIT_DISABLE_COMPOSITING_MODE=1
 fi
+
+# Libraries carry their DATA directories as absolute paths fixed at build time, and
+# unlike RUNPATHs those cannot be rewritten. On a build host whose prefix is not FHS
+# (nix, guix) the bundled libxkbcommon looks for keymaps under a prefix the target does
+# not have, and GTK then fails to set up a keymap at all. Point the standard overrides
+# at the host's copies when the caller has not, which is a no-op on a Debian-built
+# bundle because the values already match.
+for _xkb in /usr/share/X11/xkb /usr/local/share/X11/xkb; do
+  [ -n "${XKB_CONFIG_ROOT:-}" ] && break
+  [ -d "$_xkb" ] && { XKB_CONFIG_ROOT="$_xkb"; export XKB_CONFIG_ROOT; break; }
+done
+for _xloc in /usr/share/X11/locale /usr/local/share/X11/locale; do
+  [ -n "${XLOCALEDIR:-}" ] && break
+  [ -d "$_xloc" ] && { XLOCALEDIR="$_xloc"; export XLOCALEDIR; break; }
+done
 
 binary="$appdir/usr/bin/unsloth-studio"
 missing=$(

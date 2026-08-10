@@ -107,6 +107,47 @@ echo "=== a bundle with no library directory is rejected ==="
 make_appdir "$_TMP/nolibdir" nolibdir
 assert_eq "missing library dir rejected" "rejected" "$(_verify "$_TMP/nolibdir")"
 
+echo "=== an ABSOLUTE DT_NEEDED is rejected ==="
+# The fault that shipped: libsoup/libtinysparql/libwebkit2gtk each recorded sqlite as a
+# full build-host path rather than a soname. The loader ignores RUNPATH for such an
+# entry and opens the absolute path, which does not exist on the target -- and ldd on
+# the BUILD host resolves it happily, so the closure check alone cannot see it.
+make_appdir "$_TMP/absneeded" complete
+_absdir="$_TMP/absneeded/usr/lib/unsloth"
+# Deliberately NO -Wl,-soname: with a SONAME the linker records that instead, and the
+# absolute path never appears. A library built without one -- which is how the real
+# sqlite dependency arose -- makes ld record the path exactly as it was given.
+printf 'int extra_symbol(void){return 7;}\n' > "$_TMP/e.c"
+gcc -shared -fPIC -o "$_absdir/libextra.so.1" "$_TMP/e.c" 2>/dev/null
+# Link against the FULL PATH so the recorded DT_NEEDED is absolute.
+printf 'int extra_symbol(void); int webkit_symbol(void);\nint main(void){return extra_symbol()+webkit_symbol();}\n' > "$_TMP/ma.c"
+gcc -o "$_TMP/absneeded/usr/bin/unsloth-studio" "$_TMP/ma.c" \
+    "$_absdir/libextra.so.1" -L"$_absdir" -l:libwebkit2gtk-4.1.so.0 2>/dev/null
+patchelf --set-rpath '$ORIGIN/../lib/unsloth' "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null || true
+_has_abs=$(patchelf --print-needed "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null | grep -c "/" || true)
+if [ "${_has_abs:-0}" -ge 1 ]; then
+    assert_eq "absolute DT_NEEDED rejected" "rejected" "$(_verify "$_TMP/absneeded")"
+else
+    echo "  SKIP: toolchain did not record an absolute DT_NEEDED"
+fi
+
+echo "=== structural: the ldd parser sees BOTH ldd output forms ==="
+# ldd prints `name => /path` normally but `/path (0x..)` for an absolute DT_NEEDED.
+# Matching only the arrow form is why the absolute sqlite was never copied.
+assert_eq "parser handles the arrow form"    "yes" \
+    "$(grep -q '=>\[\[:space:\]\]\*' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "parser handles the bare-path form" "yes" \
+    "$(grep -q '(0x' "$BUILD_SH" && echo yes || echo no)"
+
+echo "=== structural: WebKit's two compiled-in paths and the bundle stamp ==="
+assert_eq "helper dir redirected"     "yes" "$(grep -q 'libexec/webkit2gtk' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "injected bundle redirected" "yes" "$(grep -q 'injected-bundle' "$BUILD_SH" && echo yes || echo no)"
+# The trailing slash is why the first attempt patched only one of the two paths.
+assert_eq "injected-bundle trailing slash tolerated" "yes" \
+    "$(grep -q 'injected-bundle/?' "$BUILD_SH" && echo yes || echo no)"
+assert_eq "tauri bundle-type stamped" "yes" \
+    "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"
+
 echo "=== structural: the host/bundle boundary ==="
 # glibc and the GPU stack must stay on the host; the desktop stack must not.
 for _host in 'libc' 'libGL' 'libEGL' 'libdrm' 'libX11' 'libwayland-'; do
