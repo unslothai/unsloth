@@ -1149,7 +1149,6 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
         if row is None:
             return
         conn.execute("BEGIN IMMEDIATE")
-        _remove_retired_snapshot(row["stored_path"])
         conn.execute(
             "DELETE FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
             (folder_id, rel),
@@ -1161,6 +1160,9 @@ def _delete_mapping(folder_id: str, rel: str) -> None:
         raise
     finally:
         conn.close()
+    # After the commit, as in _install_mapping: a rollback here restores a live
+    # document, and an auto_sync=0 folder may not reconcile again for a long time.
+    _remove_snapshot(row["stored_path"])
 
 
 def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:

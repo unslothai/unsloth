@@ -59,6 +59,19 @@ def _mapping(folder: dict) -> dict | None:
     return _row("SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],))
 
 
+class _CommitFails:
+    """A connection whose commit always fails, to exercise rollback ordering."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def commit(self):
+        raise sqlite3.OperationalError("database is locked")
+
+
 @requires_sqlite_vec
 def test_startup_preserves_foreign_leased_work_until_its_lease_expires(rag_home):
     from core.rag import ingestion, job_leases
@@ -138,16 +151,6 @@ def test_failed_replacement_commit_keeps_the_prior_snapshot_readable(
         "inode": stat.st_ino,
     }
 
-    class _CommitFails:
-        def __init__(self, conn):
-            self._conn = conn
-
-        def __getattr__(self, name):
-            return getattr(self._conn, name)
-
-        def commit(self):
-            raise sqlite3.OperationalError("database is locked")
-
     real_connection = folder_sync.rag_db.get_connection
     with monkeypatch.context() as patched:
         patched.setattr(
@@ -160,6 +163,33 @@ def test_failed_replacement_commit_keeps_the_prior_snapshot_readable(
     assert os.path.isfile(stored_path)
     with _connection() as conn:
         assert store.search_lexical(conn, folder["scope"], "first", 5)
+
+
+@requires_sqlite_vec
+def test_failed_deletion_commit_keeps_the_snapshot_readable(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """An auto_sync=0 folder may not reconcile again for a long time."""
+    source, folder = _folder(rag_home)
+    path = source / "notes.txt"
+    path.write_text("only searchable text", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    before = _mapping(folder)
+    with _connection() as conn:
+        stored_path = store.get_document(conn, before["document_id"])["stored_path"]
+
+    real_connection = folder_sync.rag_db.get_connection
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            folder_sync.rag_db, "get_connection", lambda: _CommitFails(real_connection())
+        )
+        with pytest.raises(sqlite3.OperationalError):
+            folder_sync._delete_mapping(folder["id"], "notes.txt")
+
+    assert _mapping(folder)["document_id"] == before["document_id"]
+    assert os.path.isfile(stored_path)
+    with _connection() as conn:
+        assert store.search_lexical(conn, folder["scope"], "searchable", 5)
 
 
 @requires_sqlite_vec

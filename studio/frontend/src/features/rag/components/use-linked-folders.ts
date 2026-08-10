@@ -130,6 +130,9 @@ export function useLinkedFolders(
             }
             await new Promise((resolve) => setTimeout(resolve, 1500));
           }
+          // Exhausted: release too, or refresh keeps seeing the job as tracked
+          // and never restarts polling, freezing progress until unmount.
+          releaseController();
         } catch {
           releaseController();
         }
