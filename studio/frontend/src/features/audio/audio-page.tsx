@@ -44,6 +44,7 @@ import {
   ParamSlider,
   getInferenceStatus,
   listGgufVariants,
+  listLoras,
   loadModel,
   unloadModel,
 } from "@/features/chat";
@@ -1524,6 +1525,38 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  // Trained TTS checkpoints. A scan row carries no modality until the backend tags
+  // it, so without this the Audio page offers only catalog models and a checkpoint
+  // you just fine-tuned here is unreachable.
+  const [trainedTtsModels, setTrainedTtsModels] = useState<ModelOption[]>([]);
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    listLoras()
+      .then((res) => {
+        if (cancelled) return;
+        setTrainedTtsModels(
+          res.loras
+            .filter((lora) => isTtsAudioType(lora.audio_type))
+            .map((lora) => ({
+              id: lora.adapter_path,
+              name: lora.display_name.replace(/_\d{10,}$/, ""),
+              description:
+                lora.export_type === "merged"
+                  ? `Fine-tuned - ${lora.base_model || "unknown base"}`
+                  : `LoRA - ${lora.base_model || "unknown base"}`,
+            })),
+        );
+      })
+      .catch(() => {
+        // Listing trained models is additive; the catalog rows still work without it.
+        if (!cancelled) setTrainedTtsModels([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
   // --- Render -------------------------------------------------------------
 
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
@@ -1582,7 +1615,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           <ModelSelector
             models={selectorModels}
             additionalOnDeviceModels={
-              mode === "transcribe" ? sttOnDeviceModels : undefined
+              mode === "transcribe" ? sttOnDeviceModels : trainedTtsModels
             }
             loadedModelIdOverride={
               mode === "transcribe" && sttReady

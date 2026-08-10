@@ -123,6 +123,15 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    audio_type: Optional[str] = Field(
+        None,
+        description = (
+            "Codec of the adapter's base model ('snac', 'bicodec', 'dac', 'csm', "
+            "'whisper', 'audio_vlm') when it fine-tunes an audio model, else null. "
+            "The Audio page needs this to offer a trained checkpoint: a scan row "
+            "carries no modality otherwise, so an audio adapter reads as a text one."
+        ),
+    )
 
 
 class LoRAScanResponse(BaseModel):

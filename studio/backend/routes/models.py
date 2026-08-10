@@ -2535,6 +2535,30 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
+def _audio_type_of_checkpoint(model_path: str, base_model: Optional[str]) -> Optional[str]:
+    """Codec a trained checkpoint speaks, or None for a text one.
+
+    A scan row carries no modality, so without this every trained audio model reads
+    as text: the Audio page filters it out and chat routes it to the GGUF auto-switch,
+    which cannot resolve a local adapter directory. Detection reads the checkpoint
+    itself first (a merged export has its own tokenizer) and falls back to the base
+    repo an adapter names. Cached per model, so the scan stays one pass.
+    """
+    from utils.models.model_config import detect_audio_type
+
+    for candidate in (model_path, base_model):
+        if not candidate:
+            continue
+        try:
+            audio_type = detect_audio_type(candidate)
+        except Exception as exc:  # never let a scan row fail the whole listing
+            logger.debug("audio detection failed for %r: %s", candidate, exc)
+            continue
+        if audio_type:
+            return audio_type
+    return None
+
+
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
@@ -2565,6 +2589,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "training",
                     export_type = model_type,
+                    audio_type = _audio_type_of_checkpoint(model_path, base_model),
                 )
             )
 
@@ -2578,6 +2603,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "exported",
                     export_type = export_type,
+                    audio_type = _audio_type_of_checkpoint(model_path, base_model),
                 )
             )
 

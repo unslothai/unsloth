@@ -15,6 +15,7 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listLoras,
   listModels,
   listRecommendedFolders,
   listScanFolders,
