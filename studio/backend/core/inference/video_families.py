@@ -98,6 +98,13 @@ class VideoFamily:
     # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
     # loader's base_model_id check sends the load back to the dense path.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline. Its
     # components are loaded without pruning the workflow's routing blocks.
     modular_workflow: Optional[str] = None
@@ -155,6 +162,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # the layout every image-side prequant repo already uses and the one prequant_repo_filename
         # builds without help.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        # The INT8 denoiser is ConvRot-rotated (see diffusion_convrot): its weights live in a
+        # Hadamard-rotated basis and are wrong unless the loader rotates the activations to match,
+        # so it carries the v2 format tag a Studio predating that code refuses. Shipping it under
+        # its own name rather than over MiniMax-H3-INT8.pt keeps both true at once: this build
+        # gets the rotated artifact, and an older install still resolves the plain one instead of
+        # refusing the v2 tag and falling back to the 66.3 GB dense download.
+        prequant_filenames = (("int8", "MiniMax-H3-INT8-ConvRot.pt"),),
         # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",

@@ -40,6 +40,16 @@ def main(argv = None) -> int:
     p.add_argument("--dtype", default = "bfloat16", choices = ["bfloat16"])
     p.add_argument("--hf-token", default = None)
     p.add_argument(
+        "--convrot-groupsize",
+        type = int,
+        default = 0,
+        help = "bake a ConvRot block-Hadamard activation rotation at this group size (a power of "
+               "4; 0 = off). Every quantized Linear whose in_features the group divides has its "
+               "weight rotated before quantize_ so the quantizer sees a flatter distribution; the "
+               "exact fqn list is recorded in the checkpoint and the loader rotates the "
+               "activations of that list and nothing else. Writes the v2 format tag.",
+    )
+    p.add_argument(
         "--upload-repo", default = None, help = "optional HF repo id to upload the checkpoint to"
     )
     p.add_argument("--upload-revision", default = None)
@@ -51,7 +61,7 @@ def main(argv = None) -> int:
     import diffusers
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import PREQUANT_FORMAT, prequant_filename
+    from core.inference.diffusion_prequant import prequant_filename, prequant_format_for
 
     # Reuse the runtime quant factory + filter so offline == runtime (the LPIPS-0 invariant).
     from core.inference.diffusion_transformer_quant import (
@@ -89,15 +99,34 @@ def main(argv = None) -> int:
     require_bf16 = scheme in _REQUIRE_BF16_SCHEMES
     # fp8 bakes the accumulate mode in; record it so the loader can reject a contradicting request.
     fast_accum = _resolve_fast_accum(None) if scheme == TQ_FP8 else None
-    quantize_(
-        transformer,
-        _make_quant_config(scheme),
-        filter_fn = make_filter_fn(
-            args.min_features,
-            exclude_name_tokens = exclude_name_tokens,
-            require_bf16 = require_bf16,
-        ),
+    filter_fn = make_filter_fn(
+        args.min_features,
+        exclude_name_tokens = exclude_name_tokens,
+        require_bf16 = require_bf16,
     )
+
+    # ConvRot, BEFORE quantize_: rotating the weights is only worth anything if the quantizer then
+    # sees the rotated distribution. The fqn list is recorded, never re-derived at load time.
+    rotation: dict = {}
+    if args.convrot_groupsize:
+        from core.inference.diffusion_convrot import (
+            rotatable_fqns,
+            rotate_linears_,
+            rotation_metadata,
+        )
+
+        group = int(args.convrot_groupsize)
+        rotatable, not_divisible = rotatable_fqns(transformer, filter_fn, group)
+        rotate_linears_(transformer, rotatable, group)
+        rotation = rotation_metadata(group, rotatable)
+        print(
+            f"  rotated {len(rotatable)} linears at ConvRot group {group}; "
+            f"{len(not_divisible)} quantized linears left plain (in_features not divisible)"
+            + (f", e.g. {not_divisible[0]}" if not_divisible else ""),
+            flush = True,
+        )
+
+    quantize_(transformer, _make_quant_config(scheme), filter_fn = filter_fn)
 
     # CPU state dict for a portable, GPU-free artifact.
     state_dict = {
@@ -123,8 +152,11 @@ def main(argv = None) -> int:
     # fp8 granularity: lets the loader reject a stale per-tensor checkpoint (runtime needs per-row).
     if scheme == TQ_FP8:
         metadata["fp8_granularity"] = FP8_GRANULARITY
+    metadata.update(rotation)
     ckpt = {
-        "format": PREQUANT_FORMAT,
+        # v2 when a rotation is baked in, so a Studio predating the online half refuses the file
+        # rather than running the rotated weights against unrotated activations.
+        "format": prequant_format_for(metadata),
         "metadata": metadata,
         "state_dict": state_dict,
     }

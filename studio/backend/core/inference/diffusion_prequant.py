@@ -27,6 +27,24 @@ from typing import Any, Optional
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
+# v2 is v1 plus an ACTIVATION ROTATION (see ``diffusion_convrot``): the weights are stored in a
+# rotated basis and are wrong unless the loader rotates the activations to match. That is the one
+# on-disk change a released Studio cannot ignore safely -- an old build reading a rotated artifact
+# as v1 would load it clean, raise nothing and render quietly wrong pixels forever -- so it gets a
+# tag old builds refuse outright, and the load drops to dense instead. Strictly a biconditional:
+# a v2 artifact MUST declare a rotation and a v1 artifact must NOT, both checked below, so neither
+# a hand-edited tag nor a builder that forgot one half can produce something that loads.
+PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
+
+PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED)
+
+
+def prequant_format_for(metadata: Any) -> str:
+    """The on-disk format tag an offline builder should stamp for ``metadata``."""
+    from .diffusion_convrot import declares_rotation
+
+    return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
+
 # Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted repo checkpoint is first-party;
 # a ``kind == "path"`` can come from a request, so it is unpickled ONLY inside an operator-configured directory ALLOWLIST.
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
@@ -133,17 +151,25 @@ def resolve_prequant_source(
     override = (path_override or "").strip()
     if override:
         return PrequantSource(kind = "path", location = override, filename = None)
+    preferred = None
     try:
-        from .diffusion_families import family_prequant_repo
+        from .diffusion_families import family_prequant_filename, family_prequant_repo
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
+        preferred = family_prequant_filename(fam, scheme)
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
     if repo_id:
+        derived = prequant_repo_filename(repo_id, scheme)
+        # A family may name a SECOND artifact for the same repo and scheme (today: MiniMax-H3's
+        # rotated INT8 denoiser). It becomes the primary and the derived name becomes the
+        # fallback, so a build that knows the new name gets it and every older build keeps
+        # resolving the artifact it already understands. Without an override nothing changes: the
+        # derived name is primary and the legacy transformer_<scheme>.pt is the fallback.
         return PrequantSource(
             kind = "repo",
             location = repo_id,
-            filename = prequant_repo_filename(repo_id, scheme),
-            fallback_filename = prequant_filename(scheme),
+            filename = preferred or derived,
+            fallback_filename = derived if preferred else prequant_filename(scheme),
         )
     return None
 
@@ -183,7 +209,7 @@ def local_prequant_scheme(path: str) -> Optional[str]:
     try:
         import torch
         obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
-        if isinstance(obj, dict) and obj.get("format") == PREQUANT_FORMAT:
+        if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None
     except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
@@ -329,9 +355,16 @@ def load_prequantized_transformer(
     can key on what was baked rather than on today's defaults. A raising callback falls out to the
     outer handler below, i.e. a warning and a dense fallback, never a failed load.
 
+    A checkpoint that declares an ACTIVATION ROTATION (``diffusion_convrot``) has the matching
+    online half installed here, on exactly the fqns it records. That is unconditional and central
+    rather than a family opt-in, because the one failure mode worth designing against is the
+    silent one: rotated weights met by unrotated activations render wrong pixels and raise
+    nothing.
+
     Returns the placed transformer, or None on any problem (missing / mismatched /
-    unreadable checkpoint, or unsupported meta-init) so the caller falls back to
-    dense-quantise. Best-effort: never raises for an unavailable artifact.
+    unreadable checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly)
+    so the caller falls back to dense-quantise. Best-effort: never raises for an unavailable
+    artifact.
     """
     try:
         # weights_only=False executes pickle code, so a local path is unpickled ONLY when allowlisted; the hosted family repo is first-party.
@@ -385,6 +418,18 @@ def load_prequantized_transformer(
             if prepare_model is not None:
                 prepare_model(transformer, metadata)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
+
+        # The ONLINE half of an activation rotation, applied here rather than in a family's
+        # ``prepare_model`` hook so that no route can load a rotated checkpoint without it: the
+        # offline half is already baked into the weights that were just assigned, and a rotated
+        # weight met by an unrotated activation renders plausible garbage with nothing to catch.
+        # A no-op for every artifact that declares no rotation, and a RAISE (caught below into the
+        # dense fallback) for one this build cannot honour exactly. After load_state_dict because
+        # the meta retry above rebuilds the module; before apply_small_m_padding because padding
+        # reparents the Linears and the recorded fqns name the unwrapped tree.
+        from .diffusion_convrot import apply_activation_rotation
+
+        apply_activation_rotation(transformer, metadata, logger = logger)
 
         transformer = transformer.to(device)
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a
@@ -598,6 +643,51 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     return True
 
 
+def _validate_activation_rotation(
+    ckpt_format: Any,
+    meta: Any,
+    scheme: str,
+    logger: Any,
+) -> bool:
+    """Reject a checkpoint whose activation rotation this build cannot honour EXACTLY.
+
+    Three ways an artifact and a loader can disagree about the rotation, and all three end in the
+    same place -- weights in a rotated basis multiplied by unrotated activations, which is finite,
+    raises nothing, and renders quietly wrong -- so all three are refused here rather than
+    discovered later:
+
+      * the artifact declares a rotation and is tagged v1. Only v2 makes a Studio too old for this
+        code refuse it, so a v1 tag on rotated weights is a hazard to every OTHER build, and the
+        builder that produced it is not one to trust about anything else in the file;
+      * the artifact is tagged v2 and declares none. Nothing here would rotate, and the tag says
+        something was meant to;
+      * the rotation is declared but its contract does not parse (an unknown kind, a group that is
+        not a power of 4, an absent or malformed fqn list).
+
+    Refusing costs a dense fallback: slower and bigger, never wrong."""
+    from .diffusion_convrot import declares_rotation, rotation_metadata_error
+
+    rotated = declares_rotation(meta)
+    tagged = ckpt_format == PREQUANT_FORMAT_ROTATED
+    if rotated != tagged:
+        _warn(
+            logger,
+            scheme,
+            ValueError(
+                f"checkpoint format {ckpt_format!r} and its activation rotation disagree "
+                f"(declares a rotation: {rotated}); a rotated checkpoint must be tagged "
+                f"{PREQUANT_FORMAT_ROTATED!r} so older builds refuse it instead of running it "
+                "unrotated"
+            ),
+        )
+        return False
+    problem = rotation_metadata_error(meta)
+    if problem:
+        _warn(logger, scheme, ValueError(problem))
+        return False
+    return True
+
+
 def _validate_checkpoint(
     ckpt: Any,
     scheme: str,
@@ -615,13 +705,15 @@ def _validate_checkpoint(
     ``fast_accum`` (fp8 only): when the caller forces it and the checkpoint baked a different
     value, the loaded kernels would ignore the request, so reject and let the dense path
     honor it. A checkpoint predating a metadata field (absent) is accepted for back-compat."""
-    if not isinstance(ckpt, dict) or ckpt.get("format") != PREQUANT_FORMAT:
+    if not isinstance(ckpt, dict) or ckpt.get("format") not in PREQUANT_FORMATS:
         _warn(logger, scheme, ValueError("unrecognised pre-quant checkpoint format"))
         return False
     if "state_dict" not in ckpt:
         _warn(logger, scheme, ValueError("pre-quant checkpoint has no state_dict"))
         return False
     meta = ckpt.get("metadata") or {}
+    if not _validate_activation_rotation(ckpt.get("format"), meta, scheme, logger):
+        return False
     if meta.get("scheme") != scheme:
         _warn(logger, scheme, ValueError(f"checkpoint scheme {meta.get('scheme')!r} != {scheme!r}"))
         return False
