@@ -1288,7 +1288,29 @@ function GgufVariantExpander({
               )
             : normalized.variants,
         );
-        setDefaultVariant(normalized.defaultVariant);
+        // Only if it survived the filter. defaultVariant is a QUANT key chosen across the
+        // WHOLE repo, and a prefix subset need not contain it: the H3 catalog's ref2va group
+        // offers 6 quants against fl2va's 8. Kept as-is, effectiveRecommended's
+        // budget-unavailable branch returns a key with no visible row, so nothing reads as
+        // recommended and the sorter falls through to largest-first. Null says "no
+        // recommendation for this subset", which is the truth; inventing one is
+        // pick_best_gguf's job and it never saw the subset.
+        setDefaultVariant(
+          filenamePrefix &&
+            normalized.defaultVariant != null &&
+            !normalized.variants.some(
+              (variant) =>
+                variant.quant === normalized.defaultVariant &&
+                variant.filename
+                  .replace(/\\/g, "/")
+                  .split("/")
+                  .at(-1)
+                  ?.toLowerCase()
+                  .startsWith(filenamePrefix.toLowerCase()),
+            )
+            ? null
+            : normalized.defaultVariant,
+        );
         setHasVision(normalized.hasVision);
         onHasVision?.(normalized.hasVision);
         setNativeContext(normalized.contextLength);

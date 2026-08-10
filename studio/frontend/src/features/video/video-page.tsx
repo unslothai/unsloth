@@ -690,9 +690,19 @@ const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 /** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
  *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
  *  without passing through handleModelSelect, so checking it in one place staged the default
- *  fl2va partition, tens of GB, with no way to ask for References. */
+ *  fl2va partition, tens of GB, with no way to ask for References.
+ *
+ *  An on-device copy counts. The same pipeline added as a directory reaches the generic
+ *  local-pipeline branch, which a Hub-id equality test never recognises, so an omitted h3_task
+ *  pinned it to fl2va and its transformer_ref partition was unreachable even with the weights
+ *  sitting on disk. Matched on the final path segment, the same way a local checkpoint's family
+ *  is read off its filename elsewhere. */
 function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
-  return kind === "pipeline" && repoId.toLowerCase() === H3_BF16_REPO.toLowerCase();
+  if (kind !== "pipeline") return false;
+  const id = repoId.toLowerCase();
+  if (id === H3_BF16_REPO.toLowerCase()) return true;
+  const leaf = id.replace(/\\/g, "/").replace(/\/+$/, "").split("/").at(-1) ?? "";
+  return leaf === H3_BF16_REPO.split("/")[1].toLowerCase();
 }
 
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
@@ -1974,13 +1984,31 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [guidance, loadOrStage, pickGuard, quant, revertPick, steps],
   );
 
+  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
+  // nothing will load and nothing else will restore the label. Hand the resident state back here or
+  // the selector keeps showing the abandoned pick's quant and recipe for good.
+  const abandonPick = useCallback(() => {
+    if (quantRevert.current) {
+      revertPick(quantRevert.current);
+      quantRevert.current = null;
+    }
+  }, [revertPick]);
+
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
     if (!active) {
       pickGuard.release();
-      setPendingH3Load(null);
+      // Through the SAME ending as pressing Cancel. The pick that opened this dialog already
+      // replaced the quant label, steps and guidance and parked their rollback in quantRevert,
+      // and the load it was deferring never ran. Clearing the dialog alone leaves the controls
+      // describing H3 over whatever model is still resident, and leaves a stale rollback for the
+      // next pick to trip over.
+      setPendingH3Load((pending) => {
+        if (pending) abandonPick();
+        return null;
+      });
     }
-  }, [active, pickGuard]);
+  }, [abandonPick, active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
   const routeSearch = useSearch({ strict: false }) as {
@@ -2053,15 +2081,6 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     pickGuard,
   ]);
 
-  // A pick that is rejected after beginPick() has already retired the staged pick it replaced, so
-  // nothing will load and nothing else will restore the label. Hand the resident state back here or
-  // the selector keeps showing the abandoned pick's quant and recipe for good.
-  const abandonPick = useCallback(() => {
-    if (quantRevert.current) {
-      revertPick(quantRevert.current);
-      quantRevert.current = null;
-    }
-  }, [revertPick]);
 
   // The task dialog defers the load out of the branch that snapshotted the rollback, so the two
   // ways out of it carry that branch's two endings: choosing runs the load and reverts if it never
@@ -2265,6 +2284,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
+      // The on-device copy of the H3 pipeline lands here rather than in the curated branch, and
+      // it needs the same partition question: without it the load silently takes fl2va.
+      if (isH3PipelinePick(id, "pipeline")) {
+        setPendingH3Load({
+          repoId: id,
+          opts: { kind: "pipeline" },
+          source: meta.source,
+          token,
+        });
+        return;
+      }
       void loadOrStage(id, { kind: "pipeline" }, meta.source, token).then((started) => {
         if (!started && pickGuard.holds(token)) {
           revertPick(revert);
