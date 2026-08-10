@@ -153,7 +153,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
-        supports_torch_compile = False,
+        # Regionally compilable. The DiT declares _repeated_blocks (MiniMaxH3TransformerBlock +
+        # MiniMaxH3TokenRefinerBlock); every block sees (1, S, 5376) plus an (S,) index tensor,
+        # where S is the PACKED length (18,870 video + 207 audio rows + the caption's text rows at
+        # 960x544x124). The caption moves S by ~2% (19,096 at 19 tokens vs 19,479 at 402) and S
+        # cannot change mid-denoise, so dynamic=True traces once and holds: measured 1.298-1.342
+        # s/step eager vs 1.000-1.040 compiled (1.30x), first forward 10.2 s, zero recompiles
+        # across captions of 19/19/37/128/402 tokens. The loader engages this only when the
+        # denoiser is RESIDENT; compiling inside a full CPU-offload rotation measured slower than
+        # eager, so that case stays on the no-compile tier.
+        supports_torch_compile = True,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
         # its own from_pretrained, so there is no dense module to quantise in place: these are the
