@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { CommandPalette } from "@/components/command-palette";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
@@ -24,6 +25,7 @@ import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
   createRootRoute,
@@ -268,7 +270,7 @@ function RootLayout() {
         chatRuntime.setIncognito(false);
         void navigate({
           to: "/chat",
-          search: { new: crypto.randomUUID() },
+          search: { new: createNavigationNonce() },
         });
       }
     };
@@ -301,6 +303,7 @@ function RootLayout() {
       <TransformersUpgradeDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
+      {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <Suspense fallback={<RouteFallback />}>

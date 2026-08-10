@@ -42,6 +42,7 @@ function CommandDialog({
   className,
   overlayClassName,
   showCloseButton = false,
+  onCloseAutoFocus,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string;
@@ -49,6 +50,7 @@ function CommandDialog({
   className?: string;
   overlayClassName?: string;
   showCloseButton?: boolean;
+  onCloseAutoFocus?: React.ComponentProps<typeof DialogContent>["onCloseAutoFocus"];
 }) {
   return (
     <Dialog {...props}>
@@ -63,6 +65,7 @@ function CommandDialog({
         )}
         overlayClassName={overlayClassName}
         showCloseButton={showCloseButton}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         {children}
       </DialogContent>

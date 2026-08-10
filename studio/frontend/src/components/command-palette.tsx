@@ -1,0 +1,286 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
+import {
+  Command,
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+  CommandShortcut,
+} from "@/components/ui/command";
+import { detectLocalPlatform, usePlatformStore } from "@/config/env";
+import {
+  clearNewChatDraft,
+  useChatRuntimeStore,
+  useChatSearchStore,
+} from "@/features/chat";
+import { useSettingsDialogStore, type SettingsTab } from "@/features/settings";
+import { SETTINGS_SEARCH_INDEX } from "@/features/settings/settings-search";
+import { useT, type TranslationKey } from "@/i18n";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
+import { useCommandPaletteStore } from "@/stores/command-palette";
+import {
+  ChefHatIcon,
+  DashboardCircleIcon,
+  FlimSlateIcon,
+  DownloadSquare01Icon,
+  Folder01Icon,
+  Globe02Icon,
+  Image03Icon,
+  Message01Icon,
+  PencilEdit02Icon,
+  Search01Icon,
+  Settings02Icon,
+  Sun03Icon,
+  TestTube01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
+import { Moon } from "lucide-react";
+import { useEffect, useState } from "react";
+
+const isMacClient = detectLocalPlatform() === "mac";
+
+// matches sidebar: drop interior bubble paths
+const TestTubeOutlineIcon = TestTube01Icon.slice(
+  0,
+  3,
+) as typeof TestTube01Icon;
+
+const SETTINGS_TAB_ENTRIES: {
+  id: SettingsTab;
+  labelKey: TranslationKey;
+}[] = [
+  { id: "general", labelKey: "settings.tabs.general" },
+  { id: "profile", labelKey: "settings.tabs.profile" },
+  { id: "appearance", labelKey: "settings.tabs.appearance" },
+  { id: "resources", labelKey: "settings.tabs.resources" },
+  { id: "chat", labelKey: "settings.tabs.chat" },
+  { id: "connections", labelKey: "settings.tabs.connections" },
+  { id: "data", labelKey: "settings.tabs.data" },
+  { id: "api-keys", labelKey: "settings.tabs.apiKeys" },
+  { id: "voice", labelKey: "settings.tabs.voice" },
+  { id: "agents", labelKey: "settings.tabs.agents" },
+  { id: "about", labelKey: "settings.tabs.about" },
+];
+
+export function CommandPalette() {
+  const isOpen = useCommandPaletteStore((s) => s.isOpen);
+  const setOpen = useCommandPaletteStore((s) => s.setOpen);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.code !== "KeyP") return;
+      e.preventDefault(); // prevents the browser print dialog
+      // A held shortcut auto-repeats keydown; toggling on repeats would
+      // close the palette on the first repeat after it opened.
+      if (e.repeat) return;
+      useCommandPaletteStore.getState().toggle();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // Hidden-shell routes unmount the palette; leave the store closed so it
+  // does not remount already open after the auth flow.
+  useEffect(() => () => useCommandPaletteStore.getState().setOpen(false), []);
+
+  return (
+    <CommandDialog
+      open={isOpen}
+      onOpenChange={setOpen}
+      className="w-140 max-w-[calc(100%-2rem)] sm:max-w-140"
+    >
+      <PaletteContent />
+    </CommandDialog>
+  );
+}
+
+function PaletteContent() {
+  const t = useT();
+  const navigate = useNavigate();
+  const close = useCommandPaletteStore((s) => s.close);
+  // Until /api/health answers, `chatOnly` is the browser-platform seed, not a verdict; gating
+  // on it would hide Train on every Mac at first paint. Match the sidebar and wait for it.
+  const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
+  const chatOnlyMeasured = chatOnly && !capabilitiesUnknown;
+  const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
+  const [query, setQuery] = useState("");
+  const hasQuery = query.trim().length > 0;
+
+  const runAndClose = (action: () => void) => () => {
+    close();
+    action();
+  };
+
+  const openSettings = (tab?: SettingsTab) =>
+    runAndClose(() => {
+      useSettingsDialogStore.getState().openDialog(tab, {
+        opener: useCommandPaletteStore.getState().opener,
+      });
+    });
+
+  const openNewChat = runAndClose(() => {
+    clearNewChatDraft();
+    const chatRuntime = useChatRuntimeStore.getState();
+    chatRuntime.setActiveThreadId(null);
+    chatRuntime.setActiveProjectId(null);
+    chatRuntime.setIncognito(false);
+    void navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+  });
+
+  return (
+    <Command>
+      <CommandInput
+        placeholder={t("shell.commandPalette.placeholder")}
+        value={query}
+        onValueChange={setQuery}
+      />
+      <CommandList className="max-h-105">
+        <CommandEmpty className="text-muted-foreground text-xs">
+          {t("shell.commandPalette.noResults")}
+        </CommandEmpty>
+        <CommandGroup heading={t("shell.commandPalette.navigation")}>
+          <CommandItem onSelect={runAndClose(() => navigate({ to: "/chat" }))}>
+            <HugeiconsIcon icon={Message01Icon} strokeWidth={1.75} />
+            <span>{t("shell.commandPalette.chat")}</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/projects" }))}
+          >
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} />
+            <span>{t("shell.commandPalette.projects")}</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/hub" }))}
+            keywords={["models"]}
+          >
+            <HugeiconsIcon icon={DashboardCircleIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.hub")}</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/images" }))}
+            keywords={["image", "generate"]}
+          >
+            <HugeiconsIcon icon={Image03Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.images")}</span>
+          </CommandItem>
+          {/* /video is allowed on chat-only hosts (VideoPage explains an unsupported host
+              itself), so it is always listed, like the sidebar always renders the row. */}
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/video" }))}
+            keywords={["video", "generate"]}
+          >
+            <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.video")}</span>
+          </CommandItem>
+          {/* chat-only guard redirects /studio; omit rather than dead-end. Only a measured
+              verdict counts: the pre-measurement guess is chat-only on every Mac, and acting
+              on it would drop Train from the palette on a host that supports it. */}
+          {!chatOnlyMeasured && (
+            <CommandItem
+              onSelect={runAndClose(() => navigate({ to: "/studio" }))}
+              keywords={["studio", "fine-tune", "training"]}
+            >
+              <HugeiconsIcon icon={TestTubeOutlineIcon} strokeWidth={1.75} />
+              <span>{t("shell.navigation.train")}</span>
+            </CommandItem>
+          )}
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/data-recipes" }))}
+            keywords={["data", "datasets"]}
+          >
+            <HugeiconsIcon icon={ChefHatIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.recipes")}</span>
+          </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/export" }))}
+            keywords={["gguf", "checkpoint"]}
+          >
+            <HugeiconsIcon icon={DownloadSquare01Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.export")}</span>
+          </CommandItem>
+          {/* The monitor page, not the API keys dialog. */}
+          <CommandItem
+            onSelect={runAndClose(() => navigate({ to: "/api-monitor" }))}
+            keywords={["api", "monitor", "requests"]}
+          >
+            <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.api")}</span>
+          </CommandItem>
+          <CommandItem onSelect={openSettings()} keywords={["preferences"]}>
+            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.settings")}</span>
+            <CommandShortcut>{isMacClient ? "⌘," : "Ctrl+,"}</CommandShortcut>
+          </CommandItem>
+        </CommandGroup>
+        <CommandSeparator />
+        <CommandGroup heading={t("shell.commandPalette.actions")}>
+          <CommandItem onSelect={openNewChat}>
+            <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.newChat")}</span>
+            <CommandShortcut>
+              {isMacClient ? "⌘⇧O" : "Ctrl+Shift+O"}
+            </CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            onSelect={runAndClose(() =>
+              useChatSearchStore.getState().open({
+                opener: useCommandPaletteStore.getState().opener,
+              }),
+            )}
+          >
+            <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} />
+            <span>{t("shell.commandPalette.searchChats")}</span>
+            <CommandShortcut>{isMacClient ? "⌘K" : "Ctrl+K"}</CommandShortcut>
+          </CommandItem>
+          <CommandItem
+            ref={anchorRef as React.Ref<HTMLDivElement>}
+            onSelect={runAndClose(() => void toggleTheme())}
+            keywords={["theme"]}
+          >
+            {isDark ? (
+              <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} />
+            ) : (
+              <Moon strokeWidth={1.75} className="size-4" />
+            )}
+            <span>
+              {isDark
+                ? t("shell.navigation.lightMode")
+                : t("shell.navigation.darkMode")}
+            </span>
+          </CommandItem>
+        </CommandGroup>
+        {hasQuery && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading={t("shell.navigation.settings")}>
+              {SETTINGS_TAB_ENTRIES.map((tab) => (
+                <CommandItem
+                  key={tab.id}
+                  keywords={SETTINGS_SEARCH_INDEX[tab.id].map((key) => t(key))}
+                  onSelect={openSettings(tab.id)}
+                >
+                  <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                  <span className="text-muted-foreground">
+                    {t("shell.navigation.settings")}
+                  </span>
+                  <span className="text-muted-foreground">→</span>
+                  <span>{t(tab.labelKey)}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+      </CommandList>
+    </Command>
+  );
+}
