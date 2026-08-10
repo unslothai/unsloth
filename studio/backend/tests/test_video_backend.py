@@ -5302,6 +5302,8 @@ def test_the_video_sidecar_records_the_negative_prompt_that_ran(monkeypatch, tmp
 
     assert saved and saved[-1]["negative_prompt"] is None
     assert saved[-1]["prompt"] == "a fox runs through snow"
+
+
 # ── the refusal reads the plan the load will actually take ────────────────────
 # Two ways the hard unified-memory refusal added in PR #8213 can read a number the load never
 # occupies, both of which turn it from a guard into a false rejection.
