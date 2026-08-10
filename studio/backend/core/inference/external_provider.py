@@ -85,9 +85,7 @@ _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 def _anthropic_sampling_params_removed(model: str) -> bool:
     """Whether Anthropic rejects non-default sampling params for ``model``."""
     normalized = model.strip().lower()
-    if normalized == "claude-mythos-preview" or normalized.startswith(
-        "claude-mythos-preview-"
-    ):
+    if normalized == "claude-mythos-preview" or normalized.startswith("claude-mythos-preview-"):
         return True
 
     match = _ANTHROPIC_MODEL_VERSION.match(normalized)
@@ -153,11 +151,13 @@ def _openai_non_streaming_response_sse_lines(response: dict[str, Any]) -> list[s
         for output_index, item in enumerate(output):
             if not isinstance(item, dict):
                 continue
-            add({
-                "type": "response.output_item.added",
-                "output_index": output_index,
-                "item": item,
-            })
+            add(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": item,
+                }
+            )
             if item.get("type") == "message":
                 content = item.get("content")
                 if isinstance(content, list):
@@ -173,18 +173,22 @@ def _openai_non_streaming_response_sse_lines(response: dict[str, Any]) -> list[s
                             else None
                         )
                         if isinstance(text, str) and text:
-                            add({
-                                "type": "response.output_text.delta",
-                                "output_index": output_index,
-                                "content_index": content_index,
-                                "delta": text,
-                                "annotations": part.get("annotations") or [],
-                            })
-            add({
-                "type": "response.output_item.done",
-                "output_index": output_index,
-                "item": item,
-            })
+                            add(
+                                {
+                                    "type": "response.output_text.delta",
+                                    "output_index": output_index,
+                                    "content_index": content_index,
+                                    "delta": text,
+                                    "annotations": part.get("annotations") or [],
+                                }
+                            )
+            add(
+                {
+                    "type": "response.output_item.done",
+                    "output_index": output_index,
+                    "item": item,
+                }
+            )
 
     status = response.get("status")
     if status == "incomplete":
