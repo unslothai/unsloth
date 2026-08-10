@@ -258,6 +258,7 @@ def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:
         from storage.studio_db import add_scan_folder
+
         folder = add_scan_folder(str(path))
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
 

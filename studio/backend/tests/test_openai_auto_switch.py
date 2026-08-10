@@ -210,12 +210,8 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     calls = []
     warmed = []
 
-    entry = resolver._LocalGgufEntry(
-        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
-    )
-    monkeypatch.setattr(
-        resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry})
-    )
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
     resolver.invalidate_index(additions_only = True)
     assert resolver._scan[0] == 0.0
     assert resolver.index_is_built() is False
@@ -254,12 +250,8 @@ def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
         lambda: SimpleNamespace(active_model_name = None),
     )
 
-    old = resolver._LocalGgufEntry(
-        "unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",)
-    )
-    added = resolver._LocalGgufEntry(
-        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
-    )
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
     resolver._additions_only_retained = None
     resolver.invalidate_index()
@@ -300,10 +292,7 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
 
     _run_hook("unsloth/B-GGUF")
 
-    assert calls == [
-        ("unsloth/B-GGUF", {}),
-        ("unsloth/B-GGUF", {"allow_scan": False}),
-    ]
+    assert calls == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
     assert scans == [1]
     assert rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"
@@ -314,12 +303,8 @@ def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch
     backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
-    old = resolver._LocalGgufEntry(
-        "unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",)
-    )
-    added = resolver._LocalGgufEntry(
-        "unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",)
-    )
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/a-gguf": old}))
     scans = []
     calls = []

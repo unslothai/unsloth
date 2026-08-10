@@ -356,14 +356,12 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     global _scan, _additions_only_retained
     with _lock:
         timestamp, retained = _scan
-        was_trusted = (
-            bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S
-        ) or (not timestamp and retained is _additions_only_retained)
+        was_trusted = (bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S) or (
+            not timestamp and retained is _additions_only_retained
+        )
         # Revoke permission before publishing a config-invalidated snapshot. A
         # lock-free reader can then fail safe if it runs between these assignments.
-        _additions_only_retained = (
-            retained if additions_only and was_trusted else None
-        )
+        _additions_only_retained = retained if additions_only and was_trusted else None
         _scan = (0.0, retained)
 
 
@@ -397,9 +395,7 @@ def index_is_built() -> bool:
     return bool(_scan[0])
 
 
-def resolve_trusted_cached_local_gguf(
-    requested: str,
-) -> Optional[tuple[str, Optional[str], str]]:
+def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
     """Resolve a positive cache hit only when its snapshot is safe to trust.
 
     A snapshot is trustworthy while fresh, or after an explicit additions-only
