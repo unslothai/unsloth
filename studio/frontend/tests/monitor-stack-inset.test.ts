@@ -317,7 +317,7 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
   const measure = source.slice(
     source.indexOf("const measure = () => {"),
-    source.indexOf("observer.observe(node)"),
+    source.indexOf("const observer = new ResizeObserver"),
   );
   assert.ok(measure, "the measure callback moved");
   assert.match(
@@ -433,4 +433,60 @@ test("no pairing produces an overlap or an unusable cap", () => {
       }
     }
   }
+});
+
+// At its cap the stack's border box does not move when its content grows, so neither a
+// root-only ResizeObserver nor a childList watcher hears an image finish loading inside an
+// expanded release note, and the stack keeps the pre-load height and stays clipped.
+test("every box inside the stack is observed, not just the stack", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wiring = source.slice(source.indexOf("const observer = new ResizeObserver"));
+  assert.ok(
+    !/observer\.observe\(node\)/.test(wiring),
+    "the root alone is observed, so an intrinsic descendant resize is missed",
+  );
+  assert.match(
+    wiring,
+    /querySelectorAll\("\*"\)/,
+    "the descendants are never enumerated, so none of them is observed",
+  );
+  // A changed subtree has to be re-observed, or a banner arriving after mount is missed.
+  const onMutation = wiring.slice(wiring.indexOf("new MutationObserver"));
+  assert.match(onMutation, /syncObserved\(\)/, "the observed set is not resynced");
+  // And unobserved on the way out, or a detached node keeps the observer alive.
+  assert.match(wiring, /observer\.unobserve\(/, "nothing is ever unobserved");
+});
+
+// The llama.cpp update banner animates its progress bar's width every frame, inside this
+// same stack. Observing descendants without filtering therefore remeasures at ~60Hz for a
+// stack whose height never moved, and each remeasure lifts the cap and reads scrollHeight,
+// which forces a synchronous layout.
+test("a width-only animation does not remeasure the stack", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wiring = source.slice(
+    source.indexOf("const observer = new ResizeObserver"),
+    source.indexOf("const observed = new Set<Element>()"),
+  );
+  assert.ok(
+    !/new ResizeObserver\(measure\)/.test(wiring),
+    "every observed resize remeasures, width-only ones included",
+  );
+  assert.match(wiring, /blockSize/, "the entry's height is never read");
+  assert.match(
+    wiring,
+    /if \(moved\) measure\(\)/,
+    "measure runs whether or not a height moved",
+  );
 });
