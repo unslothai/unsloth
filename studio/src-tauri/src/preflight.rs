@@ -805,13 +805,9 @@ exit 1
 
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, server.port).await.unwrap();
-        let probe = backend_desktop_auth_status(
-            &client,
-            server.port,
-            &health,
-            Some(EXPECTED_ROOT_ID),
-        )
-        .await;
+        let probe =
+            backend_desktop_auth_status(&client, server.port, &health, Some(EXPECTED_ROOT_ID))
+                .await;
 
         assert!(matches!(
             probe,
