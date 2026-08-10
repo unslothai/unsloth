@@ -1279,6 +1279,15 @@ jobs:
           if (Test-Path $eicarPath) {
             $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
             $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            # Remediation is asynchronous, so the sample can survive Test-Path and
+            # be quarantined before MpCmdRun opens it, leaving the scan nothing to
+            # find. The sample disappearing is the control firing, not a missing
+            # scanner: nothing else here deletes it, and -DisableRemediation keeps
+            # this scan from doing so, so with no engine it is still on disk below.
+            if (-not $controlPassed -and -not (Test-Path $eicarPath)) {
+              Write-Host 'EICAR positive control quarantined before the scan could open it; real-time protection is live.'
+              $controlPassed = $true
+            }
             Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
           } else {
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'

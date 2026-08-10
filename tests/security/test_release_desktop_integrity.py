@@ -508,9 +508,15 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
 
     # The two cmdlets fail independently ($status is a live-service WMI call,
     # $pref reads registry-backed settings), so each probe must sit inside the
-    # guard for the result it reads. A blanket $cmdletsDown guard would discard a
-    # readable MAPSReporting=0 and publish on a scan blind to cloud "!ml" verdicts.
-    bodies = _guarded_bodies(scan, "if ($status) {") + _guarded_bodies(scan, "if ($pref) {")
+    # guard for the result it reads - the guard for *its own* cmdlet, not merely
+    # some guard. Pooling both bodies would accept $pref.MAPSReporting moved under
+    # `if ($status)`, where a dead status cmdlet again discards a readable
+    # MAPSReporting=0 and publishes on a scan blind to the cloud "!ml" verdicts
+    # this gate exists to catch, exactly as a blanket $cmdletsDown guard did.
+    guards = {
+        "$status": _guarded_bodies(scan, "if ($status) {"),
+        "$pref": _guarded_bodies(scan, "if ($pref) {"),
+    }
     for probe in (
         "$status.RealTimeProtectionEnabled",
         "$pref.MAPSReporting",
@@ -519,12 +525,21 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "$pref.CloudBlockLevel",
         "$pref.ExclusionPath",
     ):
+        owner = probe.split(".", 1)[0]
         assert any(
-            probe in body for body in bodies
-        ), f"{probe} left the guard that proves it was read"
+            probe in body for body in guards[owner]
+        ), f"{probe} left the `if ({owner})` guard that proves it was read"
+        for other, bodies in guards.items():
+            if other != owner and any(probe in body for body in bodies):
+                raise AssertionError(
+                    f"{probe} is gated on `if ({other})`, which fails independently "
+                    f"of {owner}; one dead cmdlet would discard the other cmdlet's "
+                    "readable result"
+                )
     outside = scan
-    for body in bodies:
-        outside = outside.replace(body, "", 1)
+    for bodies in guards.values():
+        for body in bodies:
+            outside = outside.replace(body, "", 1)
     for held in ("$status.", "$pref."):
         assert held not in outside, f"a {held[:-1]} dereference sits outside its availability guard"
 
@@ -544,3 +559,40 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
     # A detection still fails the job, cmdlets or not.
     assert "Refusing to publish a Windows bundle Defender flags" in scan
     assert "Refusing to publish bundles Defender could not scan" in scan
+
+
+def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
+    """A sample that vanishes during the scan is a live engine, not a missing one.
+
+    Defender remediates asynchronously - Microsoft dropped "save the file" as a
+    validation step precisely because it is not deterministic - and MpCmdRun opens
+    the sample, which is itself the trigger. So the write can succeed, `Test-Path`
+    can see the file, and real-time protection can quarantine it out from under the
+    scan. MpCmdRun then prints neither "found N threats" nor a threat name,
+    `$controlPassed` stays false, and with the cmdlets down the skip branch exits 0,
+    publishing every bundle unscanned on a runner whose scanner just proved itself.
+    Only a sample that survives means no scanner.
+    """
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    body = _guarded_bodies(scan, "if (Test-Path $eicarPath) {")[0]
+    _, scanned, after = body.partition("-DisableRemediation")
+    assert scanned, "the positive control no longer scans the sample with MpCmdRun"
+    # The re-check has to land after the scan and before this step's own cleanup,
+    # or it proves nothing about who removed the file.
+    recheck, cleaned, _ = after.partition("Remove-Item $eicarPath")
+    assert cleaned, "the positive control no longer removes the sample afterwards"
+    assert "-not (Test-Path $eicarPath)" in recheck, (
+        "the positive control never re-checks the sample after the scan, so a "
+        "sample quarantined mid-scan reads as a missing scanner and skips the "
+        "bundle scan on a runner where Defender is demonstrably live"
+    )
+    assert (
+        "$controlPassed = $true" in recheck
+    ), "the vanished sample is noticed but still does not pass the control"
+    # Only a vanished sample may pass this way. -DisableRemediation keeps the scan
+    # itself from deleting the file, so with no engine the sample survives, this
+    # check never fires, and the missing-scanner skip still applies.
+    assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
+        "$controlPassed = $true"
+    ), "the control passes without first confirming the sample is gone"
