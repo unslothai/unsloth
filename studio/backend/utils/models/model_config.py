@@ -1797,8 +1797,7 @@ def _drafter_names_other_weight(
     if _drafter_matches_weight(candidate_name, weight_name, kind = kind):
         return False
     return any(
-        _drafter_matches_weight(candidate_name, other, kind = kind)
-        for other in other_weight_names
+        _drafter_matches_weight(candidate_name, other, kind = kind) for other in other_weight_names
     )
 
 

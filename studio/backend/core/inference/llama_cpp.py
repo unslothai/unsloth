@@ -8136,9 +8136,7 @@ class LlamaCppBackend:
                 # Every non-sidecar GGUF in the snapshot is a weight some sidecar
                 # could be naming; that is what tells a neighbour's sidecar apart
                 # from one naming no family at all.
-                others = [
-                    Path(name).name for name in names if not _is_dflash_drafter_path(name)
-                ]
+                others = [Path(name).name for name in names if not _is_dflash_drafter_path(name)]
                 ranked.extend(
                     (dflash_repo_preference_key(name, weight_name, others), snap / name)
                     for name in names

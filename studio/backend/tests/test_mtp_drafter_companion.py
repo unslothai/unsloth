@@ -2184,9 +2184,9 @@ def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypat
         ("model-B-Q4_K_M.gguf", "dflash-kquant.gguf"),
         ("model-A-Q4_K_M.gguf", "dflash-model-A-Q8_0.gguf"),
     ):
-        assert b._cached_repo_dflash_drafter(
-            "org/repo", near_path = str(snap / weight)
-        ) == str(snap / expected)
+        assert b._cached_repo_dflash_drafter("org/repo", near_path = str(snap / weight)) == str(
+            snap / expected
+        )
     # No weight in hand: precision order, exactly as before.
     assert b._cached_repo_dflash_drafter("org/repo") == str(snap / "dflash-model-A-Q8_0.gguf")
 
