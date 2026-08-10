@@ -90,6 +90,32 @@ def partial_is_process_unique(name: str) -> bool:
     return _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(name[: -len(INCOMPLETE_SUFFIX)]) is not None
 
 
+def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
+    """Whether some process holds huggingface_hub's per-blob download lock right now.
+
+    hf takes ``<hub cache>/.locks/<repo dir>/<etag>.lock`` for the whole of a file download, so
+    a lock we cannot take means a live writer -- including a client in another process that no
+    peer registry here can see. It answers False when the lock cannot be probed at all, since
+    upstream calls the lock best-effort and some filesystems grant it to everyone; callers pair
+    it with a staleness check rather than trusting it alone.
+    """
+    lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
+    if not lock_path.exists():
+        return False
+    try:
+        from filelock import FileLock, Timeout
+    except Exception:  # noqa: BLE001 - no filelock means no opinion
+        return False
+    try:
+        lock = FileLock(str(lock_path), timeout = 0)
+        with lock:
+            return False
+    except Timeout:
+        return True
+    except OSError:
+        return False
+
+
 def partial_is_resumable(name: str) -> bool:
     """Whether any later attempt could append to this particular partial.
 

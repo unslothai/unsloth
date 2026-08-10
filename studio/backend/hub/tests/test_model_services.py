@@ -1371,9 +1371,9 @@ def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeyp
         )
 
     rows = cache_inventory._scan_cached_gguf()
-    assert "Org/Good" in {
-        row["repo_id"] for row in rows
-    }, "one unhashable repo identity emptied the whole GGUF inventory"
+    assert "Org/Good" in {row["repo_id"] for row in rows}, (
+        "one unhashable repo identity emptied the whole GGUF inventory"
+    )
 
 
 def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
@@ -4850,7 +4850,9 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
     """Only a hub that can still append to the partial earns the same-transport reprieve."""
-    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: True)
+    # The purge asks partial_is_resumable, so patching the hub-version helper it wraps would
+    # be a no-op here.
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -4862,7 +4864,11 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
         only_blob_hashes = frozenset({"q4-main"}),
         companion_blob_hashes = companion,
     )
-    (blobs / "shared-mmproj.incomplete").write_bytes(b"resumable")
+    partial = blobs / "shared-mmproj.incomplete"
+    partial.write_bytes(b"resumable")
+    # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
+    old = time.time() - download_registry._ABANDONED_PARTIAL_SECONDS - 60
+    os.utime(partial, (old, old))
 
     purged = download_registry.prepare_cache_for_transport(
         "model",
@@ -4874,7 +4880,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     )
 
     assert purged == 0
-    assert (blobs / "shared-mmproj.incomplete").exists()
+    assert partial.exists()
 
 
 def test_prepare_cache_for_transport_protects_peer_companion(monkeypatch, tmp_path):
@@ -5724,9 +5730,9 @@ def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "resolve", _boom)
     errors: list = []
     assert state.hf_cache_roots(errors) == []
-    assert any(
-        "network mount unavailable" in str(e) for e in errors
-    ), "the unreadable root has to be reported, not silently dropped"
+    assert any("network mount unavailable" in str(e) for e in errors), (
+        "the unreadable root has to be reported, not silently dropped"
+    )
 
 
 def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):

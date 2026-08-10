@@ -73,7 +73,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
     target_dir_name,
     hf_cache_root,
-    hf_partials_are_resumable,
+    blob_download_lock_held,
     incomplete_blob_hash,
     partial_is_resumable,
 )
@@ -327,11 +327,12 @@ def reap_orphan_workers() -> None:
 
     Verifies each breadcrumb's PID is alive AND its command line is one of our
     workers before terminating, so a recycled PID can't take down an unrelated
-    process. Partial blobs are never touched, so a reaped download stays
+    process. A resumable partial is never touched, so a reaped download stays
     resumable; an interrupted one with bytes on disk is settled to a cancelled
     marker (see :func:`_settle_orphaned_download`) so its resume affordance
-    survives a hard crash like a graceful shutdown's does. Runs once at startup
-    and never raises."""
+    survives a hard crash like a graceful shutdown's does. A partial nothing can
+    resume has no affordance to preserve and is swept
+    (see :func:`sweep_abandoned_partials`). Runs once at startup and never raises."""
     parent = state_dir.workers_dir()
     if parent is None:
         return
@@ -368,6 +369,23 @@ def reap_orphan_workers() -> None:
                 data.get("cancel_marker_transport") or data.get("transport"),
                 data.get("hub_cache"),
             )
+            # The guaranteed revisit. A terminal-state sweep can still find an orphan too
+            # freshly written to judge, and if the user never returns to that repo nothing
+            # else looks again. Here the writer is a process from a previous run, so the
+            # question is settled -- and a partial an unrelated client is holding right now
+            # is still spared by the lock and staleness gates inside the sweep.
+            swept = sweep_abandoned_partials(
+                data.get("repo_type") or "model",
+                repo_id,
+                root = Path(data["hub_cache"]) if data.get("hub_cache") else None,
+            )
+            if swept:
+                logger.info(
+                    "Swept %d unresumable partial blob(s) for %s left by a previous "
+                    "backend instance.",
+                    swept,
+                    repo_id,
+                )
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
         _safe_unlink(entry)
@@ -428,6 +446,12 @@ def _purge_incomplete_blobs(
                 continue
             if unresumable_only:
                 if partial_is_resumable(blob.name):
+                    continue
+                # Two independent ways to spot a live writer, because neither is sufficient
+                # alone: the lock is the precise signal but upstream calls it best-effort and
+                # some filesystems grant it to everyone, while mtime cannot tell a dead writer
+                # from one stalled on a slow network for longer than the grace.
+                if blob_download_lock_held(entry, blob_hash):
                     continue
                 if now - blob.stat().st_mtime < _ABANDONED_PARTIAL_SECONDS:
                     continue
@@ -873,10 +897,10 @@ def completed_blob_bytes(
 
 
 def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
-    """Bytes already on disk (finalized + ``.incomplete``) for *blob_hashes* in
-    the active HF cache root. A blob is in exactly one state, so summing both
-    candidate names never double-counts. Used to size what a (possibly resumed)
-    download still needs to write before the run starts."""
+    """Bytes a download will NOT have to fetch again for *blob_hashes*, in the active HF cache
+    root: finalized blobs, plus partials something can still resume from. A blob is in exactly
+    one state, so summing both candidate names never double-counts. Used to size what a
+    (possibly resumed) download still needs to write before the run starts."""
     if not blob_hashes:
         return 0
     total = 0
@@ -896,6 +920,12 @@ def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str
                 partial_hash = incomplete_blob_hash(blob.name)
                 blob_hash = partial_hash if partial_hash is not None else blob.name
                 if blob_hash not in present:
+                    continue
+                if partial_hash is not None and not partial_is_resumable(blob.name):
+                    # Callers spend this on "bytes we will not have to fetch again", and
+                    # _preflight_disk_space subtracts it from the space a download needs. An
+                    # unresumable partial is refetched in full into a new path, so counting it
+                    # would clear a download for a disk that cannot hold it.
                     continue
                 # Broken advisory locks can leave several process-unique writers for one etag.
                 # They are duplicate attempts, not additive completion, so keep the largest.

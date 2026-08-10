@@ -1108,6 +1108,10 @@ def register_worker(
                     repo_type,
                     repo_id,
                     protected_blob_hashes = registry.peer_blob_hashes(key),
+                    # The cache this worker actually wrote to. Resolving the live one instead
+                    # would miss the orphan whenever the download location changed mid-run,
+                    # and sweep a cache this job never touched.
+                    root = _cache_dir,
                 )
                 if swept:
                     logger.info(

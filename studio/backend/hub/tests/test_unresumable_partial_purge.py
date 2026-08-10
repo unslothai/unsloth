@@ -3,6 +3,7 @@
 
 """A partial no writer can reopen is litter, but only once nothing is writing it."""
 
+import json
 import os
 import time
 
@@ -201,3 +202,101 @@ def test_the_sweep_still_spares_a_live_writer_and_a_peer(monkeypatch, blobs):
     assert swept == 0
     assert live.exists()
     assert peer.exists()
+
+
+def test_a_locked_blob_is_spared_however_stale_it_looks(monkeypatch, blobs):
+    """A writer stalled past the grace still holds the lock, and still owns the file."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    _prepare()
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: True)
+    assert _prepare() == 0
+    assert partial.exists()
+
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: False)
+    assert _prepare() == 1
+    assert not partial.exists()
+
+
+def test_the_lock_probe_reads_the_layout_hf_writes(tmp_path):
+    """<hub cache>/.locks/<repo dir>/<etag>.lock, and no lock file means nobody is writing."""
+    from filelock import FileLock
+
+    entry = tmp_path / "models--Org--Model"
+    lock_path = tmp_path / ".locks" / "models--Org--Model" / f"{_MAIN}.lock"
+    lock_path.parent.mkdir(parents = True)
+
+    assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
+
+    lock_path.touch()
+    assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
+
+    with FileLock(str(lock_path), timeout = 0):
+        assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
+
+
+def test_unresumable_bytes_are_not_credited_against_the_disk_check(monkeypatch, blobs):
+    """_preflight_disk_space subtracts this, so crediting a refetch can approve a full disk."""
+    (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 0
+
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
+    assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 25
+
+
+def test_a_finalized_blob_still_counts_against_the_disk_check(monkeypatch, blobs):
+    """Only partials are in question; a finished blob is bytes nobody refetches."""
+    (blobs / _MAIN).write_bytes(b"x" * 25)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+
+    assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 25
+
+
+def test_startup_reaping_sweeps_a_previous_run_orphan(monkeypatch, tmp_path, blobs):
+    """The guaranteed revisit: by the next boot the writer is a process that no longer exists."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    (workers / "job.json").write_text(
+        json.dumps(
+            {
+                "pid": 999999999,
+                "repo_type": "model",
+                "repo_id": "Org/Model",
+                "variant": None,
+                "transport": "http",
+                "hub_cache": str(blobs.parent.parent),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "_settle_orphaned_download", lambda *_a, **_k: None)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    download_registry.reap_orphan_workers()
+
+    assert not partial.exists()
