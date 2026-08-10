@@ -2119,3 +2119,33 @@ def test_detect_dflash_file_still_prefers_a_sidecar_that_names_this_weight(tmp_p
     _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
 
     assert detect_dflash_file(str(weight)) == str(paired.resolve())
+
+
+def test_detect_dflash_file_ignores_the_suffix_form_the_picker_cannot_hide(tmp_path):
+    """Discovery and the quant picker have to agree on what a sidecar is.
+
+    The shared companion predicates know DFlash by the dflash- prefix only, so a
+    <model>-dflash.gguf accepted here would be a drafter for discovery and at the
+    same time a selectable Q8_0 main model in the picker, and choosing that
+    variant would hand llama-server the drafter as the target. Detection gives
+    the form up rather than teaching the predicate a suffix that would hide a
+    real model merely named DFlash.
+    """
+    from core.inference.llama_cpp import _is_companion_gguf_path
+
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    suffix_form = tmp_path / "Muse-Glimmer-30B-Q8_0-dflash.gguf"
+    _write_gguf(suffix_form, "dflash")
+
+    assert detect_dflash_file(str(weight)) is None
+    # The invariant behind the choice: what discovery accepts, the picker hides.
+    assert _is_companion_gguf_path(suffix_form.name) is False
+    assert _is_companion_gguf_path("dflash-kquant.gguf") is True
+
+
+def test_dflash_prefix_form_is_still_found_beside_the_weight(tmp_path):
+    """Dropping the suffix form must not cost the published sidecar."""
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())

@@ -5528,6 +5528,7 @@ def _estimate_gguf_required_gb(
     try:
         from core.inference.llama_cpp import (
             _canonicalize_spec_mode,
+            _extra_args_mtp_draft_path,
             _extra_args_requests_dflash,
             _extra_args_requests_dspark,
         )
@@ -5602,6 +5603,16 @@ def _estimate_gguf_required_gb(
                 _sized_attrs.append("gguf_dflash_file")
             else:
                 _sized_attrs.append("gguf_mtp_file")
+        # A caller that owns speculation through llama_extra_args names the
+        # drafter with --model-draft, and discovery never populates
+        # gguf_dflash_file / gguf_dspark_file for a file outside the model
+        # directory. load_model still hands that path to llama-server, so
+        # without this the guard admits a load beside a training run while
+        # charging nothing for the sidecar that load is about to make resident.
+        _extras_draft = _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        if _extras_draft and Path(_extras_draft).is_file():
+            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(_extras_draft))
+
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():

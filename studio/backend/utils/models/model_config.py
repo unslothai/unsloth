@@ -2119,11 +2119,17 @@ def detect_dflash_file(
             lower = candidate.name.lower()
             if not lower.endswith(".gguf"):
                 continue
-            # Drop the shard suffix first: a split copy under the old scheme is
-            # <model>-Q8_0-dflash-00001-of-00002.gguf, whose stem does not end
-            # in -dflash.
-            stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
-            if not (lower.startswith("dflash-") or stem.endswith("-dflash")):
+            # Prefix form only, deliberately. The shared companion predicates
+            # (_drafter_path_kind, is_mtp_drafter_path) know DFlash by the
+            # dflash- prefix, so accepting <model>-dflash.gguf here would let one
+            # file be a drafter for discovery AND a selectable Q8_0 main model in
+            # the quant picker, and choosing that variant would hand llama-server
+            # the drafter as the target. Teaching the predicate the suffix
+            # instead would hide a real model whose name merely ends in DFlash,
+            # which is the case #7811 exists to protect, so detection gives the
+            # form up rather than the picker giving up a model. No published
+            # DFlash sidecar uses it; the shipped one is dflash-kquant.gguf.
+            if not lower.startswith("dflash-"):
                 # Every other GGUF in the folder is a weight some sidecar could
                 # be naming. Recorded so a sidecar belonging to a NEIGHBOUR can
                 # be told apart from one naming no family at all (below).
