@@ -744,6 +744,10 @@ jobs:
         with:
           workspaces: 'studio/src-tauri -> target'
 
+          # Windows release builds can spend many minutes uploading the target cache
+          # after signed artifacts are ready, which blocks the publisher for no release benefit.
+          save-if: ${{ matrix.platform != 'windows-latest' }}
+
       # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials
         if: matrix.platform == 'macos-latest'
