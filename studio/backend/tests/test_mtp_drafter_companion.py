@@ -3008,9 +3008,7 @@ def test_cached_dflash_lookup_skips_an_incomplete_split_set(tmp_path, monkeypatc
     assert b._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(first)
 
 
-def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(
-    tmp_path, monkeypatch
-):
+def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(tmp_path, monkeypatch):
     """Skipped, not fatal, exactly as the header check is: the half set merely
     ranks first, and the snapshot still holds a sidecar that can be launched."""
     from core.inference.llama_cpp import LlamaCppBackend
@@ -3025,6 +3023,6 @@ def test_cached_dflash_lookup_falls_through_from_a_half_split_to_a_whole_one(
         "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
     )
 
-    assert LlamaCppBackend()._cached_repo_dflash_drafter(
-        "org/repo", near_path = str(weight)
-    ) == str(whole)
+    assert LlamaCppBackend()._cached_repo_dflash_drafter("org/repo", near_path = str(weight)) == str(
+        whole
+    )

@@ -5396,7 +5396,9 @@ def _remote_gguf_companion_bytes(
         dflash_bytes = max(
             (
                 size
-                + sum(dflash_sizes.get(shard, 0) for shard in _gguf_extra_shards(dflash_sizes, name))
+                + sum(
+                    dflash_sizes.get(shard, 0) for shard in _gguf_extra_shards(dflash_sizes, name)
+                )
                 for name, size in dflash_sizes.items()
             ),
             default = 0,
