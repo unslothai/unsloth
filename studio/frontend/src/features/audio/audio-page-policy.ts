@@ -184,12 +184,17 @@ export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
   removedId?: string,
-): T[] {
+): { clips: T[]; stitched: boolean } {
   const inPage = new Set(page.map((clip) => clip.id));
   const tail = cached.filter(
     (clip) => !inPage.has(clip.id) && clip.id !== removedId,
   );
-  return [...page, ...tail];
+  // No overlap with a non-empty cache means the page has moved past everything held, so
+  // stitching would render a gap as contiguous and no cursor could ever reach it.
+  if (tail.length > 0 && tail.length === cached.length && page.length > 0) {
+    return { clips: [...page], stitched: false };
+  }
+  return { clips: [...page, ...tail], stitched: tail.length > 0 };
 }
 
 /** Match the gallery record returned by this generation, never another

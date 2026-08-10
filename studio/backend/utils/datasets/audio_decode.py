@@ -22,10 +22,13 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _installed = False
+_ORIGINAL_ENCODE = None
 
 
 def _decode_with_soundfile(
-    self, value: dict, token_per_repo_id: Optional[dict] = None
+    self,
+    value: dict,
+    token_per_repo_id: Optional[dict] = None,
 ) -> dict:
     """Stand-in for `datasets.Audio.decode_example` that never needs FFmpeg."""
     import io
@@ -56,15 +59,36 @@ def _decode_with_soundfile(
 
     array, sampling_rate = sf.read(source, dtype = "float32", always_2d = False)
     if array.ndim > 1:
-        # Mirrors datasets' own AudioDecoder["array"], which averages channels to mono.
-        array = np.mean(array, axis = tuple(range(array.ndim - 1)))
+        # soundfile returns (frames, channels); torchcodec returns (channels, frames).
+        array = np.mean(array, axis = -1)
     target = self.sampling_rate
     if target and sampling_rate != target:
         import librosa
-
         array = librosa.resample(array, orig_sr = sampling_rate, target_sr = target)
         sampling_rate = target
     return {"path": path, "array": array, "sampling_rate": sampling_rate}
+
+
+def _encode_with_soundfile(self, value) -> dict:
+    """Stand-in for `datasets.Audio.encode_example`, for the array form only.
+
+    The audio VLM path maps without `remove_columns`, so reading `["array"]` writes the
+    decoded value back and `cast_storage` re-encodes it. torchcodec's encoder is a hard
+    requirement there, which would fail a run the decoder above had just unblocked.
+    """
+    import io
+
+    import soundfile as sf
+
+    if isinstance(value, dict) and value.get("array") is not None:
+        buf = io.BytesIO()
+        sf.write(buf, value["array"], value["sampling_rate"], format = "WAV")
+        return {"bytes": buf.getvalue(), "path": value.get("path")}
+    if isinstance(value, dict) and ("bytes" in value or "path" in value):
+        return {"bytes": value.get("bytes"), "path": value.get("path")}
+    if isinstance(value, (str, bytes, bytearray)):
+        return _ORIGINAL_ENCODE(self, value)
+    return _ORIGINAL_ENCODE(self, value)
 
 
 def ensure_audio_decoding() -> bool:
@@ -80,36 +104,31 @@ def ensure_audio_decoding() -> bool:
         from datasets.features.audio import Audio
     except ImportError:
         return False
+    if config.TORCHCODEC_AVAILABLE and not _installed:
+        try:
+            # config only ran find_spec, and an installed torchcodec whose native libraries
+            # cannot dlopen still passes that. The API process never imports unsloth, so
+            # disable_torchcodec_if_broken has not corrected the flag here.
+            from datasets.features._torchcodec import AudioDecoder  # noqa: F401
+        except (ImportError, OSError, RuntimeError) as exc:
+            logger.info("torchcodec is installed but unusable (%s)", exc)
+            config.TORCHCODEC_AVAILABLE = False
     if config.TORCHCODEC_AVAILABLE:
         return True
     if _installed:
         return True
     try:
+        # librosa too: every trainer path casts to a target rate, so a decoder that cannot
+        # resample would raise from inside `datasets` exactly where this returns False.
+        import librosa  # noqa: F401
         import soundfile  # noqa: F401
     except (ImportError, OSError) as exc:
-        logger.warning("No usable audio decoder: torchcodec is broken and soundfile failed (%s)", exc)
+        logger.warning("No usable audio decoder: torchcodec is broken and %s", exc)
         return False
+    global _ORIGINAL_ENCODE
+    _ORIGINAL_ENCODE = Audio.encode_example
     Audio.decode_example = _decode_with_soundfile
+    Audio.encode_example = _encode_with_soundfile
     _installed = True
     logger.info("torchcodec is unusable; decoding dataset audio with soundfile")
     return True
-
-
-def audio_array_and_rate(value: Any, default_sampling_rate: int) -> tuple:
-    """``(array, sampling_rate)`` from a `datasets` Audio cell, or ``(None, default)``.
-
-    datasets 4.x yields a torchcodec ``AudioDecoder`` that supports ``["array"]`` and
-    ``["sampling_rate"]`` but has no ``.get``, while the soundfile decoder above and
-    pre-4.0 datasets yield a dict. Subscripting reads both, so callers never branch on
-    the type or risk an AttributeError on a working torchcodec host.
-    """
-    if value is None:
-        return None, default_sampling_rate
-    try:
-        array = value["array"]
-        rate = int(value["sampling_rate"])
-    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-        return None, default_sampling_rate
-    if array is None:
-        return None, default_sampling_rate
-    return array, rate

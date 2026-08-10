@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
@@ -329,17 +330,15 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
 });
 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
-  // pickedTask, not meta.pipelineTag: a cached row absent from the current Hub listing
-  // has no tag, and the page would then classify an ASR checkpoint as TTS.
+  // pickedTask, not meta.pipelineTag: a cached row carries no tag, so ASR would read as TTS.
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*task:\s*pickedTask \?\? undefined/,
   );
   assert.match(
     pickerSource,
-    /const routable =\s*page !== "audio" \|\|\s*audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
+    /page === "audio" &&\s*!audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
   );
-  assert.match(pickerSource, /if \(page && routable\) \{/);
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
@@ -427,5 +426,64 @@ test("GGUF variant picks retain their Hub pipeline tag", () => {
       ggufVariant: "Q4_K_M",
       pipelineTag: "automatic-speech-recognition",
     },
+  );
+});
+
+test("only speech repos the runtime can serve are routed to the Audio page", () => {
+  const curated = {
+    id: "unsloth/orpheus-3b-0.1-ft",
+    task: "text-to-speech",
+    isGguf: false,
+    isCurated: true,
+  };
+  assert.equal(audioPickIsRoutable(curated), true);
+  // The catalog, not the tag, is a curated id's runtime contract.
+  assert.equal(audioPickIsRoutable({ ...curated, isCurated: false }), true);
+
+  // Hub tags text-to-speech onto families the main-slot backend has no decoder for.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "suno/bark",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: false,
+    }),
+    false,
+  );
+  // Community ASR runs on the Transformers Whisper sidecar only.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "someone/whisper-small-fi",
+      task: "automatic-speech-recognition",
+      isGguf: false,
+      isCurated: false,
+    }),
+    true,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "someone/parakeet-tdt",
+      task: "automatic-speech-recognition",
+      isGguf: false,
+      isCurated: false,
+    }),
+    false,
+  );
+  // A chat pick is not an audio pick, so the gate must not claim it.
+  assert.equal(
+    audioPickIsRoutable({
+      id: "unsloth/Qwen3-8B",
+      task: "text-generation",
+      isGguf: false,
+      isCurated: false,
+    }),
+    true,
+  );
+});
+
+test("an unroutable speech pick is refused instead of loaded into chat", () => {
+  assert.match(
+    pickerSource,
+    /!audioPickIsRoutable\(\{[\s\S]*\}\)\s*\) \{[\s\S]*toast\.error\([\s\S]*return;/,
   );
 });

@@ -2104,7 +2104,7 @@ class InferenceOrchestrator:
                 # Recheck after the dispatcher wait: unload can set its flag without
                 # _gen_lock, and a switch may have completed while this call was queued.
                 if self._unload_pending or self.active_model_name != expected_model:
-                    raise RuntimeError("model is being unloaded")
+                    raise AudioGenerationCancelledError("model is being unloaded")
 
                 # Bound public API integers before either enqueuing work or
                 # calculating the floating-point watchdog deadline.

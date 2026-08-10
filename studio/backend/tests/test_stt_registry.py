@@ -23,6 +23,7 @@ class _Sidecar:
         self._loading = loading
         self._fail = fail
         self.unloaded = False
+        self.unload_waits = []
         self.loaded_with = None
         self.load_cancel_event = None
 
@@ -37,9 +38,10 @@ class _Sidecar:
         self.loaded_with = model
         self.load_cancel_event = request_cancel_event
 
-    def unload(self):
+    def unload(self, wait = True):
         if self._fail:
             raise RuntimeError("boom")
+        self.unload_waits.append(wait)
         self.unloaded = True
 
 
@@ -69,25 +71,24 @@ def test_load_delegates_to_the_engines_sidecar(monkeypatch):
     assert sidecar.load_cancel_event is cancel_event
 
 
-def test_load_releases_the_other_engines_before_loading(monkeypatch):
+def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
     order = []
     sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
     for name, sidecar in sidecars.items():
-        sidecar.unload = lambda name = name: order.append(f"unload:{name}")
+        sidecar.unload = lambda wait = True, name = name: order.append(f"unload:{name}")
     target = sidecars["mtmd"]
     target.load = lambda model, request_cancel_event = None: order.append("load:mtmd")
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
 
     stt_registry.load("qwen3-asr-0.6b", "mtmd")
 
-    # Two engines resident at once doubles VRAM for the whole keep-alive window.
-    assert order == ["unload:transformers", "unload:gguf", "load:mtmd"]
+    # Two engines resident at once doubles VRAM for the whole keep-alive window, but the
+    # release follows the load: a 409 must not cost the user the engine they were using.
+    assert order == ["load:mtmd", "unload:transformers", "unload:gguf"]
 
 
-def test_load_still_loads_when_another_engine_refuses_to_release(monkeypatch):
-    sidecars = {
-        name: _Sidecar(name, fail = name == "gguf") for name in stt_registry.STT_ENGINES
-    }
+def test_load_still_succeeds_when_another_engine_refuses_to_release(monkeypatch):
+    sidecars = {name: _Sidecar(name, fail = name == "gguf") for name in stt_registry.STT_ENGINES}
     monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
 
     stt_registry.load("small", "transformers")
@@ -169,3 +170,67 @@ def test_a_cold_process_loads_without_building_an_orchestrator(monkeypatch):
     # Same functions the orchestrator's methods forward to, so neither path
     # can drift from the other.
     assert ri._stt_lifecycle() == (stt_registry.load, stt_registry.unload)
+
+
+def test_load_never_blocks_on_an_engine_that_is_serving_a_request(monkeypatch):
+    """A transcription holds the sidecar lock for minutes; the new load must not wait."""
+    sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    stt_registry.load("qwen3-asr-0.6b", "mtmd")
+
+    assert sidecars["transformers"].unload_waits == [False]
+    assert sidecars["gguf"].unload_waits == [False]
+    # A caller releasing every engine on purpose still waits for each one.
+    stt_registry.unload()
+    assert sidecars["mtmd"].unload_waits == [True]
+
+
+def test_a_busy_sidecar_keeps_its_model_and_an_idle_one_releases_it():
+    """Against the real sidecars: `wait=False` must decline a live request, not block.
+
+    RLock.locked() only exists on 3.14, and the mtmd sidecar drops _lock before its HTTP
+    call, so the busy probe cannot be either of those.
+    """
+    from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
+    from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
+    ggml = get_ggml_stt_sidecar()
+    released = []
+    ggml._release_locked = lambda: released.append("ggml")
+    with ggml._lock:
+        blocker = threading.Thread(target = ggml.unload, kwargs = {"wait": False})
+        blocker.start()
+        blocker.join(timeout = 2)
+        assert not blocker.is_alive(), "unload(wait=False) blocked on a held lock"
+    assert released == []
+
+    ggml.unload(wait = False)
+    assert released == ["ggml"]
+
+    mtmd = get_mtmd_stt_sidecar()
+    mtmd_released = []
+    mtmd._release_locked = lambda: mtmd_released.append("mtmd")
+    mtmd._active_requests = 1
+    mtmd.unload(wait = False)
+    assert mtmd_released == [], "a transcription outside _lock still counts as busy"
+    mtmd._active_requests = 0
+    mtmd.unload(wait = False)
+    assert mtmd_released == ["mtmd"]
+
+
+def test_a_failed_load_leaves_the_engine_the_user_was_using(monkeypatch):
+    """The sidecars order preflight before release for this reason; so does the registry."""
+    sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
+
+    def refuse(model, request_cancel_event = None):
+        raise RuntimeError("STT model 'x' is not downloaded.")
+
+    sidecars["mtmd"].load = refuse
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    with pytest.raises(RuntimeError, match = "not downloaded"):
+        stt_registry.load("x", "mtmd")
+
+    assert not sidecars["transformers"].unloaded
+    assert not sidecars["gguf"].unloaded

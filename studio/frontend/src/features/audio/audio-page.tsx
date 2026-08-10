@@ -299,6 +299,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const sttStatusRefreshGeneration = useRef(0);
   const sttLoadGeneration = useRef(0);
   const sttLoadingGeneration = useRef<number | null>(null);
+  // Residency is not ownership: the activation resync adopts whatever a sidecar already
+  // holds, including a model chat dictation loaded, and that must survive a mode switch.
+  const sttLoadedByThisPage = useRef(false);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
     repoId: string;
@@ -449,13 +452,22 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
   const releaseTranscribeSelection = useCallback(async () => {
     const selected = selectedSttRepoRef.current;
-    const owned = sttReady && selected !== null;
-    deferredSttLoad.current = null;
-    selectedSttRepoRef.current = null;
-    sttLoadGeneration.current += 1;
-    setSelectedSttRepo(null);
-    if (!owned) return;
+    const owned = sttReady && selected !== null && sttLoadedByThisPage.current;
+    const forget = () => {
+      deferredSttLoad.current = null;
+      selectedSttRepoRef.current = null;
+      sttLoadGeneration.current += 1;
+      sttLoadedByThisPage.current = false;
+      setSelectedSttRepo(null);
+    };
+    if (!owned) {
+      forget();
+      return;
+    }
+    // Forget only once the sidecar is actually released: clearing first left a failed
+    // unload with the model in VRAM, no selection, and no Eject to retry with.
     await unloadSttModel(sttEngineForRepoId(selected));
+    forget();
     await refreshSttStatus();
   }, [refreshSttStatus, sttReady]);
 
@@ -482,22 +494,24 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const generation = ++galleryRefreshGeneration.current;
       try {
         const page = await listAudioGallery(0, PAGE_SIZE);
-        // The caller's own fetch, even when a newer refresh owns the cache below: a
-        // generation that reported its clip persisted must not be told it was not saved.
+        // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
-        const merged = mergeGalleryPage(
+        const { clips: merged, stitched } = mergeGalleryPage(
           page.audio,
           galleryCache.clips,
           removedId,
         );
         galleryCache.clips = merged;
-        galleryCache.hasMore = page.has_more;
-        galleryCache.nextCursor =
-          page.next_before_mtime !== null && page.next_before_id !== null
-            ? { mtime: page.next_before_mtime, id: page.next_before_id }
-            : null;
+        // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
+        if (!stitched) {
+          galleryCache.hasMore = page.has_more;
+          galleryCache.nextCursor =
+            page.next_before_mtime !== null && page.next_before_id !== null
+              ? { mtime: page.next_before_mtime, id: page.next_before_id }
+              : null;
+        }
         setClips(merged);
-        setHasMore(page.has_more);
+        setHasMore(galleryCache.hasMore);
         if (
           galleryCache.selectedId &&
           !merged.some((c) => c.id === galleryCache.selectedId)
@@ -671,7 +685,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       if (busyRef.current === "generating") generateAbort.current?.abort();
       stopAndDiscardRecording();
       setMode(nextMode);
-      // Holding the sidecar through Generate keeps a dictation model in VRAM beside the speech model for the whole keep-alive window.
+      // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
         void releaseTranscribeSelection().catch((error) => {
           toast.error(
@@ -786,6 +800,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         selectedSttRepoRef.current === repoId;
 
       setBusy("loading");
+      sttLoadedByThisPage.current = true;
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
       try {
         try {
@@ -1413,6 +1428,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       await clearAudioGallery();
       galleryCache.srcById.clear();
       galleryCache.selectedId = null;
+      // Drop the cached list first: refreshGallery merges the fetched page into it, so an
+      // empty page would otherwise leave every cleared row on screen.
+      galleryCache.clips = [];
       setSrcById({});
       setSelectedId(null);
       await refreshGallery();
@@ -1574,7 +1592,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
               void navigateSelf({ to: "/studio" });
             }}
             fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
+            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
             tabs={[
               {
                 value: "create",

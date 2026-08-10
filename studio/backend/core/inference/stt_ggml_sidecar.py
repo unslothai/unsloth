@@ -766,9 +766,18 @@ class GgmlSttSidecar:
         if process is not None:
             forget_pid(process.pid)
 
-    def unload(self) -> None:
-        with self._lock:
+    def unload(self, wait: bool = True) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        `transcribe` holds ``_lock`` across the whole whisper-server round trip, so a
+        caller releasing engines it does not own must not block behind one.
+        """
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
             self._release_locked()
+        finally:
+            self._lock.release()
 
     def _raise_if_update_in_progress(self) -> None:
         if self._update_in_progress:
@@ -1083,8 +1092,7 @@ class GgmlSttSidecar:
         )
         parts.append(f"--{boundary}--\r\n".encode())
         body = b"".join(parts)
-        # http.client, not urllib: cancellation needs the socket to shut down the blocked
-        # read, and urlopen exposes no connection to shut.
+        # http.client, not urllib: a cancel needs the socket, and urlopen exposes none.
         connection = http.client.HTTPConnection(
             "127.0.0.1", self._port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
@@ -1108,7 +1116,7 @@ class GgmlSttSidecar:
                         f"The local transcription runtime returned HTTP {response.status}."
                     )
                 payload = json.loads(response.read().decode("utf-8"))
-        except SttAudioDecodeError:
+        except (SttAudioDecodeError, SttEngineUnavailableError):
             raise
         except Exception as exc:
             raise SttEngineUnavailableError(

@@ -316,7 +316,7 @@ def check_format_response(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
-        # An audio column decodes as soon as a preview row is read, so this precedes every tier below.
+        # An audio column decodes on the first preview row, so this precedes every tier.
         ensure_audio_decoding()
 
         try:

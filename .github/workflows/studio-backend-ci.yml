@@ -88,7 +88,10 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio httpx
+            'numpy<3' pytest pytest-asyncio httpx \
+            soundfile librosa
+          # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
+          # them the no-torchcodec decode path is silently untested here.
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.

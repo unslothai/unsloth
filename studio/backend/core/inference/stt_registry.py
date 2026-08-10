@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 # unload sweeps them, which matters only for logging.
 STT_ENGINES = ("transformers", "gguf", "mtmd")
 
-# Serialises release-then-load so two loads on different engines cannot leave both resident.
+# Serialises load-then-release so two loads on different engines cannot leave both resident.
 _load_lock = threading.Lock()
 
 
@@ -45,29 +45,34 @@ def load(
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
 ) -> None:
-    """Make ``model`` resident on ``engine``, releasing every other engine first.
+    """Make ``model`` resident on ``engine``, then release every idle other engine.
 
     Dictation is one user-visible choice, so the engines are alternatives rather
     than slots: a Transformers Whisper and a llama.cpp Qwen3-ASR held at once
-    doubles VRAM for the whole keep-alive window. Releasing before the load
-    mirrors what a sidecar already does for an in-engine model switch, so the
-    peak never holds two models either. Raises what the sidecar raises.
+    doubles VRAM for the whole keep-alive window. An engine serving a request
+    keeps its model and releases it on its own idle timer, since waiting for a
+    transcription that may run for minutes would stall this load. Raises what
+    the sidecar raises, before anything is released: a 409 for a model that is not
+    downloaded must not cost the user the engine they were already using, which is the
+    order `_load_locked` keeps for an in-engine switch.
     """
     with _load_lock:
-        unload([name for name in STT_ENGINES if name != engine])
         sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+        unload([name for name in STT_ENGINES if name != engine], wait = False)
 
 
-def unload(engines: Optional[Sequence[str]] = None) -> list[str]:
+def unload(engines: Optional[Sequence[str]] = None, *, wait: bool = True) -> list[str]:
     """Release every named engine (all of them by default), reporting refusals.
 
     Each is attempted even after a failure: more than one can hold memory at
     once after an engine switch, so stopping early would strand the rest.
+    ``wait=False`` leaves a sidecar that is mid-request resident instead of
+    blocking on it, for callers releasing engines they do not own.
     """
     failed: list[str] = []
     for name in STT_ENGINES if engines is None else engines:
         try:
-            sidecar_for(name).unload()
+            sidecar_for(name).unload(wait = wait)
         except Exception as exc:  # noqa: BLE001 - report after attempting all
             logger.warning("Failed to unload STT engine '%s': %s", name, exc)
             failed.append(name)

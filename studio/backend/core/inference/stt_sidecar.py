@@ -1466,9 +1466,19 @@ class WhisperSttSidecar:
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled
 
-    def unload(self) -> None:
-        with self._lock:
+    def unload(self, wait: bool = True) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        A transcription holds ``_lock`` for its whole duration, so a caller releasing
+        engines it does not own must be able to leave a busy one alone rather than
+        block behind it.
+        """
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
             self._release_engine_locked()
+        finally:
+            self._lock.release()
 
 
 _sidecar: Optional[WhisperSttSidecar] = None

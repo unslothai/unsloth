@@ -619,15 +619,27 @@ class MtmdSttSidecar:
             self._port = None
             self._model_id = None
 
-    def unload(self) -> None:
+    def unload(self, wait: bool = True) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        `transcribe` runs `_post_transcribe` outside ``_lock`` and counts itself in
+        ``_active_requests`` instead, so that, not the lock, is what says busy here. A
+        caller releasing engines it does not own must leave a busy one alone.
+        """
+        if not wait and (self.is_loading() or self._active_requests):
+            return
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
         # settle outside _lock: load() holds _start_lock across startup and
         # takes _lock inside it, so holding _lock here would invert them.
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
-        with self._lock:
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
             self._release_locked()
+        finally:
+            self._lock.release()
 
     def cancel_pending_load(self) -> bool:
         """Preempt a starting llama-server so training is not raced for VRAM.

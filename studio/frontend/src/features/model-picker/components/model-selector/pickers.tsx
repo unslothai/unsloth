@@ -3093,15 +3093,23 @@ export function HubModelPicker({
           diffusionTaskById.get(id.toLowerCase()),
         );
         const page = mediaPageForTask(pickedTask);
-        const routable =
-          page !== "audio" ||
-          audioPickIsRoutable({
+        if (
+          page === "audio" &&
+          !audioPickIsRoutable({
             id,
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
-          });
-        if (page && routable) {
+          })
+        ) {
+          // Loading it here would evict the chat model for a repo neither surface can run.
+          toast.error(
+            `${id} is not a speech model Unsloth can run yet. The Audio page lists the families it supports.`,
+            { duration: 7000 },
+          );
+          return;
+        }
+        if (page) {
           void navigateToPage({
             to: `/${page}`,
             // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
@@ -3114,8 +3122,7 @@ export function HubModelPicker({
                     ggufQuant: meta.ggufFilename
                       ? undefined
                       : (meta.ggufVariant ?? undefined),
-                    // pickedTask, not meta.pipelineTag: a cached row with no Hub listing has
-                    // no tag, and the page would then treat an ASR checkpoint as TTS.
+                    // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
                     task: pickedTask ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),

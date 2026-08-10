@@ -98,21 +98,51 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
     assert Audio.decode_example is before
 
 
-def test_audio_array_and_rate_reads_a_torchcodec_decoder():
-    """The decoder supports subscripting but has no ``.get``, which callers used to use."""
+def test_a_stereo_source_keeps_its_frames(broken_torchcodec):
+    """soundfile returns (frames, channels), torchcodec (channels, frames): the wrong
+    axis collapsed a clip to one sample per channel and trained on near-silence."""
+    from datasets import Audio, Dataset
 
-    class _Decoder:
-        def __getitem__(self, key):
-            return {"array": np.zeros(4, dtype = "float32"), "sampling_rate": 22050}[key]
+    buf = io.BytesIO()
+    sf.write(buf, np.zeros((800, 2), dtype = "float32"), 16000, format = "WAV")
+    audio_decode.ensure_audio_decoding()
+    ds = Dataset.from_dict({"audio": [{"path": "s.wav", "bytes": buf.getvalue()}]})
+    ds = ds.cast_column("audio", Audio())
 
-    array, rate = audio_decode.audio_array_and_rate(_Decoder(), 16000)
-    assert rate == 22050 and len(array) == 4
-    assert not hasattr(_Decoder(), "get")
+    assert len(ds[0]["audio"]["array"]) == 800
 
 
-@pytest.mark.parametrize(
-    "value",
-    [None, {}, {"array": None, "sampling_rate": 16000}, object()],
-)
-def test_audio_array_and_rate_falls_back_on_an_unreadable_cell(value):
-    assert audio_decode.audio_array_and_rate(value, 16000) == (None, 16000)
+def test_a_decoder_that_cannot_resample_reports_unusable(monkeypatch, broken_torchcodec):
+    """Every trainer cast names a target rate, so soundfile alone is not enough."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_librosa(name, *args, **kwargs):
+        if name == "librosa":
+            raise ImportError("no librosa in no-torch mode")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_librosa)
+    assert audio_decode.ensure_audio_decoding() is False
+
+
+def test_the_dataset_format_check_installs_the_decoder():
+    """The preview reads audio rows, so the wiring is the fix, not the module."""
+    import inspect
+
+    from hub.services.datasets import formatting
+
+    source = inspect.getsource(formatting.check_format_response)
+    assert "ensure_audio_decoding()" in source
+
+
+def test_the_audio_trainer_paths_install_the_decoder():
+    import inspect
+
+    from core.training import trainer
+
+    source = inspect.getsource(trainer)
+    assert "ensure_audio_decoding()" in source
+    # Guarded so a text-only run never pays for the probe.
+    assert "if self._audio_type or self.is_audio_vlm:" in source

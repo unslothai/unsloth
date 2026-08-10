@@ -6732,8 +6732,7 @@ _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
-# Long enough for a cancelling unload to terminate and reap a server, short enough that a
-# lost acknowledgement releases the load instead of stranding the lifecycle gate.
+# Long enough to reap a server, short enough that a lost ack releases the lifecycle gate.
 _LOAD_CANCEL_HANDSHAKE_TIMEOUT = 30.0
 
 
@@ -6852,9 +6851,7 @@ async def _run_tracked_load_model_impl(
         )
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
-            # Bounded: only the cancelling unload sets this, and it needs a pool thread of its
-            # own to reach the setter, so an unbounded wait here deadlocks a saturated executor
-            # and strands the lifecycle gate until the process restarts.
+            # Bounded: the unload that sets this needs a pool thread too, so waiting forever deadlocks.
             if not await asyncio.to_thread(
                 attempt.cancel_complete.wait, _LOAD_CANCEL_HANDSHAKE_TIMEOUT
             ):
@@ -9146,8 +9143,7 @@ async def _generate_tts_wav(
             with _direct_llama_request(_direct_llama_tts):
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
-            # An idle auto-unload or another surface's teardown cancels through the backend
-            # without touching this route's event, so trust the raised type as well.
+            # An idle auto-unload cancels through the backend without setting this route's event.
             if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             # Missing capability, not a failure: no retry helps, and the message
@@ -9711,7 +9707,7 @@ async def _transcribe_audio_result(
             )
     except asyncio.CancelledError:
         if cancel_event is not None:
-            # cancel_transcription takes the sidecar lock, which a concurrent load can hold across a server reap, so inline would stall the event loop.
+            # cancel_transcription takes a lock a load can hold, so inline would stall the loop.
             threading.Thread(
                 target = sidecar.cancel_transcription,
                 args = (cancel_event,),

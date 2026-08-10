@@ -347,24 +347,25 @@ test("a gallery refresh keeps the loaded scrollback instead of collapsing it", (
   ];
 
   // Newest page first, then the pages the user scrolled to.
-  assert.deepEqual(mergeGalleryPage(page, cached), [
-    { id: "e" },
-    { id: "d" },
-    { id: "c" },
-    { id: "b" },
-    { id: "a" },
-  ]);
+  assert.deepEqual(mergeGalleryPage(page, cached), {
+    clips: [{ id: "e" }, { id: "d" }, { id: "c" }, { id: "b" }, { id: "a" }],
+    stitched: true,
+  });
 });
 
 test("a clip this client deleted leaves the merged gallery", () => {
-  const merged = mergeGalleryPage([{ id: "c" }], [{ id: "b" }, { id: "a" }], "b");
-  assert.deepEqual(merged, [{ id: "c" }, { id: "a" }]);
+  const merged = mergeGalleryPage(
+    [{ id: "c" }, { id: "a" }],
+    [{ id: "b" }, { id: "a" }],
+    "b",
+  );
+  assert.deepEqual(merged.clips, [{ id: "c" }, { id: "a" }]);
 });
 
 test("the selection only moves when its clip left the merged gallery", () => {
   assert.match(
     audioPageSource,
-    /const merged = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
+    /const \{ clips: merged, stitched \} = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
   );
   // Play an older clip, delete another, and the player must not jump to the newest.
   assert.doesNotMatch(
@@ -383,4 +384,23 @@ test("a superseded refresh still reports the clips its own fetch saw", () => {
     audioPageSource,
     /const refreshed = await refreshGallery\(\);[\s\S]*persistedClipForGeneration\(\s*generated\.clip_id,\s*refreshed,/,
   );
+});
+
+test("keeping the scrollback keeps the deeper pagination cursor", () => {
+  // A clip carries no mtime, so adopting the page-0 cursor made loadMore re-walk loaded pages.
+  assert.match(
+    audioPageSource,
+    /if \(!stitched\) \{[\s\S]*galleryCache\.hasMore = page\.has_more;[\s\S]*galleryCache\.nextCursor =/,
+  );
+  assert.match(audioPageSource, /setHasMore\(galleryCache\.hasMore\);/);
+});
+
+test("a cache with nothing in common with the page is dropped, not stitched", () => {
+  // Another client can write a full page between two refreshes; stitching would render the
+  // gap as contiguous and the preserved cursor could never fetch it.
+  const merged = mergeGalleryPage(
+    [{ id: "z" }, { id: "y" }],
+    [{ id: "c" }, { id: "b" }],
+  );
+  assert.deepEqual(merged, { clips: [{ id: "z" }, { id: "y" }], stitched: false });
 });
