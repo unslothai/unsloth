@@ -7326,8 +7326,9 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
     except OSError:
         return records
     if len(names) > _MAX_ORPHAN_RECORDS:
-        logger.warning("%d kept-folder records; reading the first %d", len(names),
-                       _MAX_ORPHAN_RECORDS)
+        logger.warning(
+            "%d kept-folder records; reading the first %d", len(names), _MAX_ORPHAN_RECORDS
+        )
         names = names[:_MAX_ORPHAN_RECORDS]
     for name in names:
         try:
@@ -7364,7 +7365,10 @@ def _recorded_workspace_remains(workspace: str, root: "str | None") -> bool:
 
 
 def forget_orphaned_project_if_gone(
-    project_id: str, workspace: str, root: "str | None", is_chat: bool = False,
+    project_id: str,
+    workspace: str,
+    root: "str | None",
+    is_chat: bool = False,
 ) -> None:
     """Drop the record only once the folder has gone."""
     if _recorded_workspace_remains(workspace, root):

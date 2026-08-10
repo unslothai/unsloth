@@ -5385,7 +5385,9 @@ def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeyp
     (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(
-        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: str(sandbox),
     )
 
     class _Head:
@@ -5393,7 +5395,11 @@ def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeyp
 
     response = asyncio.new_event_loop().run_until_complete(
         inference.serve_sandbox_file(
-            "thread-1", "report.csv", request = _Head(), token = None, session = None,
+            "thread-1",
+            "report.csv",
+            request = _Head(),
+            token = None,
+            session = None,
         )
     )
     assert response.status_code == 200
@@ -5487,7 +5493,9 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
 
     answers = [None, {"id": project_id}]
     monkeypatch.setattr(
-        chat_history, "get_chat_project", lambda pid: answers.pop(0) if answers else None,
+        chat_history,
+        "get_chat_project",
+        lambda pid: answers.pop(0) if answers else None,
     )
     monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: {"id": pid})
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
