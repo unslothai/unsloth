@@ -545,10 +545,18 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
-    # Ungated from here down: mirrored to drop the third-party fetch, not a gate. Every licence
-    # here permits redistribution, and each mirror carries the upstream licence text plus the
-    # notice that licence prescribes. Qwen-Image-2512 is the one no other redirect could reach:
-    # its companions are named by the artifact repo's base_model card tag, not the family table.
+)
+
+# Mirrored to drop the third-party fetch, NOT to route around a gate. Every licence here
+# permits redistribution, and each mirror carries the upstream licence text plus the notice
+# that licence prescribes. Qwen-Image-2512 is the one no other redirect could reach: its
+# companions are named by the artifact repo's base_model card tag, not the family table.
+#
+# Kept apart from the gated pairs because the two answer different questions. Both redirect
+# a fetch, but only a GATED upstream justifies overriding a user's existing cache: for these
+# the upstream is reachable without credentials, so a complete local snapshot must keep being
+# used rather than re-pulled from the mirror.
+_UNGATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
     ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
     ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
@@ -569,13 +577,24 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     # excludes the EU, the UK and South Korea. A public Hub repo distributes worldwide, so that
     # mirror cannot be made compliant and the family keeps fetching upstream.
 )
-_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
-_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
+_MIRROR_PAIRS: tuple[tuple[str, str], ...] = _GATED_MIRROR_PAIRS + _UNGATED_MIRROR_PAIRS
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _MIRROR_PAIRS}
+_GATED_UPSTREAMS: frozenset[str] = frozenset(u.lower() for u, _m in _GATED_MIRROR_PAIRS)
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
     """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def upstream_is_gated(repo_id: Optional[str]) -> bool:
+    """True when ``repo_id`` is a vendor base the Hub refuses without accepted terms.
+
+    Distinct from "has a mirror": most of the mirror table is ungated and exists only to keep
+    the fetch inside ``unsloth/*``. Only the gated half justifies overriding a user's cache.
+    """
+    return (repo_id or "").strip().lower() in _GATED_UPSTREAMS
 
 
 def canonical_base(repo_id: Optional[str]) -> str:

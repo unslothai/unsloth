@@ -634,13 +634,13 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
 def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
     monkeypatch, no_mirror_env
 ):
-    """Cache preference must not strand a token-less run on a gated vendor repo.
+    """Cache preference must not strand a token-less run on a GATED vendor repo.
 
-    Only gated repos are in the mirror table, so a mirror existing means the upstream needs
-    credentials this run does not have. prefer_ungated_mirror's probe counts ANY cached weight as
-    a hit, so one leftover shard from an interrupted or previously authorized download kept the
-    vendor id, and the start route's HEAD then refused the request outright: the exact case the
-    mirrors exist for became the one that could not train.
+    The credentials this run lacks are the credentials the fetch needs, so the cached snapshot
+    is unusable however complete it looks. prefer_ungated_mirror's probe counts ANY cached
+    weight as a hit, so one leftover shard from an interrupted or previously authorized download
+    kept the vendor id, and the start route's HEAD then refused the request outright: the exact
+    case the mirrors exist for became the one that could not train.
     """
     from core.inference import diffusion_families
     from core.training.diffusion_train_common import DiffusionLoraConfig
@@ -667,6 +667,38 @@ def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
     assert _cfg("hf_realtoken").fetch_base_model == source
     # And the canonical id is untouched either way: only the fetch moves.
     assert _cfg(None).base_model == source
+
+
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env):
+    """The override is for gates, not for mirrors in general.
+
+    Most of the mirror table is ungated: those exist to keep the fetch inside unsloth/*, and the
+    upstream answers anonymously. Overriding the cache preference there would throw away a
+    complete local snapshot and re-pull gigabytes, or fail outright with no network. Klein base-4B
+    is the one that matters most here, since it is a default trainable base AND mirrored.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.2-klein-base-4B"
+    assert diffusion_families.mirror_repo(source), "precondition: this base is mirrored"
+    assert not diffusion_families.upstream_is_gated(source), "precondition: and it is ungated"
+    # Cached, so the cache-aware answer is the vendor repo. It must survive.
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    assert _cfg(None).fetch_base_model == source
+    assert _cfg("   ").fetch_base_model == source
+    assert _cfg("hf_realtoken").fetch_base_model == source
 
 
 def test_route_start_forwards_extra_training_knobs(client):
