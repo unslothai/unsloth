@@ -522,7 +522,9 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "$pref.CloudBlockLevel",
         "$pref.ExclusionPath",
     ):
-        assert any(probe in body for body in bodies), f"{probe} left the guard that proves it was read"
+        assert any(
+            probe in body for body in bodies
+        ), f"{probe} left the guard that proves it was read"
     outside = scan
     for body in bodies:
         outside = outside.replace(body, "", 1)
