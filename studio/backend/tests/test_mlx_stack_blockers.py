@@ -97,6 +97,8 @@ def test_versions_are_checked_before_imports(monkeypatch):
 def test_the_detail_line_never_raises_and_stays_short(monkeypatch):
     from utils.hardware import hardware as hw
 
+    monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
+
     def explode() -> list[str]:
         raise RuntimeError("no")
 
@@ -181,3 +183,82 @@ def test_health_reads_the_detail_inside_the_guarded_snapshot(monkeypatch):
     # A later pass clearing the globals cannot change what this snapshot reports.
     monkeypatch.setattr(main._hw_module, "CHAT_ONLY_DETAIL", None)
     assert snapshot[2] == "mlx-vlm 0.1.0 is older than 0.4.4"
+
+
+# The gate and the detail ask the same question, so it is asked once. On the host that
+# needs the detail the mlx imports are the ones that hang, and this module already treats
+# them as able to park indefinitely; asking twice there is what a second call costs.
+def test_the_gate_measures_the_stack_once(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
+    calls: list[int] = []
+
+    def counted() -> list[str]:
+        calls.append(1)
+        return ["mlx-vlm 0.1.0 is older than 0.4.4"]
+
+    monkeypatch.setattr(mr, "mlx_stack_blockers", counted)
+    assert hw._has_usable_mlx_stack() is False
+    assert hw._mlx_stack_detail() == "mlx-vlm 0.1.0 is older than 0.4.4"
+    assert len(calls) == 1, f"the stack was probed {len(calls)} times for one verdict"
+
+
+def test_a_measurement_is_used_once_and_not_kept(monkeypatch):
+    """A list left over from an earlier pass describes a stack since re-measured."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
+    monkeypatch.setattr(mr, "mlx_stack_blockers", lambda: ["mlx is not installed"])
+    hw._has_usable_mlx_stack()
+    assert hw._mlx_stack_detail() == "mlx is not installed"
+    assert hw._MLX_BLOCKERS_MEASURED is None
+
+    # Nothing measured, so the detail measures for itself rather than reusing the above.
+    monkeypatch.setattr(mr, "mlx_stack_blockers", lambda: ["mlx-lm is not installed"])
+    assert hw._mlx_stack_detail() == "mlx-lm is not installed"
+
+
+def test_a_healthy_gate_still_reads_as_usable(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", None)
+    monkeypatch.setattr(mr, "mlx_stack_blockers", lambda: [])
+    assert hw._has_usable_mlx_stack() is True
+
+
+def test_an_unreadable_gate_falls_back_to_the_bare_import(monkeypatch):
+    """mlx_repair should always import; a host where it cannot is not forced chat-only."""
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "_MLX_BLOCKERS_MEASURED", ["stale"])
+
+    def explode() -> list[str]:
+        raise RuntimeError("mlx_repair is unimportable")
+
+    monkeypatch.setattr(mr, "mlx_stack_blockers", explode)
+    monkeypatch.setattr(hw, "_has_mlx", lambda: True)
+    assert hw._has_usable_mlx_stack() is True
+    # And it published nothing, rather than leaving the stale list to be read as this
+    # pass's answer.
+    assert hw._MLX_BLOCKERS_MEASURED is None
+
+
+# A blocker line goes into /api/health and into the Train row's native tooltip. Neither
+# renders a paragraph, and a dyld failure lists every path it tried.
+def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
+    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+
+    def explode(module: str):
+        raise ImportError(
+            "dlopen failed:\n  tried: '/opt/one/lib.so' (no such file)\n"
+            "  tried: '/opt/two/lib.so' (mach-o, but wrong architecture)\n" + "x" * 400
+        )
+
+    monkeypatch.setattr(mr.importlib, "import_module", explode)
+    blocker = mr.mlx_stack_blockers()[0]
+    assert "\n" not in blocker
+    assert len(blocker) < 200, f"{len(blocker)} chars reaches the tooltip: {blocker}"
+    assert blocker.endswith("...)"), blocker
+    # Still says which module and which error, which is the whole point of the line.
+    assert blocker.startswith("mlx.core does not import (ImportError:")

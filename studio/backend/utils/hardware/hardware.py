@@ -251,22 +251,39 @@ def _has_mlx() -> bool:
         return False
 
 
+# What the last gate call measured, so the CPU fallback can name a blocker without
+# running the mlx imports a second time. This module already treats those imports as
+# able to park indefinitely on a broken stack, and that is exactly the host that needs
+# the detail, so a second run there can double detection latency or keep the pass from
+# reaching the repair scheduler. Written and consumed inside one locked detection pass.
+_MLX_BLOCKERS_MEASURED: Optional[list[str]] = None
+
+
 def _has_usable_mlx_stack() -> bool:
     """True only when the FULL Unsloth MLX training/export stack is usable
     (mlx + mlx-lm + mlx-vlm at the minimum versions unsloth-zoo requires), not
     just a bare ``import mlx.core``. A backtracked/old mlx-vlm still imports but
     breaks VLM Train/Export, so the training gate must match the self-heal's own
-    criterion (utils.mlx_repair.mlx_stack_available) -- otherwise detect_hardware
-    would enable Train/Export on exactly the inadequate stack the MLX self-heal
-    is trying to repair, leaving the user with greyed-in-but-broken buttons."""
+    criterion (utils.mlx_repair) -- otherwise detect_hardware would enable
+    Train/Export on exactly the inadequate stack the MLX self-heal is trying to
+    repair, leaving the user with greyed-in-but-broken buttons.
+
+    Asked as "no blockers" rather than through mlx_stack_available(), which is the
+    same question: both run the version checks before the imports, in the same order,
+    and stop at the first failure. Reading the list is what lets the answer be
+    explained without measuring it again."""
+    global _MLX_BLOCKERS_MEASURED
+    _MLX_BLOCKERS_MEASURED = None
     try:
-        from utils.mlx_repair import mlx_stack_available
-        return mlx_stack_available()
+        from utils.mlx_repair import mlx_stack_blockers
+        blockers = mlx_stack_blockers()
     except Exception as exc:
         # mlx_repair should always import; if it somehow cannot, fall back to the
         # bare import check rather than forcing a working host into chat-only.
         logger.debug("MLX stack availability check failed, using bare import: %s", exc)
         return _has_mlx()
+    _MLX_BLOCKERS_MEASURED = blockers
+    return not blockers
 
 
 def _mlx_stack_detail() -> Optional[str]:
@@ -274,13 +291,23 @@ def _mlx_stack_detail() -> Optional[str]:
 
     Never raises and never re-runs the gate's own verdict: this only describes a
     verdict already reached, so a failure here costs a sentence, not Train.
+
+    Takes what the gate measured when there is any. Measuring again is the fallback
+    for a caller that reached here without one, e.g. a test driving this alone.
     """
-    try:
-        from utils.mlx_repair import mlx_stack_blockers
-        blockers = mlx_stack_blockers()
-    except Exception as exc:
-        logger.debug("MLX blocker detail unavailable: %s", exc)
-        return None
+    global _MLX_BLOCKERS_MEASURED
+    blockers = _MLX_BLOCKERS_MEASURED
+    # Consumed, not kept: a list left behind by an earlier pass describes a stack that
+    # has since been re-measured, and the whole point of the detail is that it belongs
+    # to the verdict beside it.
+    _MLX_BLOCKERS_MEASURED = None
+    if blockers is None:
+        try:
+            from utils.mlx_repair import mlx_stack_blockers
+            blockers = mlx_stack_blockers()
+        except Exception as exc:
+            logger.debug("MLX blocker detail unavailable: %s", exc)
+            return None
     if not blockers:
         # The gate said no and the detail says yes, which means the stack changed
         # under us. Saying nothing beats naming a blocker that is no longer there.
@@ -479,9 +506,11 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
     global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
+    global _MLX_BLOCKERS_MEASURED
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
     CHAT_ONLY_DETAIL = None
+    _MLX_BLOCKERS_MEASURED = None
     IS_ROCM = False
 
     # Probe torch once per pass: a failed probe is expensive and a second can disagree.

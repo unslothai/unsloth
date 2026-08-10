@@ -641,7 +641,9 @@ def test_health_snapshot_returns_a_settled_verdict(monkeypatch):
     monkeypatch.setattr(hw_mod, "CHAT_ONLY", True, raising = False)
     monkeypatch.setattr(hw_mod, "CHAT_ONLY_REASON", "mlx_unavailable", raising = False)
     hw_mod.DETECTION_COMPLETE.set()
-    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable")
+    # Three items: the detail travels with the reason it explains, out of the same
+    # guarded read, so the two can never be paired across different detection passes.
+    assert main_mod._hardware_snapshot() == (True, "mlx_unavailable", None)
 
 
 def test_health_rereads_the_verdict_after_authentication():

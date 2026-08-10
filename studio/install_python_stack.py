@@ -4271,15 +4271,6 @@ def install_python_stack() -> int:
         **_windows_hidden_subprocess_kwargs(),
     )
 
-    # 14b. Apple Silicon: say so when the MLX stack this install just laid down is
-    # not one Train can use. The gate is all-or-nothing across mlx, mlx-lm and
-    # mlx-vlm, and a resolver backtrack (or an mlx-vlm built against a different
-    # transformers) leaves packages present but unusable. Without this the install
-    # reports success and the app silently comes up chat-only, telling the user to
-    # run the update that has just finished.
-    if IS_MAC_ARM and not NO_TORCH:
-        _report_mlx_stack_health()
-
     # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
     # without it reports a finished install every later check calls unfinished.
     if (
@@ -4297,6 +4288,21 @@ def install_python_stack() -> int:
             file = sys.stderr,
         )
         return 1
+
+    # 16. Apple Silicon: say so when the MLX stack this install just laid down is not
+    # one Train can use. The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and
+    # a resolver backtrack (or an mlx-vlm built against a different transformers) leaves
+    # packages present but unusable. Without this the install reports success and the app
+    # silently comes up chat-only, telling the user to run the update that has just
+    # finished.
+    #
+    # AFTER the manifest, not before it. The probe is advisory and out of process, and on
+    # the host it exists for the imports are the ones that hang, so it can hold its full
+    # timeout; run ahead of the manifest, a kill during that wait leaves every dependency
+    # step done and no record of it, and verify-install, the desktop preflight and the
+    # setup fast path all then call a complete install incomplete.
+    if IS_MAC_ARM and not NO_TORCH:
+        _report_mlx_stack_health()
 
     _step(_LABEL, "installed")
     return 0

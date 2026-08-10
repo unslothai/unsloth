@@ -146,13 +146,28 @@ def mlx_available() -> bool:
         return False
 
 
+# An import error is free-form and can be a paragraph: a compiled-against-the-wrong-
+# transformers ImportError carries the hint text, and a dyld failure carries a list of
+# paths tried. The blocker line ends up in /api/health and in the Train row's native
+# tooltip, neither of which can render a paragraph, so it is folded to one line and cut.
+_BLOCKER_TEXT_CAP = 120
+
+
+def _one_line(exc: BaseException) -> str:
+    """An exception's message as one bounded line, ellipsis marking anything dropped."""
+    text = " ".join(str(exc).split())
+    if len(text) > _BLOCKER_TEXT_CAP:
+        text = text[: _BLOCKER_TEXT_CAP - 3].rstrip() + "..."
+    return text
+
+
 def _mlx_runtime_import_blocker() -> Optional[str]:
     """The first runtime import that will not load, and why. None when all do."""
     for module in _MLX_RUNTIME_IMPORTS:
         try:
             importlib.import_module(module)
         except Exception as exc:
-            return f"{module} does not import ({type(exc).__name__}: {exc})"
+            return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
     return None
 
 
@@ -168,7 +183,7 @@ def _mlx_version_blockers() -> list[str]:
 
         from packaging.version import Version
     except Exception as exc:
-        return [f"the version check could not run ({type(exc).__name__}: {exc})"]
+        return [f"the version check could not run ({type(exc).__name__}: {_one_line(exc)})"]
     blockers: list[str] = []
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
@@ -177,13 +192,13 @@ def _mlx_version_blockers() -> list[str]:
             blockers.append(f"{name} is not installed (needs >={minimum})")
             continue
         except Exception as exc:
-            blockers.append(f"{name} could not be read ({type(exc).__name__}: {exc})")
+            blockers.append(f"{name} could not be read ({type(exc).__name__}: {_one_line(exc)})")
             continue
         try:
             if Version(installed) < Version(minimum):
                 blockers.append(f"{name} {installed} is older than {minimum}")
         except Exception as exc:
-            blockers.append(f"{name} {installed} is unreadable ({type(exc).__name__}: {exc})")
+            blockers.append(f"{name} {installed} is unreadable ({type(exc).__name__}: {_one_line(exc)})")
     return blockers
 
 

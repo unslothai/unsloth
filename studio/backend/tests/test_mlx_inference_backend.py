@@ -431,6 +431,10 @@ worker.is_apple_silicon = lambda: True
 hardware.is_apple_silicon = lambda: True
 hardware._has_torch = lambda: False
 mlx_repair._mlx_versions_satisfy_minimums = lambda: True
+# The fake mlx packages have no dist-info, so the version check has to be stood down at
+# the level the gate reads: it now asks for the blocker LIST, since the same measurement
+# both decides the verdict and explains it.
+mlx_repair._mlx_version_blockers = lambda: []
 transformers_version._VENV_T5_530_DIR = os.environ["SIDECAR"]
 transformers_version._ensure_venv_t5_530_exists = lambda: True
 
