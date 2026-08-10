@@ -18,13 +18,16 @@ let scaleFactor =
   typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
 let hovered: HTMLElement | null = null;
 let listening = false;
+// Outside Tauri the DOM routes drops itself, so there is no listener to wait on.
+let ready = !isTauri;
 
 /** The innermost registered target under `position`, or null. */
 export function nativeDropTargetAt(position: {
   x: number;
   y: number;
 }): HTMLElement | null {
-  if (targets.size === 0 || typeof document === "undefined") return null;
+  if (!ready || targets.size === 0 || typeof document === "undefined")
+    return null;
   const { x, y } = nativeDropPointToCss(position, scaleFactor);
   let node: Element | null = document.elementFromPoint(x, y);
   while (node !== null) {
@@ -47,10 +50,6 @@ function listen(): void {
   void import("@tauri-apps/api/window")
     .then(async ({ getCurrentWindow }) => {
       const currentWindow = getCurrentWindow();
-      // Before the scale setup: until this resolves a registered target is
-      // claimed with nothing behind it, and the chat-wide handler has already
-      // stepped aside, so a drop in that window is lost outright. The
-      // devicePixelRatio seed keeps the hit test usable until scale reports.
       await currentWindow.onDragDropEvent(({ payload }) => {
         if (payload.type === "leave") {
           setHovered(null);
@@ -64,11 +63,13 @@ function listen(): void {
         setHovered(null);
         if (target) targets.get(target)?.onDrop(payload.paths);
       });
+      // Only now can a target be claimed: before this the window-wide handlers
+      // would step aside for a listener that cannot deliver, losing the drop.
+      ready = true;
 
-      // Scale is a refinement, not a prerequisite, and the drop listener is
-      // already installed by now. Failing here must not reset `listening`: the
-      // next registration would retry and stack a second drop listener, so
-      // every later drop would be delivered twice. The seed above holds.
+      // Scale is a refinement, not a prerequisite, and the devicePixelRatio seed
+      // holds until it lands. Failing here must not reset `listening`: the next
+      // registration would stack a second drop listener, doubling every drop.
       let scaleReported = false;
       await currentWindow
         .onScaleChanged(({ payload }) => {
