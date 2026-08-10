@@ -4510,7 +4510,13 @@ class LlamaCppBackend:
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
-        cls._capability_cache[cache_key] = info
+        # A transient --help timeout/crash yields an inconclusive probe (#8317).
+        # Caching it would pin "loading without speculative decoding" for the
+        # whole Studio process even after llama-server --help starts succeeding,
+        # since the cache key (path, mtime) never changes. Only cache a
+        # conclusive result so a later call re-probes and can recover.
+        if not mtp_probe_inconclusive:
+            cls._capability_cache[cache_key] = info
         return info
 
     @staticmethod

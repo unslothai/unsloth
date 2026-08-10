@@ -2599,3 +2599,32 @@ def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
     neither = _make_fake_llama_server(tmp_path / "neither", "usage: llama-server\n\n--parallel N\n")
     _clear_caps_cache()
     assert LlamaCppBackend.probe_server_capabilities(str(neither))["spec_draft_ngl_flag"] is None
+
+
+@_NEEDS_BASH
+def test_inconclusive_probe_is_not_cached_so_a_later_help_retries(tmp_path, monkeypatch):
+    """A transient --help timeout must not pin "loading without speculative
+    decoding" for the whole process (#8317). The inconclusive result must not be
+    cached, so once --help succeeds the next probe re-runs and reports MTP."""
+    import subprocess as _subprocess
+
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,ngram-mod",
+    )
+    _clear_caps_cache()
+
+    def _timeout(cmd, **kwargs):
+        raise _subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 10))
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _timeout)
+    first = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert first["mtp_probe_inconclusive"] is True
+    assert first["supports_mtp"] is False
+
+    # The timeout is gone; --help now succeeds. A cached inconclusive result
+    # would keep MTP disabled until Studio restarts.
+    monkeypatch.undo()
+    second = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert second["mtp_probe_inconclusive"] is False
+    assert second["supports_mtp"] is True
