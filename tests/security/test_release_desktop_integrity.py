@@ -338,3 +338,38 @@ def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
 
     for line in versioned:
         assert "--clobber" not in line, line
+
+
+def test_a_validation_only_run_touches_nothing_public():
+    steps = _workflow()["jobs"]["publish-release"]["steps"]
+    names = [step.get("name") for step in steps]
+    mutating = (
+        "Publish versioned release assets",
+        "Publish versioned updater metadata",
+        "Record desktop build provenance on the release",
+        "Promote normal release to GitHub latest",
+    )
+    for name in mutating:
+        step = steps[names.index(name)]
+        assert step.get("if") == "${{ !inputs.draft }}", name
+
+    # Provenance last, so a retry after a partial upload records what shipped.
+    for upload in mutating[:2]:
+        assert names.index(upload) < names.index(mutating[2])
+
+
+def test_the_guard_rejects_a_prerelease_target_before_anything_is_built():
+    workflow = _workflow()
+    guard = _step(
+        workflow, "prepare-version", "Guard against republishing an existing version"
+    )
+    assert "is a prerelease" in guard["run"]
+    # And again in publish-release, which is the one holding write scope.
+    state = _step(workflow, "publish-release", "Validate versioned release state")
+    assert "is a prerelease" in state["run"]
+
+
+def test_the_build_uses_the_release_tag_not_the_dispatch_ref():
+    build = _workflow()["jobs"]["build"]["steps"]
+    checkout = next(s for s in build if "actions/checkout" in str(s.get("uses", "")))
+    assert checkout["with"]["ref"] == "${{ needs.prepare-version.outputs.desktop_release_tag }}"

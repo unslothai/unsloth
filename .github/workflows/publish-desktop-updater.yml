@@ -42,7 +42,34 @@ jobs:
         with:
           egress-policy: audit
 
+      # The v... release is published before release-desktop.yml attaches the
+      # bundles, so this fires first on a release that carries none. Skip cleanly
+      # instead of failing; the desktop run advances the channel itself.
+      - name: Check for desktop bundles
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "release" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          asset_names="$RUNNER_TEMP/release-asset-names.txt"
+          # Fail closed: an unreadable release must not look like one with no bundles.
+          if ! gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$asset_names"; then
+            echo "Could not list assets on ${RELEASE_TAG}; refusing to advance the channel." >&2
+            exit 1
+          fi
+          if grep -Fxq 'latest.json' "$asset_names"; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${RELEASE_TAG} carries no latest.json yet; nothing to validate."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download updater metadata
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -53,18 +80,21 @@ jobs:
           test -s "$RUNNER_TEMP/desktop-updater/latest.json"
 
       - name: Remove standalone signature assets
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signature_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".sig"))')"
+          # Scoped to the desktop bundles: the v... release carries other assets too.
+          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
           while IFS= read -r asset_name; do
             [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
           done <<< "$signature_assets"
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
 
       - name: Validate updater metadata
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           python3 <<'PY'
           import json
@@ -121,7 +151,7 @@ jobs:
           PY
 
       - name: Prevent GitHub latest downgrade
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -187,7 +217,7 @@ jobs:
 
 
       - name: Mark published release as GitHub latest
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

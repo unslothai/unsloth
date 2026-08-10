@@ -260,3 +260,23 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
     assert not any(
         "gh release upload desktop-latest" in step.get("run", "") for step in ordinary_steps
     )
+
+
+def test_the_updater_workflow_skips_releases_without_desktop_bundles():
+    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["publish-updater"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    gate = steps["Check for desktop bundles"]
+    assert gate["id"] == "gate"
+    # An unreadable release must not look like one that simply has no bundles.
+    assert "refusing to advance the channel" in gate["run"]
+
+    for name in (
+        "Download updater metadata",
+        "Validate updater metadata",
+        "Remove standalone signature assets",
+        "Mark published release as GitHub latest",
+    ):
+        assert "steps.gate.outputs.proceed == 'true'" in steps[name]["if"], name
+
+    # The v... release is shared, so the sweep must not reach past desktop assets.
+    assert 'startswith("Unsloth-Desktop-")' in steps["Remove standalone signature assets"]["run"]

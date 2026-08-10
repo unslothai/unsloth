@@ -241,6 +241,10 @@ jobs:
 
           release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release.json').read_text())
           tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
           prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           clashing = sorted(
               asset['name']
@@ -460,8 +464,12 @@ jobs:
         with:
           egress-policy: audit
 
+      # The tag, not the dispatch ref: the release is published before this runs and
+      # main keeps moving, so building the dispatch ref would attach unrelated source
+      # to the release and record a SHA that is not the tag's.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ needs.prepare-version.outputs.desktop_release_tag }}
           persist-credentials: false
 
       # ── Linux dependencies ──
@@ -1637,6 +1645,10 @@ jobs:
               pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release-publish.json').read_text()
           )
           tag = os.environ['DESKTOP_RELEASE_TAG']
+          # Checked here, not at promotion: GitHub refuses to mark a prerelease
+          # latest, and by then the bundles are already public.
+          if release.get('prerelease'):
+              sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
           prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           clashing = sorted(
               asset['name']
@@ -1742,24 +1754,10 @@ jobs:
 
       # The release body is the maintainer's changelog, so provenance is appended
       # rather than replacing it.
-      - name: Record desktop build provenance on the release
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          current="$RUNNER_TEMP/current-release-body.md"
-          merged="$RUNNER_TEMP/merged-release-body.md"
-          gh release view "$DESKTOP_RELEASE_TAG" --json body --jq '.body // ""' > "$current"
-          if grep -Fq '### Desktop build provenance' "$current"; then
-            echo "Release ${DESKTOP_RELEASE_TAG} already records desktop provenance."
-            exit 0
-          fi
-          { cat "$current"; printf '\n\n'; cat "$RUNNER_TEMP/desktop-release-body.md"; } > "$merged"
-          gh release edit "$DESKTOP_RELEASE_TAG" --notes-file "$merged"
-
+      # The target release is already public, so a validation-only run must not
+      # upload to it.
       - name: Publish versioned release assets
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1773,12 +1771,37 @@ jobs:
           gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
 
       - name: Publish versioned updater metadata
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
+
+      # After the uploads, so a retry that follows a partial upload records the
+      # digests actually published. Any earlier section is replaced, never kept.
+      - name: Record desktop build provenance on the release
+        if: ${{ !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          current="$RUNNER_TEMP/current-release-body.md"
+          merged="$RUNNER_TEMP/merged-release-body.md"
+          gh release view "$DESKTOP_RELEASE_TAG" --json body --jq '.body // ""' > "$current"
+          python3 - "$current" "$RUNNER_TEMP/desktop-release-body.md" "$merged" <<'PY'
+          import pathlib
+          import sys
+
+          heading = '### Desktop build provenance'
+          current, provenance, merged = (pathlib.Path(p) for p in sys.argv[1:4])
+          body = current.read_text(encoding = 'utf-8')
+          body = body.split(heading, 1)[0].rstrip()
+          merged.write_text(f'{body}\n\n{provenance.read_text(encoding = "utf-8")}', encoding = 'utf-8')
+          PY
+          gh release edit "$DESKTOP_RELEASE_TAG" --notes-file "$merged"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -1889,6 +1912,36 @@ jobs:
           print(release_id)
           PY
           )"
+
+          # The prepare-version downgrade check ran before a build that can take an
+          # hour, so re-read GitHub latest here: promoting past a newer release would
+          # hand every client an older manifest.
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-before-promote.json" 2>/dev/null; then
+            python3 - "$RUNNER_TEMP/latest-before-promote.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          semver = re.compile(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$')
+
+          def key(tag):
+              match = semver.fullmatch(tag or '')
+              if not match:
+                  return None
+              major, minor, patch, pre = match.groups()
+              # A prerelease sorts below the same release without one.
+              return (int(major), int(minor), int(patch), 0 if pre else 1, pre or '')
+
+          current = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('tag_name')
+          candidate = os.environ['DESKTOP_RELEASE_TAG']
+          current_key, candidate_key = key(current), key(candidate)
+          if current_key and candidate_key and current_key > candidate_key:
+              sys.exit(f'Refusing to promote {candidate}: GitHub latest advanced to {current}.')
+          PY
+          fi
+
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             -F make_latest=true > "$RUNNER_TEMP/promoted-release.json"
           gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-release.json"
