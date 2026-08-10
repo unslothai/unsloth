@@ -119,9 +119,11 @@ class LogConfig:
                 structlog.processors.add_log_level,  # level second
                 structlog.contextvars.merge_contextvars,
                 structlog.processors.format_exc_info,
-                # Immediately after format_exc_info, which is what renders "exception".
-                _truncate_exception_processor,
                 filter_sensitive_data,
+                # After redaction, not before: redact_native_paths replaces exact
+                # strings, so cutting the middle out of a traceback first could leave
+                # half a path behind for it to miss.
+                _truncate_exception_processor,
                 # Flatten the extra field into the main dict.
                 lambda logger, method_name, event_dict: {
                     "timestamp": event_dict.get("timestamp"),

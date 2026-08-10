@@ -192,3 +192,10 @@ def test_the_v1_surface_gets_the_same_message_cap():
     msg = "Unsupported content block type " + "q" * 500_000
     summary, _ = _summarize_validation_errors(sve([{"type": "x", "loc": ("body", "messages"), "msg": msg, "input": "x"}]))
     assert len(summary) < 400, len(summary)
+
+
+def test_a_long_loc_element_is_truncated():
+    # A typed mapping copies the offending key into loc, so it is user-controlled.
+    errors = [{"type": "x", "loc": ("body", "budgets", "k" * 2_000_000), "msg": "bad", "input": 1}]
+    out = safe_validation_errors(errors)[0]["loc"]
+    assert all(not isinstance(p, str) or len(p) < 300 for p in out), [len(str(p)) for p in out]

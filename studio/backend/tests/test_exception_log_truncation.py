@@ -76,3 +76,11 @@ def test_processor_signature_matches_structlog():
     text = "z" * 100_000
     out = log_config._truncate_exception_processor(None, "error", {"exception": text})
     assert len(out["exception"]) < len(text)
+
+
+def test_redaction_runs_before_truncation():
+    # redact_native_paths replaces exact strings, so truncating first could leave a
+    # half path behind for it to miss.
+    text = (_BACKEND / "loggers/config.py").read_text(encoding = "utf-8")
+    order = text.index("filter_sensitive_data,\n"), text.index("_truncate_exception_processor,\n")
+    assert order[0] < order[1], "filter_sensitive_data must come first in the chain"

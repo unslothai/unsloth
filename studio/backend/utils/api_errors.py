@@ -259,6 +259,14 @@ def safe_validation_errors(errors) -> list:
             safe.append(err)
             continue
         cleaned = dict(err)
+        # A typed mapping puts the offending key straight into loc (CreateResearchRun
+        # has budgets: dict[str, int]), so loc is user-controlled and unbounded too.
+        loc = cleaned.get("loc")
+        if isinstance(loc, (list, tuple)):
+            cleaned["loc"] = [
+                _truncate_text(part) if isinstance(part, str) else part
+                for part in islice(loc, _MAX_ECHOED_ITEMS)
+            ]
         if "input" in cleaned:
             cleaned["input"] = _summarize_error_input(cleaned["input"])
         # A validator that quotes the submitted value reaches "msg" too: models/
