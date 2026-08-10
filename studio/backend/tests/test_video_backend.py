@@ -3640,7 +3640,11 @@ def test_h3_keyframe_fit_stretches_the_first_and_crops_the_last():
         fit_h3_keyframe(source, 64, 64, anchor = "middle")
 
 
-def _h3_native_backend(monkeypatch, calls, binary = None):
+def _h3_native_backend(
+    monkeypatch,
+    calls,
+    binary = None,
+):
     """A backend with an H3 sd.cpp state whose engine records the params it was handed.
 
     ``binary`` stands in for what _run_load_h3_native resolves and vets: the engine gets the path

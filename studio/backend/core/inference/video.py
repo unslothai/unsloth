@@ -3696,10 +3696,7 @@ class VideoBackend:
                         # so it is held to the first rather than refused outright.
                         if binary and (
                             current_identity is None
-                            or (
-                                binary_identity is not None
-                                and current_identity != binary_identity
-                            )
+                            or (binary_identity is not None and current_identity != binary_identity)
                         ):
                             # The engine is committed at load, so this cannot be re-resolved
                             # underneath a live generation the way the image path can. Say so
