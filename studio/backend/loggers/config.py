@@ -26,6 +26,45 @@ class _DropTorchDtypeDeprecation(logging.Filter):
         return not ("torch_dtype" in msg and "deprecated" in msg)
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        raw = (os.environ.get(name) or "").strip()
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# Cap on the rendered traceback in a single log record. A traceback is normally a few
+# KB, but an exception whose message embeds a request body is not: a binary upload
+# rejected by request validation produced one 2.2 MB line. Keep the head (where the
+# raising frame is) and the tail (where the actual exception type and message are),
+# and say how much was dropped. 0 disables the cap.
+_MAX_EXC_CHARS = _env_int("UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS", 16384)
+_EXC_TAIL_CHARS = 2048
+
+
+def truncate_exception(event_dict: dict) -> dict:
+    """Structlog processor: bound the "exception" field to a readable size."""
+    if _MAX_EXC_CHARS <= 0:
+        return event_dict
+    text = event_dict.get("exception")
+    if not isinstance(text, str) or len(text) <= _MAX_EXC_CHARS:
+        return event_dict
+    head = _MAX_EXC_CHARS - _EXC_TAIL_CHARS
+    dropped = len(text) - _MAX_EXC_CHARS
+    event_dict["exception"] = (
+        text[:head]
+        + f"\n... [{dropped} chars of traceback omitted; "
+        "raise UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ...\n"
+        + text[-_EXC_TAIL_CHARS:]
+    )
+    return event_dict
+
+
+def _truncate_exception_processor(logger, method_name, event_dict):
+    return truncate_exception(event_dict)
+
+
 class LogConfig:
     """Structured logging configuration for the application."""
 
@@ -61,6 +100,8 @@ class LogConfig:
                 structlog.processors.add_log_level,  # level second
                 structlog.contextvars.merge_contextvars,
                 structlog.processors.format_exc_info,
+                # Immediately after format_exc_info, which is what renders "exception".
+                _truncate_exception_processor,
                 filter_sensitive_data,
                 # Flatten the extra field into the main dict.
                 lambda logger, method_name, event_dict: {

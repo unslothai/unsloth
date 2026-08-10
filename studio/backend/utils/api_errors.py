@@ -186,6 +186,52 @@ def _summarize_validation_errors(errors) -> tuple:
     return summary, param
 
 
+# A validation error carries the offending value under "input". For a JSON-body route
+# handed a non-JSON body (a multipart upload posted to /api/inference/audio/transcribe
+# is the case that surfaced this) that value is the whole raw payload, and
+# jsonable_encoder renders bytes with ``o.decode()``, which raises UnicodeDecodeError on
+# any binary. The handler then failed, turning a 422 into a 500 whose traceback embedded
+# the escaped payload: one 531 KB upload produced a single 2.2 MB log line.
+#
+# Clients only need loc/msg/type, so the input is summarized rather than echoed. That
+# also stops a large but perfectly decodable body from being mirrored back and logged.
+_MAX_ECHOED_INPUT_CHARS = 200
+
+
+def _summarize_error_input(value):
+    """Return a JSON-safe stand-in for a validation error's ``input`` value."""
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<{len(bytes(value))} bytes of binary data>"
+    if isinstance(value, str) and len(value) > _MAX_ECHOED_INPUT_CHARS:
+        return value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
+    if isinstance(value, dict):
+        return {k: _summarize_error_input(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_summarize_error_input(v) for v in value]
+    return value
+
+
+def safe_validation_errors(errors) -> list:
+    """FastAPI's ``exc.errors()`` with every ``input`` made JSON-encodable."""
+    safe = []
+    for err in errors:
+        if not isinstance(err, dict):
+            safe.append(err)
+            continue
+        cleaned = dict(err)
+        if "input" in cleaned:
+            cleaned["input"] = _summarize_error_input(cleaned["input"])
+        # ctx can carry the triggering exception object, which is not JSON either.
+        ctx = cleaned.get("ctx")
+        if isinstance(ctx, dict):
+            cleaned["ctx"] = {
+                k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
+                for k, v in ctx.items()
+            }
+        safe.append(cleaned)
+    return safe
+
+
 def install_api_error_handlers(app) -> None:
     """Register validation + HTTPException handlers that emit ``/v1/*`` envelopes.
 
@@ -204,10 +250,11 @@ def install_api_error_handlers(app) -> None:
                 status_code = 400,
                 content = error_body_for_path(path, summary, status = 400, param = param),
             )
-        # Default FastAPI behavior for every other path.
+        # Default FastAPI behavior for every other path, minus the raw input echo
+        # (see safe_validation_errors: encoding it raised and turned 422 into 500).
         return JSONResponse(
             status_code = 422,
-            content = {"detail": jsonable_encoder(exc.errors())},
+            content = {"detail": jsonable_encoder(safe_validation_errors(exc.errors()))},
         )
 
     @app.exception_handler(StarletteHTTPException)
