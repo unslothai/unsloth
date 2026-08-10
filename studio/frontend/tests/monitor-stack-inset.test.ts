@@ -317,7 +317,7 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
   const measure = source.slice(
     source.indexOf("const measure = () => {"),
-    source.indexOf("observer.observe(node)"),
+    source.indexOf("const observer = new ResizeObserver"),
   );
   assert.ok(measure, "the measure callback moved");
   assert.match(
@@ -433,4 +433,34 @@ test("no pairing produces an overlap or an unusable cap", () => {
       }
     }
   }
+});
+
+// Capped, the stack's own border box does not move when its content grows, so a root-only
+// ResizeObserver never fires for an image that finishes loading inside an expanded release
+// note. The child list does not change either, so neither observer speaks and the stack
+// keeps the pre-load height and stays clipped.
+test("every box inside the stack is observed, not just the stack", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const wiring = source.slice(source.indexOf("const observer = new ResizeObserver"));
+  assert.ok(
+    !/observer\.observe\(node\)/.test(wiring),
+    "the root alone is observed, so an intrinsic descendant resize is missed",
+  );
+  assert.match(
+    wiring,
+    /querySelectorAll\("\*"\)/,
+    "the descendants are never enumerated, so none of them is observed",
+  );
+  // A subtree that changes has to be re-observed, or a banner that arrives after mount is
+  // watched only until its first paint.
+  const onMutation = wiring.slice(wiring.indexOf("new MutationObserver"));
+  assert.match(onMutation, /syncObserved\(\)/, "the observed set is not resynced");
+  // And unobserved on the way out, or a detached node keeps the observer alive.
+  assert.match(wiring, /observer\.unobserve\(/, "nothing is ever unobserved");
 });
