@@ -6,6 +6,8 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
+import { timeoutSignal } from "@/features/hub/lib/abort-signals";
+// eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
@@ -42,6 +44,9 @@ import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
+
+// bounds the request itself so a wedged socket cannot stall every reader waiting on the write
+const THREAD_WRITE_TIMEOUT_MS = 30_000;
 
 /**
 * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
@@ -733,6 +738,7 @@ export async function saveChatThread(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
+    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   if (response.status === 410) {
     const body = await response.json().catch(() => null);
@@ -768,6 +774,7 @@ export async function updateChatThread(
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
@@ -820,6 +827,7 @@ export async function deleteChatThreads(threadIds: string[]): Promise<void> {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: threadIds }),
+    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   await parseJsonOrThrow<unknown>(response);
   notifyChatHistoryUpdated();
@@ -976,6 +984,7 @@ export async function syncChatMessages(
         messages,
         pruneMissing: options.pruneMissing ?? false,
       }),
+      signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
     },
   );
   const data = await parseJsonOrThrow<{ messages: MessageRecord[] }>(response);
@@ -1003,6 +1012,7 @@ export async function clearBackendChats(
       ids: options.tombstoneThreadIds ?? [],
       operationId: options.operationId,
     }),
+    signal: timeoutSignal(THREAD_WRITE_TIMEOUT_MS),
   });
   const data = await parseJsonOrThrow<{ deletedThreadIds: string[] }>(response);
   if (options.notify !== false) {

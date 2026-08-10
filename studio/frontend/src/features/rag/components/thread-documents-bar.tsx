@@ -75,10 +75,7 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
-  const initPromiseRef = useRef<{
-    threadId: string | null;
-    promise: Promise<string | null>;
-  } | null>(null);
+  const initPromiseRef = useRef<Promise<string | null> | null>(null);
   const initGenerationRef = useRef(0);
   useEffect(() => {
     if (threadId) {
@@ -116,35 +113,32 @@ export function ThreadDocumentsBar({
   // Materialize the thread id on first use; ref-deduped so a double-click can't
   // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    const requestedThreadId = effectiveThreadId;
+    // an id the component already holds came from a thread that exists, so it needs no round-trip
+    if (effectiveThreadId) {
+      return Promise.resolve(effectiveThreadId);
+    }
     const current = initPromiseRef.current;
-    if (current?.threadId === requestedThreadId) {
-      return current.promise;
+    if (current) {
+      return current;
     }
     const clearGeneration = chatHistoryClearBoundary.capture();
-    const initialized = requestedThreadId
-      ? Promise.resolve({ remoteId: requestedThreadId })
-      : aui.threadListItem().initialize();
     const generation = ++initGenerationRef.current;
-    const pending = initialized
+    const pending = aui
+      .threadListItem()
+      .initialize()
       .then(async ({ remoteId }) => {
-        // Both a cached initialize() and activeThreadId can expose the id while its row write is
-        // still pending. Confirm the row these documents index against on every upload path.
+        // a cached initialize() resolves while the row write is still pending, so confirm the row
+        // these documents will be indexed against
         const needsStoredRow = !isThreadIncognito(remoteId);
         if (needsStoredRow && !(await ensureStoredChatThread(remoteId))) {
           throw new Error(`Thread ${remoteId} was not persisted`);
         }
-        // A clear that landed while the row write was in flight is deleting this thread, so
-        // indexing documents against it now would outlive the clear.
+        // a clear that landed while the row write was in flight is deleting this thread
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");
         }
-        // Only an unchanged fresh-chat request owns this local materialization state. An older
-        // request may still finish after the component has moved to another thread.
-        if (
-          requestedThreadId === null &&
-          initGenerationRef.current === generation
-        ) {
+        // an older request can still finish after the component moved to another thread
+        if (initGenerationRef.current === generation) {
           setMaterializedId(remoteId);
         }
         return remoteId;
@@ -153,10 +147,9 @@ export function ThreadDocumentsBar({
         toast.error("Couldn't start a chat for these documents");
         return null;
       });
-    const entry = { threadId: requestedThreadId, promise: pending };
-    initPromiseRef.current = entry;
+    initPromiseRef.current = pending;
     const clear = () => {
-      if (initPromiseRef.current === entry) {
+      if (initPromiseRef.current === pending) {
         initPromiseRef.current = null;
       }
     };

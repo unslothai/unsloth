@@ -911,12 +911,17 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
+# route handlers run in Starlette's threadpool, so BEGIN IMMEDIATE writers now contend; sqlite's
+# 5 second default expires under a large clear and escapes as an unmapped 500
+_BUSY_TIMEOUT_SECONDS = 30.0
+
+
 def get_connection() -> sqlite3.Connection:
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1910,12 +1915,13 @@ def clear_chat_history_with_active_research_runs(
                 )
         _ensure_chat_attachment_inventory_current(conn)
         active_research_run_ids = _active_research_run_ids(conn)
-        thread_ids = set(additional_thread_ids)
-        thread_ids.update(
+        deleted_thread_ids = sorted(
             row["id"] for row in conn.execute("SELECT id FROM chat_threads").fetchall()
         )
-        deleted_thread_ids = sorted(thread_ids)
-        _tombstone_chat_threads(conn, deleted_thread_ids)
+        # the caller's ids are fenced too, but only rows that existed here were actually deleted
+        _tombstone_chat_threads(
+            conn, sorted(set(additional_thread_ids) | set(deleted_thread_ids))
+        )
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)

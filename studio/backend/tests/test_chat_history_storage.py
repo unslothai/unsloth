@@ -336,6 +336,20 @@ def test_clear_blocks_a_stale_recreate_of_a_deleted_thread(tmp_path, monkeypatch
     assert studio_db.get_chat_thread("pending-thread") is None
 
 
+def test_clear_reports_only_threads_that_had_a_row(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("thread-1"))
+
+    _, deleted_ids = studio_db.clear_chat_history_with_active_research_runs(
+        ["never-committed"]
+    )
+
+    # the fenced id is still tombstoned, but reporting it would inflate the cleared count
+    assert deleted_ids == ["thread-1"]
+    with pytest.raises(studio_db.ChatThreadDeletedError):
+        studio_db.upsert_chat_thread(_thread("never-committed"))
+
+
 def test_repeated_clear_operation_does_not_delete_later_threads(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("before-clear"))

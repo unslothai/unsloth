@@ -1419,14 +1419,9 @@ function useStudioRuntimeAdapters(
             await deleteStoredChatThreads([remoteId]);
             return;
           }
-          // Point reads, issued together: the model run waits on this write.
-          const [thread, existingMessage] = await Promise.all([
-            getStoredChatThread(remoteId),
-            getStoredChatMessage(remoteId, message.id),
-          ]);
-          await throwIfHistoryWasCleared(remoteId);
-          // Publish the id only after the point read confirms this row and its captured ownership.
-          if (thread?.modelType === "base" && !thread.pairId) {
+          // published before the reads below: a temporary chat has no row to confirm, and a read
+          // that fails must not leave the runtime pointing at the previously open chat
+          if (modelType === "base" && !pairId) {
             const store = useChatRuntimeStore.getState();
             const visibleThreadId = aui.threads().getState().mainThreadId;
             if (
@@ -1437,6 +1432,12 @@ function useStudioRuntimeAdapters(
               store.setActiveThreadId(remoteId);
             }
           }
+          // Point reads, issued together: the model run waits on this write.
+          const [thread, existingMessage] = await Promise.all([
+            getStoredChatThread(remoteId),
+            getStoredChatMessage(remoteId, message.id),
+          ]);
+          await throwIfHistoryWasCleared(remoteId);
           const content = cloneContent(message.content);
           const attachments =
             message.role === "user" ? cloneAttachments(message.attachments) : [];
