@@ -4,11 +4,16 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
   DocumentUploadResult,
+  FolderSyncJob,
+  FolderSyncJobEvent,
   IndexJob,
   JobEvent,
   KnowledgeBase,
+  LinkedFolder,
+  LinkedFolderScope,
   PreviewTarget,
   RagDocument,
   UploadedDocument,
@@ -218,6 +223,75 @@ export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
 }
 
+export async function listLinkedFolders(
+  scope?: LinkedFolderScope,
+): Promise<LinkedFolder[]> {
+  const query = scope
+    ? `?scope_type=${encodeURIComponent(scope.type)}&scope_id=${encodeURIComponent(scope.id)}`
+    : "";
+  const data = await ragRequest<{ linkedFolders: LinkedFolder[] }>(
+    `/linked-folders${query}`,
+  );
+  return data.linkedFolders ?? [];
+}
+
+interface LinkedFolderMutationResult {
+  linkedFolder: LinkedFolder;
+  job: FolderSyncJob;
+}
+
+export function createLinkedFolder(
+  scope: LinkedFolderScope,
+  nativePathLease: string,
+  displayName: string,
+): Promise<LinkedFolderMutationResult> {
+  const parent =
+    scope.type === "knowledge_base" ? "knowledge-bases" : "projects";
+  return ragRequest(
+    `/${parent}/${encodeURIComponent(scope.id)}/linked-folders`,
+    {
+      method: "POST",
+      body: { nativePathLease, displayName },
+    },
+  );
+}
+
+export function deleteLinkedFolder(
+  linkedFolderId: string,
+  removeIndex: boolean,
+): Promise<{ ok: boolean }> {
+  return ragRequest(
+    `/linked-folders/${encodeURIComponent(linkedFolderId)}?remove_index=${removeIndex}`,
+    { method: "DELETE" },
+  );
+}
+
+function startLinkedFolderJob(
+  linkedFolderId: string,
+  action: "sync" | "rebuild",
+): Promise<{ job: FolderSyncJob }> {
+  return ragRequest(
+    `/linked-folders/${encodeURIComponent(linkedFolderId)}/${action}`,
+    { method: "POST" },
+  );
+}
+
+export function syncLinkedFolder(
+  linkedFolderId: string,
+): Promise<{ job: FolderSyncJob }> {
+  return startLinkedFolderJob(linkedFolderId, "sync");
+}
+
+export function rebuildLinkedFolder(
+  linkedFolderId: string,
+): Promise<{ job: FolderSyncJob }> {
+  return startLinkedFolderJob(linkedFolderId, "rebuild");
+}
+
+export function getFolderSyncJob(jobId: string): Promise<FolderSyncJob> {
+  return ragRequest(`/linked-folder-jobs/${encodeURIComponent(jobId)}`);
+}
+
 export async function listAllDocuments(): Promise<UploadedDocument[]> {
   const data = await ragRequest<{ documents: UploadedDocument[] }>(
     "/documents",
@@ -243,64 +317,46 @@ export function getJob(jobId: string): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-// SSE; returns on [DONE]. Transport errors propagate so callers can poll getJob.
-export async function* streamJobEvents(
-  jobId: string,
-  signal?: AbortSignal,
-): AsyncGenerator<JobEvent> {
-  const response = await authFetch(
-    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
-    signal ? { signal } : undefined,
-  );
+/** Longest gap between frames before a stream is treated as buffered by a proxy. */
+const SSE_STALL_MS = 12000;
+
+async function openEventStream(
+  url: string,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await authFetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    // Also gated on the extension, and also not routed through ragRequest.
+    // also gated on the extension, and also not routed through ragRequest
     noteRagResponse(response.status, body);
     throw new Error(parseErrorText(response.status, body));
   }
   if (!response.body) throw new Error("Stream response missing body");
+  return response.body;
+}
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+// sse; returns on [DONE]. transport errors propagate so callers can poll getJob
+export async function* streamJobEvents(
+  jobId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<JobEvent> {
+  // no stall bound: this consumer reads an early end as a finished job
+  const body = await openEventStream(
+    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
+    signal,
+  );
+  yield* readSseJsonEvents<JobEvent>(body);
+}
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
-
-        const dataLines: string[] = [];
-        for (const line of rawEvent.split(/\r?\n/)) {
-          if (line.startsWith("data:"))
-            dataLines.push(line.slice(5).trimStart());
-        }
-        if (dataLines.length > 0) {
-          const dataText = dataLines.join("\n");
-          if (dataText === "[DONE]") return;
-          try {
-            yield JSON.parse(dataText) as JobEvent;
-          } catch {
-            // Ignore unparseable frames; [DONE] still ends the loop.
-          }
-        }
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-      }
-    }
-  } finally {
-    // Release the stream lock now instead of leaking the reader until GC.
-    try {
-      await reader.cancel();
-    } catch {
-      // already closed
-    }
-  }
+export async function* streamFolderSyncJobEvents(
+  jobId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<FolderSyncJobEvent> {
+  const body = await openEventStream(
+    `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
+    signal,
+  );
+  yield* readSseJsonEvents<FolderSyncJobEvent>(body, SSE_STALL_MS);
 }
 
 export function getPreviewTarget(

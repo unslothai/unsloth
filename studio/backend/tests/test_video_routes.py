@@ -122,7 +122,8 @@ class _FakeBackend(video_module.VideoBackend):
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
         # Non-GGUF loads are gated to unsloth/* repos, the official bases, and existing local paths.
-        trusted = model_path.lower().startswith(("unsloth/", "lightricks/")) or (
+        # minimaxai/: the real gate trusts MiniMaxAI/MiniMax-H3 as an official family base repo.
+        trusted = model_path.lower().startswith(("unsloth/", "lightricks/", "minimaxai/")) or (
             Path(model_path).expanduser().exists()
         )
         if kind != "gguf" and not trusted:
@@ -1263,6 +1264,59 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
     assert seen["h3_task"] == "ref2va"
 
 
+def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
+    # The plan route asks the same (scheme, PARTITION) question the load does, so a pick it
+    # answers 200 is one the load will honour. Both halves matter and they are one test because
+    # either alone passes for the wrong reason: refusing everything, or accepting everything.
+    #
+    # ref2va now has its own hosted int8 and fp8 denoisers, so the reference partition is a real
+    # pick rather than a keyframe checkpoint wearing the wrong name. A scheme with no checkpoint
+    # at all is still refused BEFORE staging, which is the failure this route check was added for
+    # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    def _ask(scheme):
+        return client.post(
+            "/api/inference/video/download-plan",
+            json = {
+                "model_path": "MiniMaxAI/MiniMax-H3",
+                "family_override": "minimax-h3",
+                "model_kind": "pipeline",
+                "transformer_quant": scheme,
+                "h3_task": "ref2va",
+            },
+        )
+
+    served = _ask("int8")
+    assert served.status_code == 200, served.json()
+    # Planned for the partition that was asked for, not the keyframe one it used to fall back to.
+    assert seen["h3_task"] == "ref2va"
+    assert seen["transformer_quant"] == "int8"
+
+    seen.clear()
+    refused = _ask("nvfp4")
+    assert refused.status_code == 400
+    detail = refused.json()["detail"]
+    # Named per task: "unavailable" here is a claim about ref2va, not about the whole family.
+    assert "ref2va" in detail
+    # A refusal that does not name the alternative just moves the dead end earlier.
+    assert "int8" in detail and "fp8" in detail
+    assert not seen, "download_plan must not be reached for a refused pick"
+
+
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
     # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
     # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
@@ -1327,11 +1381,15 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
-    # One of the quant-keyed refusals is task-keyed: the hosted pre-quantized H3 checkpoints are
-    # fl2va denoisers, so a quantized ref2va would seed the wrong partition. Validation only sees
-    # that when the route forwards h3_task, and this is the route that stages the download -- so
-    # without it the plan pulls the 66 GB dense transformer_ref/ AND the incompatible fl2va quant
-    # before /video/load rejects the identical request.
+    # One of the quant-keyed refusals is task-keyed: a pre-quantized H3 denoiser belongs to ONE
+    # partition, so a scheme whose only artifact is the keyframe one must not be seeded into the
+    # reference workflow. Validation only sees the task when the route forwards h3_task, and this
+    # is the route that stages the download -- so without it the plan pulls the 66 GB dense
+    # transformer_ref/ AND the wrong-partition quant before /video/load rejects the same request.
+    # nvfp4 stands in for that pair here: int8 and fp8 both ship a reference artifact now, so
+    # neither is refused any more (test_a_quantized_reference_load_resolves_the_reference_denoiser
+    # in test_video_backend.py pins that), and the per-scheme table in test_video_prequant.py
+    # covers a family where the pair itself is missing.
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
         backend,
@@ -1351,16 +1409,16 @@ def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypa
         json = {
             "model_path": "MiniMaxAI/MiniMax-H3",
             "model_kind": "pipeline",
-            "transformer_quant": "fp8",
+            "transformer_quant": "nvfp4",
             "h3_task": "ref2va",
         },
     )
 
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert "fp8" in detail
+    assert "nvfp4" in detail
     # Naming the way out, not just the dead end.
-    assert "keyframe" in detail
+    assert "int8" in detail and "fp8" in detail
 
 
 def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch):

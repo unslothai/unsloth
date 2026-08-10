@@ -33,6 +33,8 @@ import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
     _GATED_MIRROR_PAIRS,
+    _MIRROR_PAIRS,
+    _UNGATED_MIRROR_PAIRS,
     assert_flux2_gguf_matches_base,
     canonical_base,
     detect_family,
@@ -43,6 +45,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_companion_only_repo_ids,
     supported_family_names,
+    upstream_is_gated,
 )
 
 
@@ -177,8 +180,8 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_GATED_MIRROR_PAIRS) == 24
-    for upstream, mirror in _GATED_MIRROR_PAIRS:
+    assert len(_MIRROR_PAIRS) == 24
+    for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
         # Case-insensitive in, since a card tag may carry any casing.
@@ -191,6 +194,28 @@ def test_gated_mirror_table_round_trips():
     assert canonical_base(hunyuan) == hunyuan
 
 
+def test_only_the_genuinely_gated_half_reads_as_gated():
+    """Redirecting a fetch and needing credentials are different questions.
+
+    Most of the table is mirrored to keep the fetch inside ``unsloth/*``, not to route around a
+    gate, and callers that override a user's cache must key on the gate rather than on "a mirror
+    exists". Klein base-4B is the one that makes this concrete: a default trainable base, which
+    is mirrored, and which the Hub serves anonymously.
+    """
+    assert len(_GATED_MIRROR_PAIRS) == 12
+    assert len(_UNGATED_MIRROR_PAIRS) == 12
+    for upstream, _mirror in _GATED_MIRROR_PAIRS:
+        assert upstream_is_gated(upstream), upstream
+        assert upstream_is_gated(upstream.upper()), upstream
+    for upstream, _mirror in _UNGATED_MIRROR_PAIRS:
+        assert not upstream_is_gated(upstream), upstream
+    assert mirror_repo("black-forest-labs/FLUX.2-klein-base-4B")
+    assert not upstream_is_gated("black-forest-labs/FLUX.2-klein-base-4B")
+    # A repo outside the table entirely is not gated either.
+    assert not upstream_is_gated("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
+    assert not upstream_is_gated(None)
+
+
 def test_no_mirror_is_a_companion_only_repo():
     """A mirror substitutes for the WHOLE base, so it must never be a components-only repo.
 
@@ -199,7 +224,7 @@ def test_no_mirror_is_a_companion_only_repo():
     missing-weights error. The companion-only set is exactly that list of repos.
     """
     companions = sd_cpp_companion_only_repo_ids()
-    for _upstream, mirror in _GATED_MIRROR_PAIRS:
+    for _upstream, mirror in _MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
 
 
@@ -222,7 +247,7 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         "export const VIDEO_CATALOG", 1
     )[0]
     offered = set(re.findall(r'bf16Pipeline\(\s*"([^"]+)"', images))
-    mirrored = {u.lower() for u, _m in _GATED_MIRROR_PAIRS}
+    mirrored = {u.lower() for u, _m in _MIRROR_PAIRS}
     # Anything under unsloth/ is already ours, and the deliberate Hunyuan exception is recorded
     # beside the table with the territorial reason it cannot be mirrored.
     missing = sorted(
@@ -254,7 +279,7 @@ def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
 
 def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
     _no_cache(monkeypatch)
-    for upstream, mirror in _GATED_MIRROR_PAIRS:
+    for upstream, mirror in _MIRROR_PAIRS:
         assert prefer_ungated_mirror(upstream) == mirror
     # A base outside the table is untouched.
     hunyuan = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
+// eslint-disable-next-line no-restricted-imports
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
@@ -12,6 +13,7 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -43,10 +45,26 @@ import { assertCompletedPaddedBody } from "./padded-response";
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
+// bounds the request itself so a wedged socket cannot stall every reader waiting on the write
+const THREAD_WRITE_TIMEOUT_MS = 30_000;
+
+/** authFetch under a disposed timeout, so the ponyfill path leaves no timer behind. */
+async function threadWriteFetch(
+  input: string,
+  init: RequestInit,
+): Promise<Response> {
+  const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  try {
+    return await authFetch(input, { ...init, signal: timeout.signal });
+  } finally {
+    timeout.dispose();
+  }
+}
+
 /**
-* Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
-* chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
-*/
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+ * chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
+ */
 export class StreamInterruptedError extends Error {
   constructor() {
     super(
@@ -58,9 +76,9 @@ export class StreamInterruptedError extends Error {
 }
 
 /**
-* Thrown when a reasoning model consumes its output budget before emitting any standard
-* content, so the chat UI can explain a completed stream holding only a thinking panel.
-*/
+ * Thrown when a reasoning model consumes its output budget before emitting any standard
+ * content, so the chat UI can explain a completed stream holding only a thinking panel.
+ */
 export class GenerationLengthError extends Error {
   constructor() {
     super(
@@ -89,24 +107,32 @@ function parseErrorText(status: number, body: unknown): string {
 }
 
 /**
-* `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
-* which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
-*/
-function deferredError(body: unknown): { status: number; message: string } | null {
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+ * which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
+ */
+function deferredError(
+  body: unknown,
+): { status: number; message: string } | null {
   const deferred =
     body && typeof body === "object"
-      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
-          ._deferred_error
+      ? (
+          body as {
+            _deferred_error?: { status_code?: unknown; detail?: unknown };
+          }
+        )._deferred_error
       : undefined;
   if (!deferred || typeof deferred !== "object") return null;
   const status =
     typeof deferred.status_code === "number" ? deferred.status_code : 500;
-  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+  return {
+    status,
+    message: parseErrorText(status, { detail: deferred.detail }),
+  };
 }
 
 /**
-* `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
-* since a truncated body means unfinished there but is legitimate elsewhere. */
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+ * since a truncated body means unfinished there but is legitimate elsewhere. */
 async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
@@ -178,9 +204,9 @@ export interface ActiveGenerationsResponse {
 }
 
 /**
-* Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
-* that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
-*/
+ * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
+ */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
@@ -277,11 +303,11 @@ export async function validateModel(
 }
 
 /**
-* Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
-* its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
-* GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
-* deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
-*/
+ * Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
+ * its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
+ * GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
+ * deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
+ */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
@@ -345,10 +371,10 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 }
 
 /**
-* Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
-* ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
-* ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
-*/
+ * Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
+ * ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
+ * ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
+ */
 export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
@@ -423,8 +449,8 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   /**
-  * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
-  * nothing has been written to the cache for this repo. */
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
+   * nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
@@ -450,8 +476,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-  * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
-  * healthy, or null when no load is in flight. */
+   * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
+   * healthy, or null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
@@ -459,11 +485,11 @@ export interface LoadProgressResponse {
 }
 
 /**
-* Fetch the active GGUF load's mmap/upload progress. Complements the download progress
-* endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
-*/
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download progress
+ * endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
+ */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
-  const response = await authFetch(`/api/inference/load-progress`);
+  const response = await authFetch("/api/inference/load-progress");
   return parseJsonOrThrow(response);
 }
 
@@ -711,22 +737,44 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
+  options: { bounded?: boolean } = {},
 ): Promise<ThreadRecord | null> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}`,
-  );
-  if (response.status === 404) return null;
-  return parseJsonOrThrow<ThreadRecord>(response);
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
+  // the write timeout exists to keep moving. Callers on a render path stay unbounded.
+  const timeout = options.bounded
+    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      timeout ? { signal: timeout.signal } : undefined,
+    );
+    if (response.status === 404) return null;
+    return parseJsonOrThrow<ThreadRecord>(response);
+  } finally {
+    timeout?.dispose();
+  }
+}
+
+export class ChatThreadDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatThreadDeletedError";
+  }
 }
 
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
   });
+  if (response.status === 410) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+  }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
   return savedThread;
@@ -751,7 +799,7 @@ export async function updateChatThread(
   if (options.expectedOpeningMessageId !== undefined) {
     body.expectedOpeningMessageId = options.expectedOpeningMessageId;
   }
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
@@ -809,7 +857,7 @@ export async function deleteChatThreads(
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
   if (threadIds.length === 0) return [];
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
@@ -904,8 +952,8 @@ export async function listChatMessages(
 }
 
 /**
-* Fetch messages for many threads in one HTTP call. Falls back to per-thread
-* listChatMessages on 404/405 (older servers without the batch route). */
+ * Fetch messages for many threads in one HTTP call. Falls back to per-thread
+ * listChatMessages on 404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {
@@ -965,7 +1013,7 @@ export async function syncChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
@@ -989,17 +1037,39 @@ export async function countBackendChats(): Promise<number> {
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
-  options: { notify?: boolean; deleteFiles?: boolean } = {},
-): Promise<string[]> {
-  const response = await authFetch(
+  options: {
+    notify?: boolean;
+    operationId?: string;
+    tombstoneThreadIds?: string[];
+    deleteFiles?: boolean;
+  } = {},
+): Promise<{ deletedThreadIds: string[]; sandboxesKept: string[] }> {
+  const response = await threadWriteFetch(
     `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
-    { method: "DELETE" },
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: options.tombstoneThreadIds ?? [],
+        operationId: options.operationId,
+      }),
+    },
   );
-  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
+  const data = await parseJsonOrThrow<{
+    deletedThreadIds?: string[];
+    sandboxes_kept?: string[];
+  }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
-  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
+  return {
+    deletedThreadIds: Array.isArray(data?.deletedThreadIds)
+      ? data.deletedThreadIds
+      : [],
+    sandboxesKept: Array.isArray(data?.sandboxes_kept)
+      ? data.sandboxes_kept
+      : [],
+  };
 }
 
 export async function buildBackendChatExport(): Promise<{

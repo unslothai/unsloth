@@ -37,6 +37,12 @@ def _step(workflow, job, name):
     return _steps(workflow, job)[_step_index(workflow, job, name)]
 
 
+def test_windows_release_build_restores_but_does_not_save_rust_cache():
+    cache = _step(_workflow(), "build", "Rust cache")
+    assert cache["with"]["workspaces"] == "studio/src-tauri -> target"
+    assert cache["with"]["save-if"] == "${{ matrix.platform != 'windows-latest' }}"
+
+
 def _write_fake_gh(path: Path):
     """Record gh arguments and return configured statuses."""
     path.write_text(
@@ -191,23 +197,21 @@ def _run_create_release(
     }
     env.update(kwargs.pop("extra_env", None) or {})
 
-    # Execute the production publish sequence in one shell so the notes,
-    # metadata and provenance files cross the same step boundaries as Actions.
+    # Execute the production publish sequence in one shell so the notes and
+    # metadata files cross the same step boundaries as Actions.
     names = (
         "Validate versioned release state",
-        "Generate versioned updater metadata and provenance",
-        "Record desktop build provenance on the release",
+        "Generate versioned updater metadata",
     )
-    create_step = _step(
-        workflow, "publish-release", "Record desktop build provenance on the release"
-    )
+    host = "Generate versioned updater metadata"
+    create_step = _step(workflow, "publish-release", host)
     create_step["run"] = "\n".join(
         _step(workflow, "publish-release", name)["run"] for name in names
     )
     return _run_step(
         workflow,
         "publish-release",
-        "Record desktop build provenance on the release",
+        host,
         tmp_path,
         extra_env = env,
         **kwargs,
@@ -317,37 +321,31 @@ def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
-def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path):
+def test_the_publish_sequence_never_rewrites_the_release_body(tmp_path):
     workflow = _workflow()
-    digests = _stage_assets(tmp_path)
     result, commands = _run_create_release(workflow, tmp_path)
     assert result.returncode == 0, result.stderr
 
     # The release already exists, so nothing is created and no tag is reserved.
     assert not [line for line in commands if line.startswith("gh release create")]
     assert not [line for line in commands if "git/refs" in line]
-    assert any(line.startswith("gh release edit") for line in commands)
+    # The body is the maintainer's changelog. Assets are uploaded beside it and
+    # the notes are never edited, so nothing this workflow does can clobber it.
+    assert not [line for line in commands if line.startswith("gh release edit")]
+    assert not (tmp_path / "desktop-release-body.md").exists()
 
-    body_file = tmp_path / "desktop-release-body.md"
-    body = body_file.read_text(encoding = "utf-8")
-    assert SOURCE_SHA in body
-    for name, digest in digests.items():
-        assert f"{digest}  {name}" in body
     latest = tmp_path / "latest.json"
+    assert latest.is_file()
     metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
     for platform in metadata["platforms"].values():
         decoded = base64.b64decode(platform["signature"], validate = True)
         assert decoded.startswith(b"untrusted comment:")
         assert b"\ntrusted comment:" in decoded
-    assert latest.is_file()
-    assert f"{hashlib.sha256(latest.read_bytes()).hexdigest()}  latest.json" in body
-    assert ".sig" not in body
 
-    # Keep digests out of updater notes, and out of the changelog we append to.
+    # The updater popup shows the maintainer notes, never build metadata.
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
-    assert "Desktop app for Unsloth." not in body
 
 
 def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
@@ -383,14 +381,14 @@ def test_a_validation_only_run_touches_nothing_public():
     mutating = (
         "Publish versioned release assets",
         "Publish versioned updater metadata",
-        "Record desktop build provenance on the release",
         "Promote normal release to GitHub latest",
     )
     for name in mutating:
         step = steps[names.index(name)]
         assert step.get("if") == "${{ !inputs.draft }}", name
 
-    # Provenance last, so a retry after a partial upload records what shipped.
+    # Promotion last, so latest only moves once the assets are actually on the
+    # release and a partial upload cannot leave latest pointing at an empty one.
     for upload in mutating[:2]:
         assert names.index(upload) < names.index(mutating[2])
 

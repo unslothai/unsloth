@@ -146,6 +146,7 @@ import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { videoNavHint } from "@/config/hardware-verdict";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -617,8 +618,8 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
-  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -629,22 +630,21 @@ export function AppSidebar() {
   const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train."
+      ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
+        // backtrack leaves a stack that is present but unusable. Naming the package
+        // that is missing, too old, or refusing to import is what makes this
+        // actionable to someone whose `unsloth studio update` has already run.
+        chatOnlyDetail
+        ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
+        : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
-  // Video's hint is derived the same way. It used to be hardcoded to "needs an NVIDIA or AMD
-  // GPU", which is wrong on an Apple Silicon host: video has no Apple path at all, so the row
-  // says so rather than pointing at hardware the user cannot add.
-  const videoDisabledHint: string | undefined = !chatOnlyMeasured
-    ? undefined
-    : platformDeviceType === "mac"
-      ? "Video generation on macOS is coming soon."
-      : chatOnlyReason === "no_gpu"
-        ? "Video generation needs an NVIDIA or AMD GPU."
-        : undefined;
+  // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health. The backend MLX self-heal
   // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
@@ -659,7 +659,8 @@ export function AppSidebar() {
     // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
     // and /studio would hold its loading panel for the rest of the session. This is the only
     // recovery poll in the app, and the sidebar is mounted on every route that gates on the
-    // verdict (studio-page and video-page read the same store, so they recover with it).
+    // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
+    // backend's video verdict instead and needs nothing from here).
     if (selfHealSettled && !capabilitiesUnknown) return;
     let pollingSince = 0;
     // Which read currently owns the guard. A read that outlived the stall window is replaced,
@@ -1116,12 +1117,12 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/studio" }));
       },
     },
-    // Video is diffusers-only, so a chat-only host cannot load it: disable with a hint instead of bouncing off the root guard.
+    // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
-      disabled: chatOnlyMeasured,
+      disabled: videoDisabled,
       tooltip: videoDisabledHint,
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.videoChecking"),
@@ -1898,7 +1899,7 @@ export function AppSidebar() {
                   className={cn(
                     // min-w-0 so a narrow sidebar truncates the wordmark instead of pushing the search icon over.
                     "flex min-w-0 items-center gap-[6px] select-none transition-opacity",
-                    chatDisabled && "pointer-events-none opacity-50",
+                    chatDisabled && "pointer-events-none",
                   )}
                   aria-label={t("shell.aria.home")}
                   aria-disabled={chatDisabled}

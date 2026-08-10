@@ -744,6 +744,10 @@ jobs:
         with:
           workspaces: 'studio/src-tauri -> target'
 
+          # Windows release builds can spend many minutes uploading the target cache
+          # after signed artifacts are ready, which blocks the publisher for no release benefit.
+          save-if: ${{ matrix.platform != 'windows-latest' }}
+
       # ── macOS: fail before the build if notarization cannot run ──
       - name: Check Apple notarization credentials
         if: matrix.platform == 'macos-latest'
@@ -1718,18 +1722,10 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Generate versioned updater metadata and provenance
+      - name: Generate versioned updater metadata
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The build checked out the tag, so provenance records the tag's commit
-          # rather than this job's dispatch-scoped GITHUB_SHA.
-          # commits/{tag} resolves annotated and lightweight tags alike, so this is
-          # the commit the build compiled, not an intermediate tag object.
-          RELEASE_TAG_SHA="$(gh api "repos/${GH_REPO}/commits/${DESKTOP_RELEASE_TAG}" --jq '.sha')"
-          export RELEASE_TAG_SHA
           python3 <<'PY'
           import base64
           import binascii
@@ -1795,31 +1791,9 @@ jobs:
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
 
-          # Keep provenance out of the notes displayed in the updater popup. This is
-          # appended to the existing release body, so it carries no copy of the notes.
-          body_file="$RUNNER_TEMP/desktop-release-body.md"
-          {
-            printf '### Desktop build provenance\n\n'
-            printf 'Source commit: %s\n\n' "$RELEASE_TAG_SHA"
-            printf 'Asset SHA-256:\n\n```\n'
-            (
-              cd "$RUNNER_TEMP/desktop-release-assets"
-              for asset in *; do
-                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
-              done
-            )
-            (
-              cd "$RUNNER_TEMP"
-              sha256sum -- latest.json
-            )
-            printf '```\n'
-          } > "$body_file"
-          cat "$body_file"
-
-      # The release body is the maintainer's changelog, so provenance is appended
-      # rather than replacing it.
-      # The target release is already public, so a validation-only run must not
-      # upload to it.
+      # The release body is the maintainer's changelog and this workflow never
+      # rewrites it. The target release is already public, so a validation-only
+      # run must not upload to it.
       - name: Publish versioned release assets
         if: ${{ !inputs.draft }}
         shell: bash
@@ -1844,30 +1818,6 @@ jobs:
           # --clobber only for latest.json: it may already hold an older version's
           # pointer. The bundles above are still uploaded without it.
           gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
-
-      # After the uploads, so a retry that follows a partial upload records the
-      # digests actually published. Any earlier section is replaced, never kept.
-      - name: Record desktop build provenance on the release
-        if: ${{ !inputs.draft }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          current="$RUNNER_TEMP/current-release-body.md"
-          merged="$RUNNER_TEMP/merged-release-body.md"
-          gh release view "$DESKTOP_RELEASE_TAG" --json body --jq '.body // ""' > "$current"
-          python3 - "$current" "$RUNNER_TEMP/desktop-release-body.md" "$merged" <<'PY'
-          import pathlib
-          import sys
-
-          heading = '### Desktop build provenance'
-          current, provenance, merged = (pathlib.Path(p) for p in sys.argv[1:4])
-          body = current.read_text(encoding = 'utf-8')
-          body = body.split(heading, 1)[0].rstrip()
-          merged.write_text(f'{body}\n\n{provenance.read_text(encoding = "utf-8")}', encoding = 'utf-8')
-          PY
-          gh release edit "$DESKTOP_RELEASE_TAG" --notes-file "$merged"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}

@@ -422,6 +422,11 @@ def gguf_variant_key(filename: str) -> str:
     quant = quant_token_with_bpw(path)
     if quant is None:
         return _unknown_gguf_variant_key(path)
+    # MiniMax H3 bundles two denoiser partitions, and may publish both full and pruned
+    # builds at one quant. Each file is a different loadable checkpoint, so the bare
+    # quant cannot identify the row, download state, or file the loader should open.
+    if path.rsplit("/", 1)[-1].lower().startswith(_H3_DENOISER_PARTITIONS):
+        return _unknown_gguf_variant_key(path)
     parents = path.rpartition("/")[0]
     if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
         return _unknown_gguf_variant_key(path)
@@ -467,6 +472,16 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
         scopes[scope] = scopes.get(scope, 0) + 1
     for variant in variants:
         token = extract_quant_token(variant.filename)
+        h3_name = Path(variant.filename).name.lower()
+        h3_partition = next(
+            (partition for partition in _H3_DENOISER_PARTITIONS if h3_name.startswith(partition)),
+            None,
+        )
+        if h3_partition is not None:
+            task = "References" if h3_partition.endswith("ref2va") else "Text & frames"
+            build = "Pruned" if "_pruned-" in h3_name else "Full"
+            variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
+            continue
         if token is None:
             variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
         elif variant.quant.lower() != (_plain_key(variant) or "").lower():

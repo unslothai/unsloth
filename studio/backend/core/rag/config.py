@@ -29,6 +29,13 @@ UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # + vision work at ingest. 0 disables the cap. Default 200 MB.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
+# Linked folders use periodic full reconciliation. Metadata-only comparisons keep
+# unchanged passes cheap; caps prevent an accidentally broad folder from becoming
+# an unbounded ingestion queue.
+FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
+FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
+FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
+
 # Extract PDF text as layout-aware Markdown (pymupdf4llm) instead of flat text, so
 # tables, headings and lists survive into chunks and retrieval. Falls back to plain
 # PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.

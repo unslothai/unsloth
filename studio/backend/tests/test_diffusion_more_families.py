@@ -84,6 +84,12 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
+    for size in ("4B", "9B"):
+        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
+        assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
+
+
 # ── z-image: the undistilled base ────────────────────────────────────────────
 def test_zimage_base_is_trusted_so_the_gguf_keeps_its_companion_base():
     # unsloth/Z-Image-GGUF carries base_model: Tongyi-MAI/Z-Image, and _resolve_base_repo drops a

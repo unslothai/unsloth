@@ -2407,6 +2407,8 @@ def _gguf_variant_key(filename: str) -> str:
     quant = _quant_token_with_bpw(path)
     if quant is None:
         return _gguf_variant_family(path)
+    if path.rsplit("/", 1)[-1].lower().startswith(("minimax_h3_fl2va", "minimax_h3_ref2va")):
+        return _gguf_variant_family(path)
     for segment in path.rpartition("/")[0].split("/"):
         # A quant-named directory adds nothing the basename does not already say; a
         # directory naming something else is a different checkpoint and qualifies.
@@ -3397,6 +3399,35 @@ def get_base_model_from_lora_identifier(
 UI_STATUS_INDICATORS = [" (Ready)", " (Loading...)", " (Active)", "↓ "]
 
 
+# Which model defaults have already been announced. GET /api/inference/status is
+# polled every 5s for as long as a tab is open and resolves the defaults on every
+# poll, so without this the same "Loaded ... defaults from <path>" line repeats
+# forever. The first resolution of each (model, path) still logs at info; repeats
+# drop to debug, so --verbose and UNSLOTH_STUDIO_LOG_LEVEL=debug still show every
+# one. Bounded so a long-lived server with many models cannot grow it without end.
+_ANNOUNCED_MODEL_DEFAULTS: set = set()
+_ANNOUNCED_MODEL_DEFAULTS_MAX = 4096
+# Two request threads can resolve the same unseen model at once, and a bare
+# check-then-add would let both decide they were first.
+_ANNOUNCED_MODEL_DEFAULTS_LOCK = threading.Lock()
+
+
+def _log_model_defaults(
+    message: str,
+    key: str,
+    level: str = "info",
+) -> None:
+    """Log `message` at `level` the first time `key` is seen, then at debug."""
+    with _ANNOUNCED_MODEL_DEFAULTS_LOCK:
+        if key in _ANNOUNCED_MODEL_DEFAULTS:
+            logger.debug(message)
+            return
+        if len(_ANNOUNCED_MODEL_DEFAULTS) >= _ANNOUNCED_MODEL_DEFAULTS_MAX:
+            _ANNOUNCED_MODEL_DEFAULTS.clear()
+        _ANNOUNCED_MODEL_DEFAULTS.add(key)
+    getattr(logger, level)(message)
+
+
 def load_model_defaults(model_name: str) -> Dict[str, Any]:
     """Load default training parameters for a model from a YAML file.
 
@@ -3418,7 +3449,10 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
-                        logger.info(f"Loaded model defaults from {config_path} (via mapping)")
+                        _log_model_defaults(
+                            f"Loaded model defaults from {config_path} (via mapping)",
+                            f"{model_name}|{config_path}|mapping",
+                        )
                         return config
 
         # For local paths (e.g. .../Spark-TTS-0.5B/LLM from adapter_config.json, or a Windows
@@ -3437,8 +3471,9 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
                             if config_path.is_file():
                                 with open(config_path, "r", encoding = "utf-8") as f:
                                     config = yaml.safe_load(f) or {}
-                                    logger.info(
-                                        f"Loaded model defaults from {config_path} (via path suffix '{suffix}')"
+                                    _log_model_defaults(
+                                        f"Loaded model defaults from {config_path} (via path suffix '{suffix}')",
+                                        f"{model_name}|{config_path}|suffix",
                                     )
                                     return config
 
@@ -3450,17 +3485,27 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
             if config_path.is_file():
                 with open(config_path, "r", encoding = "utf-8") as f:
                     config = yaml.safe_load(f) or {}
-                    logger.info(f"Loaded model defaults from {config_path}")
+                    _log_model_defaults(
+                        f"Loaded model defaults from {config_path}",
+                        f"{model_name}|{config_path}|exact",
+                    )
                     return config
 
         default_config_path = defaults_dir / "default.yaml"
         if default_config_path.exists():
             with open(default_config_path, "r", encoding = "utf-8") as f:
                 config = yaml.safe_load(f) or {}
-                logger.info(f"Loaded default model defaults from {default_config_path}")
+                _log_model_defaults(
+                    f"Loaded default model defaults from {default_config_path}",
+                    f"{model_name}|{default_config_path}|fallback",
+                )
                 return config
 
-        logger.warning(f"No default config found for model {model_name}")
+        _log_model_defaults(
+            f"No default config found for model {model_name}",
+            f"{model_name}|<missing>",
+            level = "warning",
+        )
         return {}
 
     except Exception as e:
