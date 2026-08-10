@@ -249,3 +249,36 @@ def test_a_non_curated_whisper_cache_row_cannot_chat():
     )
     assert fields["capabilities"]["can_chat"] is False
     assert fields["capabilities"]["supports_vision"] is False
+
+
+def test_a_wait_false_unload_rechecks_active_requests_under_the_lock():
+    """transcribe claims _active_requests while holding _lock, so a request starting between
+    the unlocked probe and the acquire would have llama-server killed underneath it."""
+    import threading
+
+    from core.inference.stt_mtmd_sidecar import MtmdSttSidecar
+
+    sidecar = MtmdSttSidecar.__new__(MtmdSttSidecar)
+    sidecar._lock = threading.RLock()
+    sidecar._active_requests = 0
+    sidecar._loading = False
+    sidecar.is_loading = lambda: False
+    sidecar.cancel_pending_load = lambda: False
+    sidecar.wait_for_load_to_settle = lambda: None
+    released = []
+    sidecar._release_locked = lambda: released.append(True)
+
+    # The racing transcription claims the slot after the unlocked probe has already passed.
+    real_lock = sidecar._lock
+
+    class _RacingLock:
+        def acquire(self, blocking = True, *args, **kwargs):
+            sidecar._active_requests = 1
+            return real_lock.acquire(blocking, *args, **kwargs)
+
+        def release(self):
+            return real_lock.release()
+
+    sidecar._lock = _RacingLock()
+    MtmdSttSidecar.unload(sidecar, wait = False)
+    assert released == []

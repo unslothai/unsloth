@@ -636,6 +636,11 @@ class MtmdSttSidecar:
         if not self._lock.acquire(blocking = wait):
             return
         try:
+            # Recheck under the lock. `transcribe` claims _active_requests while holding it,
+            # so a request starting between the probe above and this acquire would otherwise
+            # have llama-server killed underneath it and lose the recording.
+            if not wait and self._active_requests:
+                return
             self._release_locked()
         finally:
             self._lock.release()

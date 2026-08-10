@@ -127,3 +127,31 @@ def test_a_detected_codec_is_definitive(monkeypatch):
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, snac)])
     assert audio_type == "snac"
     assert definitive is True
+
+
+def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
+    """A filesystem path is not a repo id, so the Hub URL would be nonsense.
+
+    /loras hits this for every adapter directory without its own tokenizer, and a transient
+    failure is never cached, so it paid two 15s timeouts per checkpoint on every scan while
+    blocking the event loop that called it.
+    """
+    from utils.models import model_config
+
+    # Recorded rather than raised: the fetch loop catches every exception and treats it as
+    # a transient failure, so a raising stub would be swallowed and the test would pass
+    # against the unfixed code.
+    fetched = []
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: fetched.append(url))
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding = "utf-8")
+
+    result, definitive = model_config._detect_audio_from_tokenizer(str(adapter))
+    assert fetched == [], fetched
+    assert result is None
+    # Nothing was read, so the answer is not definitive and must not be cached.
+    assert definitive is False

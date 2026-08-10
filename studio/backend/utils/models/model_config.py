@@ -1293,6 +1293,13 @@ def _detect_audio_from_tokenizer(
     if local_files_only or _env_offline():
         return None, read_any
 
+    # A filesystem path is not a repo id, so the URL below would be nonsense. The /loras scan
+    # reaches here for every adapter directory without its own tokenizer, and since a transient
+    # failure is never cached it paid two 15s timeouts per checkpoint on every pass, blocking
+    # the event loop that calls it. The local read above is the whole answer for a local path.
+    if is_local_path(model_name):
+        return None, read_any
+
     try:
         import requests
         import os
