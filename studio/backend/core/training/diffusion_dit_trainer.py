@@ -1907,6 +1907,15 @@ def _train_dit(
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
+    # Same as the SDXL trainer: diffusers is only in sys.modules from here, and it
+    # honours no env var, so its pipeline-loading bars can only be turned off now --
+    # before the conditioning cache below loads the VAE and text encoders.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        pass
+
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
 

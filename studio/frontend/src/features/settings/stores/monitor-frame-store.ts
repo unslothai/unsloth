@@ -340,13 +340,54 @@ export function useStackGeometry(): StackPlacement {
       setNeededRoom((current) => (current === natural ? current : natural));
     };
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    // A 0-height stack stays 0 as children come and go, so watch the child list too.
-    const mutations = new MutationObserver(measure);
+    // Every box inside the stack, not just the stack itself. At its cap the container's
+    // border box does not move when its content grows, so a root-only observer never
+    // fires for a release-note image finishing its load, and childList says nothing
+    // either: the stack would keep the pre-load height and stay clipped.
+    // Height only. The llama.cpp update banner animates its progress bar's width on every
+    // frame, and that bar is inside this stack, so an unfiltered observer would remeasure
+    // at ~60Hz for a stack whose height never moved, each one forcing a synchronous layout
+    // to read scrollHeight with the cap lifted.
+    const heights = new WeakMap<Element, number>();
+    const observer = new ResizeObserver((entries) => {
+      let moved = false;
+      for (const entry of entries) {
+        const height =
+          entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+        if (heights.get(entry.target) !== height) {
+          heights.set(entry.target, height);
+          moved = true;
+        }
+      }
+      if (moved) measure();
+    });
+    const observed = new Set<Element>();
+    const syncObserved = () => {
+      const wanted = new Set<Element>([node, ...node.querySelectorAll("*")]);
+      for (const element of observed) {
+        if (!wanted.has(element)) {
+          observer.unobserve(element);
+          observed.delete(element);
+        }
+      }
+      for (const element of wanted) {
+        if (!observed.has(element)) {
+          observer.observe(element);
+          observed.add(element);
+        }
+      }
+    };
+    syncObserved();
+    // A 0-height stack stays 0 as children come and go, so watch the child list too, and
+    // observe whatever just arrived.
+    const mutations = new MutationObserver(() => {
+      syncObserved();
+      measure();
+    });
     mutations.observe(node, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
+      observed.clear();
       mutations.disconnect();
     };
   }, []);

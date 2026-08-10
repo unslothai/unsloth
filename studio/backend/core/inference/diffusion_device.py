@@ -27,6 +27,7 @@ class DiffusionDeviceTarget:
     supports_model_cpu_offload: bool
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
+    supports_float64: bool = True
 
     @property
     def is_cuda_torch_device(self) -> bool:
@@ -41,7 +42,99 @@ class DiffusionDeviceTarget:
             "supports_model_cpu_offload": self.supports_model_cpu_offload,
             "supports_default_torch_compile": self.supports_default_torch_compile,
             "supports_pinned_transfer": self.supports_pinned_transfer,
+            "supports_float64": self.supports_float64,
         }
+
+
+def force_float32_rope(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> int:
+    """Drop the float64 intermediate in RoPE frequency tables on a device without float64.
+
+    LTX-2 builds ``theta ** linspace(0, 1, n)`` in float64 and casts straight back to float32;
+    Metal has no float64, so torch raises before the first step. The modules gate that
+    intermediate on a ``double_precision`` attribute, and clearing it costs at most 6 float32 ULP
+    against a value the next line truncates anyway.
+
+    Returns the number of modules changed; a no-op wherever float64 works, so CUDA/XPU/CPU stay
+    bit-for-bit.
+    """
+    if target.supports_float64:
+        return 0
+    changed = 0
+    for component in getattr(pipe, "components", {}).values() or ():
+        modules = getattr(component, "modules", None)
+        if not callable(modules):
+            continue
+        for module in modules():
+            if getattr(module, "double_precision", False):
+                module.double_precision = False
+                changed += 1
+    if changed and logger is not None:
+        logger.info("video.rope_float32: %d module(s) demoted (no float64 on this device)", changed)
+    return changed
+
+
+# Fraction of the device's recommended working set above which a decode starts synchronising.
+DECODE_SYNC_FRACTION = 0.85
+
+
+def install_decoder_sync(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Cap the memory a video VAE decode holds on Metal, by synchronising once it is running out.
+
+    Wan's VAE decodes one latent frame per call in a loop that never forces a commit, and Metal
+    cannot reuse a buffer until the work holding it completes, so intermediates accumulate until
+    the OS kills the process. Neither tiling (the growth is within one tile) nor torch's adaptive
+    commit bounds it.
+
+    Fires per decoder call and only above the threshold, so a decode with room to spare pays only
+    the memory read; synchronising costs the pipelining, not the decode.
+
+    ``torch.mps.recommended_max_memory()`` arrived in torch 2.5 while install.sh keeps an existing
+    venv's torch as far back as 2.4, so an unreadable budget falls back to synchronising every
+    call (measured to hold the same decode at 4.90 GiB for no wall-clock cost) rather than
+    failing the load or dropping the bound. Every probe is best-effort for the same reason.
+    """
+    if target.device != "mps":
+        return False
+    decoder = getattr(getattr(pipe, "vae", None), "decoder", None)
+    if not callable(getattr(decoder, "register_forward_hook", None)):
+        return False
+    import torch
+
+    budget: Optional[float] = None
+    try:
+        budget = torch.mps.recommended_max_memory() * DECODE_SYNC_FRACTION
+    except Exception as exc:  # noqa: BLE001 -- torch < 2.5 has no such reading
+        if logger is not None:
+            logger.info(
+                "video.decoder_sync: no memory reading (%s); synchronising every decode", exc
+            )
+
+    def _sync(_module, _args, _output) -> None:
+        if budget is not None:
+            try:
+                if torch.mps.driver_allocated_memory() < budget:
+                    return
+            except Exception:  # noqa: BLE001 -- an unreadable gauge syncs, the safe side
+                pass
+        try:
+            torch.mps.synchronize()
+        except Exception:  # noqa: BLE001 -- a decode is worth more than the bound
+            pass
+
+    decoder.register_forward_hook(_sync)
+    if logger is not None and budget is not None:
+        logger.info("video.decoder_sync: decode synchronises above %.1f GiB", budget / 1024**3)
+    return True
 
 
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
@@ -145,6 +238,7 @@ def diffusion_device_target_from_torch_device(
             supports_model_cpu_offload = False,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            supports_float64 = False,
         )
     return _cpu_target(torch = None, dtype = dtype)
 
@@ -230,6 +324,7 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_model_cpu_offload = False,
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
+            supports_float64 = False,
         )
     return _cpu_target(torch)
 

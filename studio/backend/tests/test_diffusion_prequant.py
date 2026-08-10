@@ -12,6 +12,7 @@ are all exercised without CUDA, torchao, or a real diffusers model.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import sys
 import types
 
@@ -106,6 +107,23 @@ def test_flux1_variant_prequant_wiring():
             family_prequant_repo(fam, scheme, base_repo = "black-forest-labs/FLUX.1-Krea-dev")
             == "unsloth/FLUX.1-Krea-dev-FP8"
         )
+
+
+def test_resolve_prefers_a_family_declared_filename():
+    # A family may host a SECOND artifact for the same repo and scheme. Naming it makes it the
+    # primary and demotes the derived name to the fallback, so a build that knows the new name
+    # gets it while an older one still resolves the artifact it already understands.
+    fam = _fam(prequant_repos = (("int8", "unsloth/Model-FP8"),))
+    fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
+    src = resolve_prequant_source(fam, "int8")
+    assert src.filename == "Model-INT8-ConvRot.pt"
+    assert src.fallback_filename == "Model-INT8.pt"
+    # Only for the scheme that declares one; everything else keeps today's derived/legacy pair.
+    other = resolve_prequant_source(
+        dataclasses.replace(fam, prequant_repos = (("fp8", "unsloth/Model-FP8"),)), "fp8"
+    )
+    assert other.filename == "Model-FP8.pt"
+    assert other.fallback_filename == "transformer_fp8.pt"
 
 
 def test_resolve_wrong_scheme_is_none():

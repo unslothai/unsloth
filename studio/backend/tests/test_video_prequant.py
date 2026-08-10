@@ -100,7 +100,9 @@ def test_both_h3_schemes_resolve_to_one_repo():
 # ── repo-root naming ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "scheme, expected",
-    [("int8", "MiniMax-H3-INT8.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
+    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 keeps the
+    # derived <Model>-<SCHEME>.pt.
+    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
 )
 def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
     # The name the hosted repo actually publishes. It has to be the PRIMARY, not the fallback:
@@ -111,6 +113,17 @@ def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
     assert src.filename == expected
     # Root-level: no directory component at all, on any platform.
     assert "/" not in src.filename and "\\" not in src.filename
+
+
+def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
+    # The rotated artifact carries the v2 format tag, which a Studio predating the online rotation
+    # refuses. Naming it explicitly and demoting the derived name to the fallback is what stops
+    # that refusal from reaching anyone: an older install still resolves MiniMax-H3-INT8.pt, and
+    # this one takes the rotated file when the repo has it.
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    src = resolve_prequant_source(fam, "int8")
+    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "/" not in src.fallback_filename and "\\" not in src.fallback_filename
 
 
 def test_the_h3_primary_name_is_what_memory_planning_credits():
@@ -126,7 +139,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
         cache_dir = None,
     ):
         seen["filename"] = filename
-        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8.pt" else None
+        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.pt" else None
 
     import huggingface_hub
     import os
@@ -140,7 +153,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
     finally:
         huggingface_hub.try_to_load_from_cache = real_hub
         os.path.isfile = real_isfile
-    assert seen["filename"] == "MiniMax-H3-INT8.pt"
+    assert seen["filename"] == "MiniMax-H3-INT8-ConvRot.pt"
 
 
 def test_the_names_are_built_from_the_repo_and_the_scheme():
@@ -203,6 +216,62 @@ def test_auto_is_never_refused():
     except ValueError as exc:  # pragma: no cover - only on a regression
         pytest.fail(f"auto should never be refused: {exc}")
     except Exception:
+        pass
+
+
+def _forced_target(device):
+    """A resolved diffusion target on ``device``, so a refusal keyed on the device can be tested
+    off the hardware that has it."""
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    return lambda: DiffusionDeviceTarget(
+        device = device,
+        dtype = None,
+        backend = device,
+        vendor = None,
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+        supports_float64 = device != "mps",
+    )
+
+
+def test_the_modular_pipeline_is_refused_on_metal(monkeypatch):
+    # _load_h3_modular_pipeline places every non-CPU device with
+    # ComponentsManager.enable_auto_cpu_offload, which raises NotImplementedError when the device
+    # module has no mem_get_info, and torch.mps has none. Refuse before ~145 GB downloads.
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target", _forced_target("mps")
+    )
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "cannot run on Apple Silicon"):
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3")
+
+
+def test_the_metal_refusal_names_the_artifact_that_does_run_there(monkeypatch):
+    # A dead end is not an answer: H3's GGUF checkpoints run on the native engine on the same
+    # host, so the refusal has to point at them.
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target", _forced_target("mps")
+    )
+    backend = VideoBackend()
+    with pytest.raises(ValueError, match = "unsloth/MiniMax-H3-GGUF"):
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3")
+
+
+def test_the_metal_refusal_leaves_every_other_device_alone(monkeypatch):
+    # The mirror image: CUDA is where this workflow is meant to run, so the refusal must be
+    # scoped to the device that cannot place it.
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target", _forced_target("cuda")
+    )
+    backend = VideoBackend()
+    try:
+        backend.validate_load_request("MiniMaxAI/MiniMax-H3")
+    except ValueError as exc:  # pragma: no cover - only on a regression
+        pytest.fail(f"a CUDA modular load must not be refused: {exc}")
+    except Exception:
+        # Anything past the refusal (the diffusers probe further down) already proves it did not
+        # fire.
         pass
 
 

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { registerNativeAttachmentPath, registerNativeModelPath } from "./api";
 import { classifyDropPaths, SUPPORTED_DROP_HINT } from "./drop-paths";
+import { nativeDropTargetAt } from "./native-drop-targets";
 import { useNativeIntentStore } from "./store";
 import type { NativeIntent } from "./types";
 
@@ -172,6 +173,17 @@ async function registerDroppedAttachments(
   };
 }
 
+function sameDropState(
+  a: NativeModelDropState,
+  b: NativeModelDropState,
+): boolean {
+  if (a.status !== b.status) return false;
+  if (a.status === "valid" && b.status === "valid") return a.action === b.action;
+  if (a.status === "attach" && b.status === "attach")
+    return a.count === b.count && a.kind === b.kind;
+  return true;
+}
+
 export function useNativeModelDrop(options: NativeModelDropOptions): NativeModelDropState {
   const { enabled = true } = options;
   const addIntent = useNativeIntentStore((state) => state.addIntent);
@@ -186,20 +198,36 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
     }
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    // "over" carries no paths, so the ones announced on "enter" are what the
+    // overlay keeps reading as the cursor moves across the window.
+    let draggedPaths: string[] = [];
+    // Tauri repeats "over" per cursor move, so a fresh object each time would
+    // rerender ChatPage at drag frequency. Returning `prev` makes React bail out.
+    const publish = (next: NativeModelDropState) =>
+      setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 
     void import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => getCurrentWindow().onDragDropEvent(async (event) => {
         const currentOptions = optionsRef.current;
-        if (event.payload.type === "enter") {
-          setDropState(dropStateForPaths(event.payload.paths, currentOptions));
-          return;
-        }
         if (event.payload.type === "leave") {
-          setDropState({ status: "idle" });
+          draggedPaths = [];
+          publish({ status: "idle" });
           return;
         }
-        if (event.payload.type !== "drop") return;
-        setDropState({ status: "idle" });
+        if (event.payload.type === "enter") {
+          draggedPaths = event.payload.paths;
+        }
+        // A drop zone under the cursor owns this drop; leave it alone.
+        if (nativeDropTargetAt(event.payload.position)) {
+          publish({ status: "idle" });
+          return;
+        }
+        if (event.payload.type !== "drop") {
+          publish(dropStateForPaths(draggedPaths, currentOptions));
+          return;
+        }
+        draggedPaths = [];
+        publish({ status: "idle" });
         const dropped = classifyDropPaths(event.payload.paths);
         if (dropped.kind === "none") return;
         if (dropped.kind === "unsupported") {

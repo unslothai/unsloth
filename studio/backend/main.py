@@ -201,6 +201,16 @@ import _platform_compat  # noqa: F401
 # unsloth-zoo import below, whose LLAMA_CPP_DEFAULT_DIR binding is import-time.
 from utils.paths.storage_roots import studio_root as _studio_root
 
+# Same reason, same deadline: unsloth_zoo.compiler reads UNSLOTH_COMPILE_LOCATION
+# at import time, and without this a direct start falls back to a CWD-relative
+# unsloth_compiled_cache (on Windows that is the user profile).
+from utils.paths.storage_roots import setup_cache_env as _setup_cache_env
+
+try:
+    _setup_cache_env()
+except Exception:  # noqa: BLE001
+    pass
+
 try:
     _LEGACY_STUDIO_ROOT = (_Path.home() / ".unsloth" / "studio").resolve()
 except (OSError, ValueError):
@@ -603,6 +613,21 @@ async def lifespan(app: FastAPI):
 
     _lifespan_log = _structlog.get_logger(__name__)
     clear_unsloth_compiled_cache()
+
+    # Move the legacy sandbox up here rather than from the first request: the
+    # copy can be minutes when the studio home is on another filesystem.
+    try:
+        from core.inference.tools import (
+            migrate_legacy_sandbox_in_background,
+            start_sandbox_recovery,
+        )
+        migrate_legacy_sandbox_in_background()
+        # A tree renamed for deletion by a run that was killed, and the
+        # workspace deletes it left pending: both waited for the next Python or
+        # terminal call, which ordinary chat never makes.
+        start_sandbox_recovery()
+    except Exception:  # noqa: BLE001
+        pass
 
     # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
     overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
@@ -1478,9 +1503,10 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
-    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
-    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
-    # under a tooltip the reinstall makes wrong minutes later.
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold it
+    # back and keep replying provisionally, or the Mac gets Train greyed out under a tooltip the
+    # reinstall makes wrong minutes later. Video does not wait on this: it runs on Metal without
+    # MLX, so it reads /api/system/hardware instead.
     mlx_repairing = _superseded_by_mlx_repair(snapshot)
     if mlx_repairing:
         snapshot = None

@@ -2842,7 +2842,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None: {
+        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },

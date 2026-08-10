@@ -8,6 +8,12 @@ import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
+  chatHistoryClearBoundary,
+  ChatThreadDeletedError,
+  ensureStoredChatThread,
+  isThreadIncognito,
+} from "@/features/chat";
+import {
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
@@ -50,6 +56,30 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   );
 }
 
+/**
+* Confirm a thread is stored before documents are indexed against it. An id reaches this
+* component before its row write lands, from a cached initialize() or from activeThreadId, and
+* upload_thread_document does not check the thread itself. A transport failure is not proof the
+* row is missing, so only a definitive miss blocks the upload.
+*/
+async function requireStoredThread(threadId: string): Promise<void> {
+  if (isThreadIncognito(threadId)) return;
+  let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
+  try {
+    stored = await ensureStoredChatThread(threadId);
+  } catch (error) {
+    // A backend tombstone is an answer, not an indeterminate transport failure: indexing
+    // against it would leave documents under a thread that can never come back.
+    if (error instanceof ChatThreadDeletedError) {
+      throw error;
+    }
+    return;
+  }
+  if (!stored) {
+    throw new Error(`Thread ${threadId} was not persisted`);
+  }
+}
+
 export function ThreadDocumentsBar({
   threadId,
   onIndexingChange,
@@ -70,8 +100,14 @@ export function ThreadDocumentsBar({
   // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
+  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  const initGenerationRef = useRef(0);
   useEffect(() => {
-    if (threadId) setMaterializedId(null);
+    if (threadId) {
+      setMaterializedId(null);
+      initGenerationRef.current += 1;
+      initPromiseRef.current = null;
+    }
   }, [threadId]);
 
   const lister = useCallback(
@@ -100,26 +136,49 @@ export function ThreadDocumentsBar({
   useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
   // Materialize the thread id on first use; ref-deduped so a double-click can't
-  // start two threads.
-  const initPromiseRef = useRef<Promise<string | null> | null>(null);
+  // start two threads. A thread switch gets separate work even if the prior request is pending.
   const ensureThreadId = useCallback((): Promise<string | null> => {
-    if (effectiveThreadId) return Promise.resolve(effectiveThreadId);
-    if (initPromiseRef.current) return initPromiseRef.current;
+    if (effectiveThreadId) {
+      return requireStoredThread(effectiveThreadId).then(
+        () => effectiveThreadId,
+        () => {
+          toast.error("Couldn't start a chat for these documents");
+          return null;
+        },
+      );
+    }
+    const current = initPromiseRef.current;
+    if (current) {
+      return current;
+    }
+    const clearGeneration = chatHistoryClearBoundary.capture();
+    const generation = ++initGenerationRef.current;
     const pending = aui
       .threadListItem()
       .initialize()
-      .then(({ remoteId }) => {
-        setMaterializedId(remoteId);
+      .then(async ({ remoteId }) => {
+        await requireStoredThread(remoteId);
+        // a clear that landed while the row write was in flight is deleting this thread
+        if (chatHistoryClearBoundary.capture() !== clearGeneration) {
+          throw new Error("Chat history was cleared");
+        }
+        // an older request can still finish after the component moved to another thread
+        if (initGenerationRef.current === generation) {
+          setMaterializedId(remoteId);
+        }
         return remoteId;
       })
       .catch(() => {
         toast.error("Couldn't start a chat for these documents");
         return null;
-      })
-      .finally(() => {
-        initPromiseRef.current = null;
       });
     initPromiseRef.current = pending;
+    const clear = () => {
+      if (initPromiseRef.current === pending) {
+        initPromiseRef.current = null;
+      }
+    };
+    pending.then(clear, clear);
     return pending;
   }, [aui, effectiveThreadId]);
 
