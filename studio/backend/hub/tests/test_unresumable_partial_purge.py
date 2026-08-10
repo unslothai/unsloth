@@ -32,7 +32,7 @@ def blobs(monkeypatch, tmp_path):
 
 def _abandon(path):
     """Backdate a partial past the grace, as an abandoned one would be."""
-    old = time.time() - download_registry._ABANDONED_PARTIAL_SECONDS - 60
+    old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
     os.utime(path, (old, old))
     return path
 
@@ -267,36 +267,39 @@ def test_a_finalized_blob_still_counts_against_the_disk_check(monkeypatch, blobs
     assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 25
 
 
-def test_startup_reaping_sweeps_a_previous_run_orphan(monkeypatch, tmp_path, blobs):
-    """The guaranteed revisit: by the next boot the writer is a process that no longer exists."""
+def test_startup_sweep_does_not_depend_on_a_breadcrumb(monkeypatch, tmp_path, blobs):
+    """finalize_worker_exit drops the breadcrumb, so the boot sweep cannot be driven off one."""
     workers = tmp_path / "workers"
-    workers.mkdir()
-    (workers / "job.json").write_text(
-        json.dumps(
-            {
-                "pid": 999999999,
-                "repo_type": "model",
-                "repo_id": "Org/Model",
-                "variant": None,
-                "transport": "http",
-                "hub_cache": str(blobs.parent.parent),
-            }
-        ),
-        encoding = "utf-8",
-    )
+    workers.mkdir()  # deliberately empty, as it is once drop_process has run
     partial = blobs / _NONCE_PARTIAL
     partial.write_bytes(b"x" * 25)
     _abandon(partial)
 
     monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
-    monkeypatch.setattr(download_registry, "_settle_orphaned_download", lambda *_a, **_k: None)
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
     monkeypatch.setattr(
-        download_registry,
-        "iter_active_repo_cache_dirs",
-        lambda *_a, **_k: [blobs.parent],
+        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
     )
 
     download_registry.reap_orphan_workers()
 
     assert not partial.exists()
+
+
+def test_startup_sweep_leaves_a_resumable_partial_alone(monkeypatch, tmp_path, blobs):
+    """Walking every cache at boot is not a licence to widen what gets deleted."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    partial = blobs / _LEGACY_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
+    monkeypatch.setattr(
+        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
+    )
+
+    download_registry.reap_orphan_workers()
+
+    assert partial.exists()

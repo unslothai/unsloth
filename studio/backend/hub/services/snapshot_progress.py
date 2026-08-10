@@ -25,6 +25,7 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
+    ABANDONED_PARTIAL_SECONDS,
     blob_bytes_present,
     incomplete_blob_hash,
     preferred_repo_cache_dirs,
@@ -504,9 +505,11 @@ def compute_snapshot_progress(
     variant_file_set_unknown = variant is not None and not expected_hashes
     # Resolved at most once, and only if a reading gets far enough to need it.
     metadata_files: "_Lazy[tuple[download_manifest.ExpectedFile, ...]]" = _Lazy(
-        lambda: tuple(expected_files_resolver(repo_id, hf_token))
-        if expected_files_resolver is not None
-        else ()
+        lambda: (
+            tuple(expected_files_resolver(repo_id, hf_token))
+            if expected_files_resolver is not None
+            else ()
+        )
     )
 
     readings: list[tuple[int, int, Optional[str], bool, Optional[bool]]] = []
@@ -531,7 +534,9 @@ def compute_snapshot_progress(
         completed_bytes = 0
         # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
         # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
-        partial_bytes: dict[str, int] = {}
+        # Each reading carries its mtime, because "largest" alone cannot tell a racer apart
+        # from the corpse of a killed attempt (see the reduction below the scan).
+        partial_readings: dict[str, list[tuple[float, int]]] = {}
         completed_hashes: set[str] = set()
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
@@ -572,8 +577,8 @@ def compute_snapshot_progress(
                         elif not count_unscoped:
                             unattributable_partial = True
                             continue
-                        partial_bytes[partial_hash] = max(
-                            partial_bytes.get(partial_hash, 0), blob_bytes_present(f)
+                        partial_readings.setdefault(partial_hash, []).append(
+                            (f.stat().st_mtime, blob_bytes_present(f))
                         )
                     else:
                         if expected_hashes:
@@ -595,7 +600,19 @@ def compute_snapshot_progress(
         # no bytes in flight, pinned a fully downloaded variant at 0.99 until the orphan was
         # swept -- and an orphan outlives the process that would have unlinked it on the way out.
         for blob_hash in completed_hashes:
-            partial_bytes.pop(blob_hash, None)
+            partial_readings.pop(blob_hash, None)
+        # Among writers for one blob, only those still keeping pace with the freshest count.
+        # A retry inside the sweep's grace leaves the killed attempt's partial next to the
+        # replacement's, both unresumable and both named for the same etag, and taking the
+        # larger reported the corpse -- freezing the bar at the dead attempt's high-water mark
+        # until the live transfer overtook it. Genuine concurrent writers are all advancing, so
+        # they stay in and the largest of them still wins.
+        partial_bytes: dict[str, int] = {}
+        for blob_hash, writers in partial_readings.items():
+            freshest = max(mtime for mtime, _ in writers)
+            partial_bytes[blob_hash] = max(
+                size for mtime, size in writers if freshest - mtime <= ABANDONED_PARTIAL_SECONDS
+            )
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)

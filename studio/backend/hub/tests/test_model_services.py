@@ -4867,7 +4867,7 @@ def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypa
     partial = blobs / "shared-mmproj.incomplete"
     partial.write_bytes(b"resumable")
     # Aged past the abandonment grace, so the reprieve is what preserves it, not its freshness.
-    old = time.time() - download_registry._ABANDONED_PARTIAL_SECONDS - 60
+    old = time.time() - download_registry.ABANDONED_PARTIAL_SECONDS - 60
     os.utime(partial, (old, old))
 
     purged = download_registry.prepare_cache_for_transport(

@@ -3,6 +3,8 @@
 
 """Focused reproduction for Hugging Face's process-unique partial filenames."""
 
+import os
+import time
 from types import SimpleNamespace
 
 from hub.services import snapshot_progress
@@ -372,3 +374,34 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
     assert result["downloaded_bytes"] == 100
     assert result["complete_on_disk"] is True
     assert result["progress"] == 1.0
+
+
+def test_progress_reports_the_live_writer_not_the_killed_attempt(monkeypatch, tmp_path):
+    """A retry inside the sweep's grace leaves the corpse next to the replacement."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    corpse = blobs / f"{_BLOB_HASH}.11111111.incomplete"
+    corpse.write_bytes(b"x" * 80)
+    stale = time.time() - snapshot_progress.ABANDONED_PARTIAL_SECONDS - 60
+    os.utime(corpse, (stale, stale))
+    (blobs / f"{_BLOB_HASH}.22222222.incomplete").write_bytes(b"x" * 10)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        job_key = "model:org/model-gguf#q4_k_m",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "Q4_K_M",
+    )
+
+    # Before: 80, the dead attempt's high-water mark, until the live one overtook it.
+    assert result["downloaded_bytes"] == 10

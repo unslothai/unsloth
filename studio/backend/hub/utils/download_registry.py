@@ -73,7 +73,9 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
     target_dir_name,
     hf_cache_root,
+    ABANDONED_PARTIAL_SECONDS,
     blob_download_lock_held,
+    hf_cache_roots,
     incomplete_blob_hash,
     partial_is_resumable,
 )
@@ -333,6 +335,15 @@ def reap_orphan_workers() -> None:
     survives a hard crash like a graceful shutdown's does. A partial nothing can
     resume has no affordance to preserve and is swept
     (see :func:`sweep_abandoned_partials`). Runs once at startup and never raises."""
+    try:
+        swept = sweep_abandoned_partials_in_all_caches()
+        if swept:
+            logger.info(
+                "Swept %d unresumable partial blob(s) left by a previous backend instance.",
+                swept,
+            )
+    except Exception as exc:
+        logger.debug("Boot sweep of abandoned partials failed: %s", exc)
     parent = state_dir.workers_dir()
     if parent is None:
         return
@@ -369,23 +380,6 @@ def reap_orphan_workers() -> None:
                 data.get("cancel_marker_transport") or data.get("transport"),
                 data.get("hub_cache"),
             )
-            # The guaranteed revisit. A terminal-state sweep can still find an orphan too
-            # freshly written to judge, and if the user never returns to that repo nothing
-            # else looks again. Here the writer is a process from a previous run, so the
-            # question is settled -- and a partial an unrelated client is holding right now
-            # is still spared by the lock and staleness gates inside the sweep.
-            swept = sweep_abandoned_partials(
-                data.get("repo_type") or "model",
-                repo_id,
-                root = Path(data["hub_cache"]) if data.get("hub_cache") else None,
-            )
-            if swept:
-                logger.info(
-                    "Swept %d unresumable partial blob(s) for %s left by a previous "
-                    "backend instance.",
-                    swept,
-                    repo_id,
-                )
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
         _safe_unlink(entry)
@@ -398,12 +392,8 @@ class _PurgeOutcome(NamedTuple):
     failed: int
 
 
-# How long a partial must sit untouched before an unresumable-purge treats it as abandoned.
-# huggingface_hub writes to a partial continuously, so anything still advancing is a live
-# writer -- possibly another Studio or another client entirely, which this backend's peer
-# registry cannot see. Only the unresumable sweep waits: it reclaims disk, while a
+# Only the unresumable sweep waits out ABANDONED_PARTIAL_SECONDS: it reclaims disk, while a
 # marker-mismatch purge exists to stop a corrupt append and cannot defer.
-_ABANDONED_PARTIAL_SECONDS = 120
 
 
 def _purge_incomplete_blobs(
@@ -418,7 +408,7 @@ def _purge_incomplete_blobs(
     Report failed deletions so sparse partials cannot receive an HTTP marker.
 
     ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing
-    has touched for ``_ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its
+    has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its
     writer on POSIX; it keeps filling an unlinked inode and then fails at the rename, so the
     cost of that mistake is another client's whole download.
     """
@@ -453,7 +443,7 @@ def _purge_incomplete_blobs(
                 # from one stalled on a slow network for longer than the grace.
                 if blob_download_lock_held(entry, blob_hash):
                     continue
-                if now - blob.stat().st_mtime < _ABANDONED_PARTIAL_SECONDS:
+                if now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
                     continue
             blob.unlink()
             removed += 1
@@ -807,6 +797,28 @@ def sweep_abandoned_partials(
             unresumable_only = True,
         )
         removed += outcome.removed
+    return removed
+
+
+def sweep_abandoned_partials_in_all_caches() -> int:
+    """Boot-time sweep across every known HF cache root. Returns how many partials went.
+
+    Not driven off worker breadcrumbs, because ``drop_process`` removes a breadcrumb during
+    ``finalize_worker_exit`` -- before the terminal-state sweep runs -- so a partial that sweep
+    skips for being freshly written has no breadcrumb left to be found by. Walking the caches
+    instead needs no record to survive, and every deletion still has to clear the same
+    unresumable, unlocked and abandoned gates.
+    """
+    removed = 0
+    for root in hf_cache_roots():
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if "--" not in entry.name or not (entry / "blobs").is_dir():
+                continue
+            removed += _purge_incomplete_blobs(entry, None, None, unresumable_only = True).removed
     return removed
 
 

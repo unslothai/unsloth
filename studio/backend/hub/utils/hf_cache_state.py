@@ -52,6 +52,12 @@ def incomplete_blob_hash(name: str) -> Optional[str]:
 # The last huggingface_hub line whose partials a later attempt can append to.
 _LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
 
+# How long a partial must sit untouched before it reads as abandoned rather than in flight.
+# huggingface_hub writes to one continuously, so anything still advancing has a live writer --
+# possibly a client in another process that no registry here can see. Shared by the sweep that
+# deletes abandoned partials and the progress scan that must not report one as current.
+ABANDONED_PARTIAL_SECONDS = 120
+
 
 @lru_cache(maxsize = 1)
 def hf_partials_are_resumable() -> bool:
