@@ -569,6 +569,10 @@ def test_worker_audio_forwards_shared_cancel_event():
 
 
 def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
+    # core.inference.inference pulls the training stack in, which the backend-test job does
+    # not install; without this the whole job fails on ModuleNotFoundError rather than
+    # reporting a skip for a test that cannot run there.
+    pytest.importorskip("peft")
     from core.inference.inference import InferenceBackend
 
     backend = InferenceBackend.__new__(InferenceBackend)
