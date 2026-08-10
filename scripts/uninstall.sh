@@ -86,13 +86,26 @@ _owned_sd_cpp_roots() {
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
     _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
-        for _sd_root in \
-            "$_root/stable-diffusion.cpp" \
-            "$(dirname "$_root")/stable-diffusion.cpp"
-        do
-            [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
-        done
+        _sd_root="$_root/stable-diffusion.cpp"
+        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
     done
+    _sd_cpp_sibling_bases 2>/dev/null | while IFS= read -r _root; do
+        [ -n "$_root" ] || continue
+        _sd_root="$(dirname "$_root")/stable-diffusion.cpp"
+        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+    done
+}
+
+# Every root an older build could have hung its sd.cpp sibling off: the canonicalized custom roots
+# and the lexical ones. They differ only when the Studio home is itself a symlink, and there the
+# lexical form is the one the old `dirname "$UNSLOTH_STUDIO_HOME"` produced, so canonicalizing
+# first looked beside the link's target and missed the tree entirely. Every use is gated on the
+# owner marker, which is what keeps an unrelated checkout at either path safe.
+_sd_cpp_sibling_bases() {
+    {
+        _custom_studio_roots 2>/dev/null
+        _custom_studio_roots lexical 2>/dev/null
+    } | awk '!seen[$0]++'
 }
 
 # pkill resident sd-server / sd-cli under an owned sd.cpp root before that tree is removed (a live
@@ -372,6 +385,9 @@ _custom_studio_data_dirs() {
 # the install root is three dirnames up. Prints each discovered non-default
 # root on its own line; the caller iterates and de-duplicates.
 _custom_studio_roots() {
+    # $1 = "lexical": skip the canonicalization (see the legacy sd.cpp sibling below). Reset on
+    # every call, so a plain call is never affected by a preceding lexical one.
+    _studio_roots_lexical="${1:-}"
     _seen=""
     _emit() {
         _r="$1"
@@ -386,9 +402,13 @@ _custom_studio_roots() {
         esac
         # Canonicalize so syntactic variants ($HOME/../$USER, trailing slash)
         # resolve to the same path and hit the _is_unsafe_root deny list.
-        # shellcheck disable=SC1007
-        _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
-        [ -n "$_canon" ] && _r="$_canon"
+        # Skipped for the lexical pass, which exists only to rebuild the path an
+        # older build derived with a plain dirname (see _sd_cpp_sibling_bases).
+        if [ "${_studio_roots_lexical:-}" != "lexical" ]; then
+            # shellcheck disable=SC1007
+            _canon=$(CDPATH= cd -P -- "$_r" 2>/dev/null && pwd -P)
+            [ -n "$_canon" ] && _r="$_canon"
+        fi
         case "$_r" in "$HOME/.unsloth/studio"|/|"") return 0 ;; esac
         case ":$_seen:" in *":$_r:"*) return 0 ;; esac
         _seen="$_seen:$_r"
@@ -532,6 +552,20 @@ _unsloth_uninstall_main() {
             echo "  keeping sd.cpp without Studio owner marker: $_custom_sd_cpp" >&2
         else
             _remove_path "$_custom_sd_cpp"
+        fi
+    done
+    # The lexical parent as well. A home that is itself a symlink has its old sd.cpp tree beside
+    # the LINK, and the loop above only saw the canonicalized root, so that tree survived. Marker
+    # only, with no "keeping" notice: an unmarked directory at this path is somebody's checkout
+    # and the canonical pass has already reported the one it looked at.
+    _custom_studio_roots lexical 2>/dev/null | while IFS= read -r _lex_root; do
+        [ -n "$_lex_root" ] || continue
+        _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
+        [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
+        if _is_unsafe_root "$_lex_sd_cpp"; then
+            echo "  refusing to remove unsafe path: $_lex_sd_cpp" >&2
+        else
+            _remove_path "$_lex_sd_cpp"
         fi
     done
     _remove_root_recording_db "$HOME/.unsloth/studio"

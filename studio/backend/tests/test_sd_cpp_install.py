@@ -1819,3 +1819,38 @@ def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, 
     monkeypatch.setattr(sdmod, "install", lambda **_kw: None)
 
     assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+
+
+def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_path, monkeypatch):
+    """Rejecting the legacy server is only half the answer. The tree beside the Studio home keeps
+    that mismatched server, so the next load found it again, judged the accelerator changed and
+    reinstalled the bundle already sitting in the current root -- once per model load, forever.
+    The completed matching install in that root is the authoritative one: serverless, not stale."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+    # The current root already holds the cuda bundle, and that bundle shipped no sd-server.
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    installs: list[dict] = []
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert installs == []  # the bundle is already here; nothing to download
+    # ... and with installs switched off the answer is the same, not the wrong-build server.
+    assert bk.ensure_sd_server_binary(accelerator = "cuda", allow_install = False) is None

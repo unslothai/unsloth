@@ -71,6 +71,7 @@ from core.inference.sd_cpp_engine import (
     find_sd_cpp_binary,
     find_sd_server_binary,
     is_managed_binary,
+    managed_install_root,
     owning_managed_root,
     runtime_env,
 )
@@ -378,6 +379,31 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         return False
 
 
+def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
+    """True when ``binary`` is an sd-server out of the tree an older build left beside the Studio
+    home, while the CURRENT managed root already holds a completed install for ``accelerator``.
+
+    That install is the authoritative one, and a bundle that ships no sd-server makes it a
+    serverless install: the answer is "no server", not "install again". Without this the finder
+    keeps handing back the legacy server, ``_accelerator_changed`` keeps rejecting it as the wrong
+    build, and every single load reinstalls the bundle that is already on disk."""
+    root = owning_managed_root(binary)
+    if root is None:
+        return False
+    current = managed_install_root()
+    try:
+        if root.resolve() == current.resolve():
+            return False
+    except OSError:
+        return False
+    try:
+        mod = _installer_module()
+        have = mod.installed_accelerator(current)
+        return have is not None and have == mod.accelerator_class(accelerator)
+    except Exception:  # noqa: BLE001 -- cannot tell -> leave the existing behavior alone
+        return False
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed.
 
@@ -438,6 +464,11 @@ def ensure_sd_server_binary(
     usable = bool(found) and _usable_or_discard_managed(found)
     if usable and not _accelerator_changed(found, accelerator):
         return found
+    # A mismatched server left in the legacy tree, with the matching install already here and
+    # serverless: None IS the answer, so the one-shot sd-cli of the right build runs instead of
+    # the bundle being downloaded again on this and every later load.
+    if usable and _superseded_legacy_server(found, accelerator):
+        return None
     if not allow_install:
         return found
     with _install_lock:
@@ -445,6 +476,8 @@ def ensure_sd_server_binary(
         usable = bool(found) and _usable_or_discard_managed(found)
         if usable and not _accelerator_changed(found, accelerator):
             return found
+        if usable and _superseded_legacy_server(found, accelerator):
+            return None
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
         fallback = found if usable else None
         # An install REPLACES the binaries in the managed tree, so refuse it while a native

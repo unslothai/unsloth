@@ -37,19 +37,28 @@ HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
     sed -n '/^_remove_root_recording_db() {/,/^}/p' "$UNINSTALL_SH"
     # The owned-root lister that decides which sd-servers are pkilled before a tree is deleted.
     sed -n '/^_owned_sd_cpp_roots() {/,/^}/p'      "$UNINSTALL_SH"
+    # ... and the sibling-base lister it asks for the legacy <parent>/stable-diffusion.cpp paths.
+    sed -n '/^_sd_cpp_sibling_bases() {/,/^}/p'    "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
 grep -q '_owned_sd_cpp_roots' "$HELPERS_FILE" || { echo "FAIL: helpers missing _owned_sd_cpp_roots"; exit 1; }
+grep -q '_sd_cpp_sibling_bases() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _sd_cpp_sibling_bases"; exit 1; }
 # Both blocks sit inside the main removal function, so they are indented: anchor on optional
 # leading whitespace, never on column 0, or the range matches nothing and every assertion below
 # passes or fails vacuously against a fragment that was never extracted.
 LOOP_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^[[:space:]]*_custom_studio_roots | while IFS= read -r _custom_root; do/,/^[[:space:]]*done/p' "$UNINSTALL_SH" > "$LOOP_FILE"
+# The follow-up block that clears the legacy sibling hanging off the LEXICAL parent.
+LEXICAL_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^[[:space:]]*_custom_studio_roots lexical 2>\/dev\/null | while IFS= read -r _lex_root; do/,/^[[:space:]]*done/p' "$UNINSTALL_SH" > "$LEXICAL_FILE"
+# The real root resolver, for the symlinked-home cases at the end (the others stub it).
+REAL_ROOTS_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^_custom_studio_roots() {/,/^}/p' "$UNINSTALL_SH" > "$REAL_ROOTS_FILE"
 # The real default-mode ~/.unsloth/stable-diffusion.cpp removal block (marker-guarded).
 DEFAULT_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/^[[:space:]]*_default_sd_cpp="\$HOME\/\.unsloth\/stable-diffusion\.cpp"/,/^[[:space:]]*fi/p' "$UNINSTALL_SH" > "$DEFAULT_FILE"
 
 # A silently empty extraction is what made this suite vacuous, so fail loudly instead.
-for _f in "$HELPERS_FILE" "$LOOP_FILE" "$DEFAULT_FILE"; do
+for _f in "$HELPERS_FILE" "$LOOP_FILE" "$DEFAULT_FILE" "$LEXICAL_FILE" "$REAL_ROOTS_FILE"; do
     [ -s "$_f" ] || { echo "FAIL: extracted an empty fragment from $UNINSTALL_SH"; exit 1; }
 done
 grep -q '_remove_path' "$LOOP_FILE" || { echo "FAIL: loop fragment missing _remove_path"; exit 1; }
@@ -76,6 +85,10 @@ run_loop() {
 run_default_removal() {
     # shellcheck disable=SC1090
     . "$DEFAULT_FILE"
+}
+run_lexical_removal() {
+    # shellcheck disable=SC1090
+    . "$LEXICAL_FILE"
 }
 
 # 1. Single custom root -> root AND its sibling stable-diffusion.cpp both removed.
@@ -203,6 +216,45 @@ _custom_studio_roots() { printf '%s\n' "$p11/studioI"; }
 run_loop
 assert_nodir "nested stable-diffusion.cpp removed with its root" "$p11/studioI/stable-diffusion.cpp"
 assert_nodir "its custom root removed"                           "$p11/studioI"
+
+
+# ── A Studio home that is itself a symlink ────────────────────────────────────────────────────
+#
+# The old build derived the sd.cpp root with a plain `dirname "$UNSLOTH_STUDIO_HOME"`, so for
+# UNSLOTH_STUDIO_HOME=<link> the tree it installed sits beside the LINK. _custom_studio_roots
+# canonicalizes the home before this code takes its parent, which points every legacy consumer
+# beside the link's TARGET instead: the tree beside the link was never stopped and never deleted.
+# The real resolver from here on, since a stub cannot express the link at all.
+# shellcheck disable=SC1090
+. "$REAL_ROOTS_FILE"
+unset STUDIO_HOME
+
+# 12. The legacy sibling beside the link is listed, so its sd-server is stopped before removal.
+p12="$_TMP_ROOT/inst12"
+mkdir -p "$p12/real/studioJ/share" "$p12/stable-diffusion.cpp"
+: > "$p12/real/studioJ/share/studio.conf"
+ln -s "$p12/real/studioJ" "$p12/link"
+: > "$p12/stable-diffusion.cpp/sd-server"
+: > "$p12/stable-diffusion.cpp/.unsloth-studio-owned"
+UNSLOTH_STUDIO_HOME="$p12/link"
+export UNSLOTH_STUDIO_HOME
+assert_lists "symlinked home: sd.cpp beside the link is stopped" "$p12/stable-diffusion.cpp"
+
+# 13. ... and removed.
+run_lexical_removal
+assert_nodir "symlinked home: sd.cpp beside the link removed" "$p12/stable-diffusion.cpp"
+
+# 14. An unowned checkout beside the link is kept, exactly like the canonical pass keeps one.
+p14="$_TMP_ROOT/inst14"
+mkdir -p "$p14/real/studioK/share" "$p14/stable-diffusion.cpp"
+: > "$p14/real/studioK/share/studio.conf"
+ln -s "$p14/real/studioK" "$p14/link"
+: > "$p14/stable-diffusion.cpp/main.cpp"  # the user's own checkout, no owner marker
+UNSLOTH_STUDIO_HOME="$p14/link"
+run_lexical_removal
+assert_dir "symlinked home: unowned sd.cpp beside the link kept" "$p14/stable-diffusion.cpp"
+assert_not_lists "symlinked home: unowned sd.cpp beside the link is left running" "$p14/stable-diffusion.cpp"
+unset UNSLOTH_STUDIO_HOME
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
