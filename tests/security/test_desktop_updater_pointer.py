@@ -168,7 +168,24 @@ def test_a_non_semver_release_leaves_the_pointer_alone(tmp_path):
     assert commands == [], commands
 
 
-def test_a_manifest_that_is_not_pinned_to_its_own_release_is_refused(tmp_path):
+def test_an_already_carried_manifest_is_carried_forward_again(tmp_path):
+    # The carried release is now the newest one holding latest.json, and the
+    # manifest it holds names an older version on purpose. Forwarding it again is
+    # the only thing that keeps the pointer resolving.
+    result, commands = _run(
+        tmp_path,
+        release_tag = "v0.1.54-beta",
+        releases = [
+            _release("v0.1.53-beta", published_at = "2026-04-01T00:00:00Z"),
+            _release("v0.1.52-beta", published_at = "2026-03-01T00:00:00Z"),
+        ],
+        manifest = _manifest("v0.1.52-beta"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert any(line.startswith("gh release upload v0.1.54-beta") for line in commands), commands
+
+
+def test_a_manifest_that_is_not_pinned_to_its_own_version_is_refused(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
@@ -184,16 +201,16 @@ def test_a_manifest_that_is_not_pinned_to_its_own_release_is_refused(tmp_path):
         },
     )
     assert result.returncode == 1
-    assert "not pinned to that release" in result.stderr
+    assert "not pinned to v0.1.52-beta" in result.stderr
     assert not [line for line in commands if line.startswith("gh release upload")]
 
 
-def test_a_version_mismatched_manifest_is_refused(tmp_path):
+def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
     result, _ = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [_release("v0.1.52-beta")],
-        manifest = _manifest("v0.1.51-beta"),
+        manifest = {"version": "latest", "platforms": {}},
     )
     assert result.returncode == 1
     assert "refusing to carry it forward" in result.stderr

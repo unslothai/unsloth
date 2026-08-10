@@ -120,21 +120,28 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import sys
 
           source_tag = os.environ['SOURCE_TAG']
           data = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'carry-forward', 'latest.json').read_text())
           version = data.get('version')
-          if not isinstance(version, str) or version.removeprefix('v') != source_tag.removeprefix('v'):
+          semver = r'v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?'
+          if not isinstance(version, str) or not re.fullmatch(semver, version):
               sys.exit(f'{source_tag} latest.json declares version {version!r}; refusing to carry it forward')
-          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{source_tag}/'
+
+          # Pinned to the release its own version names, which is the source release
+          # for a freshly built manifest and an older one for an already carried
+          # manifest. Either is safe to carry forward; the bundles are immutable.
+          bundle_tag = version if version.startswith('v') else f'v{version}'
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{bundle_tag}/'
           platforms = data.get('platforms')
           if not isinstance(platforms, dict) or not platforms:
               sys.exit(f'{source_tag} latest.json has no platforms')
           for platform, entry in platforms.items():
               url = (entry or {}).get('url')
               if not isinstance(url, str) or not url.startswith(expected_prefix):
-                  sys.exit(f'{source_tag} latest.json {platform} URL is not pinned to that release: {url}')
+                  sys.exit(f'{source_tag} latest.json {platform} URL is not pinned to {bundle_tag}: {url}')
           PY
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/carry-forward/latest.json" --clobber
           echo "Carried ${source_tag} updater metadata onto ${RELEASE_TAG}."

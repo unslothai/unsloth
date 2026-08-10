@@ -99,22 +99,17 @@ jobs:
       app_version: ${{ steps.prepare.outputs.app_version }}
       asset_version: ${{ steps.prepare.outputs.asset_version }}
       desktop_release_tag: ${{ steps.prepare.outputs.desktop_release_tag }}
-      pypi_version: ${{ steps.prepare.outputs.pypi_version }}
+      pypi_version: ${{ steps.backend.outputs.pypi_version }}
 
     steps:
-      # studio_version names an existing tag, so the backend pin and stamp check
-      # have to come from that tag, not from a dispatch ref that has moved on.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ inputs.studio_version }}
-          persist-credentials: false
-
+      # Before the checkout: for a malformed studio_version, actions/checkout would
+      # fail on the ref with a generic error and none of the corrections below
+      # would ever be printed.
       - name: Validate release versions
         id: prepare
         shell: bash
         env:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
-          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
         run: |
           python3 <<'PY'
           import os
@@ -151,6 +146,33 @@ jobs:
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'studio_version={studio_version}', file=output)
+              print(f'app_version={app_version}', file=output)
+              print(f'asset_version={asset_version}', file=output)
+              print(f'desktop_release_tag={desktop_release_tag}', file=output)
+
+          PY
+
+      # studio_version names an existing tag, so the backend pin and the stamp
+      # check have to come from that tag, not a dispatch ref that has moved on.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.prepare.outputs.studio_version }}
+          persist-credentials: false
+
+      - name: Resolve the backend pin from the release tag
+        id: backend
+        shell: bash
+        env:
+          INPUT_PYPI_VERSION: ${{ inputs.pypi_version }}
+        run: |
+          python3 <<'PY'
+          import os
+          import pathlib
+          import re
+          import sys
 
           def parse_backend_version(version):
               match = re.fullmatch(
@@ -209,11 +231,8 @@ jobs:
               )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              print(f'studio_version={studio_version}', file=output)
-              print(f'app_version={app_version}', file=output)
-              print(f'asset_version={asset_version}', file=output)
-              print(f'desktop_release_tag={desktop_release_tag}', file=output)
               print(f'pypi_version={pypi_version}', file=output)
+
           PY
 
       # Fail before building and notarizing a version publish-release will reject.
@@ -1963,8 +1982,12 @@ jobs:
           # The prepare-version downgrade check ran before a build that can take an
           # hour, so re-read GitHub latest here: promoting past a newer release would
           # hand every client an older manifest.
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/latest-before-promote.json" 2>/dev/null; then
-            python3 - "$RUNNER_TEMP/latest-before-promote.json" <<'PY'
+          # Fail closed: a transient lookup failure must not read as "no newer
+          # release". Only a genuine 404 means the repository has no latest yet.
+          latest_before="$RUNNER_TEMP/latest-before-promote.json"
+          latest_error="$RUNNER_TEMP/latest-before-promote.err"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$latest_before" 2> "$latest_error"; then
+            python3 - "$latest_before" <<'PY'
           import json
           import os
           import pathlib
@@ -1973,13 +1996,25 @@ jobs:
 
           semver = re.compile(r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$')
 
+          def identifier(value):
+              # beta10 must sort above beta2, so a trailing number compares as one.
+              if value.isdigit():
+                  return (0, '', int(value))
+              tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', value)
+              if tail:
+                  return (1, tail.group(1).lower(), int(tail.group(2)))
+              return (1, value, -1)
+
           def key(tag):
               match = semver.fullmatch(tag or '')
               if not match:
                   return None
               major, minor, patch, pre = match.groups()
               # A prerelease sorts below the same release without one.
-              return (int(major), int(minor), int(patch), 0 if pre else 1, pre or '')
+              return (
+                  int(major), int(minor), int(patch), 0 if pre else 1,
+                  [identifier(part) for part in pre.split('.')] if pre else [],
+              )
 
           current = json.loads(pathlib.Path(sys.argv[1]).read_text()).get('tag_name')
           candidate = os.environ['DESKTOP_RELEASE_TAG']
@@ -1987,6 +2022,12 @@ jobs:
           if current_key and candidate_key and current_key > candidate_key:
               sys.exit(f'Refusing to promote {candidate}: GitHub latest advanced to {current}.')
           PY
+          elif grep -Fq '(HTTP 404)' "$latest_error"; then
+            echo "No GitHub latest release yet; nothing to downgrade."
+          else
+            echo "Could not read GitHub latest; refusing to promote." >&2
+            cat "$latest_error" >&2
+            exit 1
           fi
 
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
