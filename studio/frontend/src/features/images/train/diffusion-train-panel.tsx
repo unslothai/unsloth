@@ -101,7 +101,10 @@ import {
   buildDiffusionResumePayload,
   resumeActionLabel,
 } from "./resume-diffusion-run";
-import { resolveDiffusionDeployBase } from "./diffusion-train-deploy";
+import {
+  resolveDiffusionDeployBase,
+  resolveDiffusionTrainingBase,
+} from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
@@ -588,11 +591,20 @@ export function DiffusionTrainPanel({
       baseDirty.current = false;
     }
     // An already-valid base wins: the top bar sets family and base together, so this must not snap back to the family's first repo.
+    // A loaded checkpoint may be the DISTILLED half of a pair, which is not trainable and so is
+    // never in base_repos. Fall back to the training base the family pairs it with before
+    // dropping to base_repos[0], or opening Train with the 9B model loaded seeds the 4B base.
+    // reportedFamily, not family: the pairing lives in deploy_bases, which only the backend
+    // reports. The static presets have no pairings, so an older backend simply keeps today's
+    // behaviour here.
+    const pairedTrainingBase = loadedBaseRepo
+      ? resolveDiffusionTrainingBase(reportedFamily, loadedBaseRepo)
+      : null;
     const preferLoaded = family.base_repos.includes(baseChoice)
       ? baseChoice
       : loadedBaseRepo && family.base_repos.includes(loadedBaseRepo)
         ? loadedBaseRepo
-        : family.base_repos[0] ?? CUSTOM_BASE;
+        : (pairedTrainingBase ?? family.base_repos[0] ?? CUSTOM_BASE);
     if (!baseDirty.current) setBaseChoice(preferLoaded);
     if (!settingsDirty.current) {
       setLearningRate(family.defaults.lr);
@@ -608,7 +620,7 @@ export function DiffusionTrainPanel({
           : "auto",
       );
     }
-  }, [family, loadedBaseRepo, reportedFamily?.recommended_precision]);
+  }, [family, loadedBaseRepo, reportedFamily]);
 
   // mixed_precision is an SDXL-only lever. A dense DiT base precision requires bf16 compute and every DiT family trains in bf16,
   // so reset to bf16 on a change to a DiT family, or an fp16 value left from SDXL rides along and the backend rejects it.

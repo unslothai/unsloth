@@ -630,6 +630,47 @@ def test_route_start_preflights_the_normalized_fetch_mirror(
     assert client._fake.started_with["base_model"] == source
 
 
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
+    monkeypatch, no_mirror_env
+):
+    """Cache preference must not strand a token-less run on a gated vendor repo.
+
+    Only gated repos are in the mirror table, so a mirror existing means the upstream needs
+    credentials this run does not have. prefer_ungated_mirror's probe counts ANY cached weight as
+    a hit, so one leftover shard from an interrupted or previously authorized download kept the
+    vendor id, and the start route's HEAD then refused the request outright: the exact case the
+    mirrors exist for became the one that could not train.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    mirror = "unsloth/FLUX.1-dev"
+    # The vendor repo looks cached, which is what made the old code keep it.
+    monkeypatch.setattr(
+        diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base
+    )
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    # The documented pin still wins, on this path as everywhere else.
+    expected = source if no_mirror_env else mirror
+    assert _cfg(None).fetch_base_model == expected
+    assert _cfg("   ").fetch_base_model == expected
+    # WITH a token the vendor repo is genuinely usable, so the cache preference stands.
+    assert _cfg("hf_realtoken").fetch_base_model == source
+    # And the canonical id is untouched either way: only the fetch moves.
+    assert _cfg(None).base_model == source
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}

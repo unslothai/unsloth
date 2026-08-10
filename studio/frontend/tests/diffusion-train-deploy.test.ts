@@ -2,9 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { resolveDiffusionDeployBase } from "../src/features/images/train/diffusion-train-deploy.ts";
+import {
+  resolveDiffusionDeployBase,
+  resolveDiffusionTrainingBase,
+} from "../src/features/images/train/diffusion-train-deploy.ts";
 
 const klein = {
   name: "flux.2-klein",
@@ -55,4 +59,38 @@ test("keeps custom bases and the legacy family-wide mapping working", () => {
     ),
     "krea/Krea-2-Turbo",
   );
+});
+
+test("preselects the training base paired with a loaded distilled checkpoint", () => {
+  assert.equal(
+    resolveDiffusionTrainingBase(klein, "black-forest-labs/FLUX.2-klein-9B"),
+    "black-forest-labs/FLUX.2-klein-base-9B",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(klein, "BLACK-FOREST-LABS/FLUX.2-KLEIN-4B"),
+    "black-forest-labs/FLUX.2-klein-base-4B",
+  );
+});
+
+test("returns null rather than inventing a base the backend would refuse", () => {
+  assert.equal(resolveDiffusionTrainingBase(undefined, "black-forest-labs/FLUX.2-klein-9B"), null);
+  assert.equal(resolveDiffusionTrainingBase(klein, ""), null);
+  // Loaded checkpoint the family declares no pairing for.
+  assert.equal(resolveDiffusionTrainingBase(klein, "krea/Krea-2-Turbo"), null);
+  // Paired, but the training half is not offered, so it must not be preselected.
+  assert.equal(resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-9B"), null);
+});
+
+test("the Train panel preselect actually consults the pairing", async () => {
+  // The helper on its own changes nothing: the bug was in the preselect chain, which fell from an
+  // exact base_repos match straight to base_repos[0]. Assert the pairing sits BETWEEN the two.
+  const source = await readFile(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const paired = source.indexOf("pairedTrainingBase ??");
+  const first = source.indexOf("family.base_repos[0]");
+  assert.ok(paired > 0, "the preselect no longer falls back to the paired training base");
+  assert.ok(paired < first && first - paired < 40, "base_repos[0] is no longer the last resort");
+  assert.match(source, /resolveDiffusionTrainingBase\(reportedFamily, loadedBaseRepo\)/);
 });

@@ -2097,10 +2097,11 @@ def _train_dit(
     # every bundle this run saves. The identity built before the load says "unresolved" on the
     # first run of an uncached repo, and an unresolved revision is not comparable, so a later
     # resume could not tell that the repo had moved underneath it.
-    # The CANONICAL base, matching identity_for_config: a mirror's commit is a different string
-    # for the same weights, so recording it would refuse the resume as soon as the fetch repo
-    # changed. A canonical repo that was never fetched simply stays "unresolved" here.
-    identity = with_resolved_revision(identity, cfg.base_model)
+    # The repo actually fetched, matching identity_for_config: the canonical base is not on disk
+    # at all when the mirror was selected, so reading it here would pin "unresolved" forever.
+    # with_resolved_revision records which repo the SHA came from, and mismatch_reason only
+    # compares two revisions that came from the same one.
+    identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
     # ...and the precision the frozen base ended up in. base_precision is still the request at

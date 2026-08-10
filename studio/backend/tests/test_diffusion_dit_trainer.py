@@ -249,10 +249,13 @@ def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
         run_dit_lora_training(cfg)
     assert seen == ["unsloth/FLUX.1-dev"]
 
-    # Control: with no mirror selected the canonical id is still what gets checked, so a
+    # Control: with no mirror at all the canonical id is still what gets checked, so a
     # genuinely gated fetch without a token keeps failing here rather than mid-download.
+    # mirror_repo has to go too: a token-less run overrides the cache preference on any repo
+    # the mirror table covers, so stubbing only the preference would still redirect.
     seen.clear()
     monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    monkeypatch.setattr(diffusion_families, "mirror_repo", lambda base: None)
     with pytest.raises(Exception):  # noqa: B017, PT011
         run_dit_lora_training(cfg)
     assert seen == ["black-forest-labs/FLUX.1-dev"]

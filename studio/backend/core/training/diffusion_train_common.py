@@ -1037,13 +1037,24 @@ class DiffusionLoraConfig:
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
-        from core.inference.diffusion_families import prefer_ungated_mirror
+        from core.inference.diffusion_families import mirror_repo, prefer_ungated_mirror
 
-        fetch_base_model = (
-            prefer_ungated_mirror(self.base_model, token or None)
-            if resolved_family != "sdxl"
-            else self.base_model
-        )
+        if resolved_family == "sdxl":
+            fetch_base_model = self.base_model
+        else:
+            fetch_base_model = prefer_ungated_mirror(self.base_model, token or None)
+            # WITHOUT a token the cache preference has to be overridden. Only gated repos are in
+            # the mirror table, so a mirror existing means the upstream needs credentials this run
+            # does not have: a partial snapshot cannot be completed, and the start route's HEAD
+            # refuses even a complete one. prefer_ungated_mirror's probe counts any cached weight
+            # as a hit, so a single leftover shard from an interrupted or previously authorized
+            # download was enough to keep the vendor id and hard-block the very case the mirrors
+            # exist for. It stays cache-aware WITH a token, where upstream is genuinely usable.
+            # UNSLOTH_DIFFUSION_NO_MIRROR still wins, exactly as it does inside
+            # prefer_ungated_mirror: it is the documented way to pin the vendor repo, and an
+            # override that ignored it would make that switch a lie on the training path only.
+            if not token and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+                fetch_base_model = mirror_repo(self.base_model) or fetch_base_model
         # A blank caption_column means the default, as the start route's own preflight already
         # assumes ("or 'text'"). Without this the route and the trainer resolve different captions
         # from a metadata.jsonl, so their dataset fingerprints disagree and a resume that the

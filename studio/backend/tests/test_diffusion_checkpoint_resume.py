@@ -2362,15 +2362,18 @@ def test_the_revision_is_pinned_once_the_base_is_on_disk(monkeypatch, run_dir):
     assert dc.with_resolved_revision(unresolved, cfg.base_model).base_revision == "unresolved"
 
 
-def test_a_mirror_backed_run_records_the_canonical_revision(monkeypatch, run_dir):
-    """The revision must not move when the FETCH repo does.
+def test_a_mirror_backed_run_pairs_the_revision_with_the_repo_it_came_from(monkeypatch, run_dir):
+    """The revision follows the FETCHED repo, and carries which repo that was.
 
-    ``prefer_ungated_mirror`` picks between the canonical repo and its byte-identical
-    mirror on local cache state, so recording whichever one loaded would give the same
-    logical base two different ``rev-`` values: evict the upstream snapshot, or resume on
-    another machine, and the checkpoint is refused as "a different base model revision".
-    Every checkpoint written before mirrors existed holds the canonical value, so it has
-    to stay the canonical one.
+    Both single-value shapes are wrong. Recording the canonical repo loses the check
+    completely, because the mirror is selected precisely WHEN the canonical repo is not
+    cached, so it has no local ref and every mirror-backed bundle reads "unresolved" --
+    which ``mismatch_reason`` skips, so a mirror that advanced under a resume goes
+    unnoticed. Recording the mirror alone refuses byte-identical weights the moment the
+    fetch repo changes, and refuses every bundle written before mirrors existed.
+
+    Pairing the two keeps the comparison wherever it can be made and drops it only where
+    it genuinely cannot.
     """
     import dataclasses
 
@@ -2383,20 +2386,45 @@ def test_a_mirror_backed_run_records_the_canonical_revision(monkeypatch, run_dir
 
     def _revision(ref):
         seen.append(ref)
-        # Only the canonical repo has a ref here: the mirror would answer differently.
-        return "rev-canonical1" if ref == source else "rev-mirror123"
+        # The real-world shape: the canonical repo is NOT cached, which is what selected the
+        # mirror in the first place, so only the mirror resolves to a commit.
+        return "rev-mirror111" if ref == mirror else "unresolved"
 
     monkeypatch.setattr(dte, "source_revision", _revision)
-
     via_mirror = dc.identity_for_config(dataclasses.replace(base, fetch_base_model = mirror))
-    direct = dc.identity_for_config(dataclasses.replace(base, fetch_base_model = None))
 
+    # The canonical id is what the run is ABOUT; only the revision pair follows the fetch.
     assert via_mirror.base_model == source
-    assert seen == [source, source]
-    assert via_mirror.base_revision == "rev-canonical1"
-    # The whole point: the two are interchangeable, so neither refuses the other's bundle.
-    assert direct.mismatch_reason(via_mirror) is None
+    assert seen == [mirror]
+    assert via_mirror.base_revision == "rev-mirror111"
+    assert via_mirror.base_revision_repo == mirror
+
+    # 1. The check this exists for: the mirror advanced under a resume. Recording the
+    #    canonical repo made both sides "unresolved" and this went undetected.
+    moved = dataclasses.replace(via_mirror, base_revision = "rev-mirror222")
+    reason = via_mirror.mismatch_reason(moved)
+    assert reason and "base model revision" in reason
+
+    # 2. And the refusal that must NOT happen: the same weights fetched from the other repo.
+    direct = dataclasses.replace(
+        via_mirror, base_revision = "rev-canonical1", base_revision_repo = source
+    )
     assert via_mirror.mismatch_reason(direct) is None
+    assert direct.mismatch_reason(via_mirror) is None
+
+    # 3. A bundle written before the field existed read the canonical repo, so it stays
+    #    comparable with a new canonical-fetched one rather than silently opting out.
+    legacy = dataclasses.replace(
+        via_mirror, base_revision = "rev-canonical9", base_revision_repo = None
+    )
+    legacy_reason = legacy.mismatch_reason(direct)
+    assert legacy_reason and "base model revision" in legacy_reason
+
+    # 4. And it survives a manifest round trip, or the pairing is lost on reload.
+    reloaded = dc.CheckpointIdentity.from_dict(via_mirror.as_dict())
+    assert reloaded is not None
+    assert reloaded.base_revision_repo == mirror
+    assert reloaded.mismatch_reason(moved) is not None
 
 
 def test_both_trainers_pin_the_revision_after_the_load():

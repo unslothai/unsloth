@@ -27,3 +27,31 @@ export function resolveDiffusionDeployBase(
   }
   return trainedBase;
 }
+
+/**
+ * The TRAINING base paired with a checkpoint that is currently loaded for inference, or null.
+ *
+ * The inverse of the mapping above, and it is what the Train panel needs to preselect: the
+ * distilled variants a user generates with are not trainable, so a loaded `...klein-9B` never
+ * appears in `base_repos` and an exact-match preselect silently falls through to the FIRST entry.
+ * For FLUX.2 Klein that is the 4B base, so opening Train with the 9B model loaded started a 9B
+ * workflow from 4B weights unless the user noticed the selector.
+ *
+ * Only a pairing the family actually declares is returned, and only when the paired training repo
+ * is offered, so this can never invent a base the backend would refuse.
+ */
+export function resolveDiffusionTrainingBase(
+  family: DiffusionTrainableFamily | undefined,
+  loadedBase: string,
+): string | null {
+  const key = normalizedRepo(loadedBase);
+  if (!family || !key) return null;
+  const pair = Object.entries(family.deploy_bases ?? {}).find(
+    ([, inferenceRepo]) => normalizedRepo(inferenceRepo) === key,
+  );
+  const trainingRepo = pair?.[0];
+  if (!trainingRepo) return null;
+  return (
+    family.base_repos.find((repo) => normalizedRepo(repo) === normalizedRepo(trainingRepo)) ?? null
+  );
+}
