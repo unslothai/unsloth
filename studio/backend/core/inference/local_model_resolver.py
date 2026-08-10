@@ -400,8 +400,9 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
 
     A snapshot is trustworthy while fresh, or after an explicit additions-only
     invalidation. A positive hit from ordinary TTL expiry or a scan-root change
-    must be rebuilt before it can trigger a model switch. The identity check closes
-    the race where a refresh publishes a different snapshot during the lookup.
+    must be rebuilt before it can trigger a model switch. The identity checks close
+    the race where invalidation publishes a different snapshot during resolution or
+    while the trust state is being evaluated.
     """
     snapshot = _scan
     resolved = _resolve_from_index(requested, snapshot[1])
@@ -410,7 +411,8 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
     timestamp, cached = snapshot
     fresh = bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S
     additions_only = not timestamp and cached is _additions_only_retained
-    return resolved if fresh or additions_only else None
+    trusted = fresh or additions_only
+    return resolved if trusted and _scan is snapshot else None
 
 
 def warm_index_soon() -> None:

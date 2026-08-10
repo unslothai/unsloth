@@ -6458,6 +6458,58 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
     assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
 
 
+def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    snapshot = (time.monotonic(), {"org/old": entry})
+    monkeypatch.setattr(resolver, "_scan", snapshot)
+
+    def _invalidate_while_deciding_trust():
+        resolver._scan = (0.0, snapshot[1])
+        return snapshot[0]
+
+    monkeypatch.setattr(resolver.time, "monotonic", _invalidate_while_deciding_trust)
+
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as model_routes
+
+    event_loop_thread = threading.get_ident()
+    calls = []
+
+    def _add(path):
+        calls.append(("add", threading.get_ident()))
+        return {"id": 7, "path": path, "created_at": "fake"}, True
+
+    def _remove(folder_id):
+        calls.append((f"remove:{folder_id}", threading.get_ident()))
+
+    def _invalidate():
+        calls.append(("invalidate", threading.get_ident()))
+
+    monkeypatch.setattr("storage.studio_db.add_scan_folder_with_status", _add)
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(resolver, "invalidate_index", _invalidate)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    async def _run():
+        folder = await model_routes.add_scan_folder_endpoint(
+            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+        )
+        removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
+        return folder, removed
+
+    folder, removed = asyncio.run(_run())
+
+    assert folder["path"] == "/models/custom"
+    assert removed == {"ok": True}
+    assert [name for name, _ in calls] == ["add", "invalidate", "remove:7", "invalidate"]
+    assert all(thread_id != event_loop_thread for _, thread_id in calls)
+
+
 def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
     import routes.models as model_routes
     from hub.services.models import local_inventory

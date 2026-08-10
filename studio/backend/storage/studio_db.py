@@ -1508,8 +1508,8 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    """Add a directory to the custom scan folder list. Returns the row."""
+def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+    """Add a custom scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
@@ -1553,13 +1553,15 @@ def add_scan_folder(path: str) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing)
+            return dict(existing), False
+        inserted = False
         try:
             conn.execute(
                 "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
                 (normalized, now),
             )
             conn.commit()
+            inserted = True
         except sqlite3.IntegrityError:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
@@ -1571,9 +1573,15 @@ def add_scan_folder(path: str) -> dict:
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
             raise ValueError("Folder was concurrently removed")
-        return dict(row)
+        return dict(row), inserted
     finally:
         conn.close()
+
+
+def add_scan_folder(path: str) -> dict:
+    """Add a directory to the custom scan folder list. Returns the row."""
+    row, _ = add_scan_folder_with_status(path)
+    return row
 
 
 def remove_scan_folder(id: int) -> None:

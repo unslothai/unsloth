@@ -1213,20 +1213,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
-    from core.inference.local_model_resolver import invalidate_index, warm_index_soon
-
-    invalidate_index()
-    warm_index_soon()
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1237,11 +1237,11 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
+    await asyncio.to_thread(remove_scan_folder, folder_id)
     logger.info("Scan folder removed: id=%s", folder_id)
     from core.inference.local_model_resolver import invalidate_index, warm_index_soon
 
-    invalidate_index()
+    await asyncio.to_thread(invalidate_index)
     warm_index_soon()
     return {"ok": True}
 
