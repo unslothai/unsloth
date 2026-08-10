@@ -3007,14 +3007,15 @@ def test_clearing_every_chat_reports_the_files_it_kept():
     api = (src / "features/chat/api/chat-api.ts").read_text(encoding = "utf-8")
     clear = api[api.index("export async function clearBackendChats") :]
     clear = clear[: clear.index("\nexport ")]
-    assert "Promise<string[]>" in clear
+    assert "deletedThreadIds: string[]" in clear
+    assert "sandboxesKept: string[]" in clear
     assert "sandboxes_kept" in clear
 
     storage = (src / "features/chat/utils/chat-history-storage.ts").read_text(
         encoding = "utf-8",
     )
     assert "sandboxesKept" in storage
-    assert "result.sandboxesKept = await clearBackendChats" in storage
+    assert "result.sandboxesKept = backendResult.sandboxesKept" in storage
 
     tab = (src / "features/settings/tabs/data-tab.tsx").read_text(encoding = "utf-8")
     assert "offerToDeleteKeptSandboxes(result.sandboxesKept)" in tab

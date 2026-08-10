@@ -563,6 +563,25 @@ def _post_warm_retired(generation: Optional[int]) -> bool:
     return True
 
 
+def _start_linked_folder_auto_sync(generation: Optional[int]) -> None:
+    # A real lifespan worker carries a generation; direct calls without one are tests.
+    if generation is None:
+        return
+    try:
+        from core.rag.folder_sync import start_auto_sync
+        from storage.studio_db import get_chat_project
+        start_auto_sync(
+            admission_lock = _post_warm_lock,
+            admit = lambda: _post_warm_generation == generation,
+            project_exists = lambda project_id: get_chat_project(project_id) is not None,
+        )
+    except Exception as exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).warning(
+            "linked-folder auto-sync failed at startup: %s", exc
+        )
+
+
 def _post_warm_background_work(generation: Optional[int] = None) -> None:
     """Stack-dependent startup work, run after the coordinated warm.
 
@@ -592,8 +611,12 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
+    if _post_warm_retired(generation):
+        return
+    _start_linked_folder_auto_sync(generation)
+
     # Only the RAG warm is gated: it pulls sentence-transformers/transformers/torch. MLX
-    # autorepair has its own opt-out, and gating it would leave a broken MLX Mac chat-only.
+    # autorepair and linked-folder scheduling have their own lifecycles.
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return
 
@@ -725,6 +748,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+    try:
+        from core.rag.folder_sync import stop_auto_sync
+        stop_auto_sync()
+    except Exception as exc:
+        _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
 
     # Same for the coordinated warm: retiring its epoch stops it at the next stage boundary.
     # run_lifespan_shutdown() also invalidates, but only after several awaits, through which the
@@ -1491,9 +1519,10 @@ async def health_check(request: Request):
     await _await_hardware_detection(_HEALTH_DETECT_BUDGET_S)
     # Snapshot, not a bare global read: a forced re-detect can start at any moment.
     snapshot = _hardware_snapshot()
-    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold
-    # it back and keep replying provisionally, or the Mac gets Train and Video greyed out
-    # under a tooltip the reinstall makes wrong minutes later.
+    # A chat-only verdict the MLX self-heal is about to overturn is not an answer yet. Hold it
+    # back and keep replying provisionally, or the Mac gets Train greyed out under a tooltip the
+    # reinstall makes wrong minutes later. Video does not wait on this: it runs on Metal without
+    # MLX, so it reads /api/system/hardware instead.
     mlx_repairing = _superseded_by_mlx_repair(snapshot)
     if mlx_repairing:
         snapshot = None

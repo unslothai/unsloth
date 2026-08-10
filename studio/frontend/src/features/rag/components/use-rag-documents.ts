@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { toast } from "@/lib/toast";
 import { consumeNativePathToken } from "@/features/native-intents";
+import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDocument,
@@ -12,7 +12,11 @@ import {
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
-import type { DocumentStatus, RagDocument } from "../types/rag";
+import {
+  type RagDocument,
+  type TerminalJobStatus,
+  terminalJobStatus,
+} from "../types/rag";
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
@@ -114,11 +118,14 @@ export function useRagDocuments(
       trackedJobs.current.set(jobId, controller);
 
       const finish = (
-        status: DocumentStatus,
+        status: TerminalJobStatus,
         error?: string | null,
         numChunks?: number | null,
       ) => {
-        if (status === "failed") {
+        if (status === "cancelled") {
+          sigByDocId.current.delete(documentId);
+          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+        } else if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
@@ -150,21 +157,17 @@ export function useRagDocuments(
               finish("completed", null, ev.num_chunks);
               return;
             } else if (ev.type === "error") {
-              finish("failed", ev.error ?? "Indexing failed");
+              finish(
+                ev.stage === "cancelled" ? "cancelled" : "failed",
+                ev.error ?? "Indexing failed",
+              );
               return;
             }
           }
           // Stream ended with no terminal frame: reconcile.
           const job = await getJob(jobId);
-          finish(
-            job.status === "completed"
-              ? "completed"
-              : job.status === "failed"
-                ? "failed"
-                : "completed",
-            job.error,
-            job.numChunks,
-          );
+          const terminal = terminalJobStatus(job.status);
+          finish(terminal ?? "completed", job.error, job.numChunks);
         } catch {
           if (controller.signal.aborted) {
             trackedJobs.current.delete(jobId);
@@ -175,10 +178,15 @@ export function useRagDocuments(
             for (let i = 0; i < 600; i++) {
               if (controller.signal.aborted) break;
               const job = await getJob(jobId);
-              if (job.status === "completed")
-                return finish("completed", null, job.numChunks);
-              if (job.status === "failed") {
-                return finish("failed", job.error ?? "Indexing failed");
+              const terminal = terminalJobStatus(job.status);
+              if (terminal) {
+                return finish(
+                  terminal,
+                  terminal === "failed"
+                    ? (job.error ?? "Indexing failed")
+                    : job.error,
+                  job.numChunks,
+                );
               }
               patchDoc(documentId, {
                 status: job.status === "running" ? "running" : "pending",
@@ -197,7 +205,7 @@ export function useRagDocuments(
 
   const refresh = useCallback(
     async (opts?: { quiet?: boolean }) => {
-      if (!scope) return;
+      if (!scopeKey) return;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
@@ -228,7 +236,7 @@ export function useRagDocuments(
         if (!opts?.quiet) setLoading(false);
       }
     },
-    [scope, lister],
+    [scopeKey, lister],
   );
 
   // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
@@ -322,7 +330,9 @@ export function useRagDocuments(
         sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(`${result.filename || name} is already indexed - skipping`);
+          toast.info(
+            `${result.filename || name} is already indexed - skipping`,
+          );
           return;
         }
         seenIds.add(result.documentId);
@@ -389,6 +399,7 @@ export function useRagDocuments(
             id: tempId,
             filename: itemName(item),
             status: "pending" as const,
+            managed: false,
             progress: null,
           })),
         ]);

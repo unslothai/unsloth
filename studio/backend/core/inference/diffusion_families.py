@@ -75,7 +75,9 @@ class DiffusionFamily:
     # that asks for it by name and the old one to every build that does not. That is what lets a
     # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
-    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # A row may also be (scheme, task, filename), which names the artifact for ONE task and beats
+    # the task-agnostic row; see ``family_prequant_filename``.
+    prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
@@ -814,16 +816,46 @@ def family_prequant_repo(
     return None
 
 
-def family_prequant_filename(fam: DiffusionFamily, scheme: str) -> Optional[str]:
+def family_prequant_filename(
+    fam: DiffusionFamily,
+    scheme: str,
+    task: Optional[str] = None,
+) -> Optional[str]:
     """The preferred checkpoint filename this family declares for ``scheme``, or None.
 
     ``None`` means "use the derived ``<Model>-<SCHEME>.pt`` name", which is every family but the
     ones shipping a second artifact under the same repo and scheme. Not variant-keyed: the
-    filename says WHICH artifact, the repo says which base."""
-    for entry_scheme, filename in getattr(fam, "prequant_filenames", ()) or ():
-        if entry_scheme == scheme:
-            return filename
-    return None
+    filename says WHICH artifact, the repo says which base.
+
+    Rows come in two shapes. ``(scheme, filename)`` is the historical one and is TASK-AGNOSTIC.
+    ``(scheme, task, filename)`` names an artifact for one task only and wins over the agnostic
+    row when ``task`` matches. That distinction exists because a family can hold several denoiser
+    PARTITIONS in one repo (MiniMax-H3: keyframe vs reference), whose checkpoints have identical
+    key sets and identical metadata and so cannot be told apart by any later check -- picking the
+    wrong one generates from the wrong partition rather than failing.
+
+    ``task = None`` therefore sees only the agnostic rows, and a scheme with no row for the task
+    asked for falls back to the agnostic one, i.e. exactly today's behaviour. Malformed rows are
+    skipped rather than raising: this runs on a refusal path where a table typo must not 500."""
+    wanted = (task or "").strip().lower()
+    agnostic: Optional[str] = None
+    for entry in getattr(fam, "prequant_filenames", ()) or ():
+        if not isinstance(entry, (tuple, list)):
+            continue
+        if len(entry) == 2:
+            entry_scheme, filename = entry
+            if entry_scheme == scheme and agnostic is None and filename:
+                agnostic = filename
+        elif len(entry) == 3:
+            entry_scheme, entry_task, filename = entry
+            if (
+                wanted
+                and entry_scheme == scheme
+                and (entry_task or "").strip().lower() == wanted
+                and filename
+            ):
+                return filename
+    return agnostic
 
 
 # The release where diffusers' own requires-python went ">= 3.10.0", which makes 0.36.0 the newest
