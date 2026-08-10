@@ -182,6 +182,10 @@ export function ProjectSourceDropzone({
 
   /** Hand a list to the owner without reading it back as an external reset. */
   const commit = useCallback((next: StagedSource[]) => {
+    // Also the ref, not just on the next render: two drops settling in one tick
+    // would otherwise merge against the same old list and the second would
+    // publish an array missing the first drop's files.
+    stagedRef.current = next;
     handedOff.current = next;
     onChangeRef.current(next);
   }, []);

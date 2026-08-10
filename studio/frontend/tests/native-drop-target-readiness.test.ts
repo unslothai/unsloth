@@ -37,7 +37,14 @@ const { nativeDropTargetAt, registerNativeDropTarget } = await import(
   "../src/features/native-intents/native-drop-targets.ts"
 );
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+/** The install runs through a dynamic import, so no fixed number of ticks says
+ * it is done. Wait for the condition itself. */
+async function until(condition: () => boolean, what: string) {
+  for (let i = 0; i < 500 && !condition(); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.ok(condition(), `timed out waiting for ${what}`);
+}
 
 const dropped: string[][] = [];
 registerNativeDropTarget(zone as unknown as HTMLElement, {
@@ -48,13 +55,16 @@ registerNativeDropTarget(zone as unknown as HTMLElement, {
 // element early would make the chat-wide handler step aside for nothing, and
 // the drop would land nowhere at all.
 test("a target is not claimed until its listener is installed", async () => {
-  await settle();
+  await until(() => control.installed !== undefined, "the drag-drop install");
   assert.equal(nativeDropTargetAt({ x: 10, y: 10 }), null);
 });
 
 test("the same target is claimed once the listener is installed", async () => {
   control.installed?.();
-  await settle();
+  await until(
+    () => nativeDropTargetAt({ x: 10, y: 10 }) !== null,
+    "the target to be claimed",
+  );
   assert.equal(nativeDropTargetAt({ x: 10, y: 10 }), zone as unknown as HTMLElement);
   control.deliver?.({
     payload: { type: "drop", position: { x: 10, y: 10 }, paths: ["/tmp/a.pdf"] },

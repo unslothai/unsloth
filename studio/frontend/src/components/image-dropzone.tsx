@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Delete02Icon, ImageAdd02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -18,6 +18,11 @@ import {
 } from "@/features/native-intents";
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
+
+// What the native path policy lets registerNativeAttachmentPath take. The
+// picker itself accepts image/*, so say which formats a drop can carry rather
+// than letting the backend refuse one with its own wording.
+const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 /** Shared image picker that returns a data URL. */
 export function ImageDropzone({
@@ -40,6 +45,16 @@ export function ImageDropzone({
   // File reads can finish after another picker action. Only the newest
   // selection may update the shared field.
   const selection = useRef(0);
+  // The sequence above is per instance, so it cannot see a read outliving this
+  // picker: `onChange` is shared, and a late write would land on whatever slot
+  // holds it now. Set on setup, so StrictMode's replay does not leave it false.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const readFile = useCallback(
     (file: File | undefined | null) => {
@@ -65,12 +80,18 @@ export function ImageDropzone({
   const readNativePath = useCallback(
     async (path: string | undefined) => {
       if (!path) return;
+      if (!NATIVE_IMAGE_EXTS.includes(path.split(".").pop()?.toLowerCase() ?? "")) {
+        toast.error("Drop a JPEG, PNG, WebP or GIF image", {
+          description: "Other image formats can still be chosen with the picker.",
+        });
+        return;
+      }
       selection.current += 1;
       const claimed = selection.current;
       try {
         const intent = await registerNativeAttachmentPath(path);
         const file = await readNativeAttachmentFile(intent.path.token);
-        if (claimed !== selection.current) return;
+        if (!mounted.current || claimed !== selection.current) return;
         onChange(`data:${file.mimeType};base64,${file.base64}`);
       } catch (error) {
         toast.error("Could not read the image", {

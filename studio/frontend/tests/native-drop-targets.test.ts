@@ -136,7 +136,7 @@ test("the chat drop handler defers to a registered target", async () => {
   );
   assert.match(
     source,
-    /if \(nativeDropTargetAt\(event\.payload\.position\)\) \{\s*setDropState\(\{ status: "idle" \}\);\s*return;/,
+    /if \(nativeDropTargetAt\(event\.payload\.position\)\) \{\s*publish\(\{ status: "idle" \}\);\s*return;/,
   );
 });
 
@@ -149,5 +149,25 @@ test("the shared image picker owns native drops and ignores stale reads", async 
   assert.match(source, /ref=\{nativeDropRef\}/);
   assert.match(source, /registerNativeAttachmentPath\(path\)/);
   assert.match(source, /readNativeAttachmentFile\(intent\.path\.token\)/);
-  assert.match(source, /if \(claimed !== selection\.current\) return;/);
+  // A read outliving the picker would land on whoever holds `onChange` now, and
+  // the native policy takes fewer formats than the picker's own image/*.
+  assert.match(source, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
+  assert.match(source, /NATIVE_IMAGE_EXTS\.includes\(/);
+});
+
+// Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
+// ChatPage, so an unconditional setState there rerenders the page per event.
+test("the chat drop overlay only publishes a changed state", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/native-intents/use-native-drop.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /setDropState\(\(prev\) => \(sameDropState\(prev, next\) \? prev : next\)\)/,
+  );
+  assert.doesNotMatch(source, /payload\.type !== "drop"\) \{\s*setDropState\(/);
 });

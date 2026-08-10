@@ -147,6 +147,17 @@ async function registerDroppedAttachments(
   };
 }
 
+function sameDropState(
+  a: NativeModelDropState,
+  b: NativeModelDropState,
+): boolean {
+  if (a.status !== b.status) return false;
+  if (a.status === "valid" && b.status === "valid") return a.action === b.action;
+  if (a.status === "attach" && b.status === "attach")
+    return a.count === b.count && a.kind === b.kind;
+  return true;
+}
+
 export function useNativeModelDrop(options: NativeModelDropOptions): NativeModelDropState {
   const { enabled = true } = options;
   const addIntent = useNativeIntentStore((state) => state.addIntent);
@@ -164,13 +175,18 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
     // "over" carries no paths, so the ones announced on "enter" are what the
     // overlay keeps reading as the cursor moves across the window.
     let draggedPaths: string[] = [];
+    // Tauri repeats "over" for every cursor move. A fresh object each time
+    // would rerender ChatPage at drag-event frequency, so publish only a
+    // change; returning `prev` makes React bail out.
+    const publish = (next: NativeModelDropState) =>
+      setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 
     void import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => getCurrentWindow().onDragDropEvent(async (event) => {
         const currentOptions = optionsRef.current;
         if (event.payload.type === "leave") {
           draggedPaths = [];
-          setDropState({ status: "idle" });
+          publish({ status: "idle" });
           return;
         }
         if (event.payload.type === "enter") {
@@ -178,15 +194,15 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         }
         // A drop zone under the cursor owns this drop; leave it alone.
         if (nativeDropTargetAt(event.payload.position)) {
-          setDropState({ status: "idle" });
+          publish({ status: "idle" });
           return;
         }
         if (event.payload.type !== "drop") {
-          setDropState(dropStateForPaths(draggedPaths, currentOptions));
+          publish(dropStateForPaths(draggedPaths, currentOptions));
           return;
         }
         draggedPaths = [];
-        setDropState({ status: "idle" });
+        publish({ status: "idle" });
         const dropped = classifyDropPaths(event.payload.paths);
         if (dropped.kind === "none") return;
         if (dropped.kind === "unsupported") {
