@@ -77,17 +77,16 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
     try:
         if engine == "mtmd":
             from core.inference import stt_mtmd_sidecar
-
             return bool(stt_mtmd_sidecar.is_model_downloaded(model))
         if engine == "gguf":
             from core.inference import stt_ggml_sidecar
-
             return stt_ggml_sidecar._cached_model_path(model) is not None
         from core.inference import stt_sidecar
 
-        return stt_sidecar._find_complete_cached_snapshot(
-            stt_sidecar.resolve_model_id(model)
-        ) is not None
+        return (
+            stt_sidecar._find_complete_cached_snapshot(stt_sidecar.resolve_model_id(model))
+            is not None
+        )
     except Exception:  # noqa: BLE001 - a probe must never fail the load it precedes
         return False
 

@@ -1347,9 +1347,7 @@ def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
     30-minute cap, and several could do that at once."""
     import threading
 
-    monkeypatch.setattr(
-        stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED
-    )
+    monkeypatch.setattr(stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
