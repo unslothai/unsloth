@@ -645,7 +645,8 @@ class MtmdSttSidecar:
             if self._active_requests:
                 logger.warning(
                     "mtmd STT still had %d active request(s) after %.0fs; releasing anyway",
-                    self._active_requests, _ACTIVE_REQUEST_DRAIN_TIMEOUT,
+                    self._active_requests,
+                    _ACTIVE_REQUEST_DRAIN_TIMEOUT,
                 )
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
