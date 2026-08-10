@@ -4,7 +4,7 @@
 // Whether the corner indicator may appear. Off by default; only an explicit
 // "true" (Settings -> General -> Notifications) enables it. An older explicit
 // "false" still reads as off, so anyone who already turned it down stays that
-// way.
+// way. Tri-state on purpose: see setShowLoadedModels.
 
 import { useSyncExternalStore } from "react";
 
@@ -38,12 +38,11 @@ export function getShowLoadedModels(): boolean {
 
 export function setShowLoadedModels(show: boolean): void {
   try {
-    if (show) {
-      localStorage.setItem(STORAGE_KEY, "true");
-    } else {
-      // Remove rather than store "false" so the default stays off.
-      localStorage.removeItem(STORAGE_KEY);
-    }
+    // Both values written, never removed: "false" is the one an older reader
+    // also treats as off, so a pre-update tab does not flip the card back on
+    // through the storage event. Absent still means off here, so the default
+    // is unaffected.
+    localStorage.setItem(STORAGE_KEY, show ? "true" : "false");
   } catch {
     // storage unavailable
   }

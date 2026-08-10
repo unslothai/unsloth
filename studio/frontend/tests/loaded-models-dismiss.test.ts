@@ -30,20 +30,30 @@ test("the indicator is off until it is switched on", () => {
   assert.equal(getShowLoadedModels(), false);
 });
 
-test("switching on stores the key, switching off removes it", () => {
+// Written either way, never removed. A pre-update tab reads a missing key as
+// on, so removing it on disable would let the storage event flip the card back
+// on over there.
+test("both toggles store a value the older reader also honours", () => {
   reset();
   setShowLoadedModels(true);
   assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.show), "true");
   setShowLoadedModels(false);
-  // Removed, not stored as "false", so the default stays off.
-  assert.equal(store.has(LOADED_MODELS_PREFERENCE_KEYS.show), false);
+  assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.show), "false");
   assert.equal(getShowLoadedModels(), false);
 });
 
-// What the old default wrote when it was turned down. It must not now read as on.
+// What the old build wrote when it was turned down. It must not now read as on.
 test("an older explicit false still reads as off", () => {
   reset();
   store.set(LOADED_MODELS_PREFERENCE_KEYS.show, "false");
+  assert.equal(getShowLoadedModels(), false);
+});
+
+// Reset all local preferences removes the key, and the default must survive it.
+test("a cleared key falls back to off, not on", () => {
+  reset();
+  setShowLoadedModels(true);
+  store.delete(LOADED_MODELS_PREFERENCE_KEYS.show);
   assert.equal(getShowLoadedModels(), false);
 });
 
