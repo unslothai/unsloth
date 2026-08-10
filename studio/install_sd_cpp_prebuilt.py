@@ -104,6 +104,11 @@ def installed_accelerator(root: Path) -> Optional[str]:
 # successful install from being repeated, without failing an install whose binaries are fine.
 _INSTALLED_ACCELERATOR_MEMO: dict[str, str] = {}
 
+# The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at
+# all: with only half of it remembered, an unwritable record leaves a serverless install looking
+# server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
+_INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+
 
 def installed_ships_server(root: Path) -> Optional[bool]:
     """Whether the bundle installed in ``root`` carried an sd-server, or None when unrecorded.
@@ -111,8 +116,13 @@ def installed_ships_server(root: Path) -> Optional[bool]:
     None is the honest answer for every install that predates this field, and callers must treat
     it as "unknown" rather than "serverless": a missing sd-server is otherwise indistinguishable
     from one a bundle never shipped, and suppressing the reinstall on a guess would strand a tree
-    whose server was deleted (by hand, or by the runnability repair) on the one-shot CLI forever."""
-    val = read_install_record(root).get("ships_server")
+    whose server was deleted (by hand, or by the runnability repair) on the one-shot CLI forever.
+
+    The memo WINS over the file, for the same reason ``installed_accelerator``'s does: it is only
+    set by an install that completed in this process, and the case it exists for is a record that
+    could not be written, where the file is stale or absent."""
+    memo = _INSTALLED_SHIPS_SERVER_MEMO.get(str(root))
+    val = memo if memo is not None else read_install_record(root).get("ships_server")
     return val if isinstance(val, bool) else None
 
 
@@ -134,6 +144,11 @@ def _write_install_record(
     rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
     if ships_server is not None:
         rec["ships_server"] = ships_server
+        _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
+    else:
+        # An install that did not report the capability must not leave an older memo standing in
+        # for this one -- the tree is now whatever this bundle put there.
+        _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
             json.dump(rec, f)

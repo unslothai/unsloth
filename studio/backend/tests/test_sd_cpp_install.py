@@ -1720,6 +1720,7 @@ def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, m
     root.mkdir()
     (root / sdmod.INSTALL_RECORD).mkdir()  # a directory where the record file goes: open() fails
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
     assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
@@ -1735,6 +1736,7 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
         json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     real_open = builtins.open
 
@@ -1809,6 +1811,7 @@ def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, 
     (legacy / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
     old_server = legacy / "sd-bin" / "sd-server"
     old_server.write_bytes(b"cpu-build")
 
@@ -1843,6 +1846,7 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     (current / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     installs: list[dict] = []
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
@@ -1881,6 +1885,7 @@ def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_p
     (current / ".unsloth-studio-owned").touch()
     sdmod._write_install_record(current, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
     monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
@@ -1911,6 +1916,7 @@ def test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless(tmp
     # A record from before ships_server existed: the bundle's server capability is unknown.
     sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t")
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
     assert sdmod.installed_ships_server(current) is None
 
     installs: list[dict] = []
@@ -1942,6 +1948,36 @@ def test_install_records_that_the_bundle_shipped_a_server(tmp_path, monkeypatch)
     _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
     install(install_dir = tmp_path)
     assert sdmod.installed_ships_server(tmp_path) is True
+
+
+def test_an_unwritable_record_still_remembers_the_server_capability(tmp_path):
+    """Memoised alongside the accelerator or not at all. With only half of it remembered, an
+    unwritable record leaves a serverless install looking server-capable to the very guard the
+    accelerator memo exists to serve, and the load keeps re-downloading the bundle."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    (root / sdmod.INSTALL_RECORD).mkdir()  # a directory where the record file goes: open() fails
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    sdmod._write_install_record(
+        root, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
+    )
+    assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
+    assert sdmod.installed_accelerator(root) == "cuda"
+    assert sdmod.installed_ships_server(root) is False  # ... and not "unknown"
+
+
+def test_a_stale_record_does_not_outrank_the_server_capability_just_installed(tmp_path):
+    """The readable-but-unreplaceable shape: an older record saying the bundle shipped a server
+    must not survive an install of one that does not."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old", "ships_server": True}, f)
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO[str(root)] = False
+    assert sdmod.installed_ships_server(root) is False
 
 
 def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_path):
