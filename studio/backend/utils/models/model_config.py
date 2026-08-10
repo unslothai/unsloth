@@ -2106,6 +2106,7 @@ def detect_dflash_file(
         dirs.append(Path(search_root))
 
     candidates: list[Path] = []
+    other_weights: list[str] = []
     seen: set[Path] = set()
     # dict.fromkeys: search_root is the weight's own parent for a flat layout,
     # and scanning it twice doubles the directory reads for nothing.
@@ -2123,6 +2124,10 @@ def detect_dflash_file(
             # in -dflash.
             stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
             if not (lower.startswith("dflash-") or stem.endswith("-dflash")):
+                # Every other GGUF in the folder is a weight some sidecar could
+                # be naming. Recorded so a sidecar belonging to a NEIGHBOUR can
+                # be told apart from one naming no family at all (below).
+                other_weights.append(candidate.name)
                 continue
             try:
                 # Collapse a split copy to shard 1 before ranking.
@@ -2141,6 +2146,33 @@ def detect_dflash_file(
                 continue
             seen.add(resolved)
             candidates.append(launch)
+
+    # A sidecar naming a family that belongs to a NEIGHBOUR weight is that
+    # neighbour's drafter, not a generic one. _drafter_matches_weight is False
+    # both for it and for a sidecar naming no family (dflash-kquant.gguf), so
+    # ranking alone bucketed the two together and precision could float the
+    # foreign one to the top: loading model B beside dflash-model-A-Q8_0.gguf
+    # and dflash-kquant.gguf launched model A's drafter for model B. Both carry
+    # a real dflash header, so the architecture check behind the ranking cannot
+    # catch it. Deciding against the weights actually present keeps the
+    # published unpaired sidecar eligible (its stem, "kquant", names no file
+    # here) without hardcoding which stems are precision tokens.
+    if weight_name is not None and other_weights:
+        kept: list[Path] = []
+        for candidate in candidates:
+            if not _drafter_matches_weight(
+                candidate.name, weight_name, kind = "dflash"
+            ) and any(
+                _drafter_matches_weight(candidate.name, other, kind = "dflash")
+                for other in other_weights
+            ):
+                logger.info(
+                    "detect_dflash_file: dropped %s (names another weight in this folder)",
+                    candidate.name,
+                )
+                continue
+            kept.append(candidate)
+        candidates = kept
 
     for candidate in sorted(candidates, key = _rank):
         meta = read_gguf_general_metadata(str(candidate)) or {}

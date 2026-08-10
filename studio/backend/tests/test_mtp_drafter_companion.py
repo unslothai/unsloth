@@ -2090,3 +2090,32 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
     assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()
+
+
+def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):
+    """A multi-model folder must not attach a foreign drafter.
+
+    _drafter_matches_weight is False both for a sidecar naming no family and for
+    one naming a DIFFERENT family, so ranking alone bucketed them together and
+    precision could float the foreign one to the top: loading model B beside
+    dflash-model-A-Q8_0.gguf and the generic dflash-kquant.gguf launched model
+    A's drafter for model B. Both files carry a real dflash header, so the
+    architecture check behind the ranking cannot catch this one.
+    """
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    _write_gguf(tmp_path / "Qwen3.6-27B-Q4_K_M.gguf", "qwen3")
+    foreign = _write_gguf(tmp_path / "dflash-Qwen3.6-27B-Q8_0.gguf", "dflash")
+    generic = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    assert foreign.exists()
+    assert detect_dflash_file(str(weight)) == str(generic.resolve())
+
+
+def test_detect_dflash_file_still_prefers_a_sidecar_that_names_this_weight(tmp_path):
+    """The skip above must not cost the paired case: a sidecar naming THIS
+    weight's family still wins over the generic one."""
+    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
+    paired = _write_gguf(tmp_path / "dflash-Muse-Glimmer-30B-Q8_0.gguf", "dflash")
+    _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    assert detect_dflash_file(str(weight)) == str(paired.resolve())

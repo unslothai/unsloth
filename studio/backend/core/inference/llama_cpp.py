@@ -4046,11 +4046,25 @@ class LlamaCppBackend:
                 # Auto counts as dspark/dflash once it resolved that way: the launch
                 # stored that sidecar, so comparing the MTP field (None for these
                 # repos) against it would reload a healthy server on every Apply.
+                # _speculative_type is reset to "default" when a drafter fails to
+                # start and the drafterless retry succeeds, but the launch still
+                # recorded the sidecar it resolved. Keying the comparison off it
+                # would then compare the intent's (empty) MTP path against that
+                # recorded sidecar and reload a healthy server on every Apply.
+                # _spec_drafter_kind survives the fallback, so it decides here.
                 _compare_dspark = speculative_type == "dspark" or (
-                    speculative_type == "auto" and self._speculative_type == "draft-dspark"
+                    speculative_type == "auto"
+                    and (
+                        self._speculative_type == "draft-dspark"
+                        or self._spec_drafter_kind == "dspark"
+                    )
                 )
                 _compare_dflash = speculative_type == "dflash" or (
-                    speculative_type == "auto" and self._speculative_type == "draft-dflash"
+                    speculative_type == "auto"
+                    and (
+                        self._speculative_type == "draft-dflash"
+                        or self._spec_drafter_kind == "dflash"
+                    )
                 )
                 if _compare_dspark:
                     intent_draft = intent.dspark_draft_path
@@ -9773,9 +9787,16 @@ class LlamaCppBackend:
                     # and ships in the model's own GGUF repo, so under Auto it
                     # costs about what the MTP drafter costs. Repos without one
                     # no-op after a single listing.
+                    # Under Auto, DSpark takes first refusal in the promotion
+                    # below, so a repo that ships both kinds would never launch
+                    # the DFlash sidecar. Fetching it anyway costs ~1.5 GiB of
+                    # bandwidth and cache for a file that cannot be used, so the
+                    # Auto fetch stands down once DSpark has resolved. An
+                    # explicit "dflash" request still fetches.
                     if (
                         not dflash_draft_path
                         and _spec_canon in ("auto", "dflash")
+                        and not (_spec_canon == "auto" and dspark_draft_path)
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         dflash_draft_path = self._download_dflash(
@@ -12583,9 +12604,11 @@ class LlamaCppBackend:
                     # failed and lose a main model that loads fine without it. The
                     # tail loses its spec group and the env goes with it, the same way
                     # the crash replay does it.
-                    if _extra_args_requests_mtp(
-                        extra_args, env = _launch_spec_env
-                    ) or _extra_args_requests_dspark(extra_args, env = _launch_spec_env):
+                    if (
+                        _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                        or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
+                        or _extra_args_requests_dflash(extra_args, env = _launch_spec_env)
+                    ):
                         _fb_tail = strip_shadowing_flags(
                             _fb_tail,
                             strip_context = False,
