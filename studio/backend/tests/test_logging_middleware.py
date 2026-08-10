@@ -420,16 +420,16 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
 
 def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypatch):
     # The loaded-models indicator reads all four runtimes every 5s for as long as the
-    # app is open, and on the desktop every line is mirrored into tauri.log. They all
-    # answer the same question, so the whole burst shares one heartbeat bucket: one
-    # line per window in total, not one per path. Previously each path heartbeated
-    # separately, which still meant four lines per window.
+    # app is open, and on the desktop every line is mirrored into tauri.log. The three
+    # cheap ones answer the same question, so they share one heartbeat bucket: one line
+    # per window in total, not one per path. Previously each path heartbeated
+    # separately, which still meant a line per path per window. /api/inference/status
+    # is excluded on purpose (its handler can be slow), and is covered by its own test.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
     mw = LoggingMiddleware(_status_app(200))
     polled = (
-        "/api/inference/status",
         "/api/inference/images/status",
         "/api/inference/video/status",
         "/api/inference/audio/stt/status",
@@ -450,7 +450,7 @@ def test_the_runtime_status_polls_share_the_liveness_bucket(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
     mw = LoggingMiddleware(_status_app(200))
-    for path in ("/api/auth/status", "/api/inference/status", "/api/inference/monitor"):
+    for path in ("/api/auth/status", "/api/inference/monitor", "/api/inference/images/status"):
         _run(mw(_http_scope(path), _noop_receive, _drop))
 
     assert len(_paths_logged(logs)) == 1, _paths_logged(logs)
@@ -464,8 +464,21 @@ def test_health_keeps_its_own_heartbeat(logs, monkeypatch):
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
     mw = LoggingMiddleware(_status_app(200))
-    _run(mw(_http_scope("/api/inference/status"), _noop_receive, _drop))
+    _run(mw(_http_scope("/api/inference/monitor"), _noop_receive, _drop))
     _run(mw(_http_scope("/api/health"), _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 2, _paths_logged(logs)
+
+
+def test_the_slow_inference_probe_keeps_its_own_heartbeat(logs, monkeypatch):
+    # get_status reads llama.cpp capabilities and checks release freshness in an
+    # executor, so a slow but successful probe is worth its own process_time_ms.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    _run(mw(_http_scope("/api/inference/images/status"), _noop_receive, _drop))
+    _run(mw(_http_scope("/api/inference/status"), _noop_receive, _drop))
 
     assert len(_paths_logged(logs)) == 2, _paths_logged(logs)
 
