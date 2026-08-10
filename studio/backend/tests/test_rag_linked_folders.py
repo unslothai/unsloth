@@ -2163,3 +2163,32 @@ def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
     assert result["restored"] == [scope]
     assert result["deleted"] == []
     assert folder_sync.scope_retired(scope) is False
+
+
+@requires_sqlite_vec
+def test_periodic_retirement_checks_ownership_under_the_scope_lock(rag_home):
+    scope = store.project_scope("p1")
+    source = rag_home / "recreated-under-lock"
+    source.mkdir()
+    folder = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+    held = []
+
+    def project_exists(project_id):
+        # create_folder and upload admission take this lock, so holding it here is what
+        # stops a project recreated mid-pass from having its new folders retired
+        lock = folder_sync._scope_lock(scope)
+        acquired = []
+        probe = threading.Thread(target = lambda: acquired.append(lock.acquire(blocking = False)))
+        probe.start()
+        probe.join()
+        held.append(not acquired[0])
+        return True
+
+    result = folder_sync.reconcile_retired_scopes(project_exists)
+
+    assert held and all(held)
+    assert result["retired"] == []
+    assert folder_sync.scope_retired(scope) is False
+    current = folder_sync.get_folder(folder["id"])
+    assert current["status"] == folder["status"]
+    assert current["auto_sync"] == folder["auto_sync"]

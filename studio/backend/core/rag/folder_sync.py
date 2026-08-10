@@ -722,10 +722,15 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
     restored: list[str] = []
     for scope in sorted(project_scopes - retired_scopes):
         project_id = scope.removeprefix("project_")
-        if not project_id or project_exists(project_id):
+        if not project_id:
             continue
         try:
-            retire_scope(scope)
+            # under the lock create_folder and upload admission take, and rechecked inside
+            # it: a project recreated with the same id must not have its new folders retired
+            with _scope_lock(scope):
+                if project_exists(project_id):
+                    continue
+                retire_scope(scope)
             retired_scopes.add(scope)
             retired.append(scope)
         except Exception:
