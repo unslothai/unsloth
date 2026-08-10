@@ -174,7 +174,7 @@ export interface GgufVariantDetail {
   partial?: boolean;
   partial_transport?: string | null;
   /** Variants sharing this key share one companion download footprint, so a
-   *  footprint resolved for one of them is wrong for the others. */
+   *  footprint resolved for one of them is correct for all of them. */
   dependency_key?: string | null;
 }
 

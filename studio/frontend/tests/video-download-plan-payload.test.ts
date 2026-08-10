@@ -43,16 +43,22 @@ test("the staged plan pins its controls through the eventual load", () => {
     source.indexOf("const loadOrStage = useCallback("),
     source.indexOf("// A GGUF pick can arrive"),
   );
-  assert.ok(
-    flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);") <
-      flow.indexOf("await getVideoDownloadPlan({"),
-  );
+  const advancedAt = flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);");
+  const planAt = flow.indexOf("await getVideoDownloadPlan({");
+  assert.ok(advancedAt >= 0, "the staged flow must compute the advanced snapshot");
+  assert.ok(planAt >= 0, "the staged flow must request the download plan");
+  assert.ok(advancedAt < planAt, "the snapshot must precede the plan request");
   assert.match(flow, /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/);
   assert.ok(source.includes("pending.opts, pending.advanced"));
 
   assert.ok(flow.includes("handleLoadRef.current(repoId, opts, advanced)"));
 });
 
+test("the video picker resolves the full GGUF footprint", () => {
+  assert.ok(source.includes("const resolveDownloadFootprint = useCallback("));
+  assert.ok(source.includes("const requiredBytes = plan.required_bytes"));
+  assert.ok(source.includes("resolveDownloadFootprint={resolveDownloadFootprint}"));
+});
 test("the staged plan carries the memory request too", () => {
-  assert.equal(source.match(/memory_mode: advanced\.memory_mode/g)?.length, 2);
+  assert.equal(source.match(/memory_mode: advanced\.memory_mode/g)?.length, 3);
 });

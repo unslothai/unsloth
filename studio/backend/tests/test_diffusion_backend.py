@@ -6286,7 +6286,7 @@ def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monke
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda _repo, files, _revision = None: (
+            lambda _repo, files, _revision = None, _declared_sizes = None: (
                 set(files) if files == ["model-Q4_K_M.gguf"] else set()
             )
         ),
@@ -7494,7 +7494,7 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_files_already_cached",
-        staticmethod(lambda repo_id, files, revision = None: set(files)),
+        staticmethod(lambda repo_id, files, revision = None, declared_sizes = None: set(files)),
     )
 
     plan = DiffusionBackend().download_plan(
@@ -7527,7 +7527,7 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: (
+            lambda repo_id, files, revision = None, declared_sizes = None: (
                 set() if repo_id.endswith("-GGUF") else set(files)
             )
         ),
@@ -7549,6 +7549,7 @@ def _seed_cache_file(
     filename,
     sha,
     *,
+    size = None,
     dangling = False,
 ):
     """Write ``filename`` into a real HF cache layout at ``sha``, refs/main pointing there."""
@@ -7567,6 +7568,9 @@ def _seed_cache_file(
             pytest.skip("symlinks unavailable on this host")
     else:
         target.write_bytes(b"x")
+        if size is not None:
+            with target.open("r+b") as handle:
+                handle.truncate(size)
     return target
 
 
@@ -7624,7 +7628,8 @@ def test_files_already_cached_skips_unusable_hits(monkeypatch, tmp_path):
 
     probe = DiffusionBackend._files_already_cached
     files = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
-    assert probe(repo, files, sha) == set(files)
+    assert probe(repo, files, sha, {name: 1 for name in files}) == set(files)
+    assert probe(repo, files, sha, {files[0]: 1, files[1]: 2}) == set()
     # The dangling link and the file that was never fetched both leave the set incomplete.
     assert probe(repo, [*files, "text_encoder/model.safetensors"], sha) == set()
     assert probe(repo, [*files, "scheduler/scheduler_config.json"], sha) == set()
@@ -7720,10 +7725,16 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _all_cached(monkeypatch)
-    for name in _FLUX_BASE_SIBLINGS_BY_NAME:
+    for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
         if _base_file_downloaded(name, include_transformer = False):
-            _seed_cache_file(other, base, name, base_sha)
-    _seed_cache_file(other, "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", gguf_sha)
+            _seed_cache_file(other, base, name, base_sha, size = size)
+    _seed_cache_file(
+        other,
+        "unsloth/FLUX.1-dev-GGUF",
+        "flux1-dev-Q4_K_M.gguf",
+        gguf_sha,
+        size = 7 * GB,
+    )
 
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
@@ -7789,7 +7800,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: (
+            lambda repo_id, files, revision = None, declared_sizes = None: (
                 set()
                 if repo_id.endswith("-GGUF")
                 else {n for n in files if n != "vae/diffusion_pytorch_model.safetensors"}
@@ -7844,7 +7855,7 @@ def test_download_plan_files_do_not_shrink_as_a_repo_warms(monkeypatch):
                 DiffusionBackend,
                 "_files_already_cached",
                 staticmethod(
-                    lambda repo_id, files, revision = None: (
+                    lambda repo_id, files, revision = None, declared_sizes = None: (
                         set() if repo_id.endswith("-GGUF") else set(cached_for_base(files))
                     )
                 ),
@@ -7918,7 +7929,8 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: seen.append((repo_id, revision)) or set()
+            lambda repo_id, files, revision = None, declared_sizes = None: seen.append((repo_id, revision))
+            or set()
         ),
     )
 
@@ -7957,9 +7969,10 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         repo_id,
         files,
         revision = None,
+        declared_sizes = None,
     ):
         revisions.append(revision)
-        return real(repo_id, files, revision)
+        return real(repo_id, files, revision, declared_sizes)
 
     monkeypatch.setattr(DiffusionBackend, "_files_already_cached", staticmethod(_spy))
 

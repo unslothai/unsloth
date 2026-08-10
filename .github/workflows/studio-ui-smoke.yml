@@ -269,6 +269,7 @@ jobs:
       - name: Image model full-footprint selector regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
           PW_ART_DIR: logs/playwright_image_footprint
         run: |
           mkdir -p logs/playwright_image_footprint
@@ -277,6 +278,7 @@ jobs:
       - name: Image staged-download cancel/retry regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
           PW_ART_DIR: logs/playwright_image_cancel_retry
         run: |
           mkdir -p logs/playwright_image_cancel_retry
@@ -287,6 +289,7 @@ jobs:
       - name: Image staged-download cancel/retry regression, cold checkpoint (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
           PW_ART_DIR: logs/playwright_image_cancel_retry_cold
           PW_CHECKPOINT_CACHED: "0"
         run: |

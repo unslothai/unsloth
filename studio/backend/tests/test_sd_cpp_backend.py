@@ -276,6 +276,39 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     assert plan["checkpoint_bytes"] == 4_000
 
 
+def test_download_plan_does_not_label_same_repo_companions_as_checkpoint(monkeypatch):
+    import core.inference.sd_cpp_backend as module
+    from core.inference.diffusion import DiffusionBackend
+
+    repo = "unsloth/Z-Image-Turbo-GGUF"
+    checkpoint = "model-Q4_K_M.gguf"
+    companion = "vae/ae.safetensors"
+    backend = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        backend,
+        "_asset_specs",
+        lambda *args, **kwargs: [
+            (repo, checkpoint, "diffusion_model"),
+            (repo, companion, "vae"),
+        ],
+    )
+    monkeypatch.setattr(module, "_fetch_repo_map", lambda specs, token: {repo: repo})
+    monkeypatch.setattr(backend, "_preflight_companion_repos", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend,
+        "_plan_file_sizes",
+        lambda by_repo, token: {(repo, checkpoint): 4_000, (repo, companion): 300},
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_loadable",
+        staticmethod(lambda _repo, filename, *_args, **_kwargs: filename == checkpoint),
+    )
+
+    plan = backend.download_plan(repo, gguf_filename = checkpoint, model_kind = "gguf")
+
+    assert plan["entries"][0]["bytes"] == 300
+    assert plan["entries"][0]["checkpoint"] is False
 def test_download_plan_restages_a_native_asset_a_stale_live_copy_shadows(monkeypatch):
     # _fetch_assets passes reuse_other_cache_root, but that only switches roots when the LIVE
     # lookup finds nothing. A stale same-named copy in the live root therefore shadows the good

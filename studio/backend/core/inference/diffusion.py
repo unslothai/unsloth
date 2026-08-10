@@ -2250,7 +2250,7 @@ class DiffusionBackend:
             # drops a repo only when one cache root already serves the whole snapshot. The
             # per-file probes below remain necessary for size-corroborated unrelated commits and
             # for accurate remaining-byte accounting.
-            if self._files_already_cached(repo, files, revision).issuperset(files):
+            if self._files_already_cached(repo, files, revision, declared_sizes).issuperset(files):
                 for entry in entries:
                     if entry["repo_id"] == repo:
                         entry["files"].extend(name for name in scope if name not in entry["files"])
@@ -2364,6 +2364,7 @@ class DiffusionBackend:
         repo_id: str,
         files: list[str],
         revision: Optional[str] = None,
+        declared_sizes: Optional[dict[str, int]] = None,
     ) -> set[str]:
         """Return all ``files`` only when one cache root serves the whole pinned snapshot.
 
@@ -2387,8 +2388,19 @@ class DiffusionBackend:
                     value = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
                 except Exception:  # noqa: BLE001 -- keep checking the other files/root
                     continue
-                if isinstance(value, str) and Path(value).is_file():
-                    found.add(name)
+                if not isinstance(value, str):
+                    continue
+                path = Path(value)
+                if not path.is_file():
+                    continue
+                expected = (declared_sizes or {}).get(name)
+                if expected and expected > 0:
+                    try:
+                        if path.stat().st_size != expected:
+                            continue
+                    except OSError:
+                        continue
+                found.add(name)
             return found
 
         live = _hits(roots[0])

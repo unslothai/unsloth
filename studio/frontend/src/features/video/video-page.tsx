@@ -1605,6 +1605,27 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     },
     [],
   );
+  const resolveDownloadFootprint = useCallback(
+    async (repoId: string, meta: ModelSelectorChangeMeta) => {
+      if (!meta.ggufFilename) return null;
+      const advanced = currentLoadAdvanced("gguf");
+      const plan = await getVideoDownloadPlan({
+        model_path: repoId,
+        gguf_filename: meta.ggufFilename,
+        model_kind: "gguf",
+        hf_token: hfApiToken(getHfToken()),
+        transformer_quant: advanced.transformer_quant,
+        memory_mode: advanced.memory_mode,
+      });
+      const requiredBytes = plan.required_bytes ?? 0;
+      if (requiredBytes <= 0) return null;
+      return {
+        requiredBytes,
+        checkpointBytes: plan.checkpoint_bytes ?? meta.expectedBytes ?? 0,
+      };
+    },
+    [currentLoadAdvanced],
+  );
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
@@ -2465,6 +2486,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
             onEject={status?.loaded ? handleUnload : undefined}
             variant="ghost"
             className="!h-[34px]"

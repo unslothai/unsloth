@@ -1136,7 +1136,7 @@ class SdCppDiffusionBackend:
                     # VAE / encoders are required assets. Compared against the POST-swap id, because a
                     # gated pick staged from its ungated mirror no longer matches the id the caller
                     # asked for. Native picks are always single-file, so there is no pipeline case.
-                    "checkpoint": repo == fetch_repo_id,
+                    "checkpoint": repo == fetch_repo_id and gguf_filename in missing,
                 }
             )
         return {
