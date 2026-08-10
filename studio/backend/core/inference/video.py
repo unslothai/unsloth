@@ -1369,7 +1369,6 @@ class VideoBackend:
                 path = root / "modular_model_index.json"
             else:
                 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-
                 path = Path(
                     hf_hub_download_with_xet_fallback(
                         base,
