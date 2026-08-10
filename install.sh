@@ -2642,6 +2642,15 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+# Whether the scripts next to install.sh may be trusted. A piped install (curl ... | sh)
+# has $0 = "sh", so _REPO_ROOT is just the caller's cwd and a file planted there would run.
+# Marker files cannot decide this (whoever can plant a helper can plant those), so require
+# the explicit --local intent AND a run from the file itself; else fetch the official copy.
+_REPO_IS_CHECKOUT=0
+case "$0" in
+    */install.sh|install.sh)
+        [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
+esac
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
@@ -3500,10 +3509,12 @@ _maybe_bootstrap_rocm_wsl() {
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
-    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
+    # copy counts only for a --local checkout run, since this executes with no prompt and
+    # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
-    if [ ! -r "$_rw_helper" ]; then
+    if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
         if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
