@@ -375,9 +375,7 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
             ):
                 unknown = hashlib.sha256(filename.lower().encode("utf-8")).hexdigest()[:16]
                 return f"{fam.name}:unknown:{unknown}"
-        encoders = sd_cpp_text_encoders_for(
-            fam, repo_id, filename, inner_dim = inner_dim
-        )
+        encoders = sd_cpp_text_encoders_for(fam, repo_id, filename, inner_dim = inner_dim)
         # Hashed, not joined raw: the encoder table is long, and the key is opaque
         # to the client, which only ever compares it for equality.
         digest = hashlib.sha256(
