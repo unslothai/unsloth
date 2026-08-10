@@ -1539,6 +1539,11 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # What specifically blocked that reason, when detection recorded one. Only the MLX
+        # gate does today, and only because it is all-or-nothing: without it the greyed-out
+        # Train row can only say "run `unsloth studio update`", which is no help to someone
+        # whose update has already run and left one package behind.
+        authed["chat_only_detail"] = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         authed["device_type"] = device_type
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)

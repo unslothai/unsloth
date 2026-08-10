@@ -78,6 +78,12 @@ CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
 # (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
 # "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
 CHAT_ONLY_REASON: Optional[str] = None
+# What exactly blocked the reason above, when there is something specific to say. Only
+# "mlx_unavailable" sets it today: the gate is all-or-nothing across mlx, mlx-lm and
+# mlx-vlm, so "run `unsloth studio update`" was the whole message even to someone who
+# had just run it. Naming the package that is missing, too old, or refusing to import
+# is the difference between a dead end and a fix. Never shown on its own.
+CHAT_ONLY_DETAIL: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 # Detection has concurrent callers (the warm thread plus any early get_device()).
@@ -260,6 +266,26 @@ def _has_usable_mlx_stack() -> bool:
         # bare import check rather than forcing a working host into chat-only.
         logger.debug("MLX stack availability check failed, using bare import: %s", exc)
         return _has_mlx()
+
+
+def _mlx_stack_detail() -> Optional[str]:
+    """One line naming what the MLX gate is unhappy about, or None if it cannot tell.
+
+    Never raises and never re-runs the gate's own verdict: this only describes a
+    verdict already reached, so a failure here costs a sentence, not Train.
+    """
+    try:
+        from utils.mlx_repair import mlx_stack_blockers
+
+        blockers = mlx_stack_blockers()
+    except Exception as exc:
+        logger.debug("MLX blocker detail unavailable: %s", exc)
+        return None
+    if not blockers:
+        # The gate said no and the detail says yes, which means the stack changed
+        # under us. Saying nothing beats naming a blocker that is no longer there.
+        return None
+    return "; ".join(blockers[:3])
 
 
 def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
@@ -450,9 +476,10 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
 
 def _detect_hardware_locked() -> DeviceType:
     """detect_hardware() body. Call only with _DETECT_LOCK held."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
     CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
     CHAT_ONLY_REASON = None
+    CHAT_ONLY_DETAIL = None
     IS_ROCM = False
 
     # Probe torch once per pass: a failed probe is expensive and a second can disagree.
@@ -555,10 +582,12 @@ def _detect_hardware_locked() -> DeviceType:
         # too old, or broken. This is usually an environment problem recoverable
         # with `unsloth studio update`.
         CHAT_ONLY_REASON = "mlx_unavailable"
+        CHAT_ONLY_DETAIL = _mlx_stack_detail()
         logger.warning(
             "Apple Silicon detected but the MLX stack is incomplete or too old; "
-            "Train/Export disabled (chat-only). Run `unsloth studio update` to "
-            "restore MLX training."
+            "Train/Export disabled (chat-only)%s Run `unsloth studio update` to "
+            "restore MLX training.",
+            f" ({CHAT_ONLY_DETAIL})." if CHAT_ONLY_DETAIL else ".",
         )
     elif TORCH_IMPORT_ERROR is not None:
         # torch installed but broken, so this host was never measured. "no_gpu" would lie.

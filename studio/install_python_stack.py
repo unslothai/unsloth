@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import importlib.util
+import json
 import os
 import platform
 import re
@@ -3787,6 +3788,48 @@ def _has_working_git() -> bool:
         return False
 
 
+_MLX_HEALTH_PROBE = (
+    "import json, sys;"
+    "sys.path.insert(0, sys.argv[1]);"
+    "from utils.mlx_repair import mlx_stack_blockers;"
+    "print(json.dumps(mlx_stack_blockers()))"
+)
+
+
+def _report_mlx_stack_health() -> None:
+    """Name what would keep Train off on this Apple Silicon host, if anything.
+
+    Advisory only: the install has already succeeded, chat still works, and the
+    background self-heal gets another go at startup. It just must not be silent,
+    which is the whole of the reported "Train is blacked out after an update".
+
+    Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
+    installed one of those can abort rather than raise.
+    """
+    backend = str(SCRIPT_DIR / "backend")
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", _MLX_HEALTH_PROBE, backend],
+            capture_output = True,
+            text = True,
+            timeout = 180,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+        blockers = json.loads(probe.stdout.strip() or "null")
+    except Exception as exc:  # noqa: BLE001 - advisory, never fail the install
+        _step("mlx", f"could not verify the MLX stack ({exc})", _dim)
+        return
+    if blockers is None:
+        _step("mlx", "could not verify the MLX stack", _dim)
+        return
+    if not blockers:
+        _step("mlx", "training stack ready")
+        return
+    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    for blocker in blockers:
+        _step("", blocker, _cyan)
+
+
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     _STEP = 0
@@ -4227,6 +4270,15 @@ def install_python_stack() -> int:
         stderr = subprocess.DEVNULL,
         **_windows_hidden_subprocess_kwargs(),
     )
+
+    # 14b. Apple Silicon: say so when the MLX stack this install just laid down is
+    # not one Train can use. The gate is all-or-nothing across mlx, mlx-lm and
+    # mlx-vlm, and a resolver backtrack (or an mlx-vlm built against a different
+    # transformers) leaves packages present but unusable. Without this the install
+    # reports success and the app silently comes up chat-only, telling the user to
+    # run the update that has just finished.
+    if IS_MAC_ARM and not NO_TORCH:
+        _report_mlx_stack_health()
 
     # 15. Record success. Written last so an earlier kill leaves none. Exiting 0
     # without it reports a finished install every later check calls unfinished.

@@ -608,6 +608,7 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
@@ -620,7 +621,13 @@ export function AppSidebar() {
   const trainDisabledHint: string | undefined = !chatOnlyMeasured
     ? undefined
     : chatOnlyReason === "mlx_unavailable"
-      ? "Training needs MLX. Run `unsloth studio update` to enable Train."
+      ? // The gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, and a resolver
+        // backtrack leaves a stack that is present but unusable. Naming the package
+        // that is missing, too old, or refusing to import is what makes this
+        // actionable to someone whose `unsloth studio update` has already run.
+        chatOnlyDetail
+        ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
+        : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "no_gpu"

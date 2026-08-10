@@ -146,32 +146,65 @@ def mlx_available() -> bool:
         return False
 
 
-def _mlx_runtime_imports_available() -> bool:
+def _mlx_runtime_import_blocker() -> Optional[str]:
+    """The first runtime import that will not load, and why. None when all do."""
     for module in _MLX_RUNTIME_IMPORTS:
         try:
             importlib.import_module(module)
-        except Exception:
-            return False
-    return True
+        except Exception as exc:
+            return f"{module} does not import ({type(exc).__name__}: {exc})"
+    return None
 
 
-def _mlx_versions_satisfy_minimums() -> bool:
+def _mlx_runtime_imports_available() -> bool:
+    return _mlx_runtime_import_blocker() is None
+
+
+def _mlx_version_blockers() -> list[str]:
+    """Every MLX package that is missing or below the minimum, named."""
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _dist_version
 
         from packaging.version import Version
-    except Exception:
-        return False
+    except Exception as exc:
+        return [f"the version check could not run ({type(exc).__name__}: {exc})"]
+    blockers: list[str] = []
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
-            if Version(_dist_version(name)) < Version(minimum):
-                return False
+            installed = _dist_version(name)
         except PackageNotFoundError:
-            return False
-        except Exception:
-            return False
-    return True
+            blockers.append(f"{name} is not installed (needs >={minimum})")
+            continue
+        except Exception as exc:
+            blockers.append(f"{name} could not be read ({type(exc).__name__}: {exc})")
+            continue
+        try:
+            if Version(installed) < Version(minimum):
+                blockers.append(f"{name} {installed} is older than {minimum}")
+        except Exception as exc:
+            blockers.append(f"{name} {installed} is unreadable ({type(exc).__name__}: {exc})")
+    return blockers
+
+
+def _mlx_versions_satisfy_minimums() -> bool:
+    return not _mlx_version_blockers()
+
+
+def mlx_stack_blockers() -> list[str]:
+    """Why this host cannot train with MLX, in the order the gate checks it.
+
+    The gate itself is all-or-nothing, and "run `unsloth studio update`" is no help
+    to someone who has just run it: a resolver backtrack leaves a stack that is
+    present but unusable, and nothing said which package or which import was the
+    problem. Same order as ``mlx_stack_available`` so the two cannot disagree.
+    Empty means the stack is usable.
+    """
+    versions = _mlx_version_blockers()
+    if versions:
+        return versions
+    blocker = _mlx_runtime_import_blocker()
+    return [blocker] if blocker else []
 
 
 def mlx_stack_available() -> bool:

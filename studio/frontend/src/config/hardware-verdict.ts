@@ -8,6 +8,8 @@
 export type HealthVerdict = {
   chat_only?: boolean;
   chat_only_reason?: string | null;
+  /** What blocked that reason, when the backend knows something specific. */
+  chat_only_detail?: string | null;
   hardware_detecting?: boolean;
   hardware_detection_deferred?: boolean;
 };
@@ -15,6 +17,7 @@ export type HealthVerdict = {
 export type ResolvedVerdict = {
   chatOnly: boolean;
   chatOnlyReason: string | null;
+  chatOnlyDetail: string | null;
 };
 
 /** True while the backend is still measuring the host, so chat_only is its
@@ -44,11 +47,18 @@ export function resolveVerdict(
     return {
       chatOnly: data.chat_only ?? true,
       chatOnlyReason: data.chat_only_reason ?? previous.chatOnlyReason,
+      // The detail belongs to the reason, so it travels with it: keeping a stale one
+      // beside a new reason would name a blocker for a verdict it never explained.
+      chatOnlyDetail:
+        data.chat_only_reason === undefined
+          ? previous.chatOnlyDetail
+          : (data.chat_only_detail ?? null),
     };
   }
   if (isProvisionalVerdict(data)) return previous;
   return {
     chatOnly: data.chat_only ?? false,
     chatOnlyReason: data.chat_only_reason ?? null,
+    chatOnlyDetail: data.chat_only_detail ?? null,
   };
 }
