@@ -25,8 +25,8 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
     blob_bytes_present,
+    incomplete_blob_hash,
     preferred_repo_cache_dirs,
     snapshot_selection_key,
 )
@@ -125,15 +125,17 @@ def _variant_bytes_on_disk(
     manifest: Optional[download_manifest.Manifest],
     snapshot_dir: Optional[Path],
     variant_file_matcher: Optional["VariantFileMatcher"],
+    active_partial_hashes: "frozenset[str]" = frozenset(),
 ) -> int:
     """Bytes a variant owns, read from the snapshot dir instead of ``blobs/``.
 
-    Only used when the expected blob hashes could not be resolved. The snapshot
-    dir is the one variant-scoped view of the cache: its entries are named per
-    file, so a sibling quant is excluded by name, whereas in the shared
-    ``blobs/`` dir a sibling's bytes are indistinguishable from this variant's
-    and counting them wholesale is the "instant ~900 MB" bug. ``stat`` follows
-    HF's symlink layout and reads the Windows copy layout directly.
+    The snapshot dir is the one variant-scoped view of the cache: its entries
+    are named per file, so a sibling quant is excluded by name, whereas in the
+    shared ``blobs/`` dir a sibling's bytes are indistinguishable from this
+    variant's and counting them wholesale is the "instant ~900 MB" bug.
+    ``stat`` follows HF's symlink layout and reads the Windows copy layout
+    directly. The latter matters even with resolved hashes: recent Hub clients
+    can materialize completed files without retaining a finalized blob entry.
     """
     if snapshot_dir is None:
         return 0
@@ -141,6 +143,11 @@ def _variant_bytes_on_disk(
     if manifest is not None:
         for expected in manifest.expected_files:
             if not download_manifest.expected_path_is_safe(expected.path):
+                continue
+            if expected.sha256 and expected.sha256 in active_partial_hashes:
+                # A force/retry can leave the previous materialized file in the snapshot while
+                # a replacement for the same logical blob is being written. Count the current
+                # partial, not both generations of the file.
                 continue
             try:
                 total += (snapshot_dir / expected.path).stat().st_size
@@ -477,6 +484,7 @@ def compute_snapshot_progress(
     for entry in cache_dirs:
         completed_bytes = 0
         in_progress_bytes = 0
+        in_progress_hashes: set[str] = set()
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
         # evidence against it either, and the by-name scan cannot see it because a partial is
@@ -508,14 +516,15 @@ def compute_snapshot_progress(
                 try:
                     if not f.is_file():
                         continue
-                    if f.name.endswith(INCOMPLETE_SUFFIX):
-                        blob_hash = f.name[: -len(INCOMPLETE_SUFFIX)]
+                    partial_hash = incomplete_blob_hash(f.name)
+                    if partial_hash is not None:
                         if expected_hashes:
-                            if blob_hash not in expected_hashes:
+                            if partial_hash not in expected_hashes:
                                 continue
                         elif not count_unscoped:
                             unattributable_partial = True
                             continue
+                        in_progress_hashes.add(partial_hash)
                         in_progress_bytes += blob_bytes_present(f)
                     else:
                         if expected_hashes:
@@ -541,21 +550,31 @@ def compute_snapshot_progress(
                 hub_cache = entry.parent,
             )
         )
-        if variant_file_set_unknown:
+        if variant is not None:
             # The best reading across every retained snapshot, for the same reason presence is
             # established across all of them: the variant can live in an older revision while
             # the newest holds a sibling, and reading only the newest reported 0 bytes for a
-            # complete cached quant.
+            # complete cached quant. Do this even when hashes resolved: huggingface_hub 1.27's
+            # Windows copy layout can move a completed file directly into the snapshot and
+            # leave no finalized entry in blobs/, so a blob-only tally stays at zero.
+            manifest = entry_manifest.get()
             on_disk = max(
                 (
-                    _variant_bytes_on_disk(entry_manifest.get(), snap, variant_file_matcher)
+                    _variant_bytes_on_disk(
+                        manifest,
+                        snap,
+                        variant_file_matcher,
+                        frozenset(in_progress_hashes),
+                    )
                     for snap in snapshot_dirs.get()
+                    if not expected_hashes
+                    or manifest is None
+                    or _snapshot_resolves_to(manifest, snap, expected_hashes)
                 ),
                 default = 0,
             )
-            # Clamped, because the matcher behind the no-manifest half of that
-            # reading accepts every companion in the repo and so can overshoot.
-            # A bar reading "44 GB of 33 GB" is a worse answer than a pinned one.
+            # Clamped, because the matcher behind the no-manifest half of that reading accepts
+            # every companion in the repo and so can overshoot.
             if expected_total > 0:
                 on_disk = min(on_disk, expected_total)
             completed_bytes = max(completed_bytes, on_disk)

@@ -36,9 +36,8 @@ jobs:
         run: |
           python -c "import huggingface_hub, inspect; from huggingface_hub import file_download; source = inspect.getsource(file_download._download_to_tmp_and_move); assert 'uuid.uuid4().hex[:8]' in source; assert '.incomplete' in source; print(f'huggingface_hub={huggingface_hub.__version__} process_unique_partial=True')"
 
-      - name: "Reproduce zero-byte Studio progress"
+      - name: "Verify Studio reports process-unique partial progress"
         shell: pwsh
         run: |
           $env:PYTHONPATH = 'studio/backend'
           python -m pytest -q studio/backend/hub/tests/test_process_unique_incomplete_repro.py --tb=short
-

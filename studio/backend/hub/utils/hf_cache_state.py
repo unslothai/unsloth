@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import shutil
 import stat as stat_module
 import sys
@@ -24,6 +25,27 @@ TRANSPORT_AUTO = "auto"
 VALID_TRANSPORT_MODES = frozenset({TRANSPORT_HTTP, TRANSPORT_XET, TRANSPORT_AUTO})
 TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
+_PROCESS_UNIQUE_PARTIAL_RE = re.compile(
+    r"^(?P<blob_hash>(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64}))\.[0-9a-fA-F]{8}$"
+)
+
+
+def incomplete_blob_hash(name: str) -> Optional[str]:
+    """Return the logical HF blob hash represented by a partial filename.
+
+    huggingface_hub historically wrote ``<etag>.incomplete``. Version 1.27
+    changed the writer to a process-unique ``<etag>.<8 hex>.incomplete`` path
+    before atomically moving it into place. Hub etags used as cache blob names
+    are Git SHA-1 or LFS SHA-256 hex digests, which lets us remove the nonce
+    without mis-parsing an arbitrary legacy filename containing a dot.
+    """
+    if not name.endswith(INCOMPLETE_SUFFIX):
+        return None
+    stem = name[: -len(INCOMPLETE_SUFFIX)]
+    if not stem:
+        return None
+    process_unique = _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(stem)
+    return process_unique.group("blob_hash") if process_unique else stem
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
