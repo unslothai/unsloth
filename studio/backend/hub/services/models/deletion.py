@@ -20,6 +20,7 @@ from hub.utils.gguf import (
     bare_quant_alias,
     extract_quant_token,
     gguf_variant_key,
+    quant_token_with_bpw,
     is_reclaimable_drafter_path as _is_reclaimable_drafter_path,
 )
 from hub.utils.hf_cache_state import (
@@ -132,10 +133,13 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    # A path-qualified variant key names its own folder; its quant token belongs to
-    # sibling checkpoints too, so it must not reach for a <quant>/ dir it does not own.
+    # A qualified variant key names its own folder; its quant token belongs to sibling
+    # checkpoints too, so it must not reach for a <quant>/ dir it does not own. Qualification
+    # has two shapes: a path (``distilled/...-Q6_K``) and a bpw modifier (``IQ4_XS-3.53bpw``,
+    # whose token-only ``IQ4_XS/`` folder, if it exists, is a different build's).
+    qualified = "/" in variant or (quant_token_with_bpw(variant) or "").lower() == variant.lower()
     variant_key = (
-        variant.lower() if "/" in variant else (extract_quant_token(variant) or variant).lower()
+        variant.lower() if qualified else (extract_quant_token(variant) or variant).lower()
     )
     removed = 0
     failures: list[str] = []
@@ -159,7 +163,7 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
                 try:
                     if sub.is_symlink() or not sub.is_dir():
                         continue
-                    folder_quant = extract_quant_token(sub.name)
+                    folder_quant = quant_token_with_bpw(sub.name)
                     matches = (
                         folder_quant is not None and folder_quant.lower() == variant_key
                     ) or sub.name.lower() == variant.lower()
