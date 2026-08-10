@@ -1929,7 +1929,7 @@ class VideoBackend:
             for component, files in te_files.items():
                 total += add(te_sources[component].location, files)
             # The denoiser's replacement artifact, for the same reason: the base entry below drops
-            # the dense DiT shards whenever this resolves, so it has to be staged in their place.
+            # the dense DiT shards only when this resolves, so it is staged in their place.
             dq_repo, dq_files = self._denoiser_prequant_hub_files(
                 fam, transformer_quant, base, api, h3_task
             )
@@ -1958,8 +1958,18 @@ class VideoBackend:
                         skip_te_components = (
                             tuple(te_files) + (("text_encoder",) if h3_te_repo else ())
                         ),
-                        skip_transformer_weights = self._denoiser_prequant_covered(
-                            fam, transformer_quant, base, h3_task
+                        # Gated on the artifact RESOLVING, exactly like the two encoder skips
+                        # above, not on the registry alone: the registry says a checkpoint should
+                        # exist, dq_repo says one does. When the task-specific file is absent or
+                        # its repo cannot be read, dropping the dense shards leaves a plan with
+                        # NEITHER denoiser, and the bf16 fallback the loader documents has nothing
+                        # to fall back to offline. The registry probe still runs, because it is
+                        # the one that refuses a non-modular family and an auto request.
+                        skip_transformer_weights = (
+                            dq_repo is not None
+                            and self._denoiser_prequant_covered(
+                                fam, transformer_quant, base, h3_task
+                            )
                         ),
                         h3_task = h3_task,
                     ),

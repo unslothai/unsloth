@@ -2650,6 +2650,81 @@ def test_download_plan_keeps_the_dense_denoiser_when_the_prequant_repo_is_missin
 
     by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
     assert "unsloth/MiniMax-H3-FP8" not in by_repo
+    assert any(
+        f.startswith("transformer/diffusion_pytorch_model")
+        for f in by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+    )
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+_H3_REF_BASE_SIBLINGS = _H3_BASE_SIBLINGS + [
+    # What marks the repo as the modular workflow, and so what makes the partition split real.
+    _PlanSibling("modular_model_index.json", 1),
+    _PlanSibling("transformer_ref/config.json", 1),
+    _PlanSibling("transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors", 40),
+    _PlanSibling("transformer_ref/diffusion_pytorch_model-00002-of-00002.safetensors", 26),
+]
+
+
+def test_download_plan_keeps_the_dense_reference_shards_when_its_artifact_is_absent(monkeypatch):
+    # A task-specific row gets NO filename fallback, so a Ref2VA checkpoint that is renamed or not
+    # yet published resolves to nothing while the repo itself reads fine. The registry still says
+    # the scheme is covered, and dropping transformer_ref/ on that word alone leaves a plan with
+    # neither denoiser: the disk preflight under-reports by 66 GB and an offline stage finishes
+    # with nothing for the documented bf16 fallback to open.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_REF_BASE_SIBLINGS,
+            # Only the keyframe artifacts; the reference ones are missing.
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS,
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        h3_task = "ref2va",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    # No entry may be invented for a file the repo does not have.
+    assert "unsloth/MiniMax-H3-FP8" not in by_repo
+    base = by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+    assert "transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors" in base
+    assert "transformer_ref/diffusion_pytorch_model-00002-of-00002.safetensors" in base
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_download_plan_still_drops_the_reference_shards_its_artifact_replaces(monkeypatch):
+    # The other half of the gate: once the Ref2VA artifact really resolves, the dense reference
+    # shards leave the base entry and the checkpoint is staged in their place.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(
+        monkeypatch,
+        {
+            "MiniMaxAI/MiniMax-H3": _H3_REF_BASE_SIBLINGS,
+            "unsloth/MiniMax-H3-FP8": _H3_PREQUANT_SIBLINGS
+            + [_PlanSibling("MiniMax-H3-Ref2VA-FP8.pt", 20)],
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "MiniMaxAI/MiniMax-H3",
+        family_override = "minimax-h3",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        h3_task = "ref2va",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert by_repo["unsloth/MiniMax-H3-FP8"]["files"] == ["MiniMax-H3-Ref2VA-FP8.pt"]
+    base = by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+    assert not any(f.startswith("transformer_ref/diffusion_pytorch_model") for f in base)
+    assert "transformer_ref/config.json" in base
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
 
 
