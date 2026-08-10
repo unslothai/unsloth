@@ -1494,6 +1494,68 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
         self.assertEqual(dspark_only, 200)
 
+    def test_auto_charges_only_dspark_when_a_repo_publishes_both_sidecars(self):
+        """The loader stands down on the DFlash fetch once DSpark has resolved
+        under Auto, so those bytes are never resident. Charging both is not the
+        safe over-estimate it is for an unlisted repo -- the listing has answered
+        by then -- it is a 409 for a load that fits."""
+        both = [
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 400),
+        ]
+
+        def _companion_bytes(siblings, **kwargs):
+            with patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ):
+                return self.route._remote_gguf_companion_bytes(
+                    "org/repo",
+                    hf_token = None,
+                    include_mmproj = False,
+                    include_mtp = False,
+                    **kwargs,
+                )
+
+        self.assertEqual(
+            _companion_bytes(both, include_dspark = True, include_dflash = True, dspark_first = True),
+            200,
+        )
+        # Only one kind published: Auto still charges whichever the repo has.
+        self.assertEqual(
+            _companion_bytes(
+                [both[1]], include_dspark = True, include_dflash = True, dspark_first = True
+            ),
+            400,
+        )
+        # An explicit DFlash request is not the Auto race and still pays for it.
+        self.assertEqual(_companion_bytes(both, include_dflash = True), 400)
+
+    def test_auto_tells_the_companion_sizing_that_dspark_comes_first(self):
+        """The remote branch is where both kinds can be asked for at once, so it
+        is the caller that has to pass the loader's Auto rule down."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0) as comp,
+            self._dspark_capable(),
+        ):
+            self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+            self.assertTrue(comp.call_args.kwargs["dspark_first"])
+            self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+            self.assertFalse(comp.call_args.kwargs["dspark_first"])
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(

@@ -8122,6 +8122,7 @@ class LlamaCppBackend:
             from utils.models.model_config import (
                 _iter_hf_cache_snapshots,
                 dflash_repo_preference_key,
+                is_dflash_architecture,
             )
 
             snapshots = (
@@ -8143,8 +8144,21 @@ class LlamaCppBackend:
                     if _is_dflash_drafter_path(name)
                 )
             for _, candidate in sorted(ranked, key = lambda entry: entry[0]):
-                if candidate.is_file():
-                    return str(candidate)
+                if not candidate.is_file():
+                    continue
+                # The ranking above works off names, and dflash- is only a naming
+                # convention: a cached weight whose basename happens to start with
+                # it would be launched as --model-draft and refused at startup.
+                # Same header rule, same helper, as the local scan, so an offline
+                # reuse and a local scan cannot disagree about what a sidecar is.
+                # Skipped rather than fatal, since the snapshot may hold a real one.
+                if not is_dflash_architecture(str(candidate)):
+                    logger.info(
+                        "Ignoring cached DFlash candidate %s: general.architecture is not dflash",
+                        candidate,
+                    )
+                    continue
+                return str(candidate)
         except Exception as exc:
             logger.debug("Cached DFlash drafter lookup failed for %s: %s", hf_repo, exc)
         return None
@@ -8169,6 +8183,11 @@ class LlamaCppBackend:
         """
 
         weight_name = Path(near_path).name if near_path else None
+        # Basenames whose header turned out not to say dflash. A name lands here
+        # only once the file is readable on disk, and _pick_dflash then skips it,
+        # so a repo whose best-ranked candidate is an impostor still reaches the
+        # real sidecar behind it instead of the search giving up on the repo.
+        rejected: set[str] = set()
 
         def _pick_dflash(candidates: list[str]) -> Optional[str]:
             # Ranked against the weight being loaded, not by precision alone: a
@@ -8186,12 +8205,53 @@ class LlamaCppBackend:
                 if name.lower().endswith(".gguf") and not _is_dflash_drafter_path(name)
             ]
             files = sorted(
-                (name for name in candidates if _is_dflash_drafter_path(name)),
+                (
+                    name
+                    for name in candidates
+                    if _is_dflash_drafter_path(name) and Path(name).name not in rejected
+                ),
                 key = lambda name: dflash_repo_preference_key(name, weight_name, others),
             )
             return files[0] if files else None
 
-        cached = _companion_snapshot_sibling(near_path, _pick_dflash) if near_path else None
+        def _validated(path: Optional[str]) -> Optional[str]:
+            """``path`` back iff its header really says ``dflash``.
+
+            _is_dflash_drafter_path is a FILENAME test, deliberately (the prefix
+            form is the only one accepted, so a sidecar cannot double as a
+            selectable main model in the quant picker), which means a remote repo
+            holding an ordinary weight called dflash-*.gguf passes it. The local
+            scan settles that with the architecture in the header; the remote
+            paths have to as well, or the load spends gigabytes of download on a
+            file llama-server then refuses as --model-draft. Same helper as
+            detect_dflash_file so the two rules cannot drift.
+            """
+            from utils.models.model_config import is_dflash_architecture
+
+            if not path:
+                return None
+            if is_dflash_architecture(path):
+                return path
+            rejected.add(Path(path).name)
+            logger.warning("Ignoring DFlash candidate %s: general.architecture is not dflash", path)
+            return None
+
+        # Retried rather than abandoned: every rejection removes one name from the
+        # pool, so the next pick returns a different file and the scan ends at the
+        # last candidate (or at the first real sidecar). Answers already seen end
+        # it too, so a scan that ignores the pool cannot spin here.
+        cached: Optional[str] = None
+        seen_siblings: set[str] = set()
+        while near_path:
+            sibling = _companion_snapshot_sibling(near_path, _pick_dflash)
+            if sibling is None or sibling in seen_siblings:
+                break
+            seen_siblings.add(sibling)
+            cached = _validated(sibling)
+            if cached:
+                break
+        # _cached_repo_dflash_drafter applies the same header check to its own
+        # candidates, so anything it hands back is already validated.
         if not cached and _hf_env_offline():
             cached = self._cached_repo_dflash_drafter(
                 hf_repo,
@@ -8218,16 +8278,32 @@ class LlamaCppBackend:
             logger.info("Reusing cached DFlash drafter: %s", cached)
             return cached
         outcome: dict = {}
-        found = self._download_companion_gguf(
-            hf_repo = hf_repo,
-            hf_token = hf_token,
-            pick = _pick_dflash,
-            label = "DFlash drafter",
-            near_path = near_path,
-            outcome = outcome,
-        )
+        found: Optional[str] = None
+        # The header can only be read once the bytes are here, so validation is a
+        # post-fetch step and a rejection has to be able to fall through to the
+        # next candidate rather than end the search. Bounded the same way as the
+        # reuse scan above: a fetch that answers with a file already rejected has
+        # nothing further to offer.
+        fetched: set[str] = set()
+        while True:
+            candidate = self._download_companion_gguf(
+                hf_repo = hf_repo,
+                hf_token = hf_token,
+                pick = _pick_dflash,
+                label = "DFlash drafter",
+                near_path = near_path,
+                outcome = outcome,
+            )
+            if candidate is None or candidate in fetched:
+                break
+            fetched.add(candidate)
+            found = _validated(candidate)
+            if found:
+                break
         # Distinguishes a repo that ships no sidecar from a fetch that failed and
-        # could yet succeed.
+        # could yet succeed. A repo whose only dflash-*.gguf is an ordinary weight
+        # exits the loop through a listing that picked nothing, which records the
+        # same permanent absence: there is nothing usable here to fetch next time.
         self._dflash_sidecar_absent = outcome.get("listed") is False
         return found
 

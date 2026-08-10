@@ -1830,6 +1830,25 @@ def dflash_repo_preference_key(
     return 2 if foreign else 1, 0, precision, sort_name
 
 
+def is_dflash_architecture(path: str) -> bool:
+    """Whether a GGUF really is a DFlash sidecar, decided by its header.
+
+    ``dflash-`` is a filename convention an ordinary weight can satisfy, by
+    accident or otherwise, and llama-server only discovers that at startup: it
+    refuses the file as ``--model-draft`` and the load falls back to no
+    speculation, after the bytes were already fetched. A DFlash sidecar declares
+    ``general.architecture = dflash``, which no real weight does, so that is what
+    settles it.
+
+    Kept here, beside the naming rules, because the local scan
+    (detect_dflash_file) and the download / cache reuse in llama_cpp all have to
+    apply it -- a remote path that trusted the prefix alone would download
+    gigabytes the launch then cannot use.
+    """
+    meta = read_gguf_general_metadata(str(path)) or {}
+    return (meta.get("general.architecture") or "").strip().lower() == "dflash"
+
+
 def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,
@@ -2248,12 +2267,14 @@ def detect_dflash_file(
                 candidate.name,
             )
             continue
-        meta = read_gguf_general_metadata(launch) or {}
-        if (meta.get("general.architecture") or "").strip().lower() != "dflash":
+        if not is_dflash_architecture(launch):
             logger.info(
                 "detect_dflash_file: dropped %s (architecture %r is not dflash)",
                 candidate.name,
-                meta.get("general.architecture"),
+                # Re-read only on the reject path, and header reads are cached by
+                # (path, mtime, size), so naming the offending architecture in the
+                # log costs nothing.
+                (read_gguf_general_metadata(launch) or {}).get("general.architecture"),
             )
             continue
         logger.info("Detected DFlash drafter: %s", launch)

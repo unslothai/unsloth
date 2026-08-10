@@ -5306,8 +5306,14 @@ def _remote_gguf_companion_bytes(
     include_mtp: bool = True,
     include_dspark: bool = False,
     include_dflash: bool = False,
+    dspark_first: bool = False,
 ) -> int:
-    """Bytes of companion GGUFs the requested launch downloads. 0 on error."""
+    """Bytes of companion GGUFs the requested launch downloads. 0 on error.
+
+    ``dspark_first`` mirrors the loader's Auto rule: the DFlash fetch stands down
+    once DSpark has resolved, so a repo publishing both kinds only ever pays for
+    the DSpark sidecar.
+    """
     try:
         from core.inference.llama_cpp import (
             _is_dflash_drafter_path,
@@ -5338,7 +5344,16 @@ def _remote_gguf_companion_bytes(
             # Same preference order the download uses, so the budget sizes the
             # file the launch will actually fetch.
             total += min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
-        if dflash_candidates:
+        # Under Auto the loader stands down on the DFlash fetch as soon as DSpark
+        # resolves (DSpark takes first refusal in the promotion), so a repo that
+        # publishes both kinds never has the DFlash bytes resident. The caller
+        # asks for both because which kind a repo ships is unknown before the
+        # listing, and over-estimating is the safe direction for a guard
+        # protecting a running training job -- but the listing has answered by
+        # here, so with both present the outcome is known rather than unknown, and
+        # charging the unused ~1.5 GiB only makes the guard 409 a load that fits.
+        # An explicitly forced DFlash is not the Auto race and still pays.
+        if dflash_candidates and not (dspark_first and dspark_candidates):
             total += min(dflash_candidates, key = lambda c: dflash_preference_key(c[0]))[1]
         return total
     except Exception as e:
@@ -5686,6 +5701,11 @@ def _estimate_gguf_required_gb(
                 ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
                 include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
+                # ... except where the listing settles it: a repo shipping BOTH
+                # kinds only loads the DSpark one under Auto, so charging the
+                # DFlash sidecar too is not caution, it is a refusal for bytes
+                # that never land.
+                dspark_first = _auto_dspark,
             )
             # Plus the local --model-draft, if the caller named one: the repo
             # listing cannot see it, and it is resident next to these weights.

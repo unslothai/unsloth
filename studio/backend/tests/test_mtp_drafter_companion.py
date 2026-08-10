@@ -1930,6 +1930,7 @@ def test_model_config_reports_a_local_dflash_sidecar(tmp_path):
 
 
 def _dflash_download_probe(
+    tmp_path,
     monkeypatch,
     *,
     supports_dflash,
@@ -1969,7 +1970,8 @@ def _dflash_download_probe(
         )
         if outcome is not None:
             outcome["listed"] = True
-        return "/cache/dflash-kquant.gguf"
+        # A real file: the fetch is only accepted once its header says dflash.
+        return str(_write_gguf(tmp_path / "dflash-kquant.gguf", "dflash"))
 
     b = LlamaCppBackend()
     b._download_companion_gguf = _fake_companion
@@ -1981,27 +1983,32 @@ def _dflash_download_probe(
     return got, reached
 
 
-def test_download_dflash_fetches_when_the_binary_supports_it(monkeypatch):
-    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = True)
-    assert got == "/cache/dflash-kquant.gguf"
+def test_download_dflash_fetches_when_the_binary_supports_it(tmp_path, monkeypatch):
+    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash = True)
+    assert got == str(tmp_path / "dflash-kquant.gguf")
     assert reached["hit"] is True
     # The picker must select the sidecar, not the weight or the projector.
     assert reached["picked"] == "dflash-kquant.gguf"
 
 
-def test_download_dflash_skips_the_fetch_when_the_binary_cannot_run_it(monkeypatch):
+def test_download_dflash_skips_the_fetch_when_the_binary_cannot_run_it(tmp_path, monkeypatch):
     """Same gate as DSpark: _build_speculative_flags drops DFlash outright on a
     binary without --spec-type draft-dflash, so the file would never be opened."""
-    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = False)
+    got, reached = _dflash_download_probe(tmp_path, monkeypatch, supports_dflash = False)
     assert got is None
     assert reached.get("hit", False) is False
 
 
-def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
+def test_download_dflash_still_reports_a_cached_sidecar_it_cannot_run(tmp_path, monkeypatch):
     """The route rediscovers it on every Apply, so answering None would compare
-    it against a launched None and reload the same server each time."""
-    cached = "/cache/snap/dflash-kquant.gguf"
-    got, reached = _dflash_download_probe(monkeypatch, supports_dflash = False, cached = cached)
+    it against a launched None and reload the same server each time.
+
+    A real file on disk, since the reuse now confirms the header says dflash
+    before handing the path back."""
+    cached = str(_write_gguf(tmp_path / "dflash-kquant.gguf", "dflash"))
+    got, reached = _dflash_download_probe(
+        tmp_path, monkeypatch, supports_dflash = False, cached = cached
+    )
     assert got == cached
     assert reached.get("hit", False) is False
 
@@ -2053,8 +2060,10 @@ def test_a_cached_dflash_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
 
     snap = tmp_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
+    # Real headers: the cached lookup confirms general.architecture before it
+    # hands a path to --model-draft.
     for name in ("dflash-kquant.gguf", "model-Q4_K_M.gguf"):
-        (snap / name).write_bytes(b"x")
+        _write_gguf(snap / name, "dflash" if name.startswith("dflash-") else "llama")
     monkeypatch.setattr(
         "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
     )
@@ -2174,7 +2183,7 @@ def test_cached_dflash_lookup_pairs_with_the_selected_weight(tmp_path, monkeypat
     snap = tmp_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
     for name in _MULTI_FAMILY_LISTING:
-        (snap / name).write_bytes(b"x")
+        _write_gguf(snap / name, "dflash" if name.startswith("dflash-") else "llama")
     monkeypatch.setattr(
         "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
     )
@@ -2197,7 +2206,7 @@ def test_cached_dflash_lookup_keeps_the_single_published_sidecar(tmp_path, monke
     snap = tmp_path / "snapshots" / "abc"
     snap.mkdir(parents = True)
     for name in ("Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "dflash-kquant.gguf"):
-        (snap / name).write_bytes(b"x")
+        _write_gguf(snap / name, "dflash" if name.startswith("dflash-") else "muse-glimmer")
     monkeypatch.setattr(
         "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
     )
@@ -2358,3 +2367,165 @@ def test_detect_dflash_file_still_checks_the_header_of_an_accepted_candidate(tmp
     _write_gguf(tmp_path / "dflash-something-Q8_0.gguf", "llama")
 
     assert detect_dflash_file(str(weight), accept = lambda launch: True) is None
+
+
+# ── Remote candidates are validated by header, not by name ───────────
+#
+# _is_dflash_drafter_path is a dflash- FILENAME test, and deliberately only the
+# prefix form (widening it would let one file be both a drafter and a selectable
+# main model in the quant picker). detect_dflash_file backs that name test with
+# the architecture in the GGUF header; the download and the cache reuse did not,
+# so a repo holding an ordinary weight called dflash-*.gguf had it downloaded in
+# full and handed to llama-server as --model-draft, which falls back at startup
+# after the bytes are already spent. Same helper on every path.
+
+
+def _dflash_repo_download(
+    tmp_path,
+    monkeypatch,
+    *,
+    listing,
+    sibling = None,
+):
+    """Drive _download_dflash over a repo listing whose files exist in tmp_path."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: sibling
+    )
+    fetched: list[str] = []
+
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+        outcome = None,
+    ):
+        target = pick(listing)
+        if outcome is not None:
+            outcome["listed"] = target is not None
+        if target is None:
+            return None
+        fetched.append(target)
+        return str(tmp_path / target)
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    got = b._download_dflash(
+        hf_repo = "org/repo",
+        near_path = str(tmp_path / "model-Q4_K_M.gguf"),
+        binary = "/fake/llama-server",
+    )
+    return b, got, fetched
+
+
+def test_download_dflash_falls_through_a_candidate_that_is_not_a_dflash_model(
+    tmp_path, monkeypatch
+):
+    """The impostor outranks the real sidecar on both name rules (it pairs with
+    this weight, and Q8_0 beats an unmarked precision), so the fetch reaches it
+    first. Its header is what disqualifies it, and only after the fetch, so the
+    search has to move on to the next candidate instead of returning None."""
+    _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(tmp_path / "dflash-model-Q8_0.gguf", "llama")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    b, got, fetched = _dflash_repo_download(
+        tmp_path,
+        monkeypatch,
+        listing = ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
+    )
+
+    assert got == str(sidecar)
+    assert fetched == ["dflash-model-Q8_0.gguf", "dflash-kquant.gguf"]
+    assert b._dflash_sidecar_absent is False
+
+
+def test_download_dflash_reports_no_sidecar_when_every_candidate_is_a_weight(tmp_path, monkeypatch):
+    """A repo whose only dflash-*.gguf is an ordinary model publishes no sidecar,
+    so the absence is recorded and the next Apply does not re-list forever."""
+    _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(tmp_path / "dflash-model-Q8_0.gguf", "llama")
+
+    b, got, fetched = _dflash_repo_download(
+        tmp_path,
+        monkeypatch,
+        listing = ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"],
+    )
+
+    assert got is None
+    assert fetched == ["dflash-model-Q8_0.gguf"]  # tried once, never re-picked
+    assert b._dflash_sidecar_absent is True
+
+
+def test_download_dflash_validates_the_snapshot_sibling_it_reuses(tmp_path, monkeypatch):
+    """The reuse path never downloads anything, but it hands the same file to
+    --model-draft, so it applies the same header rule and keeps scanning."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(snap / "dflash-model-Q8_0.gguf", "llama")
+    sidecar = _write_gguf(snap / "dflash-kquant.gguf", "dflash")
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dflash": True}),
+    )
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = lambda **kwargs: pytest.fail("the reuse must not download")
+    assert b._download_dflash(
+        hf_repo = "org/repo",
+        near_path = str(snap / "model-Q4_K_M.gguf"),
+        binary = "/fake/llama-server",
+    ) == str(sidecar)
+
+
+def test_cached_dflash_lookup_skips_a_prefixed_file_of_another_architecture(tmp_path, monkeypatch):
+    """The offline cache lookup ranks by name too, so a cached weight named like
+    a sidecar would be launched as the drafter with nothing left to catch it."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(snap / "dflash-model-Q8_0.gguf", "llama")
+    _write_gguf(snap / "dflash-kquant.gguf", "dflash")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    assert b._cached_repo_dflash_drafter(
+        "org/repo", near_path = str(snap / "model-Q4_K_M.gguf")
+    ) == str(snap / "dflash-kquant.gguf")
+
+
+def test_local_and_remote_dflash_architecture_checks_agree(tmp_path):
+    """One rule, one place: detect_dflash_file and the remote paths both ask
+    is_dflash_architecture, so neither can start trusting the name alone."""
+    from utils.models.model_config import is_dflash_architecture
+
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    impostor = _write_gguf(tmp_path / "dflash-model-Q8_0.gguf", "llama")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    assert is_dflash_architecture(str(impostor)) is False
+    assert is_dflash_architecture(str(sidecar)) is True
+    assert is_dflash_architecture(str(tmp_path / "missing.gguf")) is False
+    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
