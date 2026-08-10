@@ -43,7 +43,23 @@ export interface DocumentUploadResult {
   filename: string;
 }
 
-export type JobStatus = "pending" | "running" | "completed" | "failed";
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type TerminalJobStatus = Extract<
+  JobStatus,
+  "completed" | "failed" | "cancelled"
+>;
+
+export function terminalJobStatus(status: JobStatus): TerminalJobStatus | null {
+  return status === "completed" || status === "failed" || status === "cancelled"
+    ? status
+    : null;
+}
 
 export interface IndexJob {
   id: string;

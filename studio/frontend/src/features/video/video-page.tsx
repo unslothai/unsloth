@@ -15,7 +15,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
-import { usePlatformStore } from "@/config/env";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
@@ -687,20 +686,18 @@ function VideoGate({ children }: { children: ReactNode }) {
 /**
  * Capability gate in front of the generator.
  *
- * The root guard never bounces /video: not on the browser-platform guess, and not on a measured
- * chat-only verdict either, because a CPU-only host or a Mac without MLX is precisely where the
- * explanation below has something to say. Video also has no Apple path in the backend, so the
- * page answers for itself: spin while the answer is out, explain when it is no.
+ * The root guard never bounces /video: a chat-only host is both where the explanation below has
+ * something to say (a CPU-only box) and where video works anyway (Apple Silicon whose only
+ * problem is MLX). So the page answers for itself: spin while the answer is out, explain a no.
  *
- * The spin is bounded: AppSidebar is mounted on this route and re-reads /api/health while the
- * verdict is unknown, writing it to the same store this reads, so a host slower than
- * fetchDeviceType's bounded wait still lands here rather than spinning for the session.
+ * That answer is /api/system/hardware's alone, which settles detection before replying. Waiting
+ * on the chat-only verdict too would spin through an MLX self-heal /api/health holds it back for,
+ * which cannot change a Metal answer.
  */
 export function VideoPage({ active = true }: { active?: boolean }) {
   const hardware = useHardwareInfo();
-  const capabilitiesUnknown = usePlatformStore((s) => s.capabilitiesUnknown());
 
-  if (capabilitiesUnknown || !hardware.loaded) {
+  if (!hardware.loaded) {
     return (
       <VideoGate>
         <Spinner className="size-5" />
@@ -732,7 +729,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 function VideoGenerator({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "a tiny ginger sloth surfing a wave at sunset, cinematic, smooth motion",
+    "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);

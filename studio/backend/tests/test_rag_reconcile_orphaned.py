@@ -144,3 +144,15 @@ def test_live_foreign_lease_is_preserved_then_reconciled_after_expiry(rag_conn):
         ).fetchone()
         is None
     )
+
+
+def test_cancelled_job_is_terminal_and_survives_a_restart(rag_conn):
+    # The worker cancelled itself because the document was deleted mid-ingestion.
+    # A restart must leave that verdict alone: rewriting it to 'failed' reports a
+    # deliberate cancellation to the UI's getJob fallback as an indexing failure.
+    _add_doc(rag_conn, "kb_a", "cancelled_doc", "processing", ["alpha bravo"])
+    _orphan_job(rag_conn, "cancelled_doc", "kb_a", status = "cancelled")
+
+    assert rag_db.reconcile_orphaned_ingestion_jobs() == 0
+
+    assert _job_status(rag_conn, "cancelled_doc") == "cancelled"

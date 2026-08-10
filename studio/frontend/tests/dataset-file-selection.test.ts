@@ -6,7 +6,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  DATASET_CLIP_EXTS,
   DATASET_IMAGE_EXTS,
+  DATASET_MEDIA_EXTS,
   DATASET_TEXT_EXTS,
   chunkDatasetUpload,
   existingStemClash,
@@ -48,6 +50,26 @@ test("accepts exactly the extensions the backend accepts", async () => {
   // still reads, so a backend that widens either list must widen the picker with it.
   assert.deepEqual([...DATASET_IMAGE_EXTS].sort(), literals("_DIFFUSION_DATASET_IMAGE_EXTS"));
   assert.deepEqual([...DATASET_TEXT_EXTS].sort(), literals("_DIFFUSION_DATASET_TEXT_EXTS"));
+
+  // clips are defined once, in core/training/diffusion_clip_formats.py, and read from there by
+  // both the routes and the trainer's clip discovery. The picker has to mirror that same list.
+  const clipSource = await readFile(
+    new URL("../../backend/core/training/diffusion_clip_formats.py", import.meta.url),
+    "utf8",
+  );
+  const clipMatch = /CLIP_EXTS\s*=\s*frozenset\(\{([^}]+)\}\)/.exec(clipSource);
+  assert.ok(clipMatch, "CLIP_EXTS not found in diffusion_clip_formats.py");
+  assert.deepEqual(
+    [...DATASET_CLIP_EXTS].sort(),
+    [...clipMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort(),
+  );
+
+  // the two halves must stay DISJOINT: every rule that widened to media relies on an extension
+  // belonging to exactly one kind, so a container that is also an image extension would make
+  // the same file count twice and pick an arbitrary branch in the summary.
+  const overlap = DATASET_IMAGE_EXTS.filter((e) => DATASET_CLIP_EXTS.includes(e));
+  assert.deepEqual(overlap, []);
+  assert.equal(DATASET_MEDIA_EXTS.length, DATASET_IMAGE_EXTS.length + DATASET_CLIP_EXTS.length);
 });
 
 test("keeps images alongside the caption files paired to them", () => {
@@ -70,12 +92,41 @@ test("drops files the upload endpoint would reject, and counts them", () => {
   const result = selectDatasetFiles([
     picked("cat.png"),
     picked("notes.pdf"),
-    picked("clip.mp4"),
     picked("README"),
   ]);
 
   assert.deepEqual(result.files.map((f) => f.name), ["cat.png"]);
-  assert.equal(result.skipped, 3);
+  assert.equal(result.skipped, 2);
+});
+
+test("keeps clips alongside the caption files paired to them", () => {
+  const result = selectDatasetFiles([
+    picked("clip.mp4"),
+    picked("clip.txt"),
+    picked("second.MOV"),
+    picked("metadata.jsonl"),
+  ]);
+
+  assert.equal(result.files.length, 4);
+  assert.equal(result.clipCount, 2);
+  assert.equal(result.imageCount, 0);
+  assert.equal(result.captionCount, 2);
+  assert.equal(result.skipped, 0);
+  assert.deepEqual(result.collisions, []);
+});
+
+test("reports an image and a clip sharing a stem, which would share one caption sidecar", () => {
+  // the sidecar is keyed on the stem alone, so cat.png and cat.mp4 collide exactly as two
+  // images would; training.py refuses the batch, and catching it here says so before the upload.
+  const result = selectDatasetFiles([picked("cat.png"), picked("cat.mp4"), picked("cat.txt")]);
+
+  assert.deepEqual(result.files.map((f) => f.name), ["cat.png", "cat.txt"]);
+  assert.deepEqual(result.collisions, [{ kind: "stem", first: "cat.png", second: "cat.mp4" }]);
+});
+
+test("a clip already in the folder holds its sidecar against a new image of that stem", () => {
+  const clash = existingStemClash([picked("cat.png")], ["cat.mp4"]);
+  assert.deepEqual(clash, { kind: "stem", first: "cat.mp4", second: "cat.png" });
 });
 
 test("reports basenames a folder pick would flatten together", () => {
@@ -421,4 +472,35 @@ test("uses the flat list when the entries API is unavailable", async () => {
   } as unknown as DataTransfer);
 
   assert.deepEqual(out.map((f) => f.name), ["a.png", "b.png"]);
+});
+
+test("the labeling grid is gated on images, not just its toggle", async () => {
+  // A mixed folder keeps its listing on clip_count alone, so deleting the last image leaves the
+  // grid with no toggle to close it unless the grid itself sits inside the same guard.
+  const source = await readFile(
+    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  const guard = "{selectedDataset.image_count > 0 && (";
+  const toggle = source.indexOf("<LabelingGridToggle");
+  const grid = source.indexOf("<DatasetLabelingGrid");
+  assert.ok(toggle > 0 && grid > 0);
+  // The guard opening the block the toggle sits in.
+  const start = source.lastIndexOf(guard, toggle);
+  assert.ok(start > 0, "the toggle is not inside an image_count guard");
+  // Walk to that block's matching close brace.
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  assert.ok(end > start, "unbalanced braces around the labeling grid guard");
+  assert.ok(grid > start && grid < end, "the grid renders outside the image_count guard");
 });

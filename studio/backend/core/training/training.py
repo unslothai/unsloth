@@ -627,6 +627,10 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
+    # Set on the end-of-run record HF emits after leaving the training loop. It has no
+    # step loss, so the progress filter would drop it, and with it the only elapsed
+    # time that includes the final evaluation, checkpoint save and best-model reload.
+    is_run_summary: bool = False
 
 
 class _MLXTrainerAdapter:
@@ -2854,7 +2858,11 @@ class TrainingBackend:
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
-                if step > 0 and loss is not None:
+                # Only ever move forward. HF can log more than one record at the same
+                # global_step around the end of a run, and each one used to add another
+                # point, so a 30-step run charted 33 with the last few stacked on step 30.
+                _last_step = self.step_history[-1] if self.step_history else None
+                if step > 0 and loss is not None and (_last_step is None or step > _last_step):
                     self.loss_history.append(loss)
                     self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)

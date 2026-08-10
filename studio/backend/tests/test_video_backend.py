@@ -8,7 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
-from pathlib import Path
+import dataclasses
 import sys
 import threading
 import time
@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
     _detect_load_family,
@@ -99,6 +100,7 @@ class _FakePipe:
             "num_frames": num_frames,
             "frame_rate": frame_rate,
             "sigmas": sigmas,
+            "generator": generator,
             **kwargs,
         }
         if callback_on_step_end is not None:
@@ -161,9 +163,18 @@ class _FakeWanDiT:
         yield
 
 
+class _FakeWanDecoder:
+    def __init__(self) -> None:
+        self.hooks: list = []
+
+    def register_forward_hook(self, hook):
+        self.hooks.append(hook)
+
+
 class _FakeWanVae:
     def __init__(self) -> None:
         self.tiled = False
+        self.decoder = _FakeWanDecoder()
 
     def enable_tiling(self) -> None:
         self.tiled = True
@@ -913,6 +924,23 @@ def test_generate_defaults_from_variant(fake_runtime, tmp_path):
     assert call["sigmas"] == list(LTX23_DISTILLED_SIGMAS)
 
 
+@pytest.mark.parametrize("device, expected", [("mps", "cpu"), ("cuda", "cuda")])
+def test_generate_seeds_metal_from_a_cpu_generator(fake_runtime, tmp_path, device, expected):
+    # Metal reproduces a seed only through a CPU generator, and this also keeps the path off
+    # whatever torch.Generator(device="mps") does on the older torch releases install.sh keeps.
+    (tmp_path / "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf").write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    backend._state = dataclasses.replace(backend._state, device = device)
+    backend.generate(prompt = "a sloth", seed = 7)
+    assert backend._state.pipe.last_kwargs["generator"].device == expected
+
+
 def test_ltx23_load_forwards_the_precast_encoder(fake_runtime, tmp_path, monkeypatch):
     # The wiring half of the same bug: the 2.3 branch does not use pipe_kwargs, so the loader must pass the pre-cast encoder across explicitly.
     from core.inference import diffusion_te_prequant, video_ltx2
@@ -1411,6 +1439,62 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert status["defaults"]["frame_step"] == 4
     assert status["transformer_quant"] is None
     assert _FakeWanPipelineSingle.last["repo"] == "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    # Nothing to sync on this CPU-resolved target; the hook must not cost non-MPS loads a thing.
+    assert backend._state.pipe.vae.decoder.hooks == []
+
+
+def _fits_in_memory_snapshot(device):
+    """A memory snapshot big enough that no load is ever refused for size, so a test forcing a
+    device does not inherit the runner's own free memory as a precondition."""
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = 512 * 1024
+    kind = "unified_memory" if device == "mps" else "discrete_vram"
+    return lambda target: DeviceMemory(device, device, kind, int(total * 0.80), total)
+
+
+@pytest.mark.parametrize("device,hooked", [("mps", 1), ("cuda", 0)])
+def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
+    fake_runtime, monkeypatch, device, hooked
+):
+    # Tiling alone does not bound a Wan decode on MPS: intermediates accumulate within a single
+    # tile until the OS kills the process. The load must arm the sync.
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        torch,
+        device,
+        types.SimpleNamespace(
+            synchronize = lambda: None,
+            recommended_max_memory = lambda: 64 * 1024**3,
+            driver_allocated_memory = lambda: 0,
+        ),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        "core.inference.video.resolve_diffusion_device_target",
+        lambda: DiffusionDeviceTarget(
+            device = device,
+            dtype = torch.bfloat16,
+            backend = device,
+            vendor = None,
+            supports_model_cpu_offload = False,
+            supports_default_torch_compile = False,
+            supports_pinned_transfer = False,
+        ),
+    )
+    # Forcing device="mps" also forces the unified-memory placement, and that snapshot is read
+    # from the HOST's free RAM (snapshot_device_memory sends mps to _system_memory_mib), not from
+    # the torch.mps stub above. A runner with little free RAM therefore refuses this 25 GB load
+    # before the hook is ever installed, which is correct behaviour and nothing to do with what
+    # is being asserted here. Pin a pool with room to spare so the result does not depend on how
+    # busy the machine is.
+    monkeypatch.setattr(
+        "core.inference.video.settled_snapshot_device_memory",
+        _fits_in_memory_snapshot(device),
+    )
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert len(backend._state.pipe.vae.decoder.hooks) == hooked
 
 
 def test_video_dense_speed_defaults_to_compile_profile(fake_runtime):

@@ -36,6 +36,9 @@ PRE_STREAM_RESERVATION = (FRONTEND / "features/chat/utils/pre-stream-run-reserva
 CHAT_CLEAR_BOUNDARY = (FRONTEND / "features/chat/utils/chat-history-clear-boundary.ts").read_text(
     encoding = "utf-8"
 )
+CHAT_HISTORY_STORAGE = (FRONTEND / "features/chat/utils/chat-history-storage.ts").read_text(
+    encoding = "utf-8"
+)
 QUEUED_SETTINGS = (FRONTEND / "features/chat/utils/queued-chat-run-settings.ts").read_text(
     encoding = "utf-8"
 )
@@ -739,14 +742,35 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
         "requestPromptQueueStop();"
     )
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
-        "await chatHistoryClearBoundary.waitForPending();"
+        "return await clearStoredChats();"
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(remoteId);" in RUNTIME_PROVIDER
-    assert "chatHistoryClearBoundary.trackPending(write)" in RUNTIME_PROVIDER
+    assert "trackStoredChatThreadRecord(" in RUNTIME_PROVIDER
     assert "class ChatHistoryClearBoundary" in CHAT_CLEAR_BOUNDARY
-    assert "async waitForPending(): Promise<void>" in CHAT_CLEAR_BOUNDARY
+    assert "capture(): number" in CHAT_CLEAR_BOUNDARY
+    assert "advance(): number" in CHAT_CLEAR_BOUNDARY
+    assert "const reopenAdmission = threadRecordWrites.closeAdmission();" in CHAT_HISTORY_STORAGE
+    assert (
+        "const pendingThreadIds = threadRecordWrites.idsRequiringFence();" in CHAT_HISTORY_STORAGE
+    )
+    assert "tombstoneThreadIds: idsToFence" in CHAT_HISTORY_STORAGE
+    assert "threadRecordWrites.confirmFinalState(idsToFence);" in CHAT_HISTORY_STORAGE
+
+
+def test_a_failed_thread_row_write_surfaces_to_the_patch_caller():
+    """A retry that reports undefined reads as "no row to update", so the queued run's
+    model correction is dropped and never retried: thread.tsx clears
+    shouldCorrectPersistedModel right after the awaited updateStoredChatThread."""
+    retry = _between(
+        CHAT_HISTORY_STORAGE,
+        "async function retryFailedThreadRecord(",
+        "export async function listStoredChatMessages(",
+    )
+    # awaiting the tracked write, not the settle-all helper, is what propagates the failure
+    assert "await trackStoredChatThreadRecord(threadId, createRecord);" in retry
+    assert "await awaitStoredChatThreadWrites(threadId);\n  return" not in retry
 
 
 def test_noop_setting_refreshes_do_not_invalidate_pending_queues():

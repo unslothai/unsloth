@@ -74,6 +74,36 @@ def test_disconnect_after_terminal_event_removes_queue(monkeypatch):
         ing._jobs.pop(jid, None)
 
 
+def test_disconnect_after_cancelled_event_removes_queue(monkeypatch):
+    monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
+    # Deleting a document while its worker is storing marks the job cancelled.
+    # The UI consumes the error event and closes the stream before the sentinel.
+    monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "cancelled"})
+    jid = "job-disconnect-after-cancelled"
+    q = queue.Queue()
+    q.put({"type": "error", "stage": "cancelled", "error": "Document was deleted"})
+    q.put(None)
+    ing._jobs[jid] = q
+    try:
+        gen = ing.job_events(jid)
+        assert next(gen)["stage"] == "cancelled"
+        gen.close()
+        assert jid not in ing._jobs, "a cancelled job's queue must drop on disconnect"
+    finally:
+        ing._jobs.pop(jid, None)
+
+
+def test_reaper_removes_cancelled_queue(monkeypatch):
+    monkeypatch.setattr(ing, "get_job_status", lambda _jid: {"status": "cancelled"})
+    jid = "job-reap-cancelled"
+    ing._jobs[jid] = queue.Queue()
+    try:
+        ing._reap_finished_jobs()
+        assert jid not in ing._jobs, "a cancelled job must not remain in the queue registry"
+    finally:
+        ing._jobs.pop(jid, None)
+
+
 def test_transient_status_read_failure_does_not_end_stream(monkeypatch):
     monkeypatch.setattr(ing, "_SSE_POLL_SECONDS", 0.01)
     # The heartbeat poll hits a momentarily-locked DB. That must not propagate: the

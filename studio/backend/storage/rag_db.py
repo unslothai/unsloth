@@ -412,9 +412,11 @@ def reconcile_orphaned_ingestion_jobs() -> int:
     try:
         conn.execute("BEGIN IMMEDIATE")
         now = datetime.now(timezone.utc).isoformat()
+        # 'cancelled' is terminal too: the job stopped because its document was deleted, so
+        # rewriting it to failed would report a deliberate cancellation as an indexing failure.
         rows = conn.execute(
             "SELECT j.id, j.document_id FROM ingestion_jobs j "
-            "WHERE j.status NOT IN ('completed', 'failed') AND NOT EXISTS ("
+            "WHERE j.status NOT IN ('completed', 'failed', 'cancelled') AND NOT EXISTS ("
             "SELECT 1 FROM rag_job_leases l WHERE l.kind='ingestion' "
             "AND l.job_id=j.id AND l.expires_at>?)",
             (now,),

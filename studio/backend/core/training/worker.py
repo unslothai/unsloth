@@ -4520,7 +4520,22 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
     def _on_progress(progress: TrainingProgress) -> None:
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
+        # The end-of-run summary carries no loss (it is the mean, not a step), but it
+        # does carry the elapsed time including the final evaluation, checkpoint save
+        # and best-model reload. Without this the run's recorded duration stops at the
+        # last step log and under-reports how long the run actually took.
+        # A run stopped early never reaches total_steps, so the flag the trainer sets
+        # on the summary record is what marks it terminal; the step comparison stays as
+        # a fallback for backends that do not set it.
+        is_terminal = bool(getattr(progress, "is_run_summary", False)) or (
+            progress.total_steps > 0 and progress.step >= progress.total_steps
+        )
+        if (
+            (progress.step == 0 and progress.total_steps > 0)
+            or has_train_loss
+            or has_eval_loss
+            or is_terminal
+        ):
             event_queue.put(
                 {
                     "type": "progress",
@@ -4579,7 +4594,15 @@ def _create_embedding_progress_callback(
         ):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
+            # See the note in trainer.py: "train_loss" in HF's terminal summary record is
+            # the run mean, not a step loss, so it must not become the final step.
+            loss_value = logs.get("loss")
+            if loss_value is None and logs.get("train_loss") is not None:
+                print(
+                    f"Training finished: mean train_loss={logs.get('train_loss')} "
+                    f"over {state.global_step} steps",
+                    flush = True,
+                )
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time

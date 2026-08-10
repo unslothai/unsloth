@@ -801,6 +801,39 @@ def test_route_start_resolves_bare_name_under_image_dataset_root(client, monkeyp
     assert client._fake.started_with["data_dir"] == str(img_ds)
 
 
+def test_route_start_refuses_a_dataset_holding_clips(client, monkeypatch, tmp_path):
+    """No trainer reads clips. This fixture stubs discovery to SUCCEED, which is exactly the
+    mixed-folder case: without the route's own check the run starts and trains on the still
+    images alone while the picker counted the clips as trainable items."""
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    folder = ds_root / "mixed-set"
+    folder.mkdir(parents = True)
+    (folder / "a.png").write_bytes(b"x")
+    (folder / "b.mp4").write_bytes(b"x")
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "mixed-set"})
+    assert r.status_code == 400, r.text
+    assert "1 video clip" in r.json()["detail"]
+    assert client._fake.started_with is None
+
+
+def test_route_start_still_accepts_an_image_only_dataset(client, monkeypatch, tmp_path):
+    """The twin of the above: the clip check must not stand in the way of a normal folder."""
+    import utils.paths as up
+
+    ds_root = tmp_path / "assets" / "datasets"
+    folder = ds_root / "photo-set"
+    folder.mkdir(parents = True)
+    (folder / "a.png").write_bytes(b"x")
+    monkeypatch.setattr(up, "datasets_root", lambda: ds_root)
+
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "data_dir": "photo-set"})
+    assert r.status_code == 200, r.text
+
+
 def test_route_start_blocked_by_active_llm_training(client, monkeypatch):
     import routes.training as tr
 

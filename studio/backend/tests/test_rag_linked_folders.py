@@ -1608,7 +1608,7 @@ def test_project_writer_contention_does_not_retire_a_live_project(rag_home, monk
     blocker = studio_db.get_connection()
     original_get_connection = studio_db.get_connection
 
-    def short_timeout_connection():
+    def short_timeout_connection(*args, **kwargs):
         conn = original_get_connection()
         conn.execute("PRAGMA busy_timeout = 10")
         return conn
@@ -1893,7 +1893,7 @@ def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home
     blocker = rag_db.get_metadata_connection()
     original_get_connection = rag_db.get_connection
 
-    def short_timeout_connection():
+    def short_timeout_connection(*args, **kwargs):
         conn = original_get_connection()
         conn.execute("PRAGMA busy_timeout = 10")
         return conn
