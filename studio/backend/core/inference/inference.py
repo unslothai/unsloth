@@ -457,7 +457,6 @@ class InferenceBackend:
                             )
                         elif base_repo:
                             from huggingface_hub import snapshot_download
-
                             abs_repo_path = os.path.abspath(snapshot_download(base_repo))
                         else:
                             abs_repo_path = os.path.abspath(config.path)
