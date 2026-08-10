@@ -613,6 +613,23 @@ def _upstream_is_cached(
         return False
 
 
+def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
+    """Whether ``repo_id``'s local cache holds EVERY name in ``files``.
+
+    The same revision rule ``_upstream_is_cached`` applies, exposed for callers that need to know a
+    component is complete rather than merely started: a partial pull leaves some shards resident,
+    and "some" is not a cache hit for anything that then decides not to download the rest.
+
+    The LIVE root only. It is tempting to count the import-time root as well, since
+    ``_prefetch_files`` passes ``reuse_other_cache_root`` and would not re-fetch from it, but the
+    prefetch is not the consumer that matters here: the dense fast path this verdict unlocks calls
+    ``from_pretrained(cache_dir = hub_cache_dir())``, which is pinned to the live root and cannot
+    see the other one. A hit there would widen the plan and then download the whole transformer
+    again after eviction, which is the exact outcome the check exists to prevent.
+    """
+    return bool(files) and _upstream_is_cached(repo_id, tuple(files))
+
+
 # Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
 # byte identical, so an existing install that already pulled the repack holds the very same bytes
 # under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would

@@ -2257,7 +2257,11 @@ def test_a_standalone_gguf_has_one_settings_key():
 
     common = _read_backend("hub/services/models/common.py")
     # The rule this mirrors: a variant is derived only for a single scanned file.
-    assert "extract_quant_label(gguf_files[0].name)" in common
+    # gguf_variant_key, not the hub's extract_quant_label: for a standalone file there is no
+    # directory to qualify, so the key IS the quant token -- and it keeps the bpw modifier, which
+    # is what makes it agree with the loader's own _extract_quant_label (the equality the sibling
+    # test below depends on). The hub label drops that modifier.
+    assert "gguf_variant_key(gguf_files[0].name)" in common
     assert "if scan_path.is_file() and len(gguf_files) == 1" in common
 
 
