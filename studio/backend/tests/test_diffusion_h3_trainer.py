@@ -12,6 +12,7 @@ the forward contract is checkable without the 66 GB checkpoint.
 from __future__ import annotations
 
 import json
+import random
 import sys
 import types
 from pathlib import Path
@@ -1420,3 +1421,123 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
         types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None), "cpu"
     )
     assert all("token" not in call for call in seen[1:]), seen
+
+
+def test_the_audio_decode_stops_at_the_training_window(tmp_path):
+    """An over-long source is accepted input -- only its first num_frames train, and the caller is
+    warned -- so the soundtrack past that window is never used. The video loop already breaks at
+    the window; the audio one decoded and resampled the whole recording and kept every chunk
+    before truncating, so a long clip cost a recording's worth of time and memory to build a
+    sub-second sample (and failed on damage in a region that is never read)."""
+    import numpy as np
+
+    from core.training import diffusion_h3_clips as clips
+
+    target = clips.h3_audio_sample_count(clips.H3_FRAMES_PER_CHUNK)
+    decoded = 0
+
+    class _Resampler:
+        def resample(self, frame):
+            return [] if frame is None else [frame]
+
+    class _Container:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def decode(self, audio = 0):
+            nonlocal decoded
+            for _ in range(4000):  # an hour of audio behind a one-second window
+                decoded += 1
+                yield types.SimpleNamespace(
+                    to_ndarray = lambda: np.zeros(
+                        (target * clips.H3_AUDIO_CHANNELS,), dtype = "float32"
+                    )
+                )
+
+    av = types.SimpleNamespace(
+        AudioResampler = lambda **_kw: _Resampler(), open = lambda _p: _Container()
+    )
+    out = clips._decode_clip_audio(tmp_path / "a.mp4", target, av, np)
+
+    assert out.shape == (clips.H3_AUDIO_CHANNELS, target)
+    assert decoded == 1, f"decoded {decoded} blocks for a window one block wide"
+
+
+def _h3_cache_run(monkeypatch, *, num_clips: int):
+    """Drive ``_train_h3`` through phase 2 only, with every model call faked.
+
+    ``_load_transformer`` raises a sentinel, so "got past the cache gate" is observable without
+    the 66 GB base."""
+    import torch
+
+    from core.training import diffusion_h3_trainer as h3
+
+    class _Placed:
+        def to(self, _device):
+            return self
+
+    pipe = types.SimpleNamespace(
+        text_encoder = _Placed(), processor = None, vae = _Placed(), audio_vae = _Placed()
+    )
+    monkeypatch.setattr(h3, "_load_conditioners", lambda cfg, device: pipe)
+    monkeypatch.setattr(h3, "_encode_prompt", lambda *_a, **_k: torch.zeros(1, 8, 16))
+    monkeypatch.setattr(h3, "_dataset_canvas", lambda _path, _short_edge: (64, 64))
+    monkeypatch.setattr(h3, "decode_clip", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(
+        h3, "_encode_video_stats", lambda *_a: (torch.zeros(1, 4, 2, 8, 8), torch.zeros(1, 4, 2, 8, 8))
+    )
+    num_audio = h3.h3_audio_latent_count(h3.H3_TRAIN_NUM_FRAMES)
+    monkeypatch.setattr(
+        h3, "_encode_audio_latents", lambda *_a: torch.zeros(1, h3.H3_AUDIO_LATENT_CHANNELS, num_audio)
+    )
+
+    def _no_transformer(*_a, **_k):
+        raise RuntimeError("reached phase 3")
+
+    monkeypatch.setattr(h3, "_load_transformer", _no_transformer)
+
+    cfg = _cfg(output_dir = "/tmp/h3-out").normalized()
+    pairs = [(f"/clips/{i}.mp4", "a caption") for i in range(num_clips)]
+    return lambda: h3._train_h3(
+        cfg,
+        pairs,
+        random.Random(0),
+        "cpu",
+        torch.float32,
+        lambda *_a, **_k: None,
+        lambda: False,
+        lambda: True,
+    )
+
+
+def test_the_h3_latent_cache_is_size_gated_like_the_image_trainers(monkeypatch):
+    """Both shared image trainers measure the FIRST real entry and refuse to build a latent cache
+    over the host-memory budget. H3 built one entry per discovered clip unconditionally, so a
+    large clip dataset was OOM-killed at the end of the whole preparation with nothing saved.
+
+    It cannot answer the way they do -- they drop the cache and encode per step, and H3 frees both
+    VAEs to make room for the 66 GB transformer -- so it says so up front instead, with the
+    numbers and the same explicit override the size gate already has."""
+    from core.training import diffusion_train_common as common
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", raising = False)
+    monkeypatch.setattr(common, "_LATENT_CACHE_BUDGET_BYTES", 1)
+
+    with pytest.raises(ValueError, match = "latent cache") as exc:
+        _h3_cache_run(monkeypatch, num_clips = 4)()
+    assert "UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE" in str(exc.value)
+
+
+def test_the_h3_latent_cache_gate_honours_the_explicit_override(monkeypatch):
+    """The gate is the AUTOMATIC default only, exactly as it is for the image trainers: a user who
+    has the RAM and says so gets the cache, and the run carries on into phase 3."""
+    from core.training import diffusion_train_common as common
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE", "1")
+    monkeypatch.setattr(common, "_LATENT_CACHE_BUDGET_BYTES", 1)
+
+    with pytest.raises(RuntimeError, match = "reached phase 3"):
+        _h3_cache_run(monkeypatch, num_clips = 4)()

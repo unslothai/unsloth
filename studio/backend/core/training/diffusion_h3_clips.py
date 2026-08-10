@@ -363,12 +363,26 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     """
     resampler = av.AudioResampler(format = "flt", layout = "stereo", rate = H3_AUDIO_SAMPLING_RATE)
     chunks = []
+    have = 0
     with av.open(str(path)) as container:
+        # Stops at the training window, exactly as the video loop above does. An over-long source
+        # is accepted input here -- only the first num_frames are trained and the caller is merely
+        # warned -- so decoding the rest of the soundtrack would spend a whole recording's time
+        # and memory to build a sub-second sample, and would fail on damage in a region that is
+        # never used.
         for frame in container.decode(audio = 0):
             for resampled in resampler.resample(frame):
+                block = resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS)
+                chunks.append(block)
+                have += block.shape[0]
+            if have >= target_samples:
+                break
+        if have < target_samples:
+            # Only when the stream ran out: the resampler holds a partial block back, and that
+            # tail is what the pad allowance below is measured against. After an early break
+            # there is nothing to flush for -- the window is already full.
+            for resampled in resampler.resample(None):
                 chunks.append(resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS))
-        for resampled in resampler.resample(None):
-            chunks.append(resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS))
     if not chunks:
         raise ValueError(f"{Path(path).name} decoded to no audio samples.")
     samples = np.concatenate(chunks, axis = 0).astype("float32")[:target_samples]

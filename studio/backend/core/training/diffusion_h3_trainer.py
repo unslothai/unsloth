@@ -81,6 +81,8 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    _latent_cache_forced,
+    _latent_cache_over_budget,
     _restore_perf_flags,
     h3_train_unsupported_reason,
     native_bf16_supported,
@@ -578,7 +580,27 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
                 f"{Path(path).name} encoded to {audio.shape[-1]} audio latents, but the packed "
                 f"layout reserves {num_audio_latents} rows per channel."
             )
-        cache.append((video_a, video_b, audio))
+        entry = (video_a, video_b, audio)
+        if i == 0 and not _latent_cache_forced():
+            # Size-gate off the FIRST real entry, the way the SDXL and DiT caches do, before the
+            # rest of the dataset is encoded. Those two answer an over-budget estimate by dropping
+            # the cache and encoding per step; H3 cannot, because both VAEs are freed below to
+            # make room for the 66 GB transformer. So the honest answer is to say so now, with the
+            # numbers, instead of running the whole preparation and being OOM-killed at the end of
+            # it with nothing to show.
+            from core.training import diffusion_train_common as _train_common
+
+            per_clip = int(sum(t.numel() * t.element_size() for t in entry))
+            if _latent_cache_over_budget(per_clip, len(clip_paths)):
+                budget = _train_common._LATENT_CACHE_BUDGET_BYTES
+                raise ValueError(
+                    f"{len(clip_paths)} clips at {width}x{height} need about "
+                    f"{per_clip * len(clip_paths) / 1024**3:.1f} GiB of host memory for the "
+                    f"MiniMax-H3 latent cache, over the {budget / 1024**3:.0f} GiB budget. Train "
+                    f"on fewer clips or at a lower resolution, or set "
+                    f"UNSLOTH_DIFFUSION_FORCE_LATENT_CACHE=1 to cache them anyway."
+                )
+        cache.append(entry)
         _emit(on_event, "preparing", stage = "cache_latents", done = i + 1, total = len(clip_paths))
         if _check_stop():
             _emit(
