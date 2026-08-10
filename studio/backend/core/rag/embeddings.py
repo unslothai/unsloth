@@ -212,9 +212,12 @@ class _CaptureLoadReport(logging.Filter):
         for report in self.reports:
             if any(tag in report for tag in self._SERIOUS):
                 return True
-            # Row by row: a report can list the legacy buffer AND a discarded learned
-            # weight, and only the second one matters.
-            for row in report.splitlines():
+            # Row by row over the table only. transformers appends a "Notes:" section
+            # explaining each status ("- UNEXPECTED: can be ignored when loading from
+            # a different task/architecture"), and reading that as a key row would make
+            # every unexpected report serious, including the benign one.
+            table = report.split("Notes:", 1)[0]
+            for row in table.splitlines():
                 if "UNEXPECTED" in row and self._KNOWN_BENIGN_UNEXPECTED not in row:
                     return True
         return False

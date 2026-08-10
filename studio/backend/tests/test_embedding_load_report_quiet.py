@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import sys
+
+import pytest
 from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -41,13 +43,32 @@ class _Sink(logging.Handler):
         self.messages.append(record.getMessage())
 
 
-def _attach_sink():
-    log = logging.getLogger(_REPORT_LOGGER)
+_RESTORE: list = []
+
+
+def _attach_sink(name: str = _REPORT_LOGGER):
+    """Attach a sink to a process-global logger, remembering what to put back.
+
+    getLogger() is process-global, so leaving propagate = False behind would make
+    later tests in the same worker silently drop real records.
+    """
+    log = logging.getLogger(name)
     sink = _Sink()
+    _RESTORE.append((log, sink, log.propagate, log.level))
     log.addHandler(sink)
     log.propagate = False
     log.setLevel(logging.DEBUG)
     return log, sink
+
+
+@pytest.fixture(autouse = True)
+def _restore_loggers():
+    yield
+    while _RESTORE:
+        log, sink, propagate, level = _RESTORE.pop()
+        log.removeHandler(sink)
+        log.propagate = propagate
+        log.setLevel(level)
 
 
 def test_load_report_is_swallowed_and_captured():
@@ -213,11 +234,7 @@ def test_the_legacy_position_ids_report_is_still_benign():
 def test_the_peft_integration_logger_is_covered():
     # An adapter-backed embedding model reports through transformers.integrations.peft,
     # which is not a descendant of the other two loggers.
-    log = logging.getLogger("transformers.integrations.peft")
-    sink = _Sink()
-    log.addHandler(sink)
-    log.propagate = False
-    log.setLevel(logging.DEBUG)
+    log, sink = _attach_sink("transformers.integrations.peft")
     try:
         with _quiet_transformers_load() as report:
             log.warning(_SERIOUS)
@@ -244,3 +261,19 @@ def test_a_mixed_report_is_serious():
     finally:
         log.removeHandler(sink)
         log.propagate = True
+
+
+def test_the_notes_section_is_not_read_as_a_key_row():
+    # transformers appends "Notes:\n- UNEXPECTED: can be ignored ..." to every report
+    # that has unexpected keys; treating that as a row would make the benign bge
+    # report serious and defeat the whole change.
+    log, sink = _attach_sink()
+    with_notes = (
+        "BertModel LOAD REPORT from: unsloth/bge-small-en-v1.5\n"
+        "embeddings.position_ids | UNEXPECTED\n"
+        "\nNotes:\n"
+        "- UNEXPECTED:\tcan be ignored when loading from different task/architecture."
+    )
+    with _quiet_transformers_load() as report:
+        log.warning(with_notes)
+    assert report.is_serious() is False
