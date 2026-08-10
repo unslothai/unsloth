@@ -200,13 +200,17 @@ _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
 # Markdown code: a fenced block (closing fence optional so a streaming block counts) or
 # an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
 # documentation stays text instead of executing. ``>`` container prefixes are allowed so
-# a fence inside a block quote counts. Inline runs are enumerated by length (double before
+# a fence inside a block quote counts. A backtick fence's info string cannot itself contain
+# backticks, so ```` ```a``` ```` opening a line is an inline span and not a fence running
+# to EOF; the closer tolerates a CR so a CRLF block still closes. Both would otherwise
+# swallow the rest of the message and drop a real call after it. Inline runs are enumerated by length (double before
 # single) rather than backreferenced: ``code`` must be one span and not two empty pairs
 # around live markup, but a ``(`+)..\1`` form backtracks over every candidate length and
 # turned 21 KB of unmatched runs into a 1.8s scan. A lone backtick is valid content inside
 # a doubled span, so only a run of two closes it.
 _CODE_SPAN_RE = re.compile(
-    r"^[ \t]*(?:>[ \t]*)*(?:```+|~~~+).*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t]*$|\Z)"
+    r"^[ \t]*(?:>[ \t]*)*(?:```+[^`\n]*|~~~+[^\n]*)$"
+    r".*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t\r]*$|\Z)"
     r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
     re.DOTALL | re.MULTILINE,
 )

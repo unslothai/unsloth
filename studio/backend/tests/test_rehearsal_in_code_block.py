@@ -48,7 +48,23 @@ QUOTED = {
     # A block still streaming has no closing fence yet; it must not execute in the
     # window before the fence arrives.
     "unclosed_fence": f'{FENCE}\nterminal[ARGS]{{"command": "id"}}',
+    "crlf_fence": f'{FENCE}\r\nterminal[ARGS]{{"command": "id"}}\r\n{FENCE}',
 }
+
+
+# A real call must still run when the text around it only looks like a fence. These are the
+# opposite failure: over-suppression silently drops a tool call the user asked for.
+LIVE_AFTER = {
+    # A backtick fence info string cannot contain backticks, so this opens an inline span,
+    # not a fence running to EOF.
+    "line_start_inline_span": f'{FENCE}example{FENCE} then terminal[ARGS]{{"command": "id"}}',
+    "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nterminal[ARGS]{{"command": "id"}}',
+}
+
+
+@pytest.mark.parametrize("case", sorted(LIVE_AFTER))
+def test_call_after_fence_like_text_still_runs(case):
+    assert _names(LIVE_AFTER[case]) == ["terminal"]
 
 
 @pytest.mark.parametrize("case", sorted(QUOTED))
