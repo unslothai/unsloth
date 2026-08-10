@@ -1087,4 +1087,4 @@ def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
     verified = src.index("_denoiser_prequant_verified")
     predownload = src.index("_predownload_base")
     assert planned < verified < predownload
-    assert "h3_auto_denoiser or kwargs.get(\"transformer_quant\")" in src
+    assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
