@@ -458,9 +458,7 @@ def test_the_released_conditioner_is_reachable_through_the_load_api():
         normalize_te_quant("int3")
 
     def _request(value):
-        return VideoLoadRequest(
-            model_path = "MiniMaxAI/MiniMax-H3", text_encoder_quant = value
-        )
+        return VideoLoadRequest(model_path = "MiniMaxAI/MiniMax-H3", text_encoder_quant = value)
 
     for accepted in (None, "auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"):
         assert _request(accepted).text_encoder_quant == accepted
@@ -541,9 +539,7 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
         assert hits, "landmark not found in the modular loader"
         return min(hits)
 
-    load_components = _line(
-        lambda n: isinstance(n, ast.Attribute) and n.attr == "load_components"
-    )
+    load_components = _line(lambda n: isinstance(n, ast.Attribute) and n.attr == "load_components")
     fence = _line(
         lambda n: isinstance(n, ast.Compare)
         and "_load_token" in ast.dump(n)
@@ -552,6 +548,6 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
     placement = _line(
         lambda n: isinstance(n, ast.Attribute) and n.attr == "enable_auto_cpu_offload"
     )
-    assert load_components < fence < placement, (
-        "the token fence must sit between load_components and the placement it guards"
-    )
+    assert (
+        load_components < fence < placement
+    ), "the token fence must sit between load_components and the placement it guards"
