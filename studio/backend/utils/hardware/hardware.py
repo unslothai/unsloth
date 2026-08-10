@@ -276,7 +276,6 @@ def _mlx_stack_detail() -> Optional[str]:
     """
     try:
         from utils.mlx_repair import mlx_stack_blockers
-
         blockers = mlx_stack_blockers()
     except Exception as exc:
         logger.debug("MLX blocker detail unavailable: %s", exc)
