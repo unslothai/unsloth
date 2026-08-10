@@ -83,6 +83,26 @@ def hf_partials_are_resumable() -> bool:
     return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
 
 
+def partial_is_process_unique(name: str) -> bool:
+    """Whether a partial filename carries the 1.18+ per-process nonce."""
+    if not name.endswith(INCOMPLETE_SUFFIX):
+        return False
+    return _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(name[: -len(INCOMPLETE_SUFFIX)]) is not None
+
+
+def partial_is_resumable(name: str) -> bool:
+    """Whether any later attempt could append to this particular partial.
+
+    Two conditions, and the layout half matters on its own: a nonce partial is private to the
+    process that created it, so even a legacy writer will not reopen it. That combination is
+    reachable whenever caches are shared across environments, which this repo's own pins
+    produce (Python 3.10+ takes hub >= 1.23, older takes 0.36.2, one cache between them).
+    """
+    if partial_is_process_unique(name):
+        return False
+    return hf_partials_are_resumable()
+
+
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
     """``Path.is_dir()`` returning False instead of raising when the path or a
     parent is unreadable (e.g. a restricted ``~/.cache/huggingface/hub``), so

@@ -75,6 +75,7 @@ from hub.utils.hf_cache_state import (
     hf_cache_root,
     hf_partials_are_resumable,
     incomplete_blob_hash,
+    partial_is_resumable,
 )
 
 
@@ -379,15 +380,31 @@ class _PurgeOutcome(NamedTuple):
     failed: int
 
 
+# How long a partial must sit untouched before an unresumable-purge treats it as abandoned.
+# huggingface_hub writes to a partial continuously, so anything still advancing is a live
+# writer -- possibly another Studio or another client entirely, which this backend's peer
+# registry cannot see. Only the unresumable sweep waits: it reclaims disk, while a
+# marker-mismatch purge exists to stop a corrupt append and cannot defer.
+_ABANDONED_PARTIAL_SECONDS = 120
+
+
 def _purge_incomplete_blobs(
     entry: Path,
     only_hashes: Optional[frozenset[str]] = None,
     protected_hashes: Optional[frozenset[str]] = None,
+    *,
+    unresumable_only: bool = False,
 ) -> _PurgeOutcome:
     """Delete selected partials while preserving protected concurrent writes.
 
     Report failed deletions so sparse partials cannot receive an HTTP marker.
+
+    ``unresumable_only`` restricts the sweep to partials no writer can reuse AND that nothing
+    has touched for ``_ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its
+    writer on POSIX; it keeps filling an unlinked inode and then fails at the rename, so the
+    cost of that mistake is another client's whole download.
     """
+    now = time.time()
     blobs_dir = entry / "blobs"
     if not blobs_dir.is_dir():
         return _PurgeOutcome(0, 0)
@@ -409,6 +426,11 @@ def _purge_incomplete_blobs(
                 continue
             if only_hashes is not None and blob_hash not in only_hashes:
                 continue
+            if unresumable_only:
+                if partial_is_resumable(blob.name):
+                    continue
+                if now - blob.stat().st_mtime < _ABANDONED_PARTIAL_SECONDS:
+                    continue
             blob.unlink()
             removed += 1
         except FileNotFoundError:
@@ -625,20 +647,34 @@ def prepare_cache_for_transport(
         if mode == TRANSPORT_XET:
             main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
-            # A trusted marker only buys something if the next attempt can append to the
-            # partial it vouches for, and since huggingface_hub 1.18 nothing can. What
+            # A matching marker vouches for provenance, which is only worth something if
+            # something can still append to the partial it vouches for. When nothing can, what
             # survives is dead weight that holds the disk the refetch needs and, carrying the
             # etag of the blob being refetched, pins the bar to its own stale high-water mark
-            # until the new attempt overtakes it. Peers writing right now are still protected.
-            resumable = hf_partials_are_resumable()
-            if not resumable or _read_marker(entry, variant) != mode:
+            # until the new attempt overtakes it. Sweep it, but only once abandoned.
+            if _read_marker(entry, variant) != mode:
                 main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
-            if companion_blob_hashes and (not resumable or _read_companion_marker(entry) != mode):
-                companion_purge = _purge_incomplete_blobs(
+            else:
+                main_purge = _purge_incomplete_blobs(
                     entry,
-                    companion_blob_hashes,
+                    only_blob_hashes,
                     protected,
+                    unresumable_only = True,
                 )
+            if companion_blob_hashes:
+                if _read_companion_marker(entry) != mode:
+                    companion_purge = _purge_incomplete_blobs(
+                        entry,
+                        companion_blob_hashes,
+                        protected,
+                    )
+                else:
+                    companion_purge = _purge_incomplete_blobs(
+                        entry,
+                        companion_blob_hashes,
+                        protected,
+                        unresumable_only = True,
+                    )
         total_purged += main_purge.removed + companion_purge.removed
         record_unconditionally = mode == TRANSPORT_XET
         if record_unconditionally or not main_purge.failed:
@@ -727,12 +763,16 @@ def is_resumable_partial(
     repo_id: str,
     variant: Optional[str] = None,
 ) -> bool:
-    """True only when a partial exists AND was produced by a byte-resumable
-    writer (the HTTP transport). XET partials exist on disk but are discarded on
-    the next download attempt."""
-    if not has_active_incomplete_blobs(repo_type, repo_id):
+    """True only when a partial exists AND something can still resume from it.
+
+    Two ways to fail that. XET partials exist on disk but ``hf_xet`` rewrites the destination
+    from scratch, so the marker has to say HTTP. And an HTTP partial is only resumable while a
+    writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
+    the progress you already have", which must not be promised for bytes about to be swept.
+    """
+    if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
         return False
-    return read_active_transport_marker(repo_type, repo_id, variant) == TRANSPORT_HTTP
+    return bool(incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True))
 
 
 def incomplete_blob_hashes(
@@ -740,8 +780,14 @@ def incomplete_blob_hashes(
     repo_id: str,
     *,
     active_only: bool = False,
+    resumable_only: bool = False,
     root: Optional[Path] = None,
 ) -> set[str]:
+    """Logical blob hashes with a partial on disk.
+
+    ``resumable_only`` keeps just the ones a later attempt could actually append to, which is
+    what a "resume and keep your progress" claim has to be built on.
+    """
     out: set[str] = set()
     entries = (
         iter_active_repo_cache_dirs(repo_type, repo_id, root = root)
@@ -757,8 +803,11 @@ def incomplete_blob_hashes(
                 if not blob.is_file():
                     continue
                 blob_hash = incomplete_blob_hash(blob.name)
-                if blob_hash is not None:
-                    out.add(blob_hash)
+                if blob_hash is None:
+                    continue
+                if resumable_only and not partial_is_resumable(blob.name):
+                    continue
+                out.add(blob_hash)
         except OSError:
             continue
     return out
