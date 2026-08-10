@@ -59,10 +59,10 @@ GLOW_MIX_RADIUS = 110.0
 GLOW_STRENGTH = 1.48
 GLOW_SIGMA = 50.0
 
-# the icon label sits just below the icon, so the halo is eased off slightly
-# downward. left, right and top keep the full falloff.
-GLOW_BOTTOM_FLOOR = 0.70
-GLOW_BOTTOM_SPAN = 120.0
+# the icon label sits just below the icon, so the halo is eased well down
+# there. left, right and top keep the full falloff.
+GLOW_BOTTOM_FLOOR = 0.30
+GLOW_BOTTOM_SPAN = 90.0
 
 # chevron between the two icons, sized to match the macOS installers this
 # mirrors: a light 16x27pt mark in neutral grey, not a heavy arrow
