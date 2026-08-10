@@ -1565,33 +1565,54 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
     ]
 
-    def test_remote_dflash_sizing_prices_the_sidecar_this_weight_pairs_with(self):
-        """The loader ranks DFlash candidates against the weight being loaded
-        (dflash_repo_preference_key), so a multi-family repo hands model B the
-        generic sidecar. Sizing by the name-only key priced model A's smaller
-        one instead, and the guard admitted a load that then exhausts VRAM
-        beside a running training job."""
+    def test_remote_dflash_sizing_bounds_every_candidate_the_fallback_can_reach(self):
+        """_download_dflash reads a candidate's header only after paying for the
+        bytes, and a rejection falls through to the next name in the ranking, so
+        the file that lands can be any candidate -- including one LARGER than the
+        best-ranked pick. Sizing the first-ranked entry alone under-charged model
+        A by 3 GiB and admitted a load that then exhausts VRAM beside a running
+        training job. Headers are unreadable from a listing, so the bound has to
+        cover the whole reachable set."""
         with patch(
             "huggingface_hub.model_info",
             return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
         ):
-            for weight, expected_gib in (
-                ("model-B-Q4_K_M.gguf", 4),
-                ("model-A-Q4_K_M.gguf", 1),
-            ):
-                total = self.route._remote_gguf_companion_bytes(
-                    "org/repo",
-                    hf_token = None,
-                    include_mmproj = False,
-                    include_mtp = False,
-                    include_dflash = True,
-                    weight_name = weight,
-                )
-                self.assertEqual(total, expected_gib * 1024**3, weight)
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        # 4 GiB, the largest reachable candidate, for either weight in the repo:
+        # model A's own 1 GiB sidecar is merely the one tried FIRST.
+        self.assertEqual(total, 4 * 1024**3)
 
-    def test_remote_estimate_passes_the_selected_weight_to_the_dflash_sizing(self):
-        """End to end: the guard's own estimate has to carry the selected
-        filename down, or the sizing has nothing to pair the sidecar against."""
+    def test_remote_dflash_sizing_ignores_a_nested_dflash_named_weight(self):
+        """The picker is root level only, so a quants/dflash-*.gguf is an ordinary
+        weight there and can never be fetched as the drafter. Charging it made the
+        bound track a file the load cannot reach."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "quants/dflash-model-Q8_0.gguf", size = 9 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 1024**3)
+
+    def test_remote_estimate_bounds_the_dflash_fallback_end_to_end(self):
+        """End to end: the guard's own estimate has to carry the same bound, or
+        the multi-family repo above is under-charged by the whole difference."""
         import utils.models.model_config as mc
 
         cfg = SimpleNamespace(
@@ -1604,7 +1625,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gguf_variant = "Q4_K_M",
         )
         variant = SimpleNamespace(
-            filename = "model-B-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+            filename = "model-A-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
         )
         with (
             patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
@@ -1615,9 +1636,135 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self._dflash_capable(),
         ):
             gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
-        # 10 GiB of weights plus the 4 GiB generic sidecar model B actually gets,
-        # not the 1 GiB one named after model A.
+        # 10 GiB of weights plus the 4 GiB the fallback can still land on, not the
+        # 1 GiB candidate that merely goes first.
         self.assertAlmostEqual(gb, 14.0, places = 6)
+
+    # ── Auto charges ONE drafter, the one the promotion leaves resident ──
+
+    def _auto_companion_bytes(self, siblings):
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            return self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = True,
+                include_dspark = True,
+                include_dflash = True,
+                dspark_first = True,
+            )
+
+    def test_auto_does_not_charge_the_mtp_drafter_dflash_replaces(self):
+        """Under Auto the caller asks for MTP and DFlash together, but the loader
+        promotes DFlash and overwrites mtp_draft_path with it, so the two are
+        never resident at once. Charging the sum was a 409 for a load that fits.
+
+        The DFlash sidecar is the larger of the two here, so the bound is its
+        size alone -- the MTP bytes are not added on top."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 3 * 1024**3)
+
+    def test_auto_keeps_the_mtp_charge_when_the_dflash_candidates_may_all_fail(self):
+        """The other half of the same rule: every DFlash candidate can still be
+        turned away on its header, and the load then keeps the MTP drafter it has
+        already fetched. That outcome is genuinely unknown from a listing, so the
+        larger of the two is charged -- here the MTP one."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 5 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 5 * 1024**3)
+
+    def test_auto_charges_the_largest_reachable_dflash_against_the_mtp_drafter(self):
+        """Items 2 and 5 together, which is the only way they are coherent: the
+        DFlash side of the comparison is the whole reachable candidate set (4
+        GiB), not the first-ranked pick (1 GiB), and it is compared against the
+        MTP drafter rather than added to it. Fixing only one of the two lands on
+        the wrong number from either side: summing the first-ranked pick charges
+        3 GiB, and comparing against the first-ranked pick charges 2 GiB."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 2 * 1024**3),
+            *self._MULTI_FAMILY_SIBLINGS,
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 4 * 1024**3)
+
+    def test_auto_charges_dspark_alone_over_both_of_the_others(self):
+        """DSpark takes first refusal in the promotion and has no post-fetch
+        rejection, so a listed sidecar settles the load: the DFlash fetch stands
+        down and mtp_draft_path is replaced. Neither of the other two is
+        resident."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 2 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 2 * 1024**3)
+
+    def test_auto_still_charges_the_mtp_drafter_when_the_repo_ships_no_sidecar(self):
+        """Positive control: with nothing to promote, Auto launches the MTP
+        drafter and it keeps its charge."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+        ]
+        self.assertEqual(self._auto_companion_bytes(siblings), 1024**3)
+
+    def test_an_explicit_request_is_not_the_auto_race(self):
+        """dspark_first off means the caller already narrowed the kinds to the one
+        it asked for, so nothing here may drop a charge it passed in."""
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 3 * 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = True,
+                include_dflash = True,
+            )
+        self.assertEqual(total, 4 * 1024**3)
+
+    def test_native_drafter_accept_applies_the_lease_before_the_scan_reads(self):
+        """The load route's boundary, in the shape ModelConfig.from_identifier
+        takes. Discovery runs inside from_identifier and opens a DFlash
+        candidate's header, so a dflash-*.gguf symlinked out of the granted
+        directory was read before the validated rescan could reject it, and no
+        later rejection takes a read back."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            leased = Path(d) / "leased"
+            leased.mkdir()
+            outside = Path(d) / "outside"
+            outside.mkdir()
+            weight = leased / "model-Q4_K_M.gguf"
+            weight.write_bytes(b"x")
+            inside = leased / "dflash-kquant.gguf"
+            inside.write_bytes(b"y")
+            target = outside / "dflash-escape.gguf"
+            target.write_bytes(b"z")
+            escape = leased / "dflash-escape.gguf"
+            os.symlink(target, escape)
+
+            accept = self.route._native_drafter_accept
+            self.assertTrue(
+                accept(str(inside), str(weight), "dflash", str(leased))
+            )
+            self.assertFalse(
+                accept(str(target.resolve()), str(weight), "dflash", str(leased))
+            )
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc

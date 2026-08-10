@@ -2645,3 +2645,330 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
         dspark_cached = None,
     )
     assert seen["dflash_fetched"] is True
+
+
+# ── The caller's boundary reaches discovery, not just the rescan ──────
+#
+# ModelConfig.from_identifier runs the local companion scan, and the DFlash scan
+# opens a candidate's header to confirm the architecture. A native grant covers
+# one directory, so a dflash-*.gguf inside it can be a symlink whose target sits
+# outside the lease. The load route rejects that afterwards, which cannot undo a
+# read, so the boundary has to travel INTO the scan.
+
+
+def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monkeypatch):
+    """All three kinds, not only the one that reads a header: they are the same
+    discovery, and a kind that skipped the check would hand the load route a
+    sidecar it has to reject a second time."""
+    import utils.models.model_config as mc
+
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    seen: dict[str, tuple] = {}
+
+    def _recorder(kind):
+        def _detect(path, search_root = None, accept = None, **kwargs):
+            seen[kind] = (path, search_root, accept)
+            return None
+
+        return _detect
+
+    for kind, name in (
+        ("mtp", "detect_mtp_file"),
+        ("dspark", "detect_dspark_file"),
+        ("dflash", "detect_dflash_file"),
+    ):
+        monkeypatch.setattr(mc, name, _recorder(kind))
+
+    calls: list[tuple[str, str, str, str]] = []
+
+    def _accept(candidate, gguf_file, kind, search_root):
+        calls.append((candidate, gguf_file, kind, search_root))
+        return False
+
+    config = ModelConfig.from_identifier(str(weight), drafter_accept = _accept)
+
+    assert config is not None
+    assert set(seen) == {"mtp", "dspark", "dflash"}
+    for kind, (path, search_root, accept) in seen.items():
+        assert path == str(weight)
+        assert accept is not None, kind
+        # Bound to this load's file, this kind and this search root, so the three
+        # closures cannot be swapped for one another.
+        assert accept("/candidate.gguf") is False
+        assert calls[-1] == ("/candidate.gguf", str(weight), kind, search_root)
+
+
+def test_from_identifier_without_a_boundary_scans_exactly_as_before(tmp_path, monkeypatch):
+    """Every caller that has no lease to impose passes nothing, and must see the
+    same candidates in the same order."""
+    import utils.models.model_config as mc
+
+    weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    accepts: list = []
+
+    def _detect(path, search_root = None, accept = None, **kwargs):
+        accepts.append(accept)
+        return None
+
+    for name in ("detect_mtp_file", "detect_dspark_file", "detect_dflash_file"):
+        monkeypatch.setattr(mc, name, _detect)
+
+    ModelConfig.from_identifier(str(weight))
+    assert accepts == [None, None, None]
+
+
+def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, monkeypatch):
+    """End to end: the escaping symlink's target is never opened, and the config
+    reports no DFlash sidecar rather than one the load route would reject."""
+    import os
+
+    import utils.models.model_config as mc
+
+    leased = tmp_path / "leased"
+    leased.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    weight = _write_gguf(leased / "model-Q4_K_M.gguf", "llama")
+    target = _write_gguf(outside / "dflash-kquant.gguf", "dflash")
+    os.symlink(target, leased / "dflash-kquant.gguf")
+
+    reads: list[str] = []
+    real_check = mc.is_dflash_architecture
+
+    def _recording_check(path, *args, **kwargs):
+        reads.append(str(path))
+        return real_check(path, *args, **kwargs)
+
+    monkeypatch.setattr(mc, "is_dflash_architecture", _recording_check)
+
+    def _inside_the_lease(candidate, gguf_file, kind, search_root):
+        return Path(search_root) in Path(candidate).parents
+
+    config = ModelConfig.from_identifier(str(weight), drafter_accept = _inside_the_lease)
+
+    assert config is not None
+    assert config.gguf_dflash_file is None
+    assert reads == []  # the out-of-lease target's header was never read
+
+
+# ── Remote DFlash discovery is root level only, like the local scan ───
+#
+# The local contract is a root-level dflash- file (detect_dflash_file never
+# offers a nested one, since dflash/ is a family name a user picks for real
+# weights). The remote paths matched the basename in any nested directory, so an
+# ordinary quants/dflash-*.gguf weight became a candidate -- and the header can
+# only be read once the bytes are here, so the whole weight downloaded before the
+# rejection.
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("dflash-kquant.gguf", True),
+        ("dflash-model-Q8_0.gguf", True),
+        ("quants/dflash-kquant.gguf", False),
+        ("dflash/dflash-kquant.gguf", False),
+        (r"quants\dflash-kquant.gguf", False),
+        ("model-Q4_K_M.gguf", False),
+        ("model-dflash-Q8_0.gguf", False),  # prefix-only naming rule, unchanged
+    ],
+)
+def test_is_root_dflash_drafter_path(path, expected):
+    from core.inference.llama_cpp import _is_root_dflash_drafter_path
+
+    assert _is_root_dflash_drafter_path(path) is expected
+
+
+def test_the_basename_predicate_keeps_its_own_semantics():
+    """The root check is a separate predicate on purpose: _is_dflash_drafter_path
+    is shared with callers that only ever have a bare filename."""
+    from core.inference.llama_cpp import _is_dflash_drafter_path
+
+    assert _is_dflash_drafter_path("quants/dflash-kquant.gguf") is True
+    assert _is_dflash_drafter_path("dflash-kquant.gguf") is True
+
+
+def test_download_dflash_never_fetches_a_nested_dflash_named_weight(tmp_path, monkeypatch):
+    """The regression: the nested file is an ordinary weight the local scan would
+    never offer, and picking it spent its entire download before the header check
+    could turn it away."""
+    _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+
+    b, got, fetched = _dflash_repo_download(
+        tmp_path,
+        monkeypatch,
+        listing = ["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf"],
+    )
+
+    assert got is None
+    assert fetched == []  # nothing was paid for
+    assert b._dflash_sidecar_absent is True
+
+
+def test_download_dflash_still_takes_the_root_sidecar_beside_a_nested_one(tmp_path, monkeypatch):
+    """Positive control: the nested name is skipped, not the whole repo."""
+    _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
+    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
+
+    b, got, fetched = _dflash_repo_download(
+        tmp_path,
+        monkeypatch,
+        listing = ["model-Q4_K_M.gguf", "quants/dflash-model-Q8_0.gguf", "dflash-kquant.gguf"],
+    )
+
+    assert got == str(sidecar)
+    assert fetched == ["dflash-kquant.gguf"]
+
+
+def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, monkeypatch):
+    """Same rule on the offline cache scan, which hands its answer straight to
+    --model-draft with no download to be rejected first."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    snap = tmp_path / "snapshots" / "abc"
+    (snap / "quants").mkdir(parents = True)
+    _write_gguf(snap / "model-Q4_K_M.gguf", "llama")
+    _write_gguf(snap / "quants" / "dflash-model-Q8_0.gguf", "dflash")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots", lambda *a, **k: [snap]
+    )
+
+    b = LlamaCppBackend()
+    assert b._cached_repo_dflash_drafter(
+        "org/repo", near_path = str(snap / "model-Q4_K_M.gguf")
+    ) is None
+
+
+# ── A split companion is fetched as a whole set ──────────────────────
+#
+# llama-server resolves a split drafter's sibling shards from the first shard's
+# directory, so fetching only the picked shard left a drafter whose header reads
+# fine and which the server then cannot open: the load fell back to no
+# speculation with nothing to show for the download. The main-model downloader
+# already resolves its shards with _gguf_extra_shards; the companion path reuses
+# it rather than growing a second rule.
+
+
+def _split_companion_download(tmp_path, monkeypatch, listing):
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files", lambda repo, token = None: list(listing)
+    )
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
+    fetched: list[str] = []
+
+    def _fake_download(repo, filename, token, *, cancel_event = None, cache_dir = None):
+        fetched.append(filename)
+        path = tmp_path / filename
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr(llama_cpp_module, "hf_hub_download_with_xet_fallback", _fake_download)
+
+    def _pick(names):
+        return next((n for n in sorted(names) if Path(n).name.startswith("dflash-")), None)
+
+    got = LlamaCppBackend()._download_companion_gguf(
+        hf_repo = "org/repo",
+        hf_token = None,
+        pick = _pick,
+        label = "DFlash drafter",
+    )
+    return got, fetched
+
+
+def test_download_companion_gguf_fetches_every_shard_of_a_split_sidecar(tmp_path, monkeypatch):
+    got, fetched = _split_companion_download(
+        tmp_path,
+        monkeypatch,
+        [
+            "model-Q4_K_M.gguf",
+            "dflash-kquant-00001-of-00002.gguf",
+            "dflash-kquant-00002-of-00002.gguf",
+        ],
+    )
+
+    # The launch path is still shard 1, which is what llama-server is given.
+    assert got == str(tmp_path / "dflash-kquant-00001-of-00002.gguf")
+    assert fetched == [
+        "dflash-kquant-00001-of-00002.gguf",
+        "dflash-kquant-00002-of-00002.gguf",
+    ]
+
+
+def test_download_companion_gguf_leaves_a_single_file_sidecar_alone(tmp_path, monkeypatch):
+    """Every companion published today is one file, so the split handling must be
+    a no-op for them: exactly one fetch, same path back."""
+    got, fetched = _split_companion_download(
+        tmp_path, monkeypatch, ["model-Q4_K_M.gguf", "dflash-kquant.gguf"]
+    )
+
+    assert got == str(tmp_path / "dflash-kquant.gguf")
+    assert fetched == ["dflash-kquant.gguf"]
+
+
+def test_companion_snapshot_reuse_skips_an_incomplete_split_sidecar(tmp_path):
+    """The reuse scan is the other half: a snapshot holding shard 1 alone is not
+    a reuse. Reporting it would skip the download that completes the set and
+    leave the load with a drafter llama-server cannot open."""
+    from core.inference.llama_cpp import _companion_snapshot_sibling
+
+    snap = tmp_path / "models--org--repo" / "snapshots" / "abc"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"x")
+    first = snap / "dflash-kquant-00001-of-00002.gguf"
+    first.write_bytes(b"y")
+
+    def _pick(names):
+        return next((n for n in sorted(names) if Path(n).name.startswith("dflash-")), None)
+
+    near = str(snap / "model-Q4_K_M.gguf")
+    assert _companion_snapshot_sibling(near, _pick) is None
+
+    (snap / "dflash-kquant-00002-of-00002.gguf").write_bytes(b"z")
+    assert _companion_snapshot_sibling(near, _pick) == str(first)
+
+
+def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeypatch):
+    """The offline cache lookup is the third way a shard can reach --model-draft,
+    and offline there is no fetch left to complete the set."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
+    monkeypatch.setattr(
+        "huggingface_hub.list_repo_files",
+        lambda repo, token = None: ["dflash-kquant-00001-of-00002.gguf"],
+    )
+    first = tmp_path / "dflash-kquant-00001-of-00002.gguf"
+    first.write_bytes(b"x")
+    monkeypatch.setattr(
+        llama_cpp_module, "_cached_hf_snapshot_file", lambda *a, **k: str(first)
+    )
+    def _offline_fetch(*_args, **_kwargs):
+        # What the Hub raises offline, which the caller swallows to None.
+        raise RuntimeError("offline mode is enabled")
+
+    monkeypatch.setattr(
+        llama_cpp_module, "hf_hub_download_with_xet_fallback", _offline_fetch
+    )
+
+    def _pick(names):
+        return next((n for n in sorted(names) if Path(n).name.startswith("dflash-")), None)
+
+    b = LlamaCppBackend()
+    # The half set is not reported as a cache hit, so the load ends with no
+    # drafter rather than one llama-server cannot open.
+    assert b._download_companion_gguf(
+        hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
+    ) is None
+
+    (tmp_path / "dflash-kquant-00002-of-00002.gguf").write_bytes(b"y")
+    assert b._download_companion_gguf(
+        hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
+    ) == str(first)

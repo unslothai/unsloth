@@ -3833,6 +3833,7 @@ class ModelConfig:
         hf_token: Optional[str] = None,
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
+        drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3843,6 +3844,16 @@ class ModelConfig:
             is_lora: Whether this is a LoRA adapter
             gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
                 via -hf for remote repos; None auto-selects via _pick_best_gguf().
+            drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
+                the caller's extra admission rule for a discovered drafter. A
+                native-grant load passes the lease boundary here so it is applied
+                BEFORE this scan inspects a candidate: detect_dflash_file reads
+                the header of the file it is about to accept, and a
+                ``dflash-*.gguf`` symlink in a granted directory can point at a
+                target outside the lease, which the validated rescan on the load
+                route rejects only after the read already happened. Left None by
+                every caller that has no boundary to impose, which sees the same
+                candidates in the same order as before.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -3911,6 +3922,18 @@ class ModelConfig:
 
                 # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
                 companion_root = _local_gguf_companion_search_root(path, gguf_file)
+
+                # One accept per drafter kind, bound to the file this load opens.
+                # Each kind admits a different companion directory, so they cannot
+                # share one closure or an MTP load would take a sidecar out of
+                # dspark/.
+                def _drafter_accept_for(kind: str) -> Optional[Callable[[str], bool]]:
+                    if drafter_accept is None:
+                        return None
+                    return lambda candidate: drafter_accept(
+                        candidate, gguf_file, kind, companion_root
+                    )
+
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 if mmproj_file:
                     gguf_is_vision = True
@@ -3919,11 +3942,27 @@ class ModelConfig:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
+                mtp_file = detect_mtp_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("mtp"),
+                )
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
-                dspark_file = detect_dspark_file(gguf_file, search_root = companion_root)
-                dflash_file = detect_dflash_file(gguf_file, search_root = companion_root)
+                # DSpark and DFlash take the boundary for the same reason, even
+                # though only the DFlash scan opens a candidate: all three are the
+                # same discovery, and a kind that skipped the check would hand the
+                # load route a sidecar it has to reject a second time.
+                dspark_file = detect_dspark_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dspark"),
+                )
+                dflash_file = detect_dflash_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dflash"),
+                )
 
                 return cls(
                     identifier = identifier,

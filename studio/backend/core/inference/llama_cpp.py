@@ -1219,6 +1219,25 @@ def _is_dflash_drafter_path(path: str) -> bool:
     return _drafter_path_kind(path) == "dflash"
 
 
+def _is_root_dflash_drafter_path(path: str) -> bool:
+    """A DFlash sidecar as a repo listing or cache snapshot offers one: the
+    ``dflash-`` prefix AND the repository root.
+
+    _is_dflash_drafter_path tests the basename, which is all its other callers
+    have (a bare filename carries no parent to look at). Remote discovery does
+    have the repository-relative path, and needs it: the local contract is root
+    level only, so ``quants/dflash-model-Q8_0.gguf`` is an ordinary weight that
+    detect_dflash_file would never offer. Going by basename there made it a
+    candidate, and since the header can only be read once the bytes are here,
+    the whole weight was downloaded before the rejection.
+
+    Checked here rather than inside the basename predicate so the prefix-only
+    naming rule stays exactly as it is for the callers that share it.
+    """
+    normalized = path.replace("\\", "/")
+    return "/" not in normalized and _is_dflash_drafter_path(normalized)
+
+
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
@@ -1560,7 +1579,17 @@ def _companion_snapshot_sibling(
     if not sibling:
         return None
     candidate = snap / sibling
-    return str(candidate) if candidate.is_file() else None
+    if not candidate.is_file():
+        return None
+    # A split companion is usable only as a whole set (llama-server resolves the
+    # siblings from this path's directory), so a snapshot holding shard 1 alone
+    # is not a reuse -- reporting it would skip the download that completes it and
+    # leave the load with a drafter the server cannot open. Same rule the local
+    # scan applies. Non-split names are a complete one-file set, so this is a
+    # no-op for every companion published today.
+    from utils.models.model_config import _drafter_split_is_complete
+
+    return str(candidate) if _drafter_split_is_complete(candidate) else None
 
 
 def _pick_mmproj(candidates: list[str]) -> Optional[str]:
@@ -7779,10 +7808,27 @@ class LlamaCppBackend:
         Runs WITHOUT self._lock (like _download_gguf); honors _cancel_event so
         an /unload between the main download and here skips the fetch.
         ``cancel_event`` overrides ``self._cancel_event`` (defaults to it).
+
+        Split-aware, like the main-model download: a companion published as a
+        split GGUF is only usable as a complete set, since llama-server resolves
+        the sibling shards from the first one's directory. Fetching just the
+        picked shard left a drafter whose header reads fine and which the server
+        then cannot open, so the load fell back to no speculation with nothing to
+        show for the download -- and it disagreed with the local scan, which
+        accepts a split drafter only when every shard is present.
         """
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
         if cancel_event.is_set():
             return None
+
+        # The listing that produced the pick, kept so the shard siblings can be
+        # resolved from the same names the pick chose among.
+        available: list[str] = []
+
+        def _pick_from(names: list[str]) -> Optional[str]:
+            nonlocal available
+            available = list(names)
+            return pick(available)
 
         # Keep companion files in the main GGUF's snapshot.
         if near_path:
@@ -7814,7 +7860,7 @@ class LlamaCppBackend:
             if cancel_event.is_set():
                 return None
             try:
-                target = pick(list_repo_files(hf_repo, token = hf_token))
+                target = _pick_from(list_repo_files(hf_repo, token = hf_token))
                 listing_answered = True
                 break
             except Exception as e:
@@ -7838,7 +7884,7 @@ class LlamaCppBackend:
                 from utils.models.model_config import _iter_hf_cache_snapshots
                 for snap in _iter_hf_cache_snapshots(hf_repo, companion_cache_dir):
                     rel_files = _gguf_snapshot_files(snap)
-                    target = pick(rel_files)
+                    target = _pick_from(rel_files)
                     if target is not None:
                         logger.info("Resolved %s %s from local HF cache", label, target)
                         break
@@ -7871,19 +7917,43 @@ class LlamaCppBackend:
                 cache_dir = companion_cache_dir,
             )
             if cached:
-                logger.info("Resolved %s from local HF cache: %s", label, cached)
-                return cached
+                from utils.models.model_config import _drafter_split_is_complete
 
+                # Same whole-set rule as the snapshot reuse above: half a split
+                # companion is not a companion, and offline there is no fetch to
+                # complete it, so answering None leaves the load without a
+                # drafter instead of with one llama-server cannot open.
+                if _drafter_split_is_complete(Path(cached)):
+                    logger.info("Resolved %s from local HF cache: %s", label, cached)
+                    return cached
+
+        # A split companion is one file to pick and N files to fetch. Same helper
+        # the main-model download resolves its shards with, so the two cannot
+        # disagree about what belongs to a set; empty for the single-file case,
+        # which is every mmproj and every published sidecar so far.
+        extra_shards = _gguf_extra_shards(available, target)
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             # Same policy; companions are best-effort (caller below swallows failures to None).
-            return hf_hub_download_with_xet_fallback(
+            local_path = hf_hub_download_with_xet_fallback(
                 hf_repo,
                 target,
                 hf_token,
                 cancel_event = cancel_event,
                 cache_dir = companion_cache_dir,
             )
+            for shard in extra_shards:
+                if cancel_event.is_set():
+                    return None
+                logger.info(f"Downloading {label} shard: {hf_repo}/{shard}")
+                hf_hub_download_with_xet_fallback(
+                    hf_repo,
+                    shard,
+                    hf_token,
+                    cancel_event = cancel_event,
+                    cache_dir = companion_cache_dir,
+                )
+            return local_path
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
             return None
@@ -8136,12 +8206,16 @@ class LlamaCppBackend:
                 names = _gguf_snapshot_files(snap)
                 # Every non-sidecar GGUF in the snapshot is a weight some sidecar
                 # could be naming; that is what tells a neighbour's sidecar apart
-                # from one naming no family at all.
-                others = [Path(name).name for name in names if not _is_dflash_drafter_path(name)]
+                # from one naming no family at all. A nested dflash-*.gguf counts
+                # as one of those weights, since only a root-level file is a
+                # sidecar here.
+                others = [
+                    Path(name).name for name in names if not _is_root_dflash_drafter_path(name)
+                ]
                 ranked.extend(
                     (dflash_repo_preference_key(name, weight_name, others), snap / name)
                     for name in names
-                    if _is_dflash_drafter_path(name)
+                    if _is_root_dflash_drafter_path(name)
                 )
             for _, candidate in sorted(ranked, key = lambda entry: entry[0]):
                 if not candidate.is_file():
@@ -8199,16 +8273,19 @@ class LlamaCppBackend:
             # stays eligible, which is what the published one does).
             from utils.models.model_config import dflash_repo_preference_key
 
+            # Root level only, as the local scan is: a nested dflash-*.gguf is an
+            # ordinary weight, and offering it here spends its entire download
+            # before the header check can turn it away.
             others = [
                 Path(name).name
                 for name in candidates
-                if name.lower().endswith(".gguf") and not _is_dflash_drafter_path(name)
+                if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
             files = sorted(
                 (
                     name
                     for name in candidates
-                    if _is_dflash_drafter_path(name) and Path(name).name not in rejected
+                    if _is_root_dflash_drafter_path(name) and Path(name).name not in rejected
                 ),
                 key = lambda name: dflash_repo_preference_key(name, weight_name, others),
             )

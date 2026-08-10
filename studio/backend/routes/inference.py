@@ -4084,6 +4084,26 @@ def _drafter_for_path(
     return detected
 
 
+def _native_drafter_accept(candidate: str, gguf_path: str, kind: str, search_root: str) -> bool:
+    """The native lease rule, in the shape ModelConfig.from_identifier takes.
+
+    Discovery inside from_identifier runs before this route ever sees a path, and
+    the DFlash scan opens a candidate's header to confirm the architecture. A
+    native grant covers one directory, so handing the boundary down is what keeps
+    a sidecar symlinked out of the lease from being read at all -- rejecting it
+    afterwards, which _resolve_gguf_load_intent still does, cannot undo a read.
+    Same predicate the rescan uses, so the two passes cannot disagree about what
+    is in bounds.
+    """
+    return _native_gguf_companion_usable(
+        candidate,
+        gguf_path,
+        kind = kind,
+        mtp_search_root = search_root,
+        log_rejection = True,
+    )
+
+
 def _mtp_draft_for_path(
     gguf_path: Optional[str],
     native_grant_backed: bool,
@@ -5307,76 +5327,84 @@ def _remote_gguf_companion_bytes(
     include_dspark: bool = False,
     include_dflash: bool = False,
     dspark_first: bool = False,
-    weight_name: Optional[str] = None,
 ) -> int:
-    """Bytes of companion GGUFs the requested launch downloads. 0 on error.
+    """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
 
-    ``dspark_first`` mirrors the loader's Auto rule: the DFlash fetch stands down
-    once DSpark has resolved, so a repo publishing both kinds only ever pays for
-    the DSpark sidecar.
-
-    ``weight_name`` is the basename of the main GGUF this load selects. A repo
-    hosting more than one family ships a DFlash sidecar per family, and the
-    loader pairs them against that weight, so the guard has to be told which
-    weight it is pricing or it can charge a different (possibly smaller) sidecar
-    than the one the load will fetch, and wave through a load that then exhausts
-    VRAM beside a running training job.
+    ``dspark_first`` says this is an Auto load, which is the only caller that can
+    ask for several drafter kinds at once, so the loader's promotion order gets
+    to say which single one is charged: DSpark, else DFlash, else the MTP
+    drafter. The loader replaces mtp_draft_path with whichever kind wins the
+    promotion, so at most one drafter is ever launched; a sidecar that is fetched
+    and then not opened costs disk, not VRAM, and this guard sizes VRAM. Off, the
+    caller has already narrowed the request to one kind and the sum is that kind.
     """
     try:
         from core.inference.llama_cpp import (
-            _is_dflash_drafter_path,
             _is_dspark_drafter_path,
+            _is_root_dflash_drafter_path,
         )
         from huggingface_hub import model_info
-        from utils.models.model_config import dflash_repo_preference_key, dspark_preference_key
+        from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
+        mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
-        dflash_candidates: list[tuple[str, int]] = []
-        # The weights a DFlash sidecar could be naming instead of this one, which
-        # is what tells a neighbour's sidecar apart from one naming no family at
-        # all. Derived from the listing exactly as _download_dflash derives it,
-        # so the guard ranks the candidates off the same evidence.
-        other_weight_names: list[str] = []
+        dflash_sizes: list[int] = []
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
                 continue
-            if not _is_dflash_drafter_path(name):
-                other_weight_names.append(Path(name).name)
+            size = getattr(sibling, "size", 0) or 0
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if (include_mtp and is_root_mtp) or (include_mmproj and "mmproj" in base):
-                total += getattr(sibling, "size", 0) or 0
+            if include_mtp and is_root_mtp:
+                mtp_bytes += size
+            elif include_mmproj and "mmproj" in base:
+                total += size
             if include_dspark and _is_dspark_drafter_path(name):
-                dspark_candidates.append((name, getattr(sibling, "size", 0) or 0))
-            if include_dflash and _is_dflash_drafter_path(name):
-                dflash_candidates.append((name, getattr(sibling, "size", 0) or 0))
+                dspark_candidates.append((name, size))
+            # Root level only, exactly as _download_dflash's picker is: a nested
+            # dflash-*.gguf is an ordinary weight there and never a candidate, so
+            # counting it here would price a file the load cannot fetch.
+            if include_dflash and _is_root_dflash_drafter_path(name):
+                dflash_sizes.append(size)
+        # Same preference order the download uses, so the budget sizes the file
+        # the launch will actually fetch. DSpark has no post-fetch rejection, so
+        # the best-ranked candidate is the one that lands.
+        dspark_bytes = (
+            min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
+            if dspark_candidates
+            else 0
+        )
+        # The largest candidate the fetch could end up on, not the best-ranked
+        # one. _download_dflash can only read a candidate's header once it has
+        # paid for the bytes, and a rejection falls through to the next name in
+        # the ranking, so any candidate can be the file that lands -- and the
+        # whole point of the fallback is the case where it is a different, bigger
+        # one. Headers are unreadable from a listing, so the ranking cannot
+        # narrow that down here, and over-estimating is the established safe
+        # direction for a guard protecting a running training job.
+        dflash_bytes = max(dflash_sizes, default = 0)
+        if not dspark_first:
+            return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_candidates:
-            # Same preference order the download uses, so the budget sizes the
-            # file the launch will actually fetch.
-            total += min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
-        # Under Auto the loader stands down on the DFlash fetch as soon as DSpark
-        # resolves (DSpark takes first refusal in the promotion), so a repo that
-        # publishes both kinds never has the DFlash bytes resident. The caller
-        # asks for both because which kind a repo ships is unknown before the
-        # listing, and over-estimating is the safe direction for a guard
-        # protecting a running training job -- but the listing has answered by
-        # here, so with both present the outcome is known rather than unknown, and
-        # charging the unused ~1.5 GiB only makes the guard 409 a load that fits.
-        # An explicitly forced DFlash is not the Auto race and still pays.
-        if dflash_candidates and not (dspark_first and dspark_candidates):
-            # dflash_repo_preference_key, not the name-only key: it is the key the
-            # downloader sorts with, and in a multi-family repo the two disagree
-            # about which sidecar this weight gets.
-            total += min(
-                dflash_candidates,
-                key = lambda c: dflash_repo_preference_key(c[0], weight_name, other_weight_names),
-            )[1]
-        return total
+            # DSpark takes first refusal in the Auto promotion, so a listed
+            # sidecar settles the load: the DFlash fetch stands down and
+            # mtp_draft_path is replaced by the DSpark one. Charging the other
+            # two is not the safe over-estimate it is for a repo whose listing
+            # has not answered yet, it is a 409 for a load that fits.
+            return total + dspark_bytes
+        if dflash_sizes:
+            # DFlash is the other Auto promotion and replaces mtp_draft_path the
+            # same way, so the two are never resident together. Which of them it
+            # is stays genuinely unknown here: every DFlash candidate can still be
+            # turned away on its header, and the load then keeps the MTP drafter
+            # it has already fetched. The larger of the two covers both outcomes.
+            return total + max(dflash_bytes, mtp_bytes)
+        return total + mtp_bytes
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
         return 0
@@ -5707,11 +5735,6 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
-            # The variant record names the file this load opens, which is what the
-            # DFlash sizing needs to price the sidecar the loader will pair with
-            # it. A lister that reported no name leaves it None and the ranking
-            # falls back to precision alone, exactly as before.
-            selected_weight = Path(getattr(selected, "filename", "") or "").name or None
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
@@ -5726,16 +5749,11 @@ def _estimate_gguf_required_gb(
                 ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
                 include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
-                # ... except where the listing settles it: a repo shipping BOTH
-                # kinds only loads the DSpark one under Auto, so charging the
-                # DFlash sidecar too is not caution, it is a refusal for bytes
-                # that never land.
+                # ... except where the listing settles it. Auto launches exactly
+                # one drafter, in a fixed order, so once the listing says which
+                # kinds the repo has, charging the losers is not caution, it is a
+                # refusal for bytes that never become resident.
                 dspark_first = _auto_dspark,
-                # The weight this load actually opens. A multi-family repo ships a
-                # DFlash sidecar per family and the loader pairs them by name, so
-                # without it the guard can price a foreign (and smaller) sidecar
-                # than the one that lands.
-                weight_name = selected_weight,
             )
             # Plus the local --model-draft, if the caller named one: the repo
             # listing cannot see it, and it is resident next to these weights.
@@ -7128,6 +7146,10 @@ async def _load_model_impl(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    # A native grant covers one directory, and this is the first
+                    # pass that touches a drafter candidate, so the boundary has
+                    # to travel with it rather than being applied afterwards.
+                    drafter_accept = _native_drafter_accept if native_grant_backed else None,
                 )
 
         # Guard and call go to the worker together: from_identifier can import transformers
@@ -7838,6 +7860,10 @@ async def validate_model(
                     model_id = model_identifier,
                     hf_token = request.hf_token,
                     gguf_variant = request.gguf_variant,
+                    # A native grant covers one directory, and this is the first
+                    # pass that touches a drafter candidate, so the boundary has
+                    # to travel with it rather than being applied afterwards.
+                    drafter_accept = _native_drafter_accept if native_grant_backed else None,
                 )
 
         config = await asyncio.to_thread(_resolve_config)
