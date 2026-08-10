@@ -2856,7 +2856,10 @@ async def start_diffusion_training(
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it
         # reports the folder as uncaptioned, and mixed it succeeds on the images and trains on
         # that subset without saying so.
-        clip_refusal = _clip_dataset_refusal(config["data_dir"])
+        # In a worker thread like the discovery below it, and for the same reason: the scan stats
+        # every file and reads the caption sidecars, which on a large or network-mounted dataset
+        # would hold the event loop and stall status/stop alongside it.
+        clip_refusal = await asyncio.to_thread(_clip_dataset_refusal, config["data_dir"])
         if clip_refusal is not None:
             raise HTTPException(status_code = 400, detail = clip_refusal)
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
