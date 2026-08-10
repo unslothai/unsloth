@@ -2406,7 +2406,6 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
     assert warming_entry["files"] == by_repo["unsloth/MiniMax-H3-GGUF"]["files"]
     assert warming_entry["checkpoint"] is False
 
-
     _plan_cache(monkeypatch, lambda _name: True)
     cached = VideoBackend().download_plan(
         "unsloth/MiniMax-H3-GGUF",
