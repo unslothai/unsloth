@@ -147,12 +147,18 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
     return digests
 
 
-def _run_create_release(workflow, tmp_path: Path, *, invalid_signature = False, **kwargs):
+def _run_create_release(
+    workflow,
+    tmp_path: Path,
+    *,
+    invalid_signature = False,
+    **kwargs,
+):
     _stage_assets(tmp_path)
     if invalid_signature:
-        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig").write_text(
-            "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
-        )
+        (
+            tmp_path / "desktop-release-assets" / "Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig"
+        ).write_text("Tauri signer diagnostic, not a signature\n", encoding = "utf-8")
     env = {
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
         "APP_VERSION": "0.1.50",
@@ -171,7 +177,9 @@ def _run_create_release(workflow, tmp_path: Path, *, invalid_signature = False, 
         "Generate versioned updater metadata and provenance",
         "Record desktop build provenance on the release",
     )
-    create_step = _step(workflow, "publish-release", "Record desktop build provenance on the release")
+    create_step = _step(
+        workflow, "publish-release", "Record desktop build provenance on the release"
+    )
     create_step["run"] = "\n".join(
         _step(workflow, "publish-release", name)["run"] for name in names
     )

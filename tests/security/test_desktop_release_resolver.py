@@ -19,7 +19,12 @@ def _module():
     return module
 
 
-def _release(tag: str, created: str, *assets: str, draft: bool = False):
+def _release(
+    tag: str,
+    created: str,
+    *assets: str,
+    draft: bool = False,
+):
     return {
         "tagName": tag,
         "createdAt": created,
@@ -31,7 +36,7 @@ def _release(tag: str, created: str, *assets: str, draft: bool = False):
 def test_resolver_selects_newest_semver_bundle_including_drafts():
     releases = [
         _release("v0.1.528-beta", "2026-08-10T01:00:00Z", "app.dmg"),
-        _release("v0.1.529-beta", "2026-08-11T01:00:00Z", "app.dmg", draft=True),
+        _release("v0.1.529-beta", "2026-08-11T01:00:00Z", "app.dmg", draft = True),
         _release("v2026.8.11", "2026-08-12T01:00:00Z", "backend.whl"),
         _release("desktop-v0.1.530-beta", "2026-08-13T01:00:00Z", "app.dmg"),
     ]
@@ -49,7 +54,7 @@ def test_resolver_requires_the_platform_asset_and_fails_when_absent():
 
 
 def test_clean_machine_workflow_uses_resolver_but_preserves_explicit_tag():
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
     assert workflow.count("python3 .github/scripts/resolve-desktop-release.py") == 3
     assert "'.github/scripts/resolve-desktop-release.py'" in workflow
     assert workflow.count('if [ -z "$REL_TAG" ]; then') == 3

@@ -128,7 +128,9 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
-    assert names.index("Wait for the build matrix") < names.index("Record desktop build provenance on the release")
+    assert names.index("Wait for the build matrix") < names.index(
+        "Record desktop build provenance on the release"
+    )
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
     download = next(
@@ -228,15 +230,18 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
     assert "Refusing to replace GitHub latest" in downgrade["run"]
     assert "releases/latest" in downgrade["run"]
 
-
     promote = next(
-        step for step in job["steps"] if step.get("name") == "Mark published release as GitHub latest"
+        step
+        for step in job["steps"]
+        if step.get("name") == "Mark published release as GitHub latest"
     )
     assert "make_latest=true" in promote["run"]
     assert "releases/latest" in promote["run"]
 
     bridge = next(
-        step for step in job["steps"] if step.get("name") == "Bridge legacy desktop-latest clients once"
+        step
+        for step in job["steps"]
+        if step.get("name") == "Bridge legacy desktop-latest clients once"
     )
     assert "workflow_dispatch" in bridge["if"]
     assert "inputs.bridge_legacy_channel" in bridge["if"]
@@ -248,6 +253,10 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
     assert 'releases/latest" --jq .tag_name' in bridge["run"]
 
     ordinary_steps = [
-        step for step in job["steps"] if step.get("name") != "Bridge legacy desktop-latest clients once"
+        step
+        for step in job["steps"]
+        if step.get("name") != "Bridge legacy desktop-latest clients once"
     ]
-    assert not any("gh release upload desktop-latest" in step.get("run", "") for step in ordinary_steps)
+    assert not any(
+        "gh release upload desktop-latest" in step.get("run", "") for step in ordinary_steps
+    )

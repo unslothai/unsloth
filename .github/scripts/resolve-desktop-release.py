@@ -12,8 +12,7 @@ import sys
 from typing import Any
 
 SEMVER_TAG = re.compile(
-    r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
-    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
 
@@ -41,7 +40,7 @@ def resolve(releases: Any, asset_suffix: str) -> str | None:
             continue
         candidates.append((created_at, tag))
 
-    return max(candidates, default=None)[1] if candidates else None
+    return max(candidates, default = None)[1] if candidates else None
 
 
 def hydrate_assets(releases: Any, repo: str) -> Any:
@@ -56,9 +55,9 @@ def hydrate_assets(releases: Any, repo: str) -> Any:
             continue
         result = subprocess.run(
             ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
-            check=False,
-            capture_output=True,
-            text=True,
+            check = False,
+            capture_output = True,
+            text = True,
         )
         if result.returncode != 0:
             raise ValueError(f"could not inspect assets for {tag}: {result.stderr.strip()}")
@@ -67,24 +66,23 @@ def hydrate_assets(releases: Any, repo: str) -> Any:
     return releases
 
 
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--asset-suffix", required=True)
-    parser.add_argument("--repo", required=True)
+    parser.add_argument("--asset-suffix", required = True)
+    parser.add_argument("--repo", required = True)
     args = parser.parse_args()
 
     try:
         releases = hydrate_assets(json.load(sys.stdin), args.repo)
         tag = resolve(releases, args.asset_suffix)
     except (json.JSONDecodeError, ValueError) as error:
-        print(f"invalid GitHub release listing: {error}", file=sys.stderr)
+        print(f"invalid GitHub release listing: {error}", file = sys.stderr)
         return 2
 
     if tag is None:
         print(
             f"no SemVer v... desktop release contains an asset ending in {args.asset_suffix}",
-            file=sys.stderr,
+            file = sys.stderr,
         )
         return 1
     print(tag)
