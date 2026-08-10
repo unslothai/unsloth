@@ -22,6 +22,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -48,6 +49,7 @@ import {
 } from "@/features/chat";
 import {
   SttModelNotDownloadedError,
+  StudioModelDictationAdapter,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
@@ -276,6 +278,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
+  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN
+   *  origin (`-H 0.0.0.0`) is not a secure context, so navigator.mediaDevices is
+   *  undefined there. Same check the chat composer gates its microphone on;
+   *  without it Record is offered and can only ever fail. */
+  const recordingSupported = useMemo(
+    () => StudioModelDictationAdapter.isSupported(),
+    [],
+  );
   /** Audio the server produced but could not persist; kept so the generation is
    *  not lost when the gallery write fails. Cleared once a real clip lands. */
   const [fallbackClip, setFallbackClip] = useState<{
@@ -1695,11 +1705,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
               <>
                 <Field
                   label="Microphone"
-                  hint="Record a clip and it is transcribed when you stop."
+                  hint={
+                    recordingSupported
+                      ? "Record a clip and it is transcribed when you stop."
+                      : "This browser cannot record. Open Studio over https or on localhost, or upload a file below."
+                  }
                 >
                   <Button
                     variant={isRecording ? "destructive" : "secondary"}
                     disabled={
+                      !recordingSupported ||
                       (!isRecording && (!sttReady || busy !== null)) ||
                       micRequestPending
                     }

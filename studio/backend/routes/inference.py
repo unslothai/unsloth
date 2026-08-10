@@ -6731,9 +6731,13 @@ _scoped_load_attempts: dict[tuple[str, str], _ScopedLoadAttempt] = {}
 _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
+# Bound on waiting for a cancel's teardown to report back. Only the /unload
+# handler sets cancel_complete for a running attempt, so a disconnect or a
+# shutdown between the cancel and its finally leaves nobody to set it. An
+# unbounded wait there parks /load under inference_lifecycle_gate forever, and
+# to_thread's executor threads are non-daemon, so it also blocks process exit.
+_SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 15.0
 _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
-# Long enough to reap a server, short enough that a lost ack releases the lifecycle gate.
-_LOAD_CANCEL_HANDSHAKE_TIMEOUT = 30.0
 
 
 def _prune_scoped_load_cancel_tombstones(now: float) -> None:
@@ -6851,13 +6855,13 @@ async def _run_tracked_load_model_impl(
         )
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
-            # Bounded: the unload that sets this needs a pool thread too, so waiting forever deadlocks.
             if not await asyncio.to_thread(
-                attempt.cancel_complete.wait, _LOAD_CANCEL_HANDSHAKE_TIMEOUT
+                attempt.cancel_complete.wait, _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S
             ):
                 logger.warning(
-                    "Cancelling unload did not acknowledge within %.0fs; releasing the load anyway",
-                    _LOAD_CANCEL_HANDSHAKE_TIMEOUT,
+                    "Scoped load cancel did not report back in %.0fs; releasing the load: %s",
+                    _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S,
+                    request.model_path,
                 )
         with _scoped_load_attempts_lock:
             if _running_load_attempt is attempt:
