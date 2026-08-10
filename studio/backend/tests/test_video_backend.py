@@ -1989,6 +1989,42 @@ def test_hv15_720p_repo_gets_720p_family_defaults():
     assert fam480.resolution_presets[0] == (832, 480)
 
 
+def test_predownload_base_refuses_a_snapshot_split_across_roots(monkeypatch):
+    """reuse_other_cache_root resolves each file through whichever root holds it, so a moved cache
+    can serve the manifest from the old root and a companion from the live one. Handing back the
+    manifest's root would point from_pretrained at a tree missing the rest."""
+    backend = VideoBackend()
+    roots = {
+        "model_index.json": "/old-root/snap",
+        "vae/diffusion_pytorch_model.safetensors": "/live-root/snap",
+    }
+
+    class _Api:
+        def __init__(self, token = None):
+            pass
+
+        def model_info(self, repo, files_metadata = True):
+            return types.SimpleNamespace(
+                siblings = [
+                    _sibling("model_index.json", 1),
+                    _sibling("vae/diffusion_pytorch_model.safetensors", 2),
+                ]
+            )
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **kw: f"{roots[fn]}/{fn}",
+    )
+    assert backend._predownload_base("base/repo", None, "pipeline") is None
+
+    # One root for everything is the case the snapshot exists to serve.
+    roots["vae/diffusion_pytorch_model.safetensors"] = "/old-root/snap"
+    assert backend._predownload_base("base/repo", None, "pipeline") == "/old-root/snap"
+
+
 def test_predownload_base_honors_cancel_between_files(monkeypatch):
     # A warm-cache sweep returns each file without consulting the event, so the loop must check it explicitly.
     backend = VideoBackend()
