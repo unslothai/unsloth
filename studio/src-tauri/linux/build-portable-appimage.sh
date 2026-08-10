@@ -299,10 +299,14 @@ webkit_search+=(
   /usr/lib/webkit2gtk-4.1
   /usr/libexec/webkit2gtk-4.0
 )
+WEBKIT_HELPER_SRC=""
 for helper_dir in "${webkit_search[@]}"; do
   if [[ -d "$helper_dir" && -e "$helper_dir/WebKitNetworkProcess" ]]; then
     cp -a "$helper_dir/." "$webkit_exec/"
     chmod -R u+w "$webkit_exec"
+    # Remember where they came from: that directory IS the string compiled into
+    # libwebkit2gtk, and patching the literal beats guessing at the layout.
+    WEBKIT_HELPER_SRC="$helper_dir"
     log "bundled WebKit helpers from $helper_dir"
     break
   fi
@@ -313,14 +317,18 @@ done
 # $prefix/lib/webkit2gtk-4.1/injected-bundle. Without it the window opens but every
 # page logs "Error loading the injected bundle" and the app's JS bridge is dead.
 # Bundle it under the same fixed link as the helpers so one symlink serves both.
+WEBKIT_INJECTED_SRC=""
 for injected_dir in \
   "${webkit_prefix:-}/lib/webkit2gtk-4.1/injected-bundle" \
+  "${WEBKIT_HELPER_SRC:-}/injected-bundle" \
   /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1/injected-bundle \
+  /usr/lib/webkit2gtk-4.1/injected-bundle \
   /usr/lib64/webkit2gtk-4.1/injected-bundle; do
   if [[ -d "$injected_dir" ]]; then
     mkdir -p "$webkit_exec/injected-bundle"
     cp -a "$injected_dir/." "$webkit_exec/injected-bundle/"
     chmod -R u+w "$webkit_exec/injected-bundle"
+    WEBKIT_INJECTED_SRC="$injected_dir"
     log "bundled WebKit injected bundle from $injected_dir"
     break
   fi
@@ -548,32 +556,72 @@ fi
 # build time. Rewrite the string to a short fixed path instead and have AppRun
 # point that at the bundle. Replacement must be no longer than the original; the
 # remainder is NUL-padded, which keeps every offset in the ELF intact.
-WEBKIT_LINK_PATH="/tmp/.unsloth-webkit-$(id -u 2>/dev/null || echo 0)"
-python3 - "$libdir" "$WEBKIT_LINK_PATH" <<'PYEOF'
+#
+# The compiled-in paths are NOT at a fixed layout. Debian/Ubuntu put both the
+# helpers and the injected bundle under the multiarch libdir
+# (/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1), while nix and Fedora use
+# $prefix/libexec and /usr/lib64. An earlier version of this matched the literals
+# '/libexec/webkit2gtk-4.X' and '/lib/webkit2gtk-4.X/injected-bundle', which score
+# zero hits on Ubuntu -- and because a no-op looked identical to success, the build
+# passed and shipped an AppImage with exactly the fault this patch exists to fix.
+# So: patch the directories we actually copied from, fall back to a layout-agnostic
+# pattern, and treat "nothing matched" as a build failure.
+WEBKIT_LINK_PATH="/tmp/.unsloth-wk-$(id -u 2>/dev/null || echo 0)"
+python3 - "$libdir" "$WEBKIT_LINK_PATH" \
+         "${WEBKIT_HELPER_SRC:-}" "${WEBKIT_INJECTED_SRC:-}" <<'PYEOF'
 import pathlib, re, sys
+
 libdir, link = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
-# Two compiled-in absolute paths: the helper directory and the injected bundle.
-patterns = [
-    (re.compile(rb'[\x20-\x7e]*/libexec/webkit2gtk-4\.[01]\x00'), link),
-    # The literal carries a trailing slash in some builds, so accept either form.
-    (re.compile(rb'[\x20-\x7e]*/lib/webkit2gtk-4\.[01]/injected-bundle/?\x00'),
-     link + b'/injected-bundle'),
-]
-for so in libdir.glob('libwebkit2gtk-*.so*'):
+helper_src, injected_src = sys.argv[3].encode(), sys.argv[4].encode()
+
+def literal(path):
+    """Match an exact directory string, with or without a trailing slash."""
+    return re.compile(re.escape(path.rstrip(b'/')) + rb'/?\x00')
+
+# Injected bundle first: its string ends in '/injected-bundle', so the helper
+# patterns (which anchor the NUL straight after the version) cannot swallow it.
+patterns = []
+if injected_src:
+    patterns.append(('injected', literal(injected_src), link + b'/injected-bundle'))
+patterns.append(('injected',
+                 re.compile(rb'[\x20-\x7e]*/webkit2gtk-4\.[01]/injected-bundle/?\x00'),
+                 link + b'/injected-bundle'))
+if helper_src:
+    patterns.append(('helper', literal(helper_src), link))
+patterns.append(('helper',
+                 re.compile(rb'[\x20-\x7e]*/webkit2gtk-4\.[01]/?\x00'), link))
+
+found = {'helper': 0, 'injected': 0}
+for so in sorted(libdir.glob('libwebkit2gtk-*.so*')):
+    if so.is_symlink():
+        continue
     blob = bytearray(so.read_bytes())
     hits = 0
-    for pat, replacement in patterns:
-      for m in list(pat.finditer(blob)):
-        original = m.group()[:-1]
-        if len(replacement) > len(original):
-            print(f"  cannot patch: {replacement!r} longer than {original!r}", file=sys.stderr)
-            sys.exit(1)
-        blob[m.start():m.start() + len(m.group())] = (
-            replacement + b'\x00' * (len(m.group()) - len(replacement)))
-        hits += 1
+    for kind, pat, replacement in patterns:
+        for m in list(pat.finditer(blob)):
+            original = m.group()[:-1]
+            if len(replacement) > len(original):
+                print(f"  cannot patch: {replacement!r} longer than {original!r}",
+                      file=sys.stderr)
+                sys.exit(1)
+            blob[m.start():m.start() + len(m.group())] = (
+                replacement + b'\x00' * (len(m.group()) - len(replacement)))
+            found[kind] += 1
+            hits += 1
     if hits:
         so.write_bytes(bytes(blob))
-        print(f"  redirected {hits} helper path(s) in {so.name} -> {link.decode()}")
+        print(f"  redirected {hits} compiled-in path(s) in {so.name} -> {link.decode()}")
+
+missing = [k for k, n in found.items() if n == 0]
+if missing:
+    print(f"  ERROR: found no compiled-in WebKit {'/'.join(missing)} path to redirect.",
+          file=sys.stderr)
+    print("  The bundle would fall back to the build host's paths at runtime, so this",
+          file=sys.stderr)
+    print("  is a hard failure rather than a warning. Check the layout of:", file=sys.stderr)
+    print(f"    helpers  = {helper_src.decode() or '<not found>'}", file=sys.stderr)
+    print(f"    injected = {injected_src.decode() or '<not found>'}", file=sys.stderr)
+    sys.exit(1)
 PYEOF
 
 ln -sf usr/share/applications/Unsloth.desktop "$app_dir/Unsloth.desktop"

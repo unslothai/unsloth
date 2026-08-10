@@ -22,6 +22,10 @@
 #   * no bundled WebKit           -> fails (that is a thin bundle under the wrong name)
 #   * missing WebKit helpers      -> fails (window opens, page never renders)
 #   * no library directory at all -> fails
+#
+# And for the WebKit path rewrite, which is layout-sensitive:
+#   * every distro layout patched -> Debian multiarch, Fedora lib64, Arch, nix
+#   * nothing matched             -> fails the BUILD (a no-op must never read as success)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,8 +43,17 @@ assert_eq() {
 }
 
 [ -f "$BUILD_SH" ] || { echo "FAIL: $BUILD_SH not found"; exit 1; }
-command -v gcc >/dev/null 2>&1 || { echo "SKIP: gcc needed to build closure fixtures"; exit 0; }
-command -v patchelf >/dev/null 2>&1 || { echo "SKIP: patchelf needed"; exit 0; }
+# gcc and patchelf are only needed to build the ELF closure fixtures. The WebKit
+# path tests below need neither, and skipping the whole file when a runner lacks a
+# compiler would reproduce the very failure mode these tests exist to catch: a
+# silent no-op that reads as a pass. So gate only the sections that need them.
+HAVE_TOOLCHAIN=yes
+for _tool in gcc patchelf; do
+    command -v "$_tool" >/dev/null 2>&1 || {
+        echo "SKIP: $_tool missing -- ELF closure fixtures will not run"
+        HAVE_TOOLCHAIN=no
+    }
+done
 
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_TMP"' EXIT
@@ -87,48 +100,50 @@ _verify() {  # dir -> "ok"/"rejected"
     if bash "$BUILD_SH" --verify-appdir "$1" >/dev/null 2>&1; then echo ok; else echo rejected; fi
 }
 
-echo "=== a complete closure passes ==="
-make_appdir "$_TMP/good" complete
-assert_eq "complete closure accepted" "ok" "$(_verify "$_TMP/good")"
+if [ "$HAVE_TOOLCHAIN" = yes ]; then
+    echo "=== a complete closure passes ==="
+    make_appdir "$_TMP/good" complete
+    assert_eq "complete closure accepted" "ok" "$(_verify "$_TMP/good")"
 
-echo "=== a partial closure is rejected (the failure mode thin bundling feared) ==="
-make_appdir "$_TMP/broken" broken
-assert_eq "unresolved dependency rejected" "rejected" "$(_verify "$_TMP/broken")"
+    echo "=== a partial closure is rejected (the failure mode thin bundling feared) ==="
+    make_appdir "$_TMP/broken" broken
+    assert_eq "unresolved dependency rejected" "rejected" "$(_verify "$_TMP/broken")"
 
-echo "=== a bundle without WebKit is rejected ==="
-make_appdir "$_TMP/nowebkit" nowebkit
-assert_eq "missing libwebkit2gtk rejected" "rejected" "$(_verify "$_TMP/nowebkit")"
+    echo "=== a bundle without WebKit is rejected ==="
+    make_appdir "$_TMP/nowebkit" nowebkit
+    assert_eq "missing libwebkit2gtk rejected" "rejected" "$(_verify "$_TMP/nowebkit")"
 
-echo "=== a bundle without WebKit helper processes is rejected ==="
-make_appdir "$_TMP/nohelpers" nohelpers
-assert_eq "missing WebKit helpers rejected" "rejected" "$(_verify "$_TMP/nohelpers")"
+    echo "=== a bundle without WebKit helper processes is rejected ==="
+    make_appdir "$_TMP/nohelpers" nohelpers
+    assert_eq "missing WebKit helpers rejected" "rejected" "$(_verify "$_TMP/nohelpers")"
 
-echo "=== a bundle with no library directory is rejected ==="
-make_appdir "$_TMP/nolibdir" nolibdir
-assert_eq "missing library dir rejected" "rejected" "$(_verify "$_TMP/nolibdir")"
+    echo "=== a bundle with no library directory is rejected ==="
+    make_appdir "$_TMP/nolibdir" nolibdir
+    assert_eq "missing library dir rejected" "rejected" "$(_verify "$_TMP/nolibdir")"
 
-echo "=== an ABSOLUTE DT_NEEDED is rejected ==="
-# The fault that shipped: libsoup/libtinysparql/libwebkit2gtk each recorded sqlite as a
-# full build-host path rather than a soname. The loader ignores RUNPATH for such an
-# entry and opens the absolute path, which does not exist on the target -- and ldd on
-# the BUILD host resolves it happily, so the closure check alone cannot see it.
-make_appdir "$_TMP/absneeded" complete
-_absdir="$_TMP/absneeded/usr/lib/unsloth"
-# Deliberately NO -Wl,-soname: with a SONAME the linker records that instead, and the
-# absolute path never appears. A library built without one -- which is how the real
-# sqlite dependency arose -- makes ld record the path exactly as it was given.
-printf 'int extra_symbol(void){return 7;}\n' > "$_TMP/e.c"
-gcc -shared -fPIC -o "$_absdir/libextra.so.1" "$_TMP/e.c" 2>/dev/null
-# Link against the FULL PATH so the recorded DT_NEEDED is absolute.
-printf 'int extra_symbol(void); int webkit_symbol(void);\nint main(void){return extra_symbol()+webkit_symbol();}\n' > "$_TMP/ma.c"
-gcc -o "$_TMP/absneeded/usr/bin/unsloth-studio" "$_TMP/ma.c" \
-    "$_absdir/libextra.so.1" -L"$_absdir" -l:libwebkit2gtk-4.1.so.0 2>/dev/null
-patchelf --set-rpath '$ORIGIN/../lib/unsloth' "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null || true
-_has_abs=$(patchelf --print-needed "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null | grep -c "/" || true)
-if [ "${_has_abs:-0}" -ge 1 ]; then
-    assert_eq "absolute DT_NEEDED rejected" "rejected" "$(_verify "$_TMP/absneeded")"
-else
-    echo "  SKIP: toolchain did not record an absolute DT_NEEDED"
+    echo "=== an ABSOLUTE DT_NEEDED is rejected ==="
+    # The fault that shipped: libsoup/libtinysparql/libwebkit2gtk each recorded sqlite as a
+    # full build-host path rather than a soname. The loader ignores RUNPATH for such an
+    # entry and opens the absolute path, which does not exist on the target -- and ldd on
+    # the BUILD host resolves it happily, so the closure check alone cannot see it.
+    make_appdir "$_TMP/absneeded" complete
+    _absdir="$_TMP/absneeded/usr/lib/unsloth"
+    # Deliberately NO -Wl,-soname: with a SONAME the linker records that instead, and the
+    # absolute path never appears. A library built without one -- which is how the real
+    # sqlite dependency arose -- makes ld record the path exactly as it was given.
+    printf 'int extra_symbol(void){return 7;}\n' > "$_TMP/e.c"
+    gcc -shared -fPIC -o "$_absdir/libextra.so.1" "$_TMP/e.c" 2>/dev/null
+    # Link against the FULL PATH so the recorded DT_NEEDED is absolute.
+    printf 'int extra_symbol(void); int webkit_symbol(void);\nint main(void){return extra_symbol()+webkit_symbol();}\n' > "$_TMP/ma.c"
+    gcc -o "$_TMP/absneeded/usr/bin/unsloth-studio" "$_TMP/ma.c" \
+        "$_absdir/libextra.so.1" -L"$_absdir" -l:libwebkit2gtk-4.1.so.0 2>/dev/null
+    patchelf --set-rpath '$ORIGIN/../lib/unsloth' "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null || true
+    _has_abs=$(patchelf --print-needed "$_TMP/absneeded/usr/bin/unsloth-studio" 2>/dev/null | grep -c "/" || true)
+    if [ "${_has_abs:-0}" -ge 1 ]; then
+        assert_eq "absolute DT_NEEDED rejected" "rejected" "$(_verify "$_TMP/absneeded")"
+    else
+        echo "  SKIP: toolchain did not record an absolute DT_NEEDED"
+    fi
 fi
 
 echo "=== structural: the ldd parser sees BOTH ldd output forms ==="
@@ -139,12 +154,67 @@ assert_eq "parser handles the arrow form"    "yes" \
 assert_eq "parser handles the bare-path form" "yes" \
     "$(grep -q '(0x' "$BUILD_SH" && echo yes || echo no)"
 
-echo "=== structural: WebKit's two compiled-in paths and the bundle stamp ==="
-assert_eq "helper dir redirected"     "yes" "$(grep -q 'libexec/webkit2gtk' "$BUILD_SH" && echo yes || echo no)"
-assert_eq "injected bundle redirected" "yes" "$(grep -q 'injected-bundle' "$BUILD_SH" && echo yes || echo no)"
-# The trailing slash is why the first attempt patched only one of the two paths.
-assert_eq "injected-bundle trailing slash tolerated" "yes" \
-    "$(grep -q 'injected-bundle/?' "$BUILD_SH" && echo yes || echo no)"
+echo "=== behavioural: WebKit's compiled-in paths, on EVERY distro layout ==="
+# WebKitGTK bakes two absolute paths into libwebkit2gtk -- the helper directory and
+# the injected bundle -- and their layout is distro-specific:
+#
+#   Debian/Ubuntu  /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1[/injected-bundle]
+#   Fedora         /usr/lib64/webkit2gtk-4.1[/injected-bundle]
+#   nix, Arch      $prefix/libexec/webkit2gtk-4.1 + $prefix/lib/.../injected-bundle
+#
+# The first version of this patch matched '/libexec/...' and '/lib/webkit2gtk-4.X/...'
+# literally. Those score ZERO hits on Ubuntu -- which is what release-desktop.yml
+# builds on -- and a zero-hit run was indistinguishable from success, so CI would have
+# shipped an AppImage carrying the build host's paths. These tests run the real
+# patcher against each layout, because only a behavioural test can catch a no-op.
+_PATCHER="$_TMP/patcher.py"
+awk "/<<'PYEOF'/{f=1;next} f&&/^PYEOF\$/{exit} f" "$BUILD_SH" > "$_PATCHER"
+assert_eq "patcher extracted from the build script" "yes" \
+    "$([ -s "$_PATCHER" ] && echo yes || echo no)"
+
+_LINK="/tmp/.unsloth-wk-1000"
+_mk_wk() {  # $1 = dir, $2.. = NUL-terminated strings to embed
+    mkdir -p "$1"; _f="$1/libwebkit2gtk-4.1.so.0"; : > "$_f"; shift
+    for _s in "$@"; do printf '%s\0' "$_s" >> "$_f"; done
+}
+_patch() {  # $1 = dir, $2 = helper src, $3 = injected src -> ok/failed
+    if python3 "$_PATCHER" "$1" "$_LINK" "$2" "$3" >/dev/null 2>&1; then
+        echo ok; else echo failed; fi
+}
+_leftover() {  # any build-host webkit path still present?
+    strings -a "$1/libwebkit2gtk-4.1.so.0" 2>/dev/null \
+        | grep -cE '/webkit2gtk-4\.[01]' || true
+}
+
+for _layout in \
+    "debian:/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1" \
+    "fedora:/usr/lib64/webkit2gtk-4.1" \
+    "arch:/usr/lib/webkit2gtk-4.1" \
+    "nix:/nix/store/0000000000000000000000000000000-webkitgtk-2.52.4+abi=4.1/libexec/webkit2gtk-4.1"; do
+    _name="${_layout%%:*}"; _hdir="${_layout#*:}"
+    # Ubuntu's injected bundle carries a trailing slash; keep that in the fixture.
+    _idir="${_hdir%/libexec/webkit2gtk-4.1}"
+    [ "$_idir" = "$_hdir" ] && _idir="$_hdir/injected-bundle" \
+                            || _idir="$_idir/lib/webkit2gtk-4.1/injected-bundle"
+    _d="$_TMP/wk-$_name"
+    _mk_wk "$_d" "$_hdir" "$_idir/"
+    assert_eq "$_name layout patched"  "ok" "$(_patch "$_d" "$_hdir" "$_idir")"
+    assert_eq "$_name leaves no build-host path" "0" "$(_leftover "$_d")"
+done
+
+echo "=== behavioural: a patch that matches NOTHING fails the build ==="
+# The property that matters most: silence is not success.
+_mk_wk "$_TMP/wk-nomatch" "no webkit paths in here"
+assert_eq "unmatched layout rejected" "failed" \
+    "$(_patch "$_TMP/wk-nomatch" /bogus/helpers /bogus/injected)"
+
+echo "=== behavioural: a replacement longer than the original fails ==="
+# The rewrite is in-place and NUL-padded, so it can only ever shrink a string.
+_mk_wk "$_TMP/wk-short" "/l/webkit2gtk-4.1" "/l/webkit2gtk-4.1/injected-bundle"
+assert_eq "over-long replacement rejected" "failed" \
+    "$(_patch "$_TMP/wk-short" /l/webkit2gtk-4.1 /l/webkit2gtk-4.1/injected-bundle)"
+
+echo "=== structural: the tauri bundle-type stamp ==="
 assert_eq "tauri bundle-type stamped" "yes" \
     "$(grep -q 'stamp_appimage_bundle_type "\$binary_file"' "$BUILD_SH" && echo yes || echo no)"
 
