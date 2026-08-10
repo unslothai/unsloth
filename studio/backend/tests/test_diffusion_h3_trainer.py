@@ -1293,6 +1293,17 @@ def test_the_strict_start_gate_probes_the_h3_transformer_not_modular_pipeline(mo
         _cfg().normalized()
 
 
+def test_the_probe_still_fails_open_for_a_record_that_names_no_pipeline_class():
+    """``family_pipeline_available`` hides nothing it cannot judge. The probe helper reads
+    ``pipeline_class`` with a default, so a record without one arrives as the empty string, and
+    ``hasattr(diffusers, "")`` is False -- which would drop a usable repo out of a picker over a
+    stand-in family object rather than over a real missing class."""
+    from core.inference.diffusion_families import family_pipeline_available, family_probe_class
+
+    assert family_probe_class(object()) == ""
+    assert family_pipeline_available(object()) is True
+
+
 def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
     """A local MiniMax-H3 pipeline carries ``modular_model_index.json`` and NO
     ``model_index.json`` -- that is the layout ``ModularPipeline.from_pretrained`` reads and the

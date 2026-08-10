@@ -981,6 +981,12 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # A modular family is judged on its own transformer class, not on the generic
     # ``ModularPipeline`` entry point -- see ``family_probe_class``.
     name = family_probe_class(fam)
+    # No class name to probe means the record is not one this helper can judge, which is the same
+    # position as a missing diffusers: answer OPEN. ``family_probe_class`` reads the attribute with
+    # a default, so a record without ``pipeline_class`` reaches here as "" rather than raising into
+    # the guard below, and ``hasattr(diffusers, "")`` is False -- which would hide the model.
+    if not name:
+        return True
     try:
         import diffusers
         return hasattr(diffusers, name)
