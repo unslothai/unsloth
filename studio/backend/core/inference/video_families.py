@@ -98,6 +98,13 @@ class VideoFamily:
     # without one falls through to prequant_repos and, if that checkpoint was baked elsewhere, the
     # loader's base_model_id check sends the load back to the dense path.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline. Its
     # components are loaded without pruning the workflow's routing blocks.
     modular_workflow: Optional[str] = None
@@ -155,6 +162,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # the layout every image-side prequant repo already uses and the one prequant_repo_filename
         # builds without help.
         prequant_repos = (("int8", "unsloth/MiniMax-H3-FP8"), ("fp8", "unsloth/MiniMax-H3-FP8")),
+        # The INT8 denoiser is ConvRot-rotated (see diffusion_convrot): its weights live in a
+        # Hadamard-rotated basis and are wrong unless the loader rotates the activations to match,
+        # so it carries the v2 format tag a Studio predating that code refuses. Shipping it under
+        # its own name rather than over MiniMax-H3-INT8.pt keeps both true at once: this build
+        # gets the rotated artifact, and an older install still resolves the plain one instead of
+        # refusing the v2 tag and falling back to the 66.3 GB dense download.
+        prequant_filenames = (("int8", "MiniMax-H3-INT8-ConvRot.pt"),),
         # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
@@ -486,6 +500,14 @@ def validate_video_request_shape(
         step = max(1, fam.frame_step)
         offset = max(1, fam.frame_offset)
         count = int(num_frames)
+        # The window the family declares it was trained for. Hoisted out of the lattice branch
+        # because it is also enforced below: it used to exist only to WORD the lattice error
+        # ("supported counts run from 124 to 345") while a request outside it was accepted and
+        # silently snapped, so num_frames=5 rendered 124 frames and num_frames=872 rendered 345.
+        ceiling = MAX_VIDEO_NUM_FRAMES
+        if fam.max_num_frames is not None:
+            ceiling = min(ceiling, int(fam.max_num_frames))
+        floor = max(offset, int(fam.min_num_frames))
         if count < offset or (count - offset) % step != 0:
             # The two lattice points straddling the request say more than a prefix of the lattice would,
             # and stay short. Computed from the lattice rather than via snap_num_frames, which floors for
@@ -494,10 +516,6 @@ def validate_video_request_shape(
             above = below + step
             # Only name a point the caller could actually load: past the request model's own `le`, or
             # outside this family's declared range, it answers with a second, differently-shaped 422.
-            ceiling = MAX_VIDEO_NUM_FRAMES
-            if fam.max_num_frames is not None:
-                ceiling = min(ceiling, int(fam.max_num_frames))
-            floor = max(offset, int(fam.min_num_frames))
             loadable = [n for n in (below, above) if floor <= n <= ceiling]
             if len(loadable) == 2:
                 nearest = f"the nearest supported counts are {loadable[0]} and {loadable[1]}"
@@ -509,6 +527,15 @@ def validate_video_request_shape(
             raise VideoShapeError(
                 f"{count} is not a supported frame count for {fam.name}. Its VAE compresses time by "
                 f"{step}, so a frame count must be k * {step} + {offset}; {nearest} "
+                f"(the default is {fam.default_num_frames})."
+            )
+        # On the lattice but outside the trained window. The request model bounds num_frames at
+        # 1..1024, so a count well under the floor or well over the ceiling arrives here and used
+        # to be snapped in silence, which on the native path is a 25x compute surprise.
+        if count < floor or count > ceiling:
+            raise VideoShapeError(
+                f"{count} is not a supported frame count for {fam.name}. "
+                f"Supported counts run from {floor} to {ceiling} "
                 f"(the default is {fam.default_num_frames})."
             )
 

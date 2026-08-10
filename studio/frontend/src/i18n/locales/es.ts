@@ -85,6 +85,8 @@ export const es = {
       recipes: "Recetas",
       images: "Imágenes",
       video: "Vídeo",
+      trainChecking: "Comprobando si este equipo admite entrenamiento...",
+      videoChecking: "Comprobando si este equipo admite vídeo...",
       more: "Más",
       customizeSidebar: "Personalizar la barra lateral",
       newBadge: "Nuevo",
@@ -1404,6 +1406,7 @@ export const es = {
       history: "Historial",
     },
     loadingRuntime: "Cargando entorno de entrenamiento...",
+    checkingSupport: "Comprobando si este equipo admite entrenamiento...",
     backToHistory: "Volver al historial",
     sections: {
       model: "Modelo",

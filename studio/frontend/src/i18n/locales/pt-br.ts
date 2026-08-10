@@ -85,6 +85,8 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      trainChecking: "Verificando se esta máquina oferece suporte a treino...",
+      videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
       newBadge: "Novo",
@@ -1385,6 +1387,7 @@ export const ptBR = {
       history: "Histórico",
     },
     loadingRuntime: "Carregando ambiente de execução de treino...",
+    checkingSupport: "Verificando se esta máquina oferece suporte a treino...",
     backToHistory: "Voltar ao histórico",
     sections: {
       model: "Modelo",

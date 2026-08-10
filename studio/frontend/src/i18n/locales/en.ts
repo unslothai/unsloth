@@ -78,6 +78,9 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      // Hover text while the row spins, before this machine's capability is measured.
+      trainChecking: "Checking this machine for training support...",
+      videoChecking: "Checking this machine for video support...",
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
@@ -1353,6 +1356,7 @@ export const en = {
     imageTraining: "Image training",
     goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
+    checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
     sections: {
       model: "Model",

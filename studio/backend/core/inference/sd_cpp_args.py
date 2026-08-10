@@ -410,9 +410,12 @@ def build_sd_cpp_video_command(
     cmd += [f for f in metal_text_encoder_flags() if f not in offload]
     if verbose:
         cmd.append("-v")
-    for flag in list(extra_args or []):
-        if flag not in cmd:
-            cmd.append(flag)
+    # Appended verbatim, like every sibling builder: sd.cpp's parser is last-wins, so a power user
+    # can override anything. Token-wise de-duplication broke that contract on any flag that takes a
+    # value, since it drops the token that already appears earlier: ["--rng", "cuda"] lost --rng and
+    # left a bare "cuda" for the parser to choke on.
+    if extra_args:
+        cmd += list(extra_args)
     return cmd
 
 

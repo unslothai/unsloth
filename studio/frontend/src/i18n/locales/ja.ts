@@ -85,6 +85,8 @@ export const ja = {
       recipes: "レシピ",
       images: "画像",
       video: "動画",
+      trainChecking: "このマシンのトレーニング対応を確認しています...",
+      videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
       newBadge: "新機能",
@@ -1342,6 +1344,7 @@ export const ja = {
       history: "履歴",
     },
     loadingRuntime: "トレーニングランタイムを読み込み中...",
+    checkingSupport: "このマシンのトレーニング対応を確認しています...",
     backToHistory: "履歴に戻る",
     sections: {
       model: "モデル",
