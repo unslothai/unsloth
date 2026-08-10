@@ -641,6 +641,12 @@ class _SdState:
     # The FLUX.2 inner_dim this load read out of the checkpoint's own header, when it could. Kept
     # so the delete guard reconstructs the SAME encoder pick without re-probing under the lock.
     flux2_inner_dim: Optional[int] = None
+    # The managed tree's recorded accelerator when this load chose its binary. The one-shot path
+    # re-resolves sd-cli per image, so without this it would silently adopt an install that landed
+    # between images even when that install is for a DIFFERENT accelerator, while ``device`` and
+    # ``offload_flags`` still describe the build the load committed to. None on the server path,
+    # which asks the same question at start time against its own local copy.
+    sd_accelerator: Optional[str] = None
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
@@ -1162,12 +1168,25 @@ class SdCppDiffusionBackend:
                             )
                         else:
                             server = SdCppServer(server_binary)
-                            started = server
                             # Published INSIDE the claim: _tree_in_use reads _pending_server, so
                             # this is the handover from "a reader holds the tree" to "a starting
                             # server does", with no gap between them.
+                            #
+                            # Cancellation is re-read in the SAME block. The revalidation above
+                            # can sit for 20s in _server_binary_runnable, and an unload arriving
+                            # in that window finds no _pending_server to stop, so without this the
+                            # load would go on to spawn the process anyway and hold the device for
+                            # the whole start() timeout before the commit below noticed. Asked
+                            # under the lock that publishes, so an unload either stops this server
+                            # or is seen here; it cannot fall between the two.
                             with self._lock:
-                                self._pending_server = server
+                                if self._load_token != _load_token or cancel_event.is_set():
+                                    server = None
+                                else:
+                                    started = server
+                                    self._pending_server = server
+                            if server is None:
+                                raise SdCppCancelled()
                 if mode == "server":
                     assert server_binary is not None
                     assert server is not None
@@ -1242,6 +1261,13 @@ class SdCppDiffusionBackend:
                     hf_token = hf_token,
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
+                    # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
+                    # long after this decision, and has nothing else to check the answer against.
+                    sd_accelerator = (
+                        _installed_accelerator_of(getattr(engine, "binary", None))
+                        if mode == "oneshot"
+                        else None
+                    ),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -2025,6 +2051,22 @@ class SdCppDiffusionBackend:
                     # covers a batch, which releases the claim between images. Cheap when nothing
                     # moved: _resolve_engine returns the cached engine whose binary still exists.
                     engine = self._resolve_engine()
+                    # Existence is not identity here either. The install that moved the CLI may
+                    # have been for a different accelerator (an H3 load putting the CPU fallback
+                    # in, say), and this state's device and offload policy were chosen for the
+                    # other one, so running it would either spend unaccounted VRAM or drop the
+                    # whole generation onto the CPU while the arbiter's accounting says otherwise.
+                    # The server path refuses exactly this mismatch before it starts; refusing here
+                    # costs a reload, which re-resolves device, accelerator and install together.
+                    if (
+                        _installed_accelerator_of(getattr(engine, "binary", None))
+                        != state.sd_accelerator
+                    ):
+                        raise RuntimeError(
+                            "The stable-diffusion.cpp binary was replaced by an install for a "
+                            "different accelerator while this model was loaded. Load the model "
+                            "again."
+                        )
                     engine.generate(
                         state.files,
                         params,

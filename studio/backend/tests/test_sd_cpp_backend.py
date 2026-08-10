@@ -517,6 +517,36 @@ def test_generate_passes_vae_format_for_flux2():
     assert kw.get("extra_args") == ["--vae-format", "flux2"]
 
 
+def test_oneshot_generate_refuses_a_binary_swapped_for_another_accelerator(monkeypatch):
+    # The one-shot path re-resolves sd-cli per image, so an install landing between two images of
+    # a batch is adopted silently. Existence is not identity: the install may have been for a
+    # DIFFERENT accelerator (an H3 load dropping the CPU fallback in, say), while this state's
+    # device and offload flags were chosen for the other build. Running it would either spend
+    # unaccounted VRAM or put the whole generation on the CPU with the arbiter's accounting still
+    # claiming the GPU. The server path already refuses exactly this before it starts.
+    import dataclasses
+
+    b = _loaded_backend()
+    b._state = dataclasses.replace(b._state, sd_accelerator = "cuda")
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda _binary: "cpu")
+    with pytest.raises(RuntimeError, match = "different accelerator"):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+
+
+def test_oneshot_generate_accepts_a_binary_for_the_same_accelerator(monkeypatch):
+    # The control for the test above: the guard must not fire on the ordinary case, where the
+    # re-resolved binary is the build this load committed to. Without this a reload-on-every-image
+    # regression would look exactly like a passing guard.
+    import dataclasses
+
+    eng = _FakeEngine()
+    b = _loaded_backend(engine = eng)
+    b._state = dataclasses.replace(b._state, sd_accelerator = "cuda")
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda _binary: "cuda")
+    b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(eng.calls) == 1
+
+
 def test_generate_cancellation_raises_cancelled_not_failure():
     # The engine cancels mid-run; the backend surfaces a cancellation, not a crash.
     eng = _FakeEngine(cancel_on_call = True)
@@ -1143,6 +1173,66 @@ def test_server_reload_stops_old_server_before_new(monkeypatch):
     assert len(servers) == 2
     assert servers[0].stopped is True  # old server stopped
     assert b._state.server is servers[1] and servers[1].stopped is False
+
+
+def test_a_cancel_during_server_revalidation_stops_before_the_process_spawns(monkeypatch):
+    # _server_binary_runnable re-probes the binary and can sit there for 20s. An unload arriving
+    # in that window finds no _pending_server to stop, because the publish happens after the
+    # probe returns. Without a recheck inside the SAME lock that publishes, the load goes on to
+    # spawn sd-server anyway and holds the device for the whole start() timeout before anything
+    # notices. Asking under the publishing lock is what closes the gap: an unload either stops
+    # this server or is seen here, and it cannot fall between the two.
+    b = SdCppDiffusionBackend()
+    cancel = threading.Event()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+
+    def _revalidate_then_cancel(*_a, **_k):
+        cancel.set()  # the unload lands while we were probing
+        return True
+
+    monkeypatch.setattr(bk, "_server_binary_runnable", _revalidate_then_cancel)
+
+    started: list[str] = []
+
+    class _RecordingServer:
+        def __init__(self, binary):
+            self.stopped = False
+
+        def start(self, *a, **k):
+            started.append("start")
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(bk, "SdCppServer", _RecordingServer)
+    fake = _FakeEngine()
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+        _cancel_event = cancel,
+    )
+    assert started == [], "a cancelled load must not spawn the server process"
+    # Same contract as the start-failure path: a leaked _pending_server reads as "the managed
+    # tree is busy" for the rest of the process and blocks every later install.
+    assert b._pending_server is None
+    assert bk._tree_in_use(b) is False
 
 
 def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
