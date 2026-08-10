@@ -20,6 +20,13 @@ import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -95,6 +102,7 @@ import {
   type VideoGenerateProgress,
   type VideoReferenceVideo,
   type VideoLoadProgress,
+  type VideoLoadRequest,
   type VideoStatus,
   cancelVideoGeneration,
   clearVideoGallery,
@@ -660,6 +668,20 @@ function RecipeRow({
 }
 
 type Busy = "loading" | "unloading" | "generating" | null;
+type H3Task = NonNullable<VideoLoadRequest["h3_task"]>;
+type VideoLoadOptions = {
+  kind: "gguf" | "single_file" | "pipeline";
+  filename?: string;
+  h3Task?: H3Task;
+};
+type PendingH3Load = {
+  repoId: string;
+  opts: VideoLoadOptions;
+  isDownloaded?: boolean;
+  token: number;
+};
+
+const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
 function VideoGate({ children }: { children: ReactNode }) {
@@ -762,9 +784,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     "auto" | "none" | "fp8" | "int8" | "nvfp4" | "mxfp8"
   >("auto");
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options.
-  const lastLoad = useRef<{ repoId: string; kind: "gguf" | "single_file" | "pipeline"; filename?: string } | null>(
-    null,
-  );
+  const lastLoad = useRef<({ repoId: string } & VideoLoadOptions) | null>(null);
   // Whether this session holds a reapply descriptor: with a model already resident, lastLoad is null, so hide the button rather than offer a dead control.
   const [canReapply, setCanReapply] = useState(false);
 
@@ -777,6 +797,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [pendingH3Load, setPendingH3Load] = useState<PendingH3Load | null>(null);
   const {
     attach: attachSettingsScroll,
     onScroll: onSettingsScroll,
@@ -1549,10 +1570,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
       repoId: string,
-      opts: {
-        kind: "gguf" | "single_file" | "pipeline";
-        filename?: string;
-      },
+      opts: VideoLoadOptions,
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -1580,7 +1598,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
+      lastLoad.current = { repoId, ...opts };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
@@ -1595,6 +1613,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           speed_mode: speedMode === "auto" ? undefined : speedMode,
           attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
           transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
+          h3_task: opts.h3Task,
           // Full-pipeline loads only: a GGUF / single-file DiT runs the precision its checkpoint
           // carries. The Precision control is hidden for those kinds but the state persists across
           // picks, so a stale scheme would reach a load that can only refuse it.
@@ -1653,7 +1672,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // Downloads go through the Hub download manager like every other model, sharing its panel, progress, cancel and preflight. Mirrors Images.
   const pendingStagedLoad = useRef<{
     repoId: string;
-    opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    opts: VideoLoadOptions;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
   } | null>(null);
@@ -1703,7 +1722,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const loadOrStage = useCallback(
     async (
       repoId: string,
-      opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
+      opts: VideoLoadOptions,
       isDownloaded?: boolean,
       token?: number,
     ): Promise<boolean> => {
@@ -1729,6 +1748,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           // offload-forcing modes only when it can see them.
           memory_mode:
             memoryModeRef.current === "auto" ? undefined : memoryModeRef.current,
+          h3_task: opts.h3Task,
         });
         // Superseded mid-plan: neither stage nor load, and leave `pendingStagedLoad` to its new owner.
         if (!owns()) return false;
@@ -1809,7 +1829,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
   useEffect(() => {
-    if (!active) pickGuard.release();
+    if (!active) {
+      pickGuard.release();
+      setPendingH3Load(null);
+    }
   }, [active, pickGuard]);
 
   // A diffusion model picked from the chat picker arrives as ?model= on this route. Load it once, then clear the params.
@@ -1873,10 +1896,36 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     pickGuard,
   ]);
 
+  const chooseH3Task = useCallback(
+    (task: H3Task) => {
+      const pending = pendingH3Load;
+      setPendingH3Load(null);
+      if (!pending || !pickGuard.holds(pending.token)) return;
+      void loadOrStage(
+        pending.repoId,
+        { ...pending.opts, h3Task: task },
+        pending.isDownloaded,
+        pending.token,
+      );
+    },
+    [loadOrStage, pendingH3Load, pickGuard],
+  );
+
+  const cancelH3TaskChoice = useCallback(() => {
+    setPendingH3Load(null);
+    pickGuard.cancel();
+  }, [pickGuard]);
+
   // Reload the current model with the current advanced options.
   const handleReapply = useCallback(() => {
     const l = lastLoad.current;
-    if (l) void handleLoad(l.repoId, { kind: l.kind, filename: l.filename });
+    if (l) {
+      void handleLoad(l.repoId, {
+        kind: l.kind,
+        filename: l.filename,
+        h3Task: l.h3Task,
+      });
+    }
   }, [handleLoad]);
 
   // The chat picker emits (modelId, quant + filename) for a GGUF, or just (modelId) for a curated pipeline pick.
@@ -1896,6 +1945,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
+        if (id.toLowerCase() === H3_BF16_REPO.toLowerCase() && spec.kind === "pipeline") {
+          setPendingH3Load({
+            repoId: id,
+            opts: { kind: spec.kind, filename: spec.filename },
+            isDownloaded: meta.isDownloaded,
+            token,
+          });
+          return;
+        }
         void loadOrStage(
           id,
           { kind: spec.kind, filename: spec.filename },
@@ -2289,6 +2347,50 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <Dialog
+        open={pendingH3Load !== null}
+        onOpenChange={(open) => {
+          if (!open) cancelH3TaskChoice();
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Choose how MiniMax H3 should generate</DialogTitle>
+            <DialogDescription>
+              MiniMax H3 uses a separate denoiser for reference generation. Choose the mode you
+              want to load now. Shared components already on disk are reused.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("fl2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">Text and frames</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from text, with optional first and last frame images.
+                </span>
+              </span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-auto items-start justify-start whitespace-normal p-4 text-left"
+              onClick={() => chooseH3Task("ref2va")}
+            >
+              <span className="grid gap-1">
+                <span className="font-medium">References</span>
+                <span className="text-ui-11 font-normal leading-snug text-muted-foreground">
+                  Generate from reference pictures, videos and audio tracks.
+                </span>
+              </span>
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
       <div className="@container pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}

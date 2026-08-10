@@ -72,3 +72,26 @@ test("the staged plan carries the memory request too", () => {
   );
   assert.ok(source.includes("memoryModeRef.current = memoryMode"));
 });
+
+test("the selected H3 task reaches both the plan and the load", () => {
+  const planCall = source.slice(
+    source.indexOf("await getVideoDownloadPlan({"),
+    source.indexOf("await getVideoDownloadPlan({") + 1500,
+  );
+  const loadCall = source.slice(
+    source.indexOf("const startRequest = loadVideoModel({"),
+    source.indexOf("const startRequest = loadVideoModel({") + 1500,
+  );
+  assert.ok(planCall.includes("h3_task: opts.h3Task"));
+  assert.ok(loadCall.includes("h3_task: opts.h3Task"));
+  assert.ok(source.includes('chooseH3Task("fl2va")'));
+  assert.ok(source.includes('chooseH3Task("ref2va")'));
+});
+
+test("reapply preserves the loaded H3 task", () => {
+  const reapply = source.slice(
+    source.indexOf("const handleReapply = useCallback"),
+    source.indexOf("const handleReapply = useCallback") + 600,
+  );
+  assert.ok(reapply.includes("h3Task: l.h3Task"));
+});

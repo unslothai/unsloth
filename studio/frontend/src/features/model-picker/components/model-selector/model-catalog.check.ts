@@ -15,10 +15,12 @@ import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   IMAGE_CATALOG,
   VIDEO_CATALOG,
+  artifactForRepoId,
   canonicalKeyFor,
   catalogGroupFitsDevice,
   catalogToModelOptions,
   classifyGgufFit,
+  curatedDisplayNameFor,
   groupForRepoId,
   groupMatchesQuery,
   loadSpecFor,
@@ -216,9 +218,35 @@ for (const id of [
   assert.ok(imageOptionIds.has(id), `image option missing: ${id}`);
 }
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
-for (const id of ["unsloth/LTX-2.3-GGUF", ...OLD_PIPELINE_MODELS]) {
+for (const id of [
+  "unsloth/LTX-2.3-GGUF",
+  "unsloth/MiniMax-H3-GGUF",
+  "leejet/MiniMax-H3-GGUF",
+  ...OLD_PIPELINE_MODELS,
+]) {
   assert.ok(videoOptionIds.has(id), `video option missing: ${id}`);
 }
+
+// H3 publishes the ordinary and reference denoisers as separately loadable GGUFs.
+// Curating both repos must keep their bundled file menus on the matching partition.
+assert.equal(
+  artifactForRepoId("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
+    .ggufFilenamePrefix,
+  "minimax_h3_fl2va",
+);
+assert.equal(
+  artifactForRepoId("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG)?.artifact
+    .ggufFilenamePrefix,
+  "minimax_h3_ref2va",
+);
+assert.equal(
+  curatedDisplayNameFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG),
+  "MiniMax H3 (GGUF - Text and frames)",
+);
+assert.equal(
+  curatedDisplayNameFor("leejet/MiniMax-H3-GGUF", VIDEO_CATALOG),
+  "MiniMax H3 (GGUF - References)",
+);
 
 // ── classifyGgufFit ────────────────────────────────────────────────────────────
 

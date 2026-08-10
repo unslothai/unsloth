@@ -26,6 +26,9 @@ export interface ModelArtifact {
   offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
+  /** Restrict a bundled GGUF repo's variant menu to filenames for this artifact.
+   * Used when one repo publishes several independently loadable model partitions. */
+  ggufFilenamePrefix?: string;
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
    * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
    * reports one. Rows the listing never returns (a repo it does not index, a
@@ -355,7 +358,21 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         ],
       }),
       // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
-      gguf("unsloth/MiniMax-H3-GGUF", { totalParams: 20_111_438_744 }),
+      gguf("unsloth/MiniMax-H3-GGUF", {
+        label: "GGUF - Text and frames",
+        keywords: ["gguf", "quantized", "fl2va", "keyframes"],
+        totalParams: 20_111_438_744,
+        ggufFilenamePrefix: "minimax_h3_fl2va",
+      }),
+      // The community bundle currently publishing the Ref2VA quants. Its repo also contains
+      // FL2VA files and Qwen companions, so the filename prefix keeps this artifact's menu on
+      // the reference partition while the backend's bundle filter keeps companions out.
+      gguf("leejet/MiniMax-H3-GGUF", {
+        label: "GGUF - References",
+        keywords: ["gguf", "quantized", "ref2va", "references"],
+        totalParams: 20_111_438_744,
+        ggufFilenamePrefix: "minimax_h3_ref2va",
+      }),
     ],
   },
   {
@@ -583,6 +600,19 @@ export function curatedCapabilitiesFor(
   };
 }
 
+/** Human-facing name of an exact curated artifact, including the artifact label
+ * when its model has more than one selectable representation. */
+export function curatedDisplayNameFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): string | null {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return null;
+  return hit.group.artifacts.length > 1
+    ? `${hit.group.displayName} (${hit.artifact.label})`
+    : hit.group.displayName;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
@@ -590,10 +620,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
     for (const artifact of group.artifacts) {
       options.push({
         id: artifact.repoId,
-        name:
-          group.artifacts.length > 1
-            ? `${group.displayName} (${artifact.label})`
-            : group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
       });
