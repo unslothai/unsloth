@@ -1144,9 +1144,34 @@ def detect_audio_type(
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
 
+    A None here is ambiguous: it covers both "not an audio model" and "the repo
+    could not be read". Callers that gate a user action on the answer want
+    detect_audio_type_checked instead, so a gated or offline repo is not reported
+    as a definitively non-audio one.
+
     When local_files_only is True (offline export) the remote HuggingFace fetch
     is skipped so detection never blocks on a network read; only the local HF
     cache is consulted.
+    """
+    return detect_audio_type_checked(
+        model_name,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        revision = revision,
+    )[0]
+
+
+def detect_audio_type_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[Optional[str], bool]:
+    """detect_audio_type, plus whether the answer is definitive.
+
+    Returns (audio_type_or_None, definitive). definitive is False when every read
+    failed for a reason that is not "the file is absent" -- a 401 on a gated repo,
+    a 5xx, a timeout -- so a None means unknown rather than "not audio".
     """
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
@@ -1166,7 +1191,8 @@ def detect_audio_type(
     if revision is not None:
         cache_key += (revision,)
     if cache_key in _audio_detection_cache:
-        return _audio_detection_cache[cache_key]
+        # Only definitive results are cached, so a hit is definitive by construction.
+        return _audio_detection_cache[cache_key], True
 
     tokenizer_kwargs = {"local_files_only": effective_offline}
     if revision is not None:
@@ -1177,7 +1203,12 @@ def detect_audio_type(
         _audio_detection_cache[cache_key] = result
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
-    return result
+    elif not definitive:
+        logger.info(
+            f"Could not determine whether {model_name} is an audio model: "
+            f"tokenizer_config.json was unreadable (gated, offline or upstream error)"
+        )
+    return result, definitive
 
 
 def _detect_audio_from_tokenizer(

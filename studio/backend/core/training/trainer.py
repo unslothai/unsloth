@@ -753,22 +753,16 @@ class UnslothTrainer:
                 from huggingface_hub import snapshot_download
 
                 if model_name.endswith("/LLM"):
-                    # "Spark-TTS-0.5B/LLM" → parent="Spark-TTS-0.5B"
-                    local_dir = model_name.rsplit("/", 1)[0]
-                    hf_repo = f"unsloth/{local_dir}"
-                    llm_path = model_name
+                    # "Spark-TTS-0.5B/LLM" → repo "unsloth/Spark-TTS-0.5B"
+                    hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
                 else:
-                    # "unsloth/Spark-TTS-0.5B" → local_dir="Spark-TTS-0.5B"
                     hf_repo = model_name
-                    local_dir = model_name.split("/")[-1]
-                    llm_path = f"{local_dir}/LLM"
 
                 if local_files_only:
                     repo_path = lookup_name
                 else:
                     repo_path = snapshot_download(
                         hf_repo,
-                        local_dir = local_dir,
                         revision = model_revision,
                     )
                 self._spark_tts_repo_dir = os.path.abspath(repo_path)  # Absolute for sys.path

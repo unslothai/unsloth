@@ -17006,7 +17006,7 @@ class LlamaCppBackend:
             from huggingface_hub import snapshot_download
             import os
 
-            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B", local_dir = "Spark-TTS-0.5B")
+            repo_path = snapshot_download("unsloth/Spark-TTS-0.5B")
             model_repo_path = os.path.abspath(repo_path)
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)

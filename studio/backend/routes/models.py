@@ -2149,7 +2149,7 @@ async def get_model_config(
                 model_name = resolved
 
             logger.info(f"Getting model config for: {model_name}")
-            from utils.models.model_config import detect_audio_type
+            from utils.models.model_config import detect_audio_type_checked
 
             inspection_target = _model_config_inspection_target(
                 model_name,
@@ -2164,7 +2164,7 @@ async def get_model_config(
                 local_files_only = prefer_local_cache,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-            audio_type = detect_audio_type(
+            audio_type, audio_type_definitive = detect_audio_type_checked(
                 inspection_target,
                 hf_token = hf_token,
                 local_files_only = prefer_local_cache,
@@ -2203,7 +2203,7 @@ async def get_model_config(
                     pass
 
             logger.info(
-                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
             return ModelDetails(
                 id = model_name,
@@ -2214,6 +2214,7 @@ async def get_model_config(
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
+                audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
                 model_type = derive_model_type(is_vision, audio_type, is_embedding),
                 base_model = base_model,

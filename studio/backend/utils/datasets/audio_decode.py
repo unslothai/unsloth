@@ -75,16 +75,29 @@ def _decode_with_soundfile(
 
 
 def _encode_with_soundfile(self, value) -> dict:
-    """Stand-in for `datasets.Audio.encode_example`, for the array form only.
+    """Stand-in for `datasets.Audio.encode_example` that never needs FFmpeg.
 
     The audio VLM path maps without `remove_columns`, so reading `["array"]` writes the
     decoded value back and `cast_storage` re-encodes it through torchcodec's encoder,
     failing a run the decoder above had just unblocked.
+
+    The plain path/bytes forms need no encoder at all, but `datasets` imports
+    `torchcodec.encoders` at the top of `encode_example` before it looks at the value, so
+    casting a column of file paths raises on a broken host too. Those are handled here
+    rather than delegated. Only an `AudioDecoder` value falls through, which genuinely
+    needs torchcodec and cannot arrive while this shim is installed.
     """
     import io
+    from pathlib import Path
 
     import soundfile as sf
 
+    if isinstance(value, str):
+        return {"bytes": None, "path": value}
+    if isinstance(value, Path):
+        return {"bytes": None, "path": str(value.absolute())}
+    if isinstance(value, (bytes, bytearray)):
+        return {"bytes": bytes(value), "path": None}
     if isinstance(value, dict) and value.get("array") is not None:
         buf = io.BytesIO()
         sf.write(buf, value["array"], value["sampling_rate"], format = "WAV")

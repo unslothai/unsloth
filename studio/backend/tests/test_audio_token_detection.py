@@ -69,3 +69,55 @@ def test_a_codec_family_is_not_shadowed_by_a_stray_audio_marker():
         )
         == "dac"
     )
+
+
+class _Resp:
+    def __init__(self, status_code: int, payload = None):
+        self.status_code = status_code
+        self.ok = 200 <= status_code < 300
+        self._payload = payload
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no body")
+        return self._payload
+
+
+def _detect_checked(monkeypatch, responses, model = "acme/tts-model"):
+    """Drive detect_audio_type_checked with a faked Hub, no local cache."""
+    from utils.models import model_config as mc
+
+    monkeypatch.setattr(mc, "_audio_detection_cache", {})
+    monkeypatch.setattr(mc, "get_cache_path", lambda *a, **k: None)
+    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda url, **kw: responses.pop(0))
+    return mc.detect_audio_type_checked(model)
+
+
+def test_a_gated_repo_is_not_reported_as_definitively_non_audio(monkeypatch):
+    # 401 on every tokenizer_config path: nothing was read, so None means unknown.
+    audio_type, definitive = _detect_checked(monkeypatch, [_Resp(401), _Resp(401)])
+    assert audio_type is None
+    assert definitive is False
+
+
+def test_a_readable_repo_without_audio_tokens_is_definitive(monkeypatch):
+    # 200 with a plain tokenizer, then a 404 for the LLM/ variant: a real negative.
+    plain = {"added_tokens_decoder": {"0": {"content": "<bos>"}}}
+    audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, plain), _Resp(404)])
+    assert audio_type is None
+    assert definitive is True
+
+
+def test_a_detected_codec_is_definitive(monkeypatch):
+    snac = {
+        "added_tokens_decoder": {
+            str(i): {"content": f"<custom_token_{i}>"} for i in range(10_001)
+        }
+    }
+    audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, snac)])
+    assert audio_type == "snac"
+    assert definitive is True
