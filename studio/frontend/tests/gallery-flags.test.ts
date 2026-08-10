@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   applyPin,
+  hasUnknownRecord,
   nextSelectedId,
   removeGalleryItem,
   sortGalleryItems,
@@ -77,4 +78,68 @@ test("removing the last item selects the new last, not an empty slot", () => {
 
 test("removing the only item clears the selection", () => {
   assert.equal(nextSelectedId([], "a", "a", 0), null);
+});
+
+test("a merged generation lands after the pinned group, not at the very front", () => {
+  // The server sorts pinned first, so prepending a fresh record would disagree with it on reload.
+  const existing = [item("pin", 1, true), item("older", 2)];
+  const fresh = item("new", 9);
+  assert.deepEqual(ids(sortGalleryItems([fresh, ...existing])), ["pin", "new", "older"]);
+});
+
+test("with nothing pinned a merged generation still leads", () => {
+  const merged = sortGalleryItems([item("new", 9), item("older", 2)]);
+  assert.deepEqual(ids(merged), ["new", "older"]);
+});
+
+// --- lost-generation probe ---------------------------------------------------------------------
+
+/** A fake gallery listing, already in server order, served in pages. */
+const pager =
+  (all: ReturnType<typeof item>[], pageSize: number) => async (offset: number) => ({
+    items: all.slice(offset, offset + pageSize),
+    hasMore: offset + pageSize < all.length,
+  });
+
+test("a pinned first row does not mask a newly saved record", async () => {
+  // The regression: with a pin present, reading only row 0 saw the pin, which was already known,
+  // and reported a finished generation as never submitted.
+  const listing = [item("pin", 5, true), item("fresh", 9), item("old", 1)];
+  const known = new Set(["pin", "old"]);
+  assert.equal(await hasUnknownRecord(known, pager(listing, 50), 50), true);
+});
+
+test("no new record is reported when the first unpinned row is already known", async () => {
+  const listing = [item("pin", 5, true), item("known", 9), item("old", 1)];
+  assert.equal(
+    await hasUnknownRecord(new Set(["pin", "known", "old"]), pager(listing, 50), 50),
+    false,
+  );
+});
+
+test("the probe walks past a pinned group that spans more than one page", async () => {
+  const listing = [
+    item("p1", 5, true),
+    item("p2", 4, true),
+    item("p3", 3, true),
+    item("fresh", 9),
+  ];
+  const known = new Set(["p1", "p2", "p3"]);
+  // Page size 2, so the first unpinned row only appears on the second page.
+  assert.equal(await hasUnknownRecord(known, pager(listing, 2), 2), true);
+});
+
+test("the probe stops at its page cap instead of scanning the whole gallery", async () => {
+  const listing = Array.from({ length: 100 }, (_, i) => item(`p${i}`, 100 - i, true));
+  let pages = 0;
+  const counted = async (offset: number) => {
+    pages += 1;
+    return pager(listing, 10)(offset);
+  };
+  assert.equal(await hasUnknownRecord(new Set(listing.map((i) => i.id)), counted, 10, 3), false);
+  assert.equal(pages, 3);
+});
+
+test("an empty gallery reports no new record", async () => {
+  assert.equal(await hasUnknownRecord(new Set(), pager([], 50), 50), false);
 });

@@ -67,7 +67,14 @@ import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { applyPin, nextSelectedId, removeGalleryItem } from "@/lib/gallery-flags";
+import {
+  applyPin,
+  hasUnknownRecord,
+  nextSelectedId,
+  removeGalleryItem,
+  sortGalleryItems,
+  subscribeGalleryChanged,
+} from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_TABS } from "./workflows";
@@ -417,8 +424,15 @@ async function settleLostGeneration(
     if (sawActive) return;
     // Idle on the very first look: the run may already have finished or never started. A gallery record we had not seen is the proof.
     try {
-      const page = await getGallery(0, 1);
-      if (page.images.some((image) => !knownIds.has(image.id))) return;
+      const sawNew = await hasUnknownRecord(
+        knownIds,
+        async (offset) => {
+          const p = await getGallery(offset, PAGE_SIZE);
+          return { items: p.images, hasMore: p.has_more };
+        },
+        PAGE_SIZE,
+      );
+      if (sawNew) return;
     } catch {
       fails += 1;
       if (fails >= SETTLE_MAX_FAILS) throw new Error("Lost connection to the image server.");
@@ -1540,6 +1554,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
+  // This page stays mounted across route changes, so a restore or delete from the Settings archive
+  // would otherwise not reach the strip until a full reload.
+  useEffect(() => subscribeGalleryChanged("images", () => void loadGallery()), [loadGallery]);
+
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
   // archived image keeps both, since the archived view shows the same thumbnail.
@@ -1576,25 +1594,69 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [dropFromStrip],
   );
 
-  const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
-    // Optimistic: the reorder should land on the click, not a round trip later.
-    setImages((prev) => {
-      const next = applyPin(prev, id, pinned);
-      galleryCache.images = next;
-      return next;
-    });
-    try {
-      await setGalleryImageFlags(id, { pinned });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to pin image");
-      // Put the old order back rather than leave the strip lying about server state.
+  /**
+   * Refetch the loaded window from offset 0.
+   *
+   * Unpinning can drop an image past the end of the loaded window and promote a previously
+   * unloaded one into it. The local reorder cannot know about the promoted image, and the next
+   * loadMore still pages from the unchanged length, so that image would be skipped entirely until
+   * a reload. Re-reading the window is the only way to see it.
+   */
+  const resyncWindow = useCallback(
+    async (count: number) => {
+      const wanted = Math.max(count, PAGE_SIZE);
+      const collected: GalleryImage[] = [];
+      let more = false;
+      while (collected.length < wanted) {
+        const page = await getGallery(collected.length, PAGE_SIZE);
+        collected.push(...page.images);
+        more = page.has_more;
+        if (!page.has_more || page.images.length === 0) break;
+      }
+      galleryCache.images = collected;
+      galleryCache.hasMore = more;
+      setImages(collected);
+      setHasMore(more);
+      if (typeof IntersectionObserver === "undefined") {
+        collected.forEach((image) => void ensureSrc(image));
+      }
+    },
+    [ensureSrc],
+  );
+
+  const handleTogglePin = useCallback(
+    async (id: string, pinned: boolean) => {
+      const loadedCount = galleryCache.images.length;
+      // Optimistic: the reorder should land on the click, not a round trip later.
       setImages((prev) => {
-        const next = applyPin(prev, id, !pinned);
+        const next = applyPin(prev, id, pinned);
         galleryCache.images = next;
         return next;
       });
-    }
-  }, []);
+      try {
+        await setGalleryImageFlags(id, { pinned });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to pin image");
+        // Put the old order back rather than leave the strip lying about server state.
+        setImages((prev) => {
+          const next = applyPin(prev, id, !pinned);
+          galleryCache.images = next;
+          return next;
+        });
+        return;
+      }
+      // Pinning keeps the same set in the window (it only moves an already-loaded image to the
+      // front), so only unpinning can open a gap.
+      if (!pinned && loadedCount > 0) {
+        try {
+          await resyncWindow(loadedCount);
+        } catch {
+          // Best-effort: the strip is still usable, just possibly short one image until a reload.
+        }
+      }
+    },
+    [resyncWindow],
+  );
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -2961,8 +3023,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           continue;
         }
         if (!isMounted.current) break;
-        // Prepend this run's records (newest first) and load their blobs.
-        setImages((prev) => [...res.images, ...prev]);
+        // Merge this run's records and load their blobs. Sorted, not prepended: a new image is
+        // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
+        // ahead of pins until the next reload.
+        setImages((prev) => sortGalleryItems([...res.images, ...prev]));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         res.images.forEach((image) => void ensureSrc(image));

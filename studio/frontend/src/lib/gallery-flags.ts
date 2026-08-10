@@ -9,6 +9,36 @@
  * only reproduce that ordering locally so a click lands instantly instead of waiting on a refetch.
  */
 
+export const GALLERY_CHANGED_EVENT = "unsloth:gallery-changed";
+
+/** Which gallery a change landed in. */
+export type GalleryKind = "images" | "videos";
+
+/**
+ * Announce that a gallery changed from OUTSIDE the page that owns it.
+ *
+ * The Images and Video pages are mounted persistently by `__root.tsx` (so an in-flight batch
+ * survives leaving the tab) and their `loadGallery` effects run only on mount. Restoring or
+ * deleting from the Settings archive therefore left the strip stale until a full reload, since
+ * closing Settings never remounts the page. In lib/, not a feature: the emitter (Settings) and
+ * the listeners (Images, Video) are both features.
+ */
+export function notifyGalleryChanged(kind: GalleryKind): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(GALLERY_CHANGED_EVENT, { detail: { kind } }));
+}
+
+/** Calls back when `kind` changed elsewhere. Returns an unsubscriber. */
+export function subscribeGalleryChanged(kind: GalleryKind, onChanged: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const handler = (event: Event) => {
+    const detail = (event as CustomEvent<{ kind?: string }>).detail;
+    if (detail?.kind === kind) onChanged();
+  };
+  window.addEventListener(GALLERY_CHANGED_EVENT, handler);
+  return () => window.removeEventListener(GALLERY_CHANGED_EVENT, handler);
+}
+
 /** The two fields these helpers care about; both gallery record types structurally satisfy it. */
 export interface FlaggableItem {
   id: string;
@@ -50,6 +80,37 @@ export function sortGalleryItems<T extends FlaggableItem>(items: T[], justPinned
 export function applyPin<T extends FlaggableItem>(items: T[], id: string, pinned: boolean): T[] {
   const next = items.map((i) => (i.id === id ? { ...i, pinned } : i));
   return sortGalleryItems(next, pinned ? id : undefined);
+}
+
+/** Pages to walk looking for the newest unpinned record, so an absurd pin count cannot turn a
+ * recovery probe into a full gallery scan. One page is normally enough. */
+export const NEW_RECORD_PROBE_MAX_PAGES = 5;
+
+/**
+ * Whether the gallery holds a record absent from `knownIds`, used to prove that a generation whose
+ * POST response was lost did in fact reach the server.
+ *
+ * A saved record is always unpinned and newest, so it is the FIRST unpinned row of the listing.
+ * This walks the pinned prefix to reach that row instead of reading row 0: pinned records sort
+ * ahead of everything, so with any pin present row 0 is a record we already knew, and the probe
+ * would report a finished generation as never submitted.
+ */
+export async function hasUnknownRecord<T extends FlaggableItem>(
+  knownIds: ReadonlySet<string>,
+  fetchPage: (offset: number) => Promise<{ items: T[]; hasMore: boolean }>,
+  pageSize: number,
+  maxPages: number = NEW_RECORD_PROBE_MAX_PAGES,
+): Promise<boolean> {
+  for (let page = 0; page < maxPages; page += 1) {
+    const { items, hasMore } = await fetchPage(page * pageSize);
+    for (const record of items) {
+      if (!knownIds.has(record.id)) return true;
+      // The first unpinned row was already known, so nothing new was saved.
+      if (!record.pinned) return false;
+    }
+    if (!hasMore || items.length === 0) return false;
+  }
+  return false;
 }
 
 /** Drop an item that was archived or deleted; order among the rest is untouched. */

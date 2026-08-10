@@ -44,8 +44,18 @@ def _empty() -> dict[str, Any]:
     return {"version": _SCHEMA_VERSION, "items": {}}
 
 
-def _load(directory: Path) -> dict[str, Any]:
-    """Parsed store, or an empty skeleton on any error (fail-safe = no flags)."""
+class FlagsUnavailable(RuntimeError):
+    """The store exists but could not be trusted (unparseable, wrong shape, unreadable).
+
+    Distinct from "no store yet", which legitimately means no flags. Callers that only order or
+    display flags ignore this and fall back to no flags; callers that DELETE on the strength of a
+    flag must fail closed instead, or a corrupt store silently reads every archived item as active.
+    """
+
+
+def _load(directory: Path) -> tuple[dict[str, Any], bool]:
+    """``(data, trusted)``. ``trusted`` is False when a store is present but unusable, so a caller
+    can tell "nothing is flagged" apart from "we cannot say what is flagged"."""
     try:
         with open(_store_path(directory), encoding = "utf-8-sig") as f:
             data = json.load(f)
@@ -56,16 +66,21 @@ def _load(directory: Path) -> dict[str, Any]:
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
-            return data
+            return data, True
+        logger.warning("gallery_flags.unreadable: %s has an unrecognised shape", _store_path(directory))
+        return _empty(), False
     except FileNotFoundError:
-        pass
+        return _empty(), True  # no store yet is a legitimate "nothing is flagged"
     except Exception as exc:
         logger.warning("gallery_flags.read_failed: %s", exc)
-    return _empty()
+        return _empty(), False
 
 
 def _save(directory: Path, data: dict[str, Any]) -> None:
-    """Atomic write (tmp + os.replace), so a crash mid-write never leaves a truncated store."""
+    """Atomic write (tmp + os.replace), so a crash mid-write never leaves a truncated store.
+
+    Raises on failure. A silent miss would let the API report a pin or archive it never stored,
+    which the UI has already applied optimistically, so the action would quietly undo on reload."""
     path = _store_path(directory)
     tmp = directory / f".{_STORE_NAME}.tmp-{os.getpid()}"
     try:
@@ -78,6 +93,7 @@ def _save(directory: Path, data: dict[str, Any]) -> None:
             tmp.unlink(missing_ok = True)
         except OSError:
             pass
+        raise
 
 
 @contextlib.contextmanager
@@ -123,9 +139,21 @@ def _entry(items: dict[str, Any], item_id: str) -> dict[str, Any]:
 
 def read(directory: Path) -> dict[str, dict[str, Any]]:
     """Every id's flags for one gallery, read once so a listing pass can sort without
-    re-opening the store per file."""
+    re-opening the store per file. Fail-safe: an untrusted store reads as no flags, because a
+    lost pin beats a gallery that will not list. Use ``read_trusted`` before destructive work."""
     with _lock:
-        items = _load(directory).get("items", {})
+        items = _load(directory)[0].get("items", {})
+    return {k: v for k, v in items.items() if isinstance(v, dict)}
+
+
+def read_trusted(directory: Path) -> dict[str, dict[str, Any]]:
+    """``read``, but raises FlagsUnavailable instead of pretending nothing is flagged. For callers
+    that delete based on a flag, where guessing "not archived" destroys the archive."""
+    with _lock:
+        data, trusted = _load(directory)
+    if not trusted:
+        raise FlagsUnavailable(f"{_store_path(directory)} could not be read")
+    items = data.get("items", {})
     return {k: v for k, v in items.items() if isinstance(v, dict)}
 
 
@@ -161,7 +189,9 @@ def set_flags(
     import time
 
     with _lock, _file_lock(directory):
-        data = _load(directory)
+        # An untrusted store is REPLACED rather than merged: its contents are already unusable, and
+        # refusing here would leave the user unable to pin anything until they cleaned it up by hand.
+        data = _load(directory)[0]
         items = data.setdefault("items", {})
         entry = dict(_entry(items, item_id))
         if pinned is not None:
@@ -189,10 +219,13 @@ def forget(directory: Path, item_ids) -> None:
     if not ids:
         return
     with _lock, _file_lock(directory):
-        data = _load(directory)
+        data = _load(directory)[0]
         items = data.get("items", {})
         if not any(i in items for i in ids):
             return  # nothing stored for these ids: skip the write entirely
         for item_id in ids:
             items.pop(item_id, None)
-        _save(directory, data)
+        try:
+            _save(directory, data)
+        except Exception as exc:  # noqa: BLE001 -- the media is already gone; a stale row is harmless
+            logger.warning("gallery_flags.prune_failed: %s", exc)

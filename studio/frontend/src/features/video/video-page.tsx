@@ -18,7 +18,13 @@ import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { applyPin, nextSelectedId, removeGalleryItem } from "@/lib/gallery-flags";
+import {
+  applyPin,
+  nextSelectedId,
+  removeGalleryItem,
+  sortGalleryItems,
+  subscribeGalleryChanged,
+} from "@/lib/gallery-flags";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
@@ -1256,6 +1262,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
+  // This page stays mounted across route changes, so a restore or delete from the Settings archive
+  // would otherwise not reach the strip until a full reload.
+  useEffect(() => subscribeGalleryChanged("videos", () => void loadGallery()), [loadGallery]);
+
   // WebM/GIF go through a server-side transcode that can take seconds (and 501s when the codec is missing), so wrap the helper with toasts.
   const handleDownload = useCallback(
     async (src: string, video: GalleryVideo, format: "mp4" | "webm" | "gif") => {
@@ -1316,25 +1326,68 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [dropFromStrip],
   );
 
-  const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
-    // Optimistic: the reorder should land on the click, not a round trip later.
-    setVideos((prev) => {
-      const next = applyPin(prev, id, pinned);
-      galleryCache.videos = next;
-      return next;
-    });
-    try {
-      await setGalleryVideoFlags(id, { pinned });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to pin video");
-      // Put the old order back rather than leave the strip lying about server state.
+  /**
+   * Refetch the loaded window from offset 0.
+   *
+   * Unpinning can drop a clip past the end of the loaded window and promote a previously unloaded
+   * one into it. The local reorder cannot know about the promoted clip, and the next loadMore
+   * still pages from the unchanged length, so that clip would be skipped until a reload.
+   */
+  const resyncWindow = useCallback(
+    async (count: number) => {
+      const wanted = Math.max(count, PAGE_SIZE);
+      const collected: GalleryVideo[] = [];
+      let more = false;
+      while (collected.length < wanted) {
+        const page = await getVideoGallery(collected.length, PAGE_SIZE);
+        collected.push(...page.videos);
+        more = page.has_more;
+        if (!page.has_more || page.videos.length === 0) break;
+      }
+      galleryCache.videos = collected;
+      galleryCache.hasMore = more;
+      setVideos(collected);
+      setHasMore(more);
+      if (typeof IntersectionObserver === "undefined") {
+        collected.forEach((video) => void ensureSrc(video));
+      }
+    },
+    [ensureSrc],
+  );
+
+  const handleTogglePin = useCallback(
+    async (id: string, pinned: boolean) => {
+      const loadedCount = galleryCache.videos.length;
+      // Optimistic: the reorder should land on the click, not a round trip later.
       setVideos((prev) => {
-        const next = applyPin(prev, id, !pinned);
+        const next = applyPin(prev, id, pinned);
         galleryCache.videos = next;
         return next;
       });
-    }
-  }, []);
+      try {
+        await setGalleryVideoFlags(id, { pinned });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to pin video");
+        // Put the old order back rather than leave the strip lying about server state.
+        setVideos((prev) => {
+          const next = applyPin(prev, id, !pinned);
+          galleryCache.videos = next;
+          return next;
+        });
+        return;
+      }
+      // Pinning keeps the same set in the window (it only moves an already-loaded clip to the
+      // front), so only unpinning can open a gap.
+      if (!pinned && loadedCount > 0) {
+        try {
+          await resyncWindow(loadedCount);
+        } catch {
+          // Best-effort: the strip is still usable, just possibly short one clip until a reload.
+        }
+      }
+    },
+    [resyncWindow],
+  );
 
   const handleArchive = useCallback(
     async (id: string) => {
@@ -1595,9 +1648,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           setBusy(null);
           setGenStep(null);
           if (p.phase === "completed" && p.video) {
-            // Prepend the new clip (newest first) and mint its link.
+            // Merge the new clip and mint its link. Sorted, not prepended: a new clip is unpinned,
+            // so the server puts it after the pinned group.
             const clip = p.video;
-            setVideos((prev) => [clip, ...prev.filter((v) => v.id !== clip.id)]);
+            setVideos((prev) =>
+              sortGalleryItems([clip, ...prev.filter((v) => v.id !== clip.id)]),
+            );
             setSelectedId(clip.id);
             void ensureSrc(clip);
           } else if (p.phase === "failed") {
@@ -1659,7 +1715,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           const clip = g.video;
           // Deleted this session: the backend clears its terminal record on delete, but a client racing that must not merge a record whose file is gone.
           if (!galleryCache.deleted.has(clip.id)) {
-            setVideos((prev) => (prev.some((v) => v.id === clip.id) ? prev : [clip, ...prev]));
+            setVideos((prev) =>
+              prev.some((v) => v.id === clip.id) ? prev : sortGalleryItems([clip, ...prev]),
+            );
             void ensureSrc(clip);
           }
         } else if (g.phase === "failed") {

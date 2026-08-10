@@ -19,10 +19,16 @@ import {
   getVideoGallery,
   setGalleryVideoFlags,
 } from "@/features/video/api";
+import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { notifyGalleryChanged } from "@/lib/gallery-flags";
 import { toast } from "@/lib/toast";
 
 /** Archived items shown per page; "Show more" pulls the next page. Matches ArchivedChatsView. */
 const ARCHIVED_PAGE_SIZE = 20;
+
+// Blob budget for archived thumbnails. Far smaller than the gallery strip's 192 MB: these are 40px
+// rows in a settings list, and only the loaded pages are ever on screen.
+const ARCHIVED_THUMB_BUDGET_BYTES = 32 * 1024 * 1024;
 
 export type ArchivedMediaKind = "images" | "videos";
 
@@ -57,9 +63,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
-  // Object URLs this view minted, revoked together on unmount. Images only: a clip uses a signed
-  // link, which is not an object URL and must not be revoked.
-  const objectUrls = useRef<string[]>([]);
+  // Archived PNGs are full-size generated images, so "Show more" a few times would pin hundreds of
+  // MB if every blob were held to unmount. Budget them like the main gallery does. Images only: a
+  // clip uses a signed link, which is not an object URL and must not be revoked.
+  const blobs = useRef(new BlobUrlCache(ARCHIVED_THUMB_BUDGET_BYTES));
 
   const loadPage = useCallback(
     async (offset: number) => {
@@ -113,18 +120,14 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, [loadPage, kind]);
 
-  // Revoke every object URL this view minted, once, on unmount.
+  // Revoke everything still cached, once, on unmount.
   useEffect(() => {
-    const minted = objectUrls.current;
-    return () => {
-      for (const url of minted) URL.revokeObjectURL(url);
-      minted.length = 0;
-    };
+    const cache = blobs.current;
+    return () => cache.clear();
   }, []);
 
-  // Thumbnails for rows that do not have one yet. Bounded by the page size, so this never holds
-  // more than a screenful plus whatever "Show more" added. `requested` is a ref, not state, so a
-  // landing thumbnail cannot re-enter this effect and refetch the rest.
+  // Thumbnails for rows that do not have one yet. `requested` is a ref, not state, so a landing
+  // thumbnail cannot re-enter this effect and refetch the rest.
   const requested = useRef<Set<string>>(new Set());
   useEffect(() => {
     let cancelled = false;
@@ -134,14 +137,29 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (requested.current.has(row.id)) continue;
         requested.current.add(row.id);
         try {
-          const src = isImages
-            ? (await fetchGalleryObjectUrl(row.url)).url
-            : await fetchGalleryVideoSignedUrl(row.id);
-          if (cancelled) {
-            if (isImages) URL.revokeObjectURL(src);
-            return;
+          if (isImages) {
+            const { url, bytes } = await fetchGalleryObjectUrl(row.url);
+            if (cancelled) {
+              URL.revokeObjectURL(url);
+              return;
+            }
+            blobs.current.set(row.id, url, bytes);
+            // Evict the coldest thumbnails back within budget. An evicted row re-fetches if it is
+            // still on screen, so nothing renders permanently blank.
+            const evicted = blobs.current.prune();
+            setThumbs((prev) => {
+              const next = { ...prev, [row.id]: url };
+              for (const id of evicted) {
+                delete next[id];
+                requested.current.delete(id);
+              }
+              return next;
+            });
+            continue;
           }
-          if (isImages) objectUrls.current.push(src);
+          // A clip is a short-lived signed link, not a blob: nothing to budget or revoke.
+          const src = await fetchGalleryVideoSignedUrl(row.id);
+          if (cancelled) return;
           setThumbs((prev) => ({ ...prev, [row.id]: src }));
         } catch {
           // A missing thumbnail still leaves a usable, actionable row. Allow a retry on the next
@@ -155,11 +173,23 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     };
   }, [rows, isImages]);
 
+  // Drop a row, then top the page back up if that emptied it while more remain, so the list never
+  // dead-ends with rows still unreachable behind a hidden "Show more".
+  const dropRow = useCallback(
+    (id: string) => {
+      setRows((prev) => prev.filter((r) => r.id !== id));
+      // The page that owns this gallery is mounted persistently and only loads on mount, so it has
+      // to be told the shelf changed or the strip stays stale until a reload.
+      notifyGalleryChanged(kind);
+    },
+    [kind],
+  );
+
   async function handleRestore(row: ArchivedRow) {
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
-      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      dropRow(row.id);
       toast.success(`${isImages ? "Image" : "Video"} restored`);
     } catch (err) {
       toast.error(`Failed to restore ${noun}`, {
@@ -172,7 +202,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     try {
       if (isImages) await deleteGalleryImage(row.id);
       else await deleteGalleryVideo(row.id);
-      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      dropRow(row.id);
       toast.success(`${isImages ? "Image" : "Video"} deleted`);
     } catch (err) {
       toast.error(`Failed to delete ${noun}`, {
@@ -204,7 +234,9 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     );
   }
 
-  if (rows.length === 0) {
+  // Only a genuinely empty shelf ends here. Emptying the LOADED page while more remain keeps the
+  // list rendered so "Show more" survives, else the rest become unreachable without reopening.
+  if (rows.length === 0 && !hasMore) {
     return (
       <p className="py-8 text-center text-sm text-muted-foreground">
         No archived {kind}.

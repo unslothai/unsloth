@@ -20863,9 +20863,15 @@ async def update_gallery_image_flags(
     """Pin/unpin or archive/restore one image. Omitted fields are left alone."""
     from core.inference import image_gallery
 
-    record = await asyncio.to_thread(
-        image_gallery.set_flags, image_id, pinned = patch.pinned, archived = patch.archived
-    )
+    try:
+        record = await asyncio.to_thread(
+            image_gallery.set_flags, image_id, pinned = patch.pinned, archived = patch.archived
+        )
+    except OSError as exc:
+        # The client already applied this optimistically, so a silent miss would look like it stuck
+        # and then quietly undo on reload.
+        logger.warning("image_gallery.set_flags_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Could not save the change to this image.")
     if record is None:
         raise HTTPException(status_code = 404, detail = "Image not found.")
     return GalleryImage(**record)
@@ -20884,7 +20890,18 @@ async def delete_gallery_image(image_id: str, current_subject: str = Depends(get
 @studio_router.delete("/images/gallery")
 async def clear_gallery_images(current_subject: str = Depends(get_current_subject)):
     from core.inference import image_gallery
-    removed = await asyncio.to_thread(image_gallery.clear)
+    from core.inference.gallery_flags import FlagsUnavailable
+
+    try:
+        removed = await asyncio.to_thread(image_gallery.clear)
+    except FlagsUnavailable as exc:
+        # Refuse rather than delete the archive we cannot prove is archived.
+        logger.warning("image_gallery.clear_blocked: %s", exc)
+        raise HTTPException(
+            status_code = 503,
+            detail = "Could not read the gallery's pin/archive data, so clearing was stopped to "
+            "avoid deleting archived images.",
+        )
     return {"removed": removed}
 
 

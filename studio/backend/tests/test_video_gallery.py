@@ -649,3 +649,20 @@ def test_flags_are_not_required_sidecar_keys():
     sidecar = gallery.gallery_dir() / f"{record['id']}.json"
     assert "pinned" not in json.loads(sidecar.read_text(encoding = "utf-8"))
     assert [r["id"] for r in gallery.list_videos()] == [record["id"]]
+
+
+def test_clear_refuses_when_the_flag_store_cannot_be_read():
+    # Fail CLOSED: an unreadable store reads as "nothing archived", which would delete the archive.
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.video_path(record["id"]) is not None
+
+
+def test_clear_all_still_works_with_an_unreadable_store():
+    record = _save_with_mtime("a", 100.0)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    assert gallery.clear(include_archived = True) == 1
+    assert gallery.video_path(record["id"]) is None

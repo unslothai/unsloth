@@ -331,3 +331,22 @@ def test_flags_are_not_required_recipe_keys():
     record = _save_with_mtime("older-schema", 100.0)
     assert "pinned" not in gallery._read_meta(gallery.image_path(record["id"]))
     assert [r["id"] for r in gallery.list_images()] == [record["id"]]
+
+
+def test_clear_refuses_when_the_flag_store_cannot_be_read():
+    # Fail CLOSED: an unreadable store reads as "nothing archived", which would delete the archive.
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    # Nothing was unlinked before the refusal.
+    assert gallery.image_path(record["id"]) is not None
+
+
+def test_clear_all_still_works_with_an_unreadable_store():
+    # include_archived spares nothing, so it needs no flags and must not be blocked by them.
+    record = _save_with_mtime("a", 100.0)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    assert gallery.clear(include_archived = True) == 1
+    assert gallery.image_path(record["id"]) is None

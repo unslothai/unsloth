@@ -116,3 +116,41 @@ def test_writes_leave_no_temp_files_behind(gdir):
     # The tmp is renamed into place, so only the store (and its lock) may remain.
     leftovers = {p.name for p in gdir.iterdir()} - {".flags.json", ".flags.json.lock"}
     assert leftovers == set()
+
+
+def test_read_trusted_raises_on_a_corrupt_store(gdir):
+    _store(gdir).write_text("garbage", encoding = "utf-8")
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
+
+
+def test_read_trusted_accepts_a_missing_store(gdir):
+    # No store yet genuinely means nothing is flagged, which is safe to act on.
+    assert flags.read_trusted(gdir) == {}
+
+
+def test_set_flags_raises_when_the_store_cannot_be_written(gdir, monkeypatch):
+    def _boom(*a, **k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(flags.os, "replace", _boom)
+    with pytest.raises(OSError):
+        flags.set_flags(gdir, "a", pinned = True)
+    # The failed write leaves no temp behind.
+    assert [p.name for p in gdir.iterdir() if p.name.startswith(".flags.json.tmp")] == []
+
+
+def test_forget_stays_best_effort_when_the_store_cannot_be_written(gdir, monkeypatch):
+    flags.set_flags(gdir, "a", pinned = True)
+    real = flags.os.replace
+    monkeypatch.setattr(flags.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
+    # The media is already deleted by this point, so a stale row must not raise into the caller.
+    flags.forget(gdir, ["a"])
+    monkeypatch.setattr(flags.os, "replace", real)
+
+
+def test_a_corrupt_store_is_replaced_rather_than_blocking_new_flags(gdir):
+    # Refusing here would leave the user unable to pin anything until they hand-fixed the file.
+    _store(gdir).write_text("[]", encoding = "utf-8")
+    flags.set_flags(gdir, "a", archived = True)
+    assert flags.is_archived(flags.read_trusted(gdir), "a") is True

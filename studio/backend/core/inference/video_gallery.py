@@ -413,13 +413,18 @@ def clear(include_archived: bool = False) -> int:
     "clear the gallery" action that destroyed the archive would defeat it. Pass
     include_archived=True to remove those too.
 
+    Raises FlagsUnavailable when the archive has to be spared but the flag store cannot be read.
+    Fail CLOSED: read() answers "nothing is archived" for an unreadable store, which here would
+    quietly delete the very archive this promises to keep.
+
     Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
     removed = 0
+    # Read flags BEFORE listing: nothing should be unlinked if the store turns out to be untrusted.
+    flags = {} if include_archived else gallery_flags.read_trusted(gallery_dir())
     try:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return 0
-    flags = gallery_flags.read(gallery_dir())
     cleared: list[str] = []
     for path in paths:
         if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
