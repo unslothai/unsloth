@@ -632,6 +632,10 @@ def install(
         except OSError:
             pass
     archive = target / chosen
+    # Set the moment the sweep removes the first old binary. From then on the tree is a mixture of
+    # two bundles and every later failure has to be reported as an incomplete replacement, not as
+    # "this accelerator is unavailable".
+    replacing = False
     print(f"downloading {chosen} -> {archive}", flush = True)
     try:
         _download(url, archive)
@@ -662,6 +666,9 @@ def install(
         # tree is a mixture of two bundles, and the caller has to retry the sweep rather than
         # memoise the accelerator as unavailable.
         if _may_own:
+            # Set BEFORE the call, not after: the sweep removes copies one at a time, so a failure
+            # inside it has already changed the tree.
+            replacing = True
             try:
                 _discard_superseded_binaries(target, supplied)
             except SupersededBinaryError:
@@ -672,19 +679,42 @@ def install(
                 ) from exc
     finally:
         # Always drop the archive: a corrupt or partial one must not linger and defeat a later retry.
-        archive.unlink(missing_ok = True)
-    sd_cli = _locate_sd_cli(target)
-    if not sd_cli:
-        raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
-    if sys.platform != "win32":
-        _make_executable(sd_cli)
-    print(f"installed sd-cli -> {sd_cli}", flush = True)
-    # The same archive ships the persistent sd-server; make it runnable so the native backend can prefer it.
-    sd_server = _locate_sd_server(target)
-    if sd_server is not None and sys.platform != "win32":
-        _make_executable(sd_server)
-    if sd_server is not None:
-        print(f"installed sd-server -> {sd_server}", flush = True)
+        # Inside the boundary too: an unlink failure after the sweep is still a mixed tree.
+        try:
+            archive.unlink(missing_ok = True)
+        except OSError as exc:
+            if replacing:
+                raise SupersededBinaryError(
+                    f"the managed tree was left part way through a replacement: {exc}"
+                ) from exc
+            raise
+    # EVERYTHING from the sweep on is finalisation of a tree that is now a mixture of two bundles:
+    # locating the new binaries, chmod-ing them, and the record. Reported as an ordinary failure,
+    # any of these makes ensure_* memoise the accelerator as unavailable and hand back a
+    # pre-install path the sweep may already have removed. Reported as an incomplete replacement,
+    # the caller re-finds what survived and the next load retries.
+    try:
+        sd_cli = _locate_sd_cli(target)
+        if not sd_cli:
+            raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
+        if sys.platform != "win32":
+            _make_executable(sd_cli)
+        print(f"installed sd-cli -> {sd_cli}", flush = True)
+        # The same archive ships the persistent sd-server; make it runnable so the native backend
+        # can prefer it.
+        sd_server = _locate_sd_server(target)
+        if sd_server is not None and sys.platform != "win32":
+            _make_executable(sd_server)
+        if sd_server is not None:
+            print(f"installed sd-server -> {sd_server}", flush = True)
+    except SupersededBinaryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- past the sweep, every failure is a mixed tree
+        if not replacing:
+            raise
+        raise SupersededBinaryError(
+            f"the managed tree was left part way through a replacement: {exc}"
+        ) from exc
     # Written only now, on a complete install: a record naming an accelerator whose binaries never
     # finished extracting would suppress the very reinstall that repairs it. Only for a directory we
     # own -- an unowned one is the user's build, which we never claim to have installed.

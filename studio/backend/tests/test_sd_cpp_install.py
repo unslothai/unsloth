@@ -2090,3 +2090,35 @@ def test_a_failure_after_the_sweep_is_an_incomplete_replacement(tmp_path, monkey
     with pytest.raises(sdmod.SupersededBinaryError) as exc:
         install(install_dir = tmp_path)
     assert "part way through a replacement" in str(exc.value)
+
+
+def test_a_failure_finalising_the_new_tree_is_an_incomplete_replacement(tmp_path, monkeypatch):
+    """The boundary has to reach past the sweep itself. A chmod or a locate failure after the old
+    binaries are gone is still a mixed tree, and reported as an ordinary error it makes ensure_*
+    memoise the accelerator and return a pre-install path the sweep may already have removed."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+
+    def _chmod_fails(_path):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(sdmod, "_make_executable", _chmod_fails)
+    with pytest.raises(sdmod.SupersededBinaryError) as exc:
+        install(install_dir = tmp_path)
+    assert "part way through a replacement" in str(exc.value)
+
+
+def test_a_failure_before_the_sweep_is_an_ordinary_install_failure(tmp_path, monkeypatch):
+    """The other side of the boundary: nothing has been removed yet, so this really is "this
+    accelerator is unavailable" and memoising it is right."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    monkeypatch.setattr(
+        sdmod,
+        "_maybe_fetch_windows_cudart",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cudart 404")),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        install(install_dir = tmp_path)
+    assert not isinstance(exc.value, sdmod.SupersededBinaryError)
+    assert "cudart 404" in str(exc.value)

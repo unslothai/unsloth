@@ -1136,7 +1136,13 @@ class VideoBackend:
             accelerator = _install_accelerator_for(target.backend),
         )
         native_device = target.device
-        if target.backend not in ("cpu", "mps") and not sd_cpp_lists_accelerator_device(binary):
+        # What the accelerator decision below was made on, or None when it was never asked (a CPU
+        # or MPS target never consults it). Re-checked under the reader claim, so a replacement
+        # that arrives mid-load cannot silently change the answer this device choice rests on.
+        listed_accelerator: Optional[bool] = None
+        if target.backend not in ("cpu", "mps"):
+            listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+        if target.backend not in ("cpu", "mps") and not listed_accelerator:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker
             # functional with the CPU prebuilt when the user has not supplied a
             # locally compiled CUDA binary through the normal sd.cpp discovery path.
@@ -1149,6 +1155,7 @@ class VideoBackend:
             # next chat/image acquire evicted a model to make room for one that was never there.
             binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
+            listed_accelerator = sd_cpp_lists_accelerator_device(binary)
         engine = SdCppEngine(binary)
         # Re-vet and take the identity under ONE reader claim. ensure_h3_sd_cpp_binary checked the
         # file it returned, but an install can start between that return and this line, and an
@@ -1168,6 +1175,23 @@ class VideoBackend:
                 raise RuntimeError(
                     "The stable-diffusion.cpp binary was replaced by an install that does not "
                     "support MiniMax-H3. Try the load again."
+                )
+            # And re-ask the question native_device was decided on. H3 support alone is not
+            # enough: a replacement can be H3-capable and still be a different accelerator, and
+            # native_device is about to be committed for the life of this runtime. A CPU fallback
+            # committed around a CUDA executable runs on VRAM nothing accounted for, next to
+            # whatever the arbiter let in on the strength of this load claiming the CPU.
+            #
+            # Only when the decision actually consulted it. A CPU or MPS target never asked, so
+            # there is no answer to have changed, and inventing one would refuse those loads.
+            if (
+                listed_accelerator is not None
+                and is_managed_binary(binary)
+                and sd_cpp_lists_accelerator_device(binary) != listed_accelerator
+            ):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary was replaced by an install for a different "
+                    "accelerator while this model was loading. Try the load again."
                 )
             binary_identity = _sd_cli_identity(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
