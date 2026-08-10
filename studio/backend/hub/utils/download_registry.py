@@ -758,6 +758,34 @@ def read_active_transport_marker(
     return None
 
 
+def sweep_abandoned_partials(
+    repo_type: str,
+    repo_id: str,
+    *,
+    only_blob_hashes: Optional[frozenset[str]] = None,
+    protected_blob_hashes: Optional[frozenset[str]] = None,
+    root: Optional[Path] = None,
+) -> int:
+    """Remove partials nothing can resume and nothing has touched. Returns how many went.
+
+    ``prepare_cache_for_transport`` runs once, before a download, and skips anything still
+    inside the abandonment grace. That skip lands on the common case: the orphan is the file a
+    hard kill left behind, and the user restarts within seconds of the kill that made it. Run
+    this when a download reaches a terminal state and every file skipped then gets a second
+    look, by which point the grace has long since elapsed.
+    """
+    removed = 0
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+        outcome = _purge_incomplete_blobs(
+            entry,
+            only_blob_hashes,
+            protected_blob_hashes,
+            unresumable_only = True,
+        )
+        removed += outcome.removed
+    return removed
+
+
 def is_resumable_partial(
     repo_type: str,
     repo_id: str,

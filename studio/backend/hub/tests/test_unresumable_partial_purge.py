@@ -164,3 +164,40 @@ def test_transport_status_does_not_promise_a_resume_it_cannot_keep(monkeypatch, 
 
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
     assert download_registry.is_resumable_partial("model", "Org/Model") is False
+
+
+def test_a_skipped_partial_is_swept_once_it_ages_out(monkeypatch, blobs):
+    """The start-of-download skip is not the last word on an orphan."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    _prepare()
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+
+    # Too fresh at download start, so prepare leaves it alone.
+    assert _prepare() == 0
+    assert partial.exists()
+
+    # By the time that download reaches a terminal state the grace has elapsed.
+    _abandon(partial)
+    assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 1
+    assert not partial.exists()
+
+
+def test_the_sweep_still_spares_a_live_writer_and_a_peer(monkeypatch, blobs):
+    """A terminal state for one job says nothing about what another is writing."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    live = blobs / _NONCE_PARTIAL
+    live.write_bytes(b"x" * 25)
+    peer = blobs / f"{_PEER}.feedface{hf_cache_state.INCOMPLETE_SUFFIX}"
+    peer.write_bytes(b"x" * 25)
+    _abandon(peer)
+
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        protected_blob_hashes = frozenset({_PEER}),
+    )
+
+    assert swept == 0
+    assert live.exists()
+    assert peer.exists()

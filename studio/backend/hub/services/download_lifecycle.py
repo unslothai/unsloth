@@ -1099,6 +1099,22 @@ def register_worker(
                     )
             except Exception:
                 logger.exception("post-finalize marker cleanup failed for %s", key)
+            try:
+                # The second look for anything prepare_cache_for_transport spared as too
+                # recently written. A download runs for long enough that a partial orphaned
+                # before it started is well past the grace by now, and the peer set still
+                # shields a same-repo variant writing a shared companion right now.
+                swept = download_registry.sweep_abandoned_partials(
+                    repo_type,
+                    repo_id,
+                    protected_blob_hashes = registry.peer_blob_hashes(key),
+                )
+                if swept:
+                    logger.info(
+                        "%sswept %d unresumable partial blob(s) for %s", log_prefix, swept, repo_id
+                    )
+            except Exception:
+                logger.exception("abandoned-partial sweep failed for %s", key)
             finally:
                 hf_cache_scan.invalidate_hf_cache_scans()
 
