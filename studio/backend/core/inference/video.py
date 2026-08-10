@@ -983,6 +983,7 @@ class VideoBackend:
                 kind,
                 te_sources = te_sources,
                 skip_transformer_weights = skip_transformer_weights,
+                h3_task = kwargs.get("h3_task"),
                 h3_te_scheme = h3_te_scheme,
             )
             with self._lock:
@@ -1064,6 +1065,9 @@ class VideoBackend:
                 ltx23 = ltx23,
                 skip_te_components = te_skipped + h3_te_skipped,
                 skip_transformer_weights = skip_transformer_weights,
+                # Picks the H3 denoiser partition: fl2va stages transformer/, ref2va stages the
+                # separate 66.28 GB transformer_ref/ that load_components(workflow="ref2va") opens.
+                h3_task = kwargs.get("h3_task"),
                 cancel_event = cancel_event,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache.
@@ -1126,7 +1130,7 @@ class VideoBackend:
         qwen_filename = h3_text_encoder_filename(filename)
         requests = (
             (repo_id, filename),
-            (H3_GGUF_REPO, qwen_filename),
+            (self._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (H3_COMPONENT_REPO, H3_VIDEO_VAE),
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
@@ -1633,6 +1637,7 @@ class VideoBackend:
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -1656,11 +1661,22 @@ class VideoBackend:
           denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
           ``transformer/config.json`` is kept for the same reason the pre-cast
           encoders keep theirs: the pre-quant loader meta-inits the DiT from it,
-          so dropping it would break the very load that made the skip safe."""
+          so dropping it would break the very load that made the skip safe.
+
+        ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
+        brings up one: ``transformer/`` for fl2va (which also covers text-only) and
+        ``transformer_ref/`` for ref2va. They are 66.28 GB each, so the scoped list carries exactly
+        one of them, never both."""
         from .diffusion_te_prequant import is_prequant_covered_weight
+        from .video_minimax_h3 import H3_TASK_REFERENCES
 
         siblings = list(info.siblings or [])
         is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
+        h3_denoiser_prefix = (
+            "transformer_ref/"
+            if (h3_task or "").strip().lower() == H3_TASK_REFERENCES
+            else "transformer/"
+        )
         h3_prefixes = (
             "audio_scheduler/",
             "audio_vae/",
@@ -1668,7 +1684,7 @@ class VideoBackend:
             "scheduler/",
             "text_encoder/",
             "tokenizer/",
-            "transformer/",
+            h3_denoiser_prefix,
             "vae/",
         )
         files: list[tuple[str, int]] = []
@@ -1709,6 +1725,7 @@ class VideoBackend:
         ltx23: bool = False,
         te_sources: Optional[dict[str, Any]] = None,
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
         h3_te_scheme: Optional[str] = None,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
@@ -1742,6 +1759,7 @@ class VideoBackend:
                         ltx23 = ltx23,
                         skip_te_components = skip_te_components,
                         skip_transformer_weights = skip_transformer_weights,
+                        h3_task = h3_task,
                     )
                 )
             return total or None
@@ -1759,6 +1777,7 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        h3_task: Optional[str] = None,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, for staging through the Hub download
@@ -1773,7 +1792,11 @@ class VideoBackend:
         ``transformer_quant`` is read for the mirror-image reason on the denoiser: a scheme with a
         hosted PRE-QUANTIZED checkpoint replaces the dense DiT, so staging those shards would cost
         66.3 GB the load never opens. It used to be swallowed by ``**load_kwargs`` and the plan
-        stayed dense-sized."""
+        stayed dense-sized.
+
+        ``h3_task`` picks which MiniMax-H3 denoiser partition is staged. It was swallowed by
+        ``**load_kwargs`` too, so a ref2va plan staged the fl2va ``transformer/`` and left the
+        66.28 GB ``transformer_ref/`` the load then needs to be pulled inline."""
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
@@ -1917,6 +1940,7 @@ class VideoBackend:
                         skip_transformer_weights = self._denoiser_prequant_covered(
                             fam, transformer_quant, base
                         ),
+                        h3_task = h3_task,
                     ),
                     revision = getattr(info, "sha", None),
                     # A pipeline pick has no single file: the base IS the selected model (base =
@@ -1971,6 +1995,25 @@ class VideoBackend:
         }
 
     @staticmethod
+    def _h3_text_encoder_repo(repo_id: str, qwen_filename: str) -> str:
+        """Which repo the H3 native text encoder comes from, preferring a local bundle.
+
+        The GGUF bundle ships the Qwen encoder beside the denoiser partitions, so when the pick is
+        a LOCAL clone of it the encoder is already on disk. Hardcoding the Hub repo instead would
+        re-fetch multiple GB that are sitting next to the checkpoint, and fail outright offline."""
+        from .video_minimax_h3 import H3_GGUF_REPO
+
+        root = Path(repo_id).expanduser()
+        if root.is_dir():
+            from .diffusion_families import resolve_local_gguf_child
+            try:
+                resolve_local_gguf_child(root, qwen_filename)
+            except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
+                return H3_GGUF_REPO
+            return repo_id
+        return H3_GGUF_REPO
+
+    @staticmethod
     def _h3_native_download_plan(
         repo_id: str, gguf_filename: str, *, hf_token: Optional[str]
     ) -> dict[str, Any]:
@@ -1979,7 +2022,6 @@ class VideoBackend:
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
             H3_COMPONENT_REPO,
-            H3_GGUF_REPO,
             H3_VIDEO_VAE,
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
@@ -1987,9 +2029,10 @@ class VideoBackend:
         from core.inference.diffusion import DiffusionBackend
 
         validate_h3_transformer_filename(gguf_filename)
+        qwen_filename = h3_text_encoder_filename(gguf_filename)
         wanted = (
             (repo_id, gguf_filename),
-            (H3_GGUF_REPO, h3_text_encoder_filename(gguf_filename)),
+            (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (H3_COMPONENT_REPO, H3_VIDEO_VAE),
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
@@ -2124,6 +2167,7 @@ class VideoBackend:
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
@@ -2148,6 +2192,7 @@ class VideoBackend:
                 ltx23 = ltx23,
                 skip_te_components = skip_te_components,
                 skip_transformer_weights = skip_transformer_weights,
+                h3_task = h3_task,
             )
             if not any(name == "model_index.json" for name, _ in files):
                 return None
@@ -3307,9 +3352,14 @@ class VideoBackend:
                 memory_mode = memory_mode,
                 scheme = None,
             )
+        # cache_dir is passed here too, for the same reason the token is: load_components forwards
+        # its extra kwargs through ComponentSpec.load into each component's from_pretrained, and
+        # without it those ~145 GB of Hub-pinned components resolve against the HF_HUB_CACHE snapshot
+        # taken at import time rather than Studio's live cache folder, which the user can move.
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
+            cache_dir = hub_cache_dir(),
             **({"token": hf_token} if hf_token else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both
@@ -3757,6 +3807,11 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+                if not fam.supports_cfg:
+                    # A CFG-free family never reads this number: diffusers gets no guidance kwarg
+                    # and the native path pins cfg_scale to 1.0. Clamp it here so the recipe cannot
+                    # record a guidance that did not run.
+                    guidance = float(fam.default_guidance)
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
                 )
@@ -4399,6 +4454,15 @@ class VideoBackend:
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # The BUILD this clip came off, read from the ENGAGED state and never from the
+                    # request, exactly as the diffusers path records it. Without these six the
+                    # sidecar of every native GGUF clip saves a blank recipe.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
