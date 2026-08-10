@@ -46,11 +46,14 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
     )
 
     assert download_registry.incomplete_blob_hashes("model", "Org/Model") == {_BLOB_HASH}
-    assert download_registry.existing_blob_bytes(
-        "model",
-        "Org/Model",
-        frozenset({_BLOB_HASH}),
-    ) == 5
+    assert (
+        download_registry.existing_blob_bytes(
+            "model",
+            "Org/Model",
+            frozenset({_BLOB_HASH}),
+        )
+        == 5
+    )
 
 
 def test_registry_purges_process_unique_partial(tmp_path):
