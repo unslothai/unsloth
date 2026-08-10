@@ -132,17 +132,53 @@ def _raw_install_record(root: Path) -> Optional[str]:
     except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "cannot tell"
         return None
 
+# The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at
+# all: with only half of it remembered, an unwritable record leaves a serverless install looking
+# server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
+_INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
 
-def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
+
+def installed_ships_server(root: Path) -> Optional[bool]:
+    """Whether the bundle installed in ``root`` carried an sd-server, or None when unrecorded.
+
+    None is the honest answer for every install that predates this field, and callers must treat
+    it as "unknown" rather than "serverless": a missing sd-server is otherwise indistinguishable
+    from one a bundle never shipped, and suppressing the reinstall on a guess would strand a tree
+    whose server was deleted (by hand, or by the runnability repair) on the one-shot CLI forever.
+
+    The memo WINS over the file, for the same reason ``installed_accelerator``'s does: it is only
+    set by an install that completed in this process, and the case it exists for is a record that
+    could not be written, where the file is stale or absent."""
+    memo = _INSTALLED_SHIPS_SERVER_MEMO.get(str(root))
+    val = memo if memo is not None else read_install_record(root).get("ships_server")
+    return val if isinstance(val, bool) else None
+
+
+def _write_install_record(
+    root: Path,
+    *,
+    accelerator: str,
+    repo: str,
+    tag: Optional[str],
+    ships_server: Optional[bool] = None,
+) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
 
     The write itself stays best-effort -- a metadata failure must not throw away binaries that
     extracted correctly -- but the answer is memoised either way, so this process never re-installs
     what it just installed."""
     klass = accelerator_class(accelerator)
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    if ships_server is not None:
+        rec["ships_server"] = ships_server
+        _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
+    else:
+        # An install that did not report the capability must not leave an older memo standing in
+        # for this one -- the tree is now whatever this bundle put there.
+        _INSTALLED_SHIPS_SERVER_MEMO.pop(str(root), None)
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
-            json.dump({"accelerator": klass, "repo": repo, "tag": tag}, f)
+            json.dump(rec, f)
     except OSError as exc:
         # Remember it, pinned to the record we could not replace.
         _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
@@ -336,12 +372,34 @@ def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
 
 
 def default_install_dir() -> Path:
-    """``~/.unsloth/stable-diffusion.cpp`` (or under ``UNSLOTH_STUDIO_HOME`` /
-    ``STUDIO_HOME`` if set), the sibling of the llama.cpp install the finder
-    probes."""
-    home = os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME")
-    base = Path(home).parent if home else Path.home() / ".unsloth"
-    return base / "stable-diffusion.cpp"
+    """``<UNSLOTH_STUDIO_HOME>/stable-diffusion.cpp``, else the legacy
+    ``~/.unsloth/stable-diffusion.cpp``.
+
+    The same placement ``install_llama_prebuilt.default_managed_llama_dir`` uses for
+    llama.cpp, and the whisper.cpp / node installs use for theirs: the tree goes
+    *under* the Studio home, so side-by-side Studios stay isolated and nothing outside
+    the home is ever claimed. The legacy default home ``~/.unsloth/studio`` still maps
+    to ``~/.unsloth/stable-diffusion.cpp`` so an existing install is reused.
+
+    Kept byte-identical in meaning to ``sd_cpp_engine.managed_install_root``; the two
+    are separate because this script must run standalone, before the backend package is
+    importable.
+
+    Derived from an absolute home: a relative ``UNSLOTH_STUDIO_HOME`` must not leave the
+    install dir relative to whatever the working directory happens to be."""
+    home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+    legacy = Path.home() / ".unsloth" / "stable-diffusion.cpp"
+    if not home:
+        return legacy
+    root = Path(home).expanduser()
+    legacy_studio = Path.home() / ".unsloth" / "studio"
+    try:
+        root = root.resolve()
+        is_legacy = root == legacy_studio.resolve()
+    except (OSError, ValueError):
+        root = root.absolute()
+        is_legacy = root == legacy_studio
+    return legacy if is_legacy else root / "stable-diffusion.cpp"
 
 
 def _make_executable(path: Path) -> None:
@@ -748,6 +806,11 @@ def install(
             accelerator = accelerator,
             repo = used_repo,
             tag = release.get("tag_name"),
+            # Read off the archive's MEMBER LIST, so "this bundle is serverless" is recorded fact
+            # rather than something a later load has to infer from an sd-server not being there.
+            # A leftover server from an earlier bundle is indistinguishable on disk, which is the
+            # whole confusion the record exists to settle.
+            ships_server = any(p.name == _binary_names()[1] for p in supplied),
         )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli

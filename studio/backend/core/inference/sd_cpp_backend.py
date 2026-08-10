@@ -73,6 +73,7 @@ from core.inference.sd_cpp_engine import (
     find_sd_server_binary,
     is_managed_binary,
     managed_install_root,
+    owning_managed_root,
     runtime_env,
 )
 from core.inference.sd_cpp_server import SdCppServer
@@ -470,7 +471,8 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
     the CPU build is wanted: unrecorded is unknown (GPU assets shipped before the record did), and
     reinstalling every legacy install on a CPU target would redownload the bundle for the common
     case, where the install almost certainly is the CPU one already."""
-    if not is_managed_binary(binary):
+    root = owning_managed_root(binary)
+    if root is None:
         return False
     if _managed_tree_in_use():
         return False  # an install now would overwrite a running binary; the load retries after teardown
@@ -479,11 +481,54 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         want = mod.accelerator_class(accelerator)
         if want in _failed_accelerator_upgrades:
             return False
-        have = mod.installed_accelerator(managed_install_root())
-        if want == "cpu":
-            return have is not None and have != "cpu"
-        return have != want
+        # From the root the binary is actually in, not the current default: an install an older
+        # build put beside the Studio home keeps its own record, and reading the wrong root would
+        # report it unrecorded and re-download a bundle that is already here.
+        return _record_mismatch(mod, root, want)
     except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary, as before
+        return False
+
+
+def _record_mismatch(mod, root: Path, want: str) -> bool:
+    """True when ``root``'s install record names an accelerator other than ``want``. Unrecorded is
+    unknown, and on a CPU target unknown is left alone (see ``_accelerator_changed``)."""
+    have = mod.installed_accelerator(root)
+    if want == "cpu":
+        return have is not None and have != "cpu"
+    return have != want
+
+
+def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
+    """True when ``binary`` is a MISMATCHED sd-server out of the tree an older build left beside
+    the Studio home, while the CURRENT managed root holds a completed install for ``accelerator``
+    whose bundle shipped no sd-server.
+
+    That install is the authoritative one, and the recorded fact that its bundle is serverless
+    makes "no server" the answer rather than "install again": otherwise the finder keeps handing
+    the legacy server back, ``_accelerator_changed`` keeps rejecting it as the wrong build, and
+    every single load reinstalls the bundle that is already on disk.
+
+    Both halves are required. A legacy server that MATCHES the wanted accelerator is a working
+    server and is still preferred over the one-shot CLI. And an install whose record does not say
+    ``ships_server: false`` -- an older record without the field, or a bundle that did ship one
+    whose binary was later deleted or removed by the runnability repair -- is NOT evidence of a
+    serverless bundle, so it must keep reinstalling, which is what repairs the missing server."""
+    root = owning_managed_root(binary)
+    if root is None:
+        return False
+    current = managed_install_root()
+    try:
+        if root.resolve() == current.resolve():
+            return False
+    except OSError:
+        return False
+    try:
+        mod = _installer_module()
+        want = mod.accelerator_class(accelerator)
+        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+            return False
+        return mod.installed_ships_server(current) is False
+    except Exception:  # noqa: BLE001 -- cannot tell -> leave the existing behavior alone
         return False
 
 
@@ -499,10 +544,15 @@ def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     failed, and a load that keeps a usable wrong-accelerator build on purpose would be refused by
     it on every single load. What the load needs is narrower -- did the tree it resolved this
     binary out of get replaced underneath it."""
-    if not is_managed_binary(binary):
+    # From the root the binary is actually IN, not the current default. The finder also serves a
+    # tree an older build left beside the Studio home, and reading the current root for a binary
+    # out of that one reports "unrecorded" on both sides of the comparison, so a swap underneath
+    # this load reads as no change at all.
+    root = owning_managed_root(binary)
+    if root is None:
         return None
     try:
-        return _installer_module().installed_accelerator(managed_install_root())
+        return _installer_module().installed_accelerator(root)
     except Exception:  # noqa: BLE001 -- cannot tell; the comparison sees None on both sides
         return None
 
@@ -576,6 +626,12 @@ def ensure_sd_server_binary(
     """
     found = find_sd_server_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
+    # Ahead of _accelerator_changed, which reports "unchanged" while the managed tree is in use
+    # (an install would overwrite a running binary) and would hand the mismatched legacy server to
+    # a load that has the matching serverless build right here. None IS the answer: the one-shot
+    # sd-cli of the right build runs, and the bundle is not downloaded again on every later load.
+    if usable and _superseded_legacy_server(found, accelerator):
+        return None
     if usable and not _accelerator_changed(found, accelerator):
         return found
     if not allow_install:
@@ -583,6 +639,8 @@ def ensure_sd_server_binary(
     with _install_lock:
         found = find_sd_server_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
+        if usable and _superseded_legacy_server(found, accelerator):
+            return None
         if usable and not _accelerator_changed(found, accelerator):
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
@@ -610,7 +668,16 @@ def ensure_sd_server_binary(
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
                 return fallback
-        return find_sd_server_binary() or fallback
+        installed = find_sd_server_binary()
+        # The finder also probes the tree an older build left beside the Studio home, so when the
+        # bundle just installed ships no sd-server the hit here can be that legacy server, built
+        # for a different accelerator. None, not the fallback: an install just completed, so the
+        # router's next step resolves the sd-cli it landed, and a one-shot run on the right build
+        # beats a resident server on the wrong one. The fallback stays for the failure path above,
+        # where no matching binary was fetched at all.
+        if installed and _accelerator_changed(installed, accelerator):
+            return None
+        return installed or fallback
 
 
 @dataclass(frozen = True)
