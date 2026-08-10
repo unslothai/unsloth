@@ -1109,6 +1109,11 @@ class DiffusionTrainableFamily(BaseModel):
     # offering the control means offering a value that rejects Start. Defaults True so an older
     # backend's payload, which has no such families in it, keeps the control.
     supports_checkpoints: bool = True
+    # The largest batch this family's loop can form, or None for unrestricted. 1 for a family
+    # whose forward covers one packed sequence: the panel then drops the Batch control, since a
+    # value above the cap is refused rather than clamped. Declared here or Pydantic silently
+    # drops it from the response and the panel's clamp never receives its input.
+    max_train_batch_size: Optional[int] = None
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
 

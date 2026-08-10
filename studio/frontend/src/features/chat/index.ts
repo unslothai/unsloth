@@ -5,6 +5,7 @@ export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
 export {
   addScanFolder,
   browseFolders,
+  ChatThreadDeletedError,
   deleteChatAttachment,
   deleteFineTunedModel,
   fetchChatAttachmentBlob,
@@ -144,10 +145,15 @@ export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
   deleteStoredChatThreads,
+  ensureStoredChatThread,
+  isThreadIncognito,
   listStoredChatThreads,
   markThreadIncognito,
 } from "./utils/chat-history-storage";
-export { markChatThreadDeleted } from "./utils/chat-thread-tombstones";
+export {
+  markChatThreadDeleted,
+  removeChatThreadTombstones,
+} from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export { ArtifactCard } from "./artifacts/artifact-card";

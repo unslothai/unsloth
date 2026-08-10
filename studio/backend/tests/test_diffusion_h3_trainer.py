@@ -1377,6 +1377,33 @@ def test_h3_advertises_that_it_cannot_checkpoint():
     _cfg(save_steps = 0).normalized()
 
 
+def test_the_batch_cap_survives_the_response_model():
+    """family_train_infos emitting it is not enough: the route builds a DiffusionTrainableFamily
+    from that dict, and Pydantic drops any field the model does not declare. Undeclared, the
+    panel reads the cap as undefined, keeps rendering Batch, and sends a carried-over value the
+    validation refuses -- the clamp exists but never receives its input."""
+    from core.training.diffusion_train_common import (
+        SINGLE_SEQUENCE_FAMILIES,
+        family_train_infos,
+    )
+    from models.training import DiffusionTrainableFamily
+
+    infos = {info["name"]: info for info in family_train_infos()}
+    assert "minimax-h3" in SINGLE_SEQUENCE_FAMILIES
+    for name, info in infos.items():
+        expected = 1 if name in SINGLE_SEQUENCE_FAMILIES else None
+        assert info["max_train_batch_size"] == expected, name
+        # Through the wire model, which is where it was being dropped.
+        assert DiffusionTrainableFamily(**info).max_train_batch_size == expected, name
+    # And the cap has to agree with the validation, or the panel hides a control that works.
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    assert "batch size 1" in (
+        h3_train_unsupported_reason(_cfg(train_batch_size = 2).normalized()) or ""
+    )
+    assert h3_train_unsupported_reason(_cfg(train_batch_size = 1).normalized()) is None
+
+
 def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
     """``ModularPipeline.from_pretrained``'s token opens the modular INDEX only: every component
     is fetched by its own ``from_pretrained`` inside ``load_components``, which swallows a failure
@@ -1401,20 +1428,30 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     class _Modular:
         @staticmethod
-        def from_pretrained(path, token = None):
-            seen.append({"index_token": token})
+        def from_pretrained(
+            path,
+            token = None,
+            **kw,
+        ):
+            seen.append({"index_token": token, **kw})
             return _Pipe()
 
     monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(ModularPipeline = _Modular))
     monkeypatch.setattr(h3, "_assert_component_grid", lambda pipe: None)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: "/live/hub")
 
     cfg = types.SimpleNamespace(base_model = "unsloth/private-h3", hf_token = "hf_secret")
     h3._load_conditioners(cfg, "cpu")
 
-    assert seen[0] == {"index_token": "hf_secret"}
+    assert seen[0] == {"index_token": "hf_secret", "cache_dir": "/live/hub"}
     component_loads = seen[1:]
     assert len(component_loads) == 2
     assert all(call.get("token") == "hf_secret" for call in component_loads), component_loads
+    # And every one of them pinned to the LIVE cache root. An unset cache_dir resolves through
+    # huggingface_hub's import-time constant, which a mid-session cache-folder change does not
+    # update, and the training subprocess is spawned without the cache-environment wrapper: the
+    # components already in the selected root would be missed and re-downloaded into the old one.
+    assert all(call.get("cache_dir") == "/live/hub" for call in component_loads), component_loads
 
     # No token configured -> the kwarg is omitted entirely rather than sent as None.
     seen.clear()
@@ -1422,6 +1459,41 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
         types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None), "cpu"
     )
     assert all("token" not in call for call in seen[1:]), seen
+
+
+@pytest.mark.parametrize("base_precision", ["bf16", "nf4"])
+def test_the_h3_denoiser_load_is_pinned_to_the_live_cache(monkeypatch, base_precision):
+    """The denoiser is the 145 GB half, so this is the expensive one to leave unpinned."""
+    from core.training import diffusion_h3_trainer as h3
+
+    seen: list[dict] = []
+
+    class _Model:
+        def to(self, device):
+            return self
+
+    class _Transformer:
+        @staticmethod
+        def from_pretrained(path, **kw):
+            seen.append(kw)
+            return _Model()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        types.SimpleNamespace(
+            MiniMaxH3Transformer3DModel = _Transformer,
+            BitsAndBytesConfig = lambda **kw: kw,
+        ),
+    )
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: "/live/hub")
+
+    cfg = types.SimpleNamespace(base_model = "MiniMaxAI/MiniMax-H3", hf_token = None)
+    h3._load_transformer(cfg, "cpu", base_precision)
+
+    assert len(seen) == 1
+    assert seen[0]["cache_dir"] == "/live/hub"
+    assert seen[0]["subfolder"] == "transformer"
 
 
 def test_the_audio_decode_stops_at_the_training_window(tmp_path):

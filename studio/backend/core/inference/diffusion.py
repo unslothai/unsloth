@@ -2892,6 +2892,14 @@ class DiffusionBackend:
 
         import diffusers
 
+        # diffusers hard-codes _tqdm_active = True at import and honours no env var, so
+        # setup_logging (which runs long before this lazy import) cannot reach it. Without
+        # this, "Loading pipeline components..." is drawn straight onto the log stream and
+        # can land mid-record on a structlog JSON line. Idempotent and cheap.
+        from loggers.config import quiet_third_party_progress_bars
+
+        quiet_third_party_progress_bars()
+
         # Pre-install the optional attention kernel before the load locks: the pip install can block unload for 600s.
         try:
             preinstall_backend = select_attention_backend(

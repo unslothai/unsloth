@@ -875,6 +875,12 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # panel that keeps offering "Checkpoint every" turns a nonzero value into a
                 # rejected Start with no way to see why from the control itself.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
+                # And the third one, for the same reason. A batch > 1 is REFUSED for a family
+                # whose forward covers one packed sequence, so a panel that keeps offering an
+                # unrestricted Batch turns a perfectly reasonable 2 -- or a value carried over
+                # from the family the user was on a moment ago -- into a rejected Start with
+                # nothing on the control to say why.
+                "max_train_batch_size": 1 if name in SINGLE_SEQUENCE_FAMILIES else None,
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
             }
@@ -1373,6 +1379,11 @@ def discover_image_caption_pairs(
 # carries save_steps / resume_from_checkpoint for every family, so a loop that implements
 # neither has to say so rather than ignore them.
 CHECKPOINTLESS_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
+
+# Families whose forward covers ONE packed sequence, so the batch axis is a pure replication
+# axis and a second clip cannot join it: the layout, the rotary grid and the row timesteps are
+# set by that clip's geometry and its caption's length. Kept beside the refusal it explains.
+SINGLE_SEQUENCE_FAMILIES: frozenset[str] = frozenset({"minimax-h3"})
 
 # Families whose trainer loads its base through ``ModularPipeline.from_pretrained``. Their local
 # layout is ``modular_model_index.json`` and no ``model_index.json``, so the conventional shape

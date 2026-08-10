@@ -197,15 +197,33 @@ def _load_conditioners(cfg, device):
     import torch
     from diffusers import ModularPipeline
 
-    pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token)
+    from core.inference.diffusion import hub_cache_dir
+
+    # Pinned, like every loader call on the inference side. diffusers resolves an unset
+    # cache_dir through huggingface_hub's import-time constant, and the training subprocess is
+    # spawned without the cache-environment wrapper, so a cache folder changed mid-session was
+    # invisible here: components already sitting in the selected root were missed and roughly
+    # 145 GB re-downloaded into the old one.
+    cache_dir = hub_cache_dir()
+    pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
     # The token above opens the modular INDEX only. load_components runs a separate
     # from_pretrained per component, against the repos that index names, so it has to carry the
     # token again -- and it swallows a component failure as a logger.warning rather than raising,
     # so an anonymous 401 leaves the attribute unset and the first use dies on None instead of
     # saying the base was gated. The inference H3 loader forwards it for the same reason.
     auth = {"token": cfg.hf_token} if cfg.hf_token else {}
-    pipe.load_components(names = list(_H3_TEXT_COMPONENTS), torch_dtype = torch.bfloat16, **auth)
-    pipe.load_components(names = list(_H3_VAE_COMPONENTS), torch_dtype = torch.float32, **auth)
+    pipe.load_components(
+        names = list(_H3_TEXT_COMPONENTS),
+        torch_dtype = torch.bfloat16,
+        cache_dir = cache_dir,
+        **auth,
+    )
+    pipe.load_components(
+        names = list(_H3_VAE_COMPONENTS),
+        torch_dtype = torch.float32,
+        cache_dir = cache_dir,
+        **auth,
+    )
     _assert_component_grid(pipe)
     # ``load_components`` builds every component on the CPU, so place them explicitly.
     pipe.text_encoder.to(device)
@@ -302,6 +320,11 @@ def _load_transformer(cfg, device, base_precision):
     import torch
     from diffusers import MiniMaxH3Transformer3DModel
 
+    from core.inference.diffusion import hub_cache_dir
+
+    # Same pin as the conditioners above: the denoiser is the 145 GB half, so an unpinned load
+    # here is the expensive one to get wrong.
+    cache_dir = hub_cache_dir()
     if base_precision == "nf4":
         from diffusers import BitsAndBytesConfig as DiffusersBnb
         quant = DiffusersBnb(
@@ -317,12 +340,14 @@ def _load_transformer(cfg, device, base_precision):
             quantization_config = quant,
             torch_dtype = torch.bfloat16,
             token = cfg.hf_token,
+            cache_dir = cache_dir,
         )
     return MiniMaxH3Transformer3DModel.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
+        cache_dir = cache_dir,
     ).to(device)
 
 

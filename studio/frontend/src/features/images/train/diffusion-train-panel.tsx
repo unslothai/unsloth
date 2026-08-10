@@ -419,6 +419,13 @@ export function DiffusionTrainPanel({
   // REFUSES a nonzero save_steps rather than ignoring it, so leaving the field on offer meant a
   // user could set it and get a rejected Start with nothing on the control saying why.
   const supportsCheckpoints = reportedFamily?.supports_checkpoints ?? true;
+  // And the batch axis, third of the same kind. MiniMax-H3's forward covers ONE packed
+  // sequence, so its validation REFUSES a batch above 1 rather than clamping. The field was
+  // rendered unrestricted and always sent, so a 2 typed here -- or simply carried over from the
+  // family the user was on a moment ago -- rejected Start with nothing on the control to say
+  // why. Hidden when the family caps it at 1, and the cap is what gets sent.
+  const maxBatchSize = reportedFamily?.max_train_batch_size ?? null;
+  const batchIsFixed = maxBatchSize != null && maxBatchSize <= 1;
 
   const setBaseChoice = onBaseChoiceChange;
   const [customBase, setCustomBase] = useState("");
@@ -451,6 +458,7 @@ export function DiffusionTrainPanel({
   const [rank, setRank] = useState(family?.defaults.rank ?? 16);
   const [resolution, setResolution] = useState(family?.defaults.resolution ?? 768);
   const [batchSize, setBatchSize] = useState(1);
+  const effectiveBatchSize = maxBatchSize == null ? batchSize : Math.min(batchSize, maxBatchSize);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
   // Periodic resume points. 0 (off) keeps the default behaviour: only a stop-and-save writes one,
@@ -1052,7 +1060,9 @@ export function DiffusionTrainPanel({
         train_steps: durationUnit === "epochs" ? undefined : steps,
         num_epochs: durationUnit === "epochs" ? epochs : undefined,
         learning_rate: learningRate,
-        train_batch_size: batchSize,
+        // The family cap, not the field: it is only hidden, not reset, so a value typed for
+        // another family would otherwise still be sent and refused.
+        train_batch_size: effectiveBatchSize,
         gradient_accumulation_steps: gradAccum,
         seed,
         gradient_checkpointing: gradCheckpoint,
@@ -1103,6 +1113,7 @@ export function DiffusionTrainPanel({
     basePrecision,
     supportsCompile,
     supportsCheckpoints,
+    effectiveBatchSize,
     compileTransformer,
     poll,
   ]);
@@ -1296,11 +1307,14 @@ export function DiffusionTrainPanel({
           step: 64,
           hint: "The pixel size images train at, in multiples of 64. Higher is sharper and costs noticeably more VRAM.",
         })}
-        {numberField("Batch", batchSize, setBatchSize, 1, {
-          hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
-        })}
+        {!batchIsFixed &&
+          numberField("Batch", batchSize, setBatchSize, 1, {
+            hint: "Images trained on per step. Higher is faster per image and needs more VRAM.",
+          })}
         {numberField("Grad accumulation", gradAccum, setGradAccum, 1, {
-          hint: "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
+          hint: batchIsFixed
+            ? "Collects this many clips before each update. This model trains one clip at a time, so this is the only way to raise the effective batch."
+            : "Collects this many batches before each update, for the effect of a larger batch without the VRAM. Effective batch = Batch x Grad accumulation.",
         })}
         {numberField("Seed", seed, setSeed, 42, {
           min: 0,

@@ -2875,12 +2875,19 @@ async def start_diffusion_training(
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it
         # reports the folder as uncaptioned, and mixed it succeeds on the images and trains on
         # that subset without saying so.
+        # For the IMAGE-trained families only. A clip-trained family is the case this refusal
+        # was written to protect against, so leaving it unconditional rejected every valid
+        # MiniMax-H3 request with "training from clips is not supported yet" -- the trainer this
+        # branch adds, unreachable through its own route. discover_training_pairs below already
+        # branches on the family; this is the same question asked one step earlier.
         # In a worker thread like the discovery below it, and for the same reason: the scan stats
         # every file and reads the caption sidecars, which on a large or network-mounted dataset
         # would hold the event loop and stall status/stop alongside it.
-        clip_refusal = await asyncio.to_thread(_clip_dataset_refusal, config["data_dir"])
-        if clip_refusal is not None:
-            raise HTTPException(status_code = 400, detail = clip_refusal)
+        mixed_refusal = await asyncio.to_thread(
+            _mixed_media_refusal, config["data_dir"], normalized_cfg.resolved_family
+        )
+        if mixed_refusal is not None:
+            raise HTTPException(status_code = 400, detail = mixed_refusal)
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
             pairs = await asyncio.to_thread(
@@ -3114,6 +3121,41 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
         image_count = images,
         clip_count = clips,
         caption_count = captions,
+    )
+
+
+def _mixed_media_refusal(data_dir: str, resolved_family: str) -> Optional[str]:
+    """Why ``resolved_family`` cannot train on this folder as it stands, or None.
+
+    Both discoveries read one medium and ignore the other, so a mixed folder trains on a
+    subset the picker counted as trainable and says nothing. The rule is the same in both
+    directions, only the medium that is out of place changes: refuse the folder rather than
+    quietly train part of it.
+    """
+    from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES
+
+    if str(resolved_family or "").strip().lower() in CLIP_TRAINED_FAMILIES:
+        return _image_dataset_refusal(data_dir)
+    return _clip_dataset_refusal(data_dir)
+
+
+def _image_dataset_refusal(data_dir: str) -> Optional[str]:
+    """The converse of ``_clip_dataset_refusal``, for a family that trains from clips.
+
+    ``discover_clip_caption_pairs`` enumerates video extensions only, so a still sitting in a
+    clip folder is dropped from the run while /diffusion/info and the picker both count it as
+    a training item. Same failure as the mixed case below, same answer."""
+    try:
+        summary = _diffusion_dataset_summary(Path(data_dir).expanduser())
+    except OSError:
+        return None
+    if summary.image_count <= 0:
+        return None
+    images = f"{summary.image_count} still image" + ("" if summary.image_count == 1 else "s")
+    return (
+        f"'{Path(data_dir).expanduser().name}' holds {images} alongside its clips. This model "
+        "trains from clips, so a run started here would leave the stills out. Take the images "
+        "out of this folder, or choose a dataset of clips."
     )
 
 
@@ -3597,7 +3639,7 @@ def _safe_dataset_image_path(folder: Path, filename: str) -> Path:
 
 def _load_metadata_captions(folder: Path) -> dict[str, str]:
     """Read metadata.jsonl / captions.jsonl into {file_name: caption}, mirroring the
-    trainer's discovery (keys file_name/image/file; caption in the ``text`` column)."""
+    trainer's discovery (keys file_name/video/image/file; caption in the ``text`` column)."""
     import json
 
     out: dict[str, str] = {}
@@ -3620,7 +3662,10 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
                 continue
             if not isinstance(row, dict):
                 continue
-            key = row.get("file_name") or row.get("image") or row.get("file")
+            # "video" too: the clip discovery accepts it, so without it a clip dataset whose
+            # metadata.jsonl uses that key reports caption_count 0 and the panel demands a
+            # trigger prompt the trainer does not need.
+            key = row.get("file_name") or row.get("video") or row.get("image") or row.get("file")
             value = row.get("text")
             # A JSON null is "no caption", not the string "None".
             if key and value is not None:
