@@ -546,17 +546,20 @@ def test_native_fallback_preserves_assistant_reasoning_content():
         }
     }
 
-    assert backend.format_chat_prompt(
-        [
-            {"role": "user", "content": "What is the answer?"},
-            {
-                "role": "assistant",
-                "content": "",
-                "reasoning_content": "The answer is forty-two.",
-            },
-            {"role": "user", "content": "Explain why."},
-        ]
-    ) == "rendered"
+    assert (
+        backend.format_chat_prompt(
+            [
+                {"role": "user", "content": "What is the answer?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The answer is forty-two.",
+                },
+                {"role": "user", "content": "Explain why."},
+            ]
+        )
+        == "rendered"
+    )
     assert seen["messages"][1] == {
         "role": "assistant",
         "content": "",
