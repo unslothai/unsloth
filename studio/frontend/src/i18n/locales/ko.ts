@@ -83,6 +83,8 @@ export const ko = {
       recipes: "레시피",
       images: "이미지",
       video: "동영상",
+      trainChecking: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
+      videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",
@@ -1364,6 +1366,7 @@ export const ko = {
       history: "기록",
     },
     loadingRuntime: "학습 런타임을 로딩하는 중...",
+    checkingSupport: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
     backToHistory: "기록으로 돌아가기",
     sections: {
       model: "모델",

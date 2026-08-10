@@ -157,6 +157,13 @@ export function StudioPage(): ReactElement {
   // verdict is unknown and writes it to this same store, so no second poll is needed here.
   const showTrainingHydrating =
     capabilitiesUnknown || (!hasHydratedRuntime && isHydratingRuntime);
+  // Two very different waits share this panel. Hardware detection is a cold `import torch`
+  // that can run for minutes, so it says so, the way the Video page does; a hydrating runtime
+  // is quick and keeps the runtime wording. "Loading training runtime..." on a machine that is
+  // still being measured reads as a hang, which is the whole complaint about this wait.
+  const hydratingMessage = capabilitiesUnknown
+    ? t("studio.checkingSupport")
+    : t("studio.loadingRuntime");
   const showHistoryBack = activeTab === "history" && !!selectedHistoryRunId;
 
   return (
@@ -217,7 +224,7 @@ export function StudioPage(): ReactElement {
             {showTrainingHydrating ? (
               <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-muted-foreground">
                 <Spinner className="size-4 shrink-0" />
-                {t("studio.loadingRuntime")}
+                {hydratingMessage}
               </div>
             ) : (
               <>

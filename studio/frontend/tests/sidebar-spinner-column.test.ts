@@ -120,6 +120,39 @@ test("a pending row spins instead of blacking out", async () => {
   );
 });
 
+// Detection is a cold `import torch` and can run for minutes, which is long enough for a
+// silent spinner to read as a hung row. It says what it is waiting for instead, the way
+// the Video page does; the disabled hint is still withheld, since no verdict is in yet.
+test("a pending row says what it is waiting for", async () => {
+  const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
+
+  const pending = resolveNavRowState({
+    disabled: true,
+    tooltip: "Training needs an NVIDIA or AMD GPU.",
+    pending: true,
+    pendingTooltip: "Checking this machine for training support...",
+  });
+  assert.equal(pending.spinner, true);
+  assert.equal(pending.disabled, false);
+  assert.equal(pending.tooltip, "Checking this machine for training support...");
+});
+
+test("both capability rows carry a pending tooltip", async () => {
+  const source = await readFile(
+    new URL("../src/components/app-sidebar.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const row of ["train", "video"]) {
+    const block = source.slice(source.indexOf(`    ${row}: {`));
+    const body = block.slice(0, block.indexOf("\n    },"));
+    assert.match(
+      body,
+      /pendingTooltip: t\("shell\.navigation\.\w+Checking"\)/,
+      `the ${row} row spins without saying why`,
+    );
+  }
+});
+
 test("a measured row is left exactly as it was", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 

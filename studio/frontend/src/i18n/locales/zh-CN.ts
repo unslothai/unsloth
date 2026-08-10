@@ -81,6 +81,8 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      trainChecking: "正在检查此设备是否支持训练...",
+      videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",
@@ -1317,6 +1319,7 @@ export const zhCN = {
       history: "历史",
     },
     loadingRuntime: "正在加载训练运行时...",
+    checkingSupport: "正在检查此设备是否支持训练...",
     backToHistory: "返回历史",
     sections: {
       model: "模型",

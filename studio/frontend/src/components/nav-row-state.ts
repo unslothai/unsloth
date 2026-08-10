@@ -9,6 +9,8 @@ export type NavRowState = {
   tooltip?: string;
   spinner?: boolean;
   pending?: boolean;
+  /** What the row says while `pending`. Falls back to the row's own label. */
+  pendingTooltip?: string;
 };
 
 /**
@@ -18,6 +20,10 @@ export type NavRowState = {
  * the row stays enabled and spins instead: the user sees "still checking", and the click lands
  * on a page that shows its own loading state. Both render sites (the inline rows and the More
  * flyout) go through here so they cannot drift.
+ *
+ * The spinner alone does not say what is being waited on, and detection can take minutes on a
+ * cold host, so a pending row carries its own tooltip rather than the disabled hint (which
+ * would state a verdict that has not been reached) or nothing (which reads as a hung row).
  */
 export function resolveNavRowState(row: NavRowState): {
   disabled?: boolean;
@@ -25,7 +31,7 @@ export function resolveNavRowState(row: NavRowState): {
   spinner?: boolean;
 } {
   if (row.pending) {
-    return { disabled: false, tooltip: undefined, spinner: true };
+    return { disabled: false, tooltip: row.pendingTooltip, spinner: true };
   }
   return { disabled: row.disabled, tooltip: row.tooltip, spinner: row.spinner };
 }

@@ -52,6 +52,8 @@ export const it = {
       recipes: "Ricette",
       images: "Immagini",
       video: "Video",
+      trainChecking: "Verifica del supporto all'addestramento su questa macchina...",
+      videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
       customizeSidebar: "Personalizza la barra laterale",
       newBadge: "Novità",
@@ -1411,6 +1413,7 @@ export const it = {
       history: "Cronologia",
     },
     loadingRuntime: "Caricamento del runtime di addestramento...",
+    checkingSupport: "Verifica del supporto all'addestramento su questa macchina...",
     backToHistory: "Torna alla cronologia",
     sections: {
       model: "Modello",

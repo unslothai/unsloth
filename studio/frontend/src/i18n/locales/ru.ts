@@ -85,6 +85,8 @@ export const ru = {
       recipes: "Рецепты",
       images: "Изображения",
       video: "Видео",
+      trainChecking: "Проверка поддержки обучения на этой машине...",
+      videoChecking: "Проверка поддержки видео на этой машине...",
       more: "Ещё",
       customizeSidebar: "Настроить боковую панель",
       newBadge: "Новое",
@@ -1383,6 +1385,7 @@ export const ru = {
       history: "История",
     },
     loadingRuntime: "Загрузка среды обучения...",
+    checkingSupport: "Проверка поддержки обучения на этой машине...",
     backToHistory: "Назад к истории",
     sections: {
       model: "Модель",

@@ -229,6 +229,9 @@ type NavRowDef = {
   // The capability that decides `disabled` has not been measured yet. A row in this state is
   // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
   pending?: boolean;
+  // What that spinning row says on hover. Detection can take minutes on a cold host, so the
+  // spinner needs to name what it is waiting for.
+  pendingTooltip?: string;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -1097,6 +1100,7 @@ export function AppSidebar() {
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
@@ -1114,6 +1118,7 @@ export function AppSidebar() {
       disabled: chatOnlyMeasured,
       tooltip: videoDisabledHint,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
