@@ -163,6 +163,71 @@ def test_failed_replacement_commit_keeps_the_prior_snapshot_readable(
 
 
 @requires_sqlite_vec
+def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag_home):
+    """Otherwise the heartbeat renews it forever and the unlink never returns."""
+    from core.rag import job_leases
+
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
+    with _connection() as conn:
+        assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
+        # delete_folder() fails the claimed job before reconciliation starts.
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='failed' WHERE id=?", (job_id,)
+        )
+        conn.commit()
+
+    folder_sync.reconcile_folder(job_id)
+
+    assert _row("SELECT 1 FROM rag_job_leases WHERE kind=? AND job_id=?",
+                (job_leases.FOLDER_SYNC, job_id)) is None
+
+
+@requires_sqlite_vec
+def test_unlink_completes_when_the_queue_claimed_the_job_first(rag_home):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
+
+    unlinked = []
+    worker = threading.Thread(
+        target = lambda: unlinked.append(folder_sync.delete_folder(folder["id"])),
+        daemon = True,
+    )
+    worker.start()
+    time.sleep(0.1)
+    folder_sync.reconcile_folder(job_id)
+    worker.join(timeout = 10)
+
+    assert not worker.is_alive(), "unlink is still waiting on a leaked claim"
+    assert unlinked == [True]
+
+
+def test_worker_retries_after_a_failed_queue_selection(monkeypatch):
+    stop = threading.Event()
+    attempts = []
+
+    def flaky_next_job():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        stop.set()
+        return None
+
+    monkeypatch.setattr(folder_sync, "_recover_startup_state", lambda: None)
+    monkeypatch.setattr(folder_sync, "_enqueue_periodic", lambda: None)
+    monkeypatch.setattr(folder_sync, "_next_job", flaky_next_job)
+
+    try:
+        folder_sync._worker(stop)
+    finally:
+        del folder_sync._worker_state.stop_event
+
+    assert len(attempts) == 2
+
+
+@requires_sqlite_vec
 def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_home):
     """The survivor's own startup pass ran before the other backend crashed."""
     from core.rag import ingestion, job_leases

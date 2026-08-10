@@ -1482,6 +1482,10 @@ def _queue_requested_rebuild(job_id: str) -> None:
 def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     if _claim_job(job_id) is None:
+        # The caller may already hold an activated claim (the queue claims before
+        # dispatching); drop it here or the heartbeat renews it for the process
+        # lifetime and an unlink waits on a job that will never run.
+        job_leases.release(job_leases.FOLDER_SYNC, job_id)
         return
     lease_lost = False
     _worker_state.job_id = job_id
@@ -1593,7 +1597,14 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
             while not stop_event.is_set():
-                job = _next_job()
+                try:
+                    job = _next_job()
+                except Exception:
+                    # Writer-lock contention must not retire the only worker: the
+                    # initialization and periodic paths already back off and retry.
+                    logger.warning("linked-folder queue selection failed", exc_info = True)
+                    stop_event.wait(1.0)
+                    continue
                 if job:
                     job_id, folder_id = job
                     try:
