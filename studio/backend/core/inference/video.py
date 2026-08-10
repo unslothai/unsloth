@@ -667,7 +667,6 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
     try:
         import torch
-
         return int(torch.cuda.mem_get_info()[0])
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
         return None

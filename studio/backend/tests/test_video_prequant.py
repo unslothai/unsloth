@@ -776,7 +776,6 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
 
 def _h3_family():
     from core.inference.video_families import detect_video_family
-
     return detect_video_family("minimax-h3")
 
 
@@ -831,9 +830,7 @@ def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch
     from core.inference import video as vid
 
     fam = _h3_family()
-    monkeypatch.setattr(
-        vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False
-    )
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # Comfortably more free memory than the released denoiser plus everything beside it.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 500 * 1000**3)
 
@@ -860,9 +857,7 @@ def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_reside
     from core.inference import video as vid
 
     fam = _h3_family()
-    monkeypatch.setattr(
-        vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False
-    )
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # A 24 GB card: nowhere near the ~93 GB the released denoiser plus its companions need.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 24 * 1000**3)
 
@@ -907,14 +902,10 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 24 * 1000**3)
 
     # A host the hosted components were never measured on stays on the released denoiser.
-    monkeypatch.setattr(
-        vid, "_h3_auto_precision_ok", lambda target = None: False, raising = False
-    )
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: False, raising = False)
     assert ask() is None
 
-    monkeypatch.setattr(
-        vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False
-    )
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     # An unreadable card decides nothing.
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
     assert ask() is None
@@ -925,9 +916,7 @@ def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
     monkeypatch.undo()
 
     # And a partition with no hosted checkpoint for the fallback scheme keeps the released one.
-    monkeypatch.setattr(
-        vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False
-    )
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 24 * 1000**3)
     monkeypatch.setattr(
         vid, "video_family_prequant_available", lambda *a, **k: False, raising = False
