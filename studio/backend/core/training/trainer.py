@@ -175,6 +175,20 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             pass
 
 
+def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
+    """``subfolder`` for a Spark-TTS repo root, empty for anything else.
+
+    Only the canonical repo layout needs it: a local checkpoint or an alias that already
+    names LLM/ points at the tokenizer directly.
+    """
+    if audio_type != "bicodec":
+        return {}
+    name = str(lookup_name).replace("\\", "/").rstrip("/")
+    if name.endswith("/LLM") or os.path.isdir(os.path.join(lookup_name, "LLM")):
+        return {}
+    return {"subfolder": "LLM"}
+
+
 class UnslothTrainer:
     """
     Unsloth Training Backend
@@ -309,6 +323,11 @@ class UnslothTrainer:
                 token = hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
+                # Spark-TTS keeps only BiCodec, config.yaml and the source tree at its repo
+                # root; the tokenizer lives under LLM/, the same subfolder _load_model loads
+                # weights from. Reading the root finds no vocab and fails to build a backend
+                # tokenizer, blaming a missing sentencepiece that is installed and irrelevant.
+                **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
             )
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
