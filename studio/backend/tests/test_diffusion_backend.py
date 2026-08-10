@@ -7929,7 +7929,9 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None, declared_sizes = None: seen.append((repo_id, revision))
+            lambda repo_id, files, revision = None, declared_sizes = None: seen.append(
+                (repo_id, revision)
+            )
             or set()
         ),
     )

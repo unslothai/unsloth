@@ -309,6 +309,8 @@ def test_download_plan_does_not_label_same_repo_companions_as_checkpoint(monkeyp
 
     assert plan["entries"][0]["bytes"] == 300
     assert plan["entries"][0]["checkpoint"] is False
+
+
 def test_download_plan_restages_a_native_asset_a_stale_live_copy_shadows(monkeypatch):
     # _fetch_assets passes reuse_other_cache_root, but that only switches roots when the LIVE
     # lookup finds nothing. A stale same-named copy in the live root therefore shadows the good
