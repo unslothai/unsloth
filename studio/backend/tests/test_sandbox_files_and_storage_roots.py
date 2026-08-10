@@ -4280,7 +4280,7 @@ def test_an_empty_sandbox_scan_does_not_hold_the_global_lock(tmp_path, monkeypat
 
     held = []
 
-    def slow_scan(target):
+    def slow_scan(target, owner = None):
         held.append(tools._active_sessions_lock.acquire(blocking = False))
         if held[-1]:
             tools._active_sessions_lock.release()
@@ -4761,6 +4761,111 @@ def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():
 
 async def _noop_async(*args, **kwargs):
     return None
+
+
+def test_a_read_waits_for_the_move_of_the_tree_it_would_return(tmp_path, monkeypatch):
+    """Within one filesystem the move is a rename, so a legacy path handed back
+    while it runs lists nothing and 404s every card in the transcript."""
+    import threading
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "chat-moving-1"
+    legacy = Path(tools._legacy_sandbox_root()) / session
+    legacy.mkdir(parents = True)
+    (legacy / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    started = threading.Event()
+    resolved = []
+
+    def mover():
+        with tools._legacy_lock_for(session):
+            started.set()
+            time.sleep(0.3)  # the rename, from the reader's point of view
+            shutil.rmtree(legacy)
+
+    thread = threading.Thread(target = mover)
+    thread.start()
+    started.wait(5)
+
+    def reader():
+        resolved.append(tools._legacy_session_dir(session))
+
+    reading = threading.Thread(target = reader)
+    reading.start()
+    reading.join(10)
+    thread.join(10)
+
+    assert resolved == [None], f"a path in the middle of its move was served: {resolved}"
+
+
+def test_a_detached_tree_that_would_not_delete_is_retried(tmp_path, monkeypatch):
+    """ignore_errors leaves a locked file's tree behind, and the route has
+    already told the user those files went."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    monkeypatch.setattr(tools, "_DETACHED_RETRY_DELAY", 0.02)
+
+    target = tmp_path / "chat-1.deleting-abcdef12"
+    target.mkdir()
+    (target / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    real_rmtree = shutil.rmtree
+    attempts = []
+
+    def flaky(path, **kwargs):
+        attempts.append(str(path))
+        if len(attempts) == 1:
+            return  # a file held open by a scanner, which ignore_errors swallows
+        real_rmtree(path, **kwargs)
+
+    monkeypatch.setattr(tools.shutil, "rmtree", flaky)
+    tools._queue_detached_delete(str(target))
+
+    deadline = time.time() + 10
+    while time.time() < deadline and target.exists():
+        time.sleep(0.05)
+    assert not target.exists(), f"the tree was left behind after {len(attempts)} attempt(s)"
+    assert len(attempts) >= 2
+
+
+def test_a_marker_a_tool_wrote_over_counts_as_the_user_s_file(tmp_path, monkeypatch):
+    """The name is not reserved on an old install, so that file can hold the
+    only copy of what a tool wrote, and this decides whether the tree goes."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "chat-marker-1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is True
+
+    # A tool call writes its own content over the marker.
+    (workdir / tools._SANDBOX_MARKER).write_text("my notes", encoding = "utf-8")
+    assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is False
+
+    # And a delete that was not asked to remove files keeps them.
+    assert tools.remove_session_sandbox(session, delete_files = False) is False
+    assert (workdir / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "my notes"
+
+
+def test_clearing_every_chat_builds_the_listed_set_once():
+    """It is event-loop code, and rebuilding the set per chat makes a clear of
+    a few thousand threads quadratic."""
+    import inspect
+
+    from routes import chat_history
+
+    route = inspect.getsource(chat_history.clear_history)
+    assert "listed = set(thread_ids)" in route
+    assert "not in set(thread_ids)" not in route
 
 
 if __name__ == "__main__":

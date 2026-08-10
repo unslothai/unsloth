@@ -7848,8 +7848,15 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         names.append(_LEGACY_SHARED_BUCKET)
     for name in names:
         candidate = os.path.join(legacy_root, name)
-        if os.path.isdir(candidate) and not os.path.islink(candidate):
-            return candidate
+        if not os.path.isdir(candidate) or os.path.islink(candidate):
+            continue
+        # Under this session's move lock, and checked again inside it: within
+        # one filesystem the move is a rename, so a path handed back while it
+        # runs lists nothing and 404s every card in the transcript. A move that
+        # has already run sends the caller to the destination instead.
+        with _legacy_lock_for(name):
+            if os.path.isdir(candidate) and not os.path.islink(candidate):
+                return candidate
     return None
 
 
@@ -8240,18 +8247,45 @@ _DETACHED_RE = re.compile(r"\A.+\.deleting-[0-9a-f]{8}\Z")
 
 # One worker for every detached tree, rather than a thread per chat: clearing a
 # thousand chats would otherwise start a thousand recursive deletes at once.
-_delete_queue: "queue.Queue[str]" = queue.Queue()
+_delete_queue: "queue.Queue[tuple[str, int]]" = queue.Queue()
+# Attempts at one tree, and how long the first wait is (doubled each time).
+_MAX_DETACHED_DELETE_TRIES = 5
+_DETACHED_RETRY_DELAY = 1.0
 _delete_worker: "threading.Thread | None" = None
 _delete_worker_lock = threading.Lock()
 
 
 def _drain_detached_deletes() -> None:
     while True:
-        target = _delete_queue.get()
+        target, tries = _delete_queue.get()
         try:
             shutil.rmtree(target, ignore_errors = True)
+            if os.path.exists(target):
+                _retry_detached_delete(target, tries)
         finally:
             _delete_queue.task_done()
+
+
+def _retry_detached_delete(target: str, tries: int) -> None:
+    """Queue another attempt at a tree ignore_errors left behind.
+
+    A file held open by a scanner or a process still exiting is transient, and
+    on Windows routine. The route has already told the user those files went,
+    so waiting for the next launch's sweep is not an answer.
+    """
+    if tries + 1 >= _MAX_DETACHED_DELETE_TRIES:
+        logger.warning("Could not delete %s; the next sweep retries it", target)
+        return
+    try:
+        timer = threading.Timer(
+            min(_DETACHED_RETRY_DELAY * 2 ** tries, 30.0),
+            _delete_queue.put,
+            [(target, tries + 1)],
+        )
+        timer.daemon = True
+        timer.start()
+    except RuntimeError:
+        logger.warning("Could not delete %s; the next sweep retries it", target)
 
 
 def _queue_detached_delete(target: str) -> None:
@@ -8272,7 +8306,7 @@ def _queue_detached_delete(target: str) -> None:
                 _delete_worker = None
                 shutil.rmtree(target, ignore_errors = True)
                 return
-    _delete_queue.put(target)
+    _delete_queue.put((target, 0))
 
 
 def sweep_detached_sandboxes(root: "str | None" = None) -> None:
@@ -8386,16 +8420,18 @@ def session_sandbox_has_files(session_id: str) -> bool:
             if not claimed:
                 return False
             target = os.path.realpath(claimed)
-        return not _holds_no_user_files(target)
+        return not _holds_no_user_files(target, _sandbox_name(session_id))
     except OSError:
         return False
 
 
-def _holds_no_user_files(target: str) -> bool:
+def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
     """Whether a sandbox holds nothing but (possibly empty) directories.
 
-    Our own marker does not count. Bounded like every other walk here, and a
-    tree too big to check is not one to remove without being asked.
+    Our own marker does not count, and only while it is still ours: tool code
+    runs in there and can write its own content over that file, which is then
+    the only copy of it. Bounded like every other walk here, and a tree too big
+    to check is not one to remove without being asked.
     """
     budget = _MAX_SNAPSHOT_DIRS
     for parent, dirs, files in os.walk(target):
@@ -8405,7 +8441,11 @@ def _holds_no_user_files(target: str) -> bool:
             return False
         for name in files:
             if parent == target and name in _INTERNAL_SANDBOX_FILES:
-                continue
+                if name != _SANDBOX_MARKER:
+                    continue
+                marker = _marker_owner(target)
+                if marker is not None and owner in (None, marker):
+                    continue
             return False
         budget -= 1
         if budget <= 0:
@@ -8526,7 +8566,7 @@ def _remove_session_sandbox_locked(session_id: str, delete_files: bool) -> bool:
         # Empty means no files of the user's: a tool that only ran mkdir, or
         # deleted what it wrote, leaves directories behind, and the chat record
         # is already gone by the time this runs.
-        if not _holds_no_user_files(target):
+        if not _holds_no_user_files(target, _sandbox_name(session_id)):
             return False
         shutil.rmtree(target, ignore_errors = True)
         return not os.path.isdir(target)

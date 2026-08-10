@@ -938,7 +938,8 @@ async def clear_history(
     # A chat started between the listing and the transaction is in `cleared`
     # but was never cancelled, and a generation still running would dispatch a
     # tool and rebuild the sandbox this call is about to remove.
-    late = [thread_id for thread_id in cleared if thread_id not in set(thread_ids)]
+    listed = set(thread_ids)
+    late = [thread_id for thread_id in cleared if thread_id not in listed]
     if late:
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
