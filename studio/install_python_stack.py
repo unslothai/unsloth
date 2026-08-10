@@ -3529,7 +3529,7 @@ def _requirement_project_name(line: str) -> str:
     # environment marker (`;`). PEP 508 allows all of them with no surrounding
     # whitespace, so splitting on whitespace alone is not enough.
     name = re.split(r"[\[\s(<>=!~;@]", stripped, maxsplit = 1)[0]
-    return name.strip().lower().replace("_", "-")
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
 
 
 def _requirements_beyond(req: Path, names: frozenset[str]) -> Path | None:
@@ -3547,8 +3547,13 @@ def _requirements_beyond(req: Path, names: frozenset[str]) -> Path | None:
     # include does, so it is not silently dropped if base.txt ever grows one.
     if not any(line.split("#", 1)[0].strip() for line in kept):
         return None
+    # pip resolves relative -r / -c paths from the containing requirements
+    # file. Keep the filtered copy beside the source so those paths retain
+    # their meaning.
     tmp = tempfile.NamedTemporaryFile(
         mode = "w",
+        dir = req.parent,
+        prefix = f".{req.stem}-filtered-",
         suffix = ".txt",
         delete = False,
         encoding = "utf-8",
@@ -4299,13 +4304,10 @@ def install_python_stack() -> int:
             constrain = False,
         )
 
-    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: install.sh installs
-    #      unsloth itself and then runs this script with SKIP_STUDIO_BASE=1, so the whole
-    #      base-packages step is skipped and anything pinned there reaches `unsloth studio
-    #      update` but never a fresh install -- where unsloth's own metadata has already
-    #      pulled a diffusers RELEASE from PyPI, and Studio then refuses to load MiniMax-H3.
-    #      This step is outside every skip_base / NO_TORCH branch, and it runs after every
-    #      other requirements file, so nothing left can re-resolve diffusers behind it.
+    # 11b. The pinned Diffusers revision. Deliberately NOT in base.txt: that file is applied
+    #      near the start of the dependency pass, while this pin must run after every other
+    #      requirements file so nothing can re-resolve Diffusers back to a release. This step
+    #      is also outside every skip_base / NO_TORCH branch, so it reaches every install path.
     #      constrain stays on: constraints.txt says nothing about diffusers, and a future
     #      entry there should win rather than be silently bypassed here.
     _progress("diffusers pin")

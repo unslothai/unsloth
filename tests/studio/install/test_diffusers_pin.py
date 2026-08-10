@@ -5,11 +5,9 @@
 
 MiniMax-H3 needs a Diffusers revision newer than any published release, and Studio
 refuses to load it otherwise. The pin originally lived in
-studio/backend/requirements/base.txt, which looks like the obvious home and is
-completely dead on the install path that matters: install.sh installs unsloth itself
-(which drags a diffusers RELEASE in from PyPI as a transitive dependency) and then runs
-install_python_stack.py with SKIP_STUDIO_BASE=1, where the base-packages step is a bare
-`pass`. A clean install therefore ended up on the release, every time, with no error.
+studio/backend/requirements/base.txt, which did not reach fresh install.sh installs at
+the time. base.txt now reaches those installs after filtering out the core packages,
+but it still runs too early to hold this pin safely.
 
 These tests pin the shape that fixes it: exactly one file names diffusers, and the step
 that installs it sits outside every skip.
@@ -65,14 +63,12 @@ def test_only_the_pin_file_names_diffusers():
             offenders[str(path.relative_to(REPO_ROOT))] = named
     assert not offenders, (
         f"diffusers is requirement-listed outside diffusers-pin.txt: {offenders}. "
-        f"Move it into the pin file; base.txt in particular is skipped entirely by install.sh."
+        f"Move it into the pin file so the dedicated late step remains authoritative."
     )
 
 
 def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
-    """The whole bug in one assertion. base.txt's step lives under `if skip_base: pass`,
-    so it never runs on install.sh; the pin's step has to sit at function top level,
-    outside every conditional, or it inherits the same hole."""
+    """The pin must sit at function top level so it reaches every install path."""
     tree = ast.parse(STACK.read_text(encoding = "utf-8"))
 
     def _installs_pin(node: ast.AST) -> bool:
@@ -95,8 +91,8 @@ def test_the_pin_step_is_not_gated_by_skip_base_or_no_torch():
                 found = True
     assert found, (
         "no unconditional pip_install of diffusers-pin.txt found at the top level of any "
-        "function in install_python_stack.py. Nested under an `if`, the pin repeats the "
-        "base.txt bug: applied on `unsloth studio update`, skipped on a fresh install.sh."
+        "function in install_python_stack.py. Nested under an `if`, the pin can miss an "
+        "install path."
     )
 
 
@@ -121,11 +117,7 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
     assert not later, f"these requirements files are installed after the diffusers pin: {later}"
 
 
-def test_install_sh_still_skips_the_base_step():
-    """Guards the premise. If install.sh ever stops setting SKIP_STUDIO_BASE=1 this test
-    fails loudly and the comments above (and the pin's separate file) can be revisited,
-    rather than quietly describing an installer that no longer behaves that way."""
+def test_install_sh_still_delegates_the_core_package_skip():
+    """The handoff flag skips core packages while allowing other base entries through."""
     assert 'SKIP_STUDIO_BASE="$_SKIP_BASE"' in INSTALL_SH.read_text(encoding = "utf-8")
     assert "_SKIP_BASE=1" in INSTALL_SH.read_text(encoding = "utf-8")
-    stack = STACK.read_text(encoding = "utf-8")
-    assert "if skip_base:\n        pass" in stack

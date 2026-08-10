@@ -25,10 +25,7 @@ import pytest
 import install_python_stack as ips
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_PINNED = (
-    "diffusers @ https://github.com/huggingface/diffusers/archive/"
-    'f53d552036a0d1bd5570782a39cd40cfabf112bc.zip ; python_version >= "3.10"'
-)
+_EXTRA_PIN = "studio-extra @ https://example.invalid/studio-extra.zip " '; python_version >= "3.10"'
 
 
 class TestRequirementProjectName:
@@ -40,6 +37,8 @@ class TestRequirementProjectName:
             ("unsloth\n", "unsloth"),
             ("unsloth-zoo\n", "unsloth-zoo"),
             ("unsloth_zoo\n", "unsloth-zoo"),  # PEP 503 normalisation
+            ("unsloth.zoo\n", "unsloth-zoo"),
+            ("Unsloth--_..Zoo\n", "unsloth-zoo"),
             ("  unsloth  \n", "unsloth"),
             ("unsloth>=2026.8.9\n", "unsloth"),
             ("unsloth[all]==1.0\n", "unsloth"),
@@ -47,7 +46,7 @@ class TestRequirementProjectName:
             # PEP 508 allows the marker and the URL with no surrounding space
             ('diffusers;python_version<"3.10"\n', "diffusers"),
             ("diffusers@https://example.invalid/d.zip\n", "diffusers"),
-            (_PINNED + "\n", "diffusers"),  # direct URL + marker
+            (_EXTRA_PIN + "\n", "studio-extra"),  # direct URL + marker
             ("# a comment\n", ""),
             ("\n", ""),
             ("--no-deps\n", ""),
@@ -86,16 +85,42 @@ class TestRequirementsBeyond:
             f"""
             unsloth-zoo
             unsloth
-            {_PINNED}
+            {_EXTRA_PIN}
         """,
         )
         out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
         assert out is not None
         try:
             text = out.read_text(encoding = "utf-8")
-            assert _PINNED in text
+            assert _EXTRA_PIN in text
             names = [ips._requirement_project_name(line) for line in text.splitlines()]
             assert "unsloth" not in names and "unsloth-zoo" not in names
+        finally:
+            out.unlink(missing_ok = True)
+
+    @pytest.mark.parametrize(
+        "include",
+        [
+            "-r child.txt",
+            "--requirement child.txt",
+            "-c constraints.txt",
+            "--constraint=constraints.txt",
+        ],
+    )
+    def test_relative_include_keeps_the_source_directory(self, tmp_path, include):
+        req = self._write(
+            tmp_path,
+            f"""
+            unsloth-zoo
+            unsloth
+            {include}
+        """,
+        )
+        out = ips._requirements_beyond(req, ips._CORE_BASE_PACKAGES)
+        assert out is not None
+        try:
+            assert out.parent == req.parent
+            assert include in out.read_text(encoding = "utf-8")
         finally:
             out.unlink(missing_ok = True)
 
@@ -180,18 +205,18 @@ class TestSkipStudioBaseStillAppliesBaseTxt:
         return tmp_path
 
     def test_a_pinned_entry_is_installed_under_skip_studio_base(self, tmp_path):
-        """The MiniMax-H3 case: a pinned revision must survive a fresh install."""
+        """A direct URL pin must survive a fresh install."""
         root = self._req_root(
             tmp_path,
             f"""
             unsloth-zoo
             unsloth
-            {_PINNED}
+            {_EXTRA_PIN}
         """,
         )
         calls = _run_skip_base_branch(root, no_torch = False)
         assert len(calls) == 1, "the pinned base requirements were never installed"
-        assert _PINNED in calls[0]["req_text"]
+        assert _EXTRA_PIN in calls[0]["req_text"]
 
     def test_the_core_packages_are_still_not_reinstalled(self, tmp_path):
         """SKIP_STUDIO_BASE=1 exists to avoid that; keep it working."""
@@ -200,7 +225,7 @@ class TestSkipStudioBaseStillAppliesBaseTxt:
             f"""
             unsloth-zoo
             unsloth
-            {_PINNED}
+            {_EXTRA_PIN}
         """,
         )
         calls = _run_skip_base_branch(root, no_torch = False)
@@ -226,7 +251,7 @@ class TestSkipStudioBaseStillAppliesBaseTxt:
             f"""
             unsloth-zoo
             unsloth
-            {_PINNED}
+            {_EXTRA_PIN}
         """,
         )
         assert _run_skip_base_branch(root, no_torch = True) == []
