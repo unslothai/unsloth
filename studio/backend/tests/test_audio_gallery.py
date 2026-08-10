@@ -304,3 +304,18 @@ def test_save_leaves_no_orphan_wav_when_sidecar_publish_fails(monkeypatch):
     # No wav, no sidecar, no temp files: the whole record was rolled back.
     assert list(gallery.gallery_dir().iterdir()) == []
     assert gallery.list_audio() == []
+
+
+def test_a_nonnumeric_cap_disables_pruning(monkeypatch):
+    """The documented contract: "off" means off. Restoring the default for a value the
+    operator did set would delete recordings they had asked to keep."""
+    from core.inference import audio_gallery
+
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "off")
+    assert audio_gallery._max_clips() == 0
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "0")
+    assert audio_gallery._max_clips() == 0
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "5")
+    assert audio_gallery._max_clips() == 5
+    monkeypatch.delenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS")
+    assert audio_gallery._max_clips() == audio_gallery._DEFAULT_MAX_CLIPS

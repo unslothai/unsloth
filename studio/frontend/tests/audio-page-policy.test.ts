@@ -247,9 +247,11 @@ test("a resolved microphone permission stream is accepted only by its live reque
 });
 
 test("MediaRecorder setup failures release the acquired microphone stream", () => {
+  // start() now takes a timeslice so the byte cap is observable; the release on failure
+  // is what this test is about and is unchanged.
   assert.match(
     audioPageSource,
-    /recorder\.start\(\);[\s\S]*?catch \{[\s\S]*?stopRecordStream\(\);/,
+    /recorder\.start\(RECORDING_CHUNK_MS\);[\s\S]*?catch \{[\s\S]*?stopRecordStream\(\);/,
   );
 });
 
@@ -422,4 +424,20 @@ test("the recorder is gated on the same capability check the composer uses", () 
   );
   // File upload stays available, so transcription still works on those hosts.
   assert.match(audioPageSource, /accept="audio\/\*"/);
+});
+
+test("a recording is stopped at the sidecar's duration and size limits", () => {
+  // Without a cap the page buffered an over-long recording in memory and uploaded it only
+  // for the backend to refuse it. Mirrors _MAX_AUDIO_SECONDS and the b64 upload ceiling.
+  assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
+  assert.match(audioPageSource, /const RECORDING_MAX_BYTES = /);
+  assert.match(
+    audioPageSource,
+    /recordedBytes \+= event\.data\.size;[\s\S]*?if \(recordedBytes > RECORDING_MAX_BYTES\) stopAtLimit\("size"\);/,
+  );
+  assert.match(
+    audioPageSource,
+    /window\.setTimeout\(\s*\(\) => stopAtLimit\("duration"\),\s*RECORDING_MAX_SECONDS \* 1000,/,
+  );
+  assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });

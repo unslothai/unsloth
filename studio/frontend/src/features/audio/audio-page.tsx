@@ -144,6 +144,11 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 const PAGE_SIZE = 50;
+// Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
+// recording is stopped at the boundary rather than uploaded and refused.
+const RECORDING_MAX_SECONDS = 30 * 60;
+const RECORDING_MAX_BYTES = 96 * 1024 * 1024;
+const RECORDING_CHUNK_MS = 1000;
 const TTS_MAX_TOKENS = 8192;
 // Max tokens caps the OUTPUT, and the prompt's own tokens sit in the same context window, so
 // loading at exactly TTS_MAX_TOKENS made the advertised maximum unreachable for any nonempty
@@ -1396,10 +1401,38 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       recordStreamRef.current = stream;
       const recorder = new MediaRecorder(stream);
       const chunks: Blob[] = [];
+      let recordedBytes = 0;
+      let limitHit: "duration" | "size" | null = null;
+      // The sidecar rejects anything past 30 minutes, and a timeslice keeps the chunks in
+      // our array rather than inside the browser, so an over-long recording can be stopped
+      // at the limit instead of being buffered whole and refused after the upload.
+      const stopAtLimit = (reason: "duration" | "size") => {
+        if (limitHit) return;
+        limitHit = reason;
+        toast.warning(
+          reason === "duration"
+            ? `Recording stopped at the ${RECORDING_MAX_SECONDS / 60} minute limit.`
+            : "Recording stopped: it reached the maximum upload size.",
+        );
+        try {
+          recorder.stop();
+        } catch {
+          // Already stopping; the stop handler still runs.
+        }
+      };
+      const durationTimer = window.setTimeout(
+        () => stopAtLimit("duration"),
+        RECORDING_MAX_SECONDS * 1000,
+      );
       recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) chunks.push(event.data);
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+          recordedBytes += event.data.size;
+          if (recordedBytes > RECORDING_MAX_BYTES) stopAtLimit("size");
+        }
       });
       recorder.addEventListener("stop", () => {
+        window.clearTimeout(durationTimer);
         const discard = discardRecordingRef.current;
         discardRecordingRef.current = false;
         setIsRecording(false);
@@ -1411,7 +1444,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (!discard && blob.size > 0) void runTranscription(blob, "Recording");
       });
       recorderRef.current = recorder;
-      recorder.start();
+      // A timeslice is what makes the byte cap observable: with none, some browsers hold
+      // the whole recording internally and only emit it on stop.
+      recorder.start(RECORDING_CHUNK_MS);
       setIsRecording(true);
     } catch {
       // getUserMedia may have succeeded even if MediaRecorder construction or

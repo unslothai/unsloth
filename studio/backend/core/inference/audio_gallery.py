@@ -68,14 +68,18 @@ _DEFAULT_MAX_CLIPS = 2000
 
 
 def _max_clips() -> int:
-    """0 or a non-numeric value disables pruning."""
+    """0, or any non-numeric value such as "off", disables pruning.
+
+    An unset variable is the only case that takes the default: restoring it for a value the
+    operator did set would delete recordings they had asked to keep.
+    """
     raw = os.environ.get(_MAX_CLIPS_ENV)
     if raw is None:
         return _DEFAULT_MAX_CLIPS
     try:
         return max(0, int(raw.strip()))
     except (AttributeError, ValueError):
-        return _DEFAULT_MAX_CLIPS
+        return 0
 
 
 def _prune_to_cap() -> int:

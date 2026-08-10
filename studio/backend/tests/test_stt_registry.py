@@ -287,3 +287,43 @@ def test_a_wait_false_unload_rechecks_active_requests_under_the_lock():
     sidecar._lock = _RacingLock()
     MtmdSttSidecar.unload(sidecar, wait = False)
     assert released == []
+
+
+def test_a_downloaded_switch_releases_the_old_engine_before_allocating(monkeypatch):
+    """Holding two engines across the load is what OOMs a device that fits either alone."""
+    from core.inference import stt_registry
+
+    order = []
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda _e, _m: True)
+    monkeypatch.setattr(
+        stt_registry, "unload", lambda engines = None, wait = True: order.append(("unload", tuple(engines or ()))) or []
+    )
+
+    class _Fake:
+        def load(self, model, request_cancel_event = None):
+            order.append(("load", model))
+
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda _engine: _Fake())
+    stt_registry.load("mtmd", "some/asr-model")
+
+    assert [step for step, _ in order] == ["unload", "load"]
+
+
+def test_an_undownloaded_switch_keeps_the_resident_engine_until_the_load_succeeds(monkeypatch):
+    """A 409 for a model that was never downloaded must not cost the engine in use."""
+    from core.inference import stt_registry
+
+    order = []
+    monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda _e, _m: False)
+    monkeypatch.setattr(
+        stt_registry, "unload", lambda engines = None, wait = True: order.append(("unload", tuple(engines or ()))) or []
+    )
+
+    class _Fake:
+        def load(self, model, request_cancel_event = None):
+            order.append(("load", model))
+
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda _engine: _Fake())
+    stt_registry.load("mtmd", "some/asr-model")
+
+    assert [step for step, _ in order] == ["load", "unload"]

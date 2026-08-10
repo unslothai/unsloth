@@ -967,12 +967,16 @@ def _pick_device():
         return "cpu", torch.float32
 
 
-def _decode_audio_bounded(audio: bytes):
+def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
     A small, highly-compressed upload can expand far past the encoded request
     limit once decoded, so decode frame-by-frame and enforce the sample cap as
     frames arrive, then hand the array straight to Whisper.
+
+    ``cancel_event`` is polled inside the frame loop: checking only after the decode
+    returned let an abandoned upload run to EOF or the sample cap, and several of them
+    could do that at once.
     """
     try:
         import av
@@ -1019,6 +1023,8 @@ def _decode_audio_bounded(audio: bytes):
                 except InvalidDataError:
                     # Skip a corrupt frame rather than fail the whole transcription.
                     continue
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
                 frame.pts = None
                 fifo.write(frame)
                 if fifo.samples >= 500000:
@@ -1029,7 +1035,7 @@ def _decode_audio_bounded(audio: bytes):
                     write_frame(resampled)
             for resampled in resampler.resample(None):
                 write_frame(resampled)
-    except (SttAudioDecodeError, SttAudioTooLongError):
+    except (SttAudioDecodeError, SttAudioTooLongError, SttTranscriptionCancelledError):
         raise
     except (FFmpegError, ValueError, RuntimeError) as exc:
         raise SttAudioDecodeError("Could not decode the audio.") from exc
@@ -1426,7 +1432,7 @@ class WhisperSttSidecar:
             raise SttLanguageError(
                 f"Language '{language}' is not supported by English-only STT model '{model_id}'."
             )
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # condition_on_prev_tokens=False stops a fresh clip inheriting prior

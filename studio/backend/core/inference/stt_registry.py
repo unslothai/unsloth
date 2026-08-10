@@ -53,9 +53,43 @@ def load(
     sidecar raises, before anything is released: a 409 for a model that is not
     downloaded must not cost the user the engine they were already using.
     """
+    others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
-        sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
-        unload([name for name in STT_ENGINES if name != engine], wait = False)
+        # Release the other engines BEFORE allocating, but only once the checkpoint is known
+        # to be on disk. Holding two engines across the load is what makes a switch OOM on a
+        # device that fits either alone; releasing blind would let a 409 for a model that was
+        # never downloaded cost the user the engine they were already using. When the answer
+        # is not certain, keep the old order and accept the peak.
+        if _model_is_downloaded(engine, model):
+            unload(others, wait = False)
+            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+        else:
+            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+            unload(others, wait = False)
+
+
+def _model_is_downloaded(engine: str, model: str) -> bool:
+    """True only when the load is certain not to be turned away for a missing checkpoint.
+
+    Deliberately conservative: any doubt, including an import or lookup failure, answers
+    False so the caller keeps the ordering that cannot lose a resident engine.
+    """
+    try:
+        if engine == "mtmd":
+            from core.inference import stt_mtmd_sidecar
+
+            return bool(stt_mtmd_sidecar.is_model_downloaded(model))
+        if engine == "gguf":
+            from core.inference import stt_ggml_sidecar
+
+            return stt_ggml_sidecar._cached_model_path(model) is not None
+        from core.inference import stt_sidecar
+
+        return stt_sidecar._find_complete_cached_snapshot(
+            stt_sidecar.resolve_model_id(model)
+        ) is not None
+    except Exception:  # noqa: BLE001 - a probe must never fail the load it precedes
+        return False
 
 
 def unload(engines: Optional[Sequence[str]] = None, *, wait: bool = True) -> list[str]:

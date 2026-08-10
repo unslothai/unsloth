@@ -46,7 +46,8 @@ def stub_audio_decoder(monkeypatch):
     monkeypatch.setattr(
         stt_sidecar_module,
         "_decode_audio_bounded",
-        lambda _audio: np.zeros(8000, dtype = np.float32),
+        # Second arg is the cancel event the real decoder polls in its frame loop.
+        lambda _audio, _cancel_event = None: np.zeros(8000, dtype = np.float32),
     )
     monkeypatch.setattr(
         "huggingface_hub.snapshot_download",
@@ -1339,3 +1340,24 @@ def test_cpu_retry_releases_failed_accelerator_load(monkeypatch):
     # its accelerator memory stays stranded for the whole retry.
     assert seen["alive_during_retry"] is False
     assert sidecar.device == "cpu"
+
+
+def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
+    """Checking only after the decode returned let an abandoned upload run to EOF or the
+    30-minute cap, and several could do that at once."""
+    import threading
+
+    monkeypatch.setattr(
+        stt_sidecar_module, "_decode_audio_bounded", _REAL_DECODE_AUDIO_BOUNDED
+    )
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((np.zeros(16000 * 5, dtype = np.int16)).tobytes())
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
+        stt_sidecar_module._decode_audio_bounded(buf.getvalue(), cancelled)

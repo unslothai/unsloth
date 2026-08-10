@@ -382,12 +382,22 @@ def _effective_max_tokens(payload):
 _MIN_SPEECH_OUTPUT_TOKENS = 64
 
 
-def _tts_max_new_tokens(payload) -> int:
-    """Bound TTS work consistently across llama.cpp and subprocess backends."""
-    return min(
+def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
+    """Bound TTS work consistently across llama.cpp and subprocess backends.
+
+    ``prompt`` shares the loaded context with the output, so a Max tokens slider near the
+    ceiling plus a long prompt overflowed the context the page loaded with. Capped here so
+    both the Studio and OpenAI routes inherit it.
+    """
+    budget = min(
         AUDIO_GENERATION_MAX_TOKENS,
         max(1, int(_effective_max_tokens(payload) or 2048)),
     )
+    if prompt:
+        context_length = _monitor_context_length()
+        if context_length:
+            budget = max(1, min(budget, context_length - max(1, len(prompt) // 3)))
+    return budget
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
@@ -9110,7 +9120,7 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload),
+            max_new_tokens = _tts_max_new_tokens(payload, text),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
         )
@@ -9131,7 +9141,7 @@ async def _generate_tts_wav(
             top_p = payload.top_p,
             top_k = payload.top_k,
             min_p = payload.min_p,
-            max_new_tokens = _tts_max_new_tokens(payload),
+            max_new_tokens = _tts_max_new_tokens(payload, text),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
             cancel_event = _audio_cancel,
