@@ -308,7 +308,7 @@ function loadToastArgs(
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
-    duration: Infinity,
+    duration: Number.POSITIVE_INFINITY,
     closeButton: true,
     ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
     classNames: LOAD_TOAST_CLASSNAMES,
