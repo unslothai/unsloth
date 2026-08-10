@@ -159,13 +159,16 @@ def test_dmg_icon_label_stays_legible_over_the_halo() -> None:
     renderer = load_module(REPO / "scripts/make_dmg_background.py")
     scale = renderer.SCALE
     # the band Finder puts the icon label in, just under the app icon
-    label = np.asarray(renderer.build().convert("RGB"), dtype = np.float32)[
-        238 * scale : 260 * scale, 140 * scale : 220 * scale
-    ] / 255.0
+    label = (
+        np.asarray(renderer.build().convert("RGB"), dtype = np.float32)[
+            238 * scale : 260 * scale, 140 * scale : 220 * scale
+        ]
+        / 255.0
+    )
 
     channel = np.where(label <= 0.04045, label / 12.92, ((label + 0.055) / 1.055) ** 2.4)
     luminance = channel @ np.array([0.2126, 0.7152, 0.0722], dtype = np.float32)
-    assert (luminance.min() + 0.05) / 0.05 >= 7.0        # WCAG AAA for body text
+    assert (luminance.min() + 0.05) / 0.05 >= 7.0  # WCAG AAA for body text
 
 
 def test_desktop_release_asset_names_are_human_readable() -> None:
