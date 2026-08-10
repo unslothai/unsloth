@@ -33,7 +33,7 @@ _PROCESS_UNIQUE_PARTIAL_RE = re.compile(
 def incomplete_blob_hash(name: str) -> Optional[str]:
     """Return the logical HF blob hash represented by a partial filename.
 
-    huggingface_hub historically wrote ``<etag>.incomplete``. Version 1.27
+    huggingface_hub historically wrote ``<etag>.incomplete``. Version 1.18
     changed the writer to a process-unique ``<etag>.<8 hex>.incomplete`` path
     before atomically moving it into place. Hub etags used as cache blob names
     are Git SHA-1 or LFS SHA-256 hex digests, which lets us remove the nonce

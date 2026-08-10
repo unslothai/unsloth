@@ -386,17 +386,21 @@ def _snapshot_resolves_to(
 
     HF names a blob by its hash and the snapshot entry links to it, so the link target settles
     which revision is materialized here. A copy-layout cache (Windows without symlinks) has no
-    target to read: unanswerable is not a mismatch, so it passes -- and it does not have to be
-    answered, because the byte tally that gates completion only ever counts blobs whose name IS
-    an expected hash, so the expected revision is already proven present in this cache dir.
+    target to read, so fall back to the one other name that dates a snapshot: HF names the dir
+    after the commit, and a manifest that recorded one rules out every other revision. With no
+    recorded commit the question stays unanswerable, and unanswerable is not a mismatch.
     """
+    commit_hash = download_manifest.normalized_commit_hash(getattr(manifest, "commit_hash", None))
     for expected in getattr(manifest, "expected_files", ()) or ():
         if not download_manifest.expected_path_is_safe(expected.path):
             continue
         entry = snapshot / expected.path
         try:
             if not entry.is_symlink():
-                continue  # copy layout: nothing to compare against
+                # Copy layout: no target to compare, so date the snapshot by its dir name.
+                if commit_hash and snapshot.name != commit_hash:
+                    return False
+                continue
             target = os.path.basename(os.readlink(entry))
         except OSError:
             continue
@@ -483,8 +487,9 @@ def compute_snapshot_progress(
     )
     for entry in cache_dirs:
         completed_bytes = 0
-        in_progress_bytes = 0
-        in_progress_hashes: set[str] = set()
+        # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
+        # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
+        partial_bytes: dict[str, int] = {}
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
         # evidence against it either, and the by-name scan cannot see it because a partial is
@@ -524,8 +529,9 @@ def compute_snapshot_progress(
                         elif not count_unscoped:
                             unattributable_partial = True
                             continue
-                        in_progress_hashes.add(partial_hash)
-                        in_progress_bytes += blob_bytes_present(f)
+                        partial_bytes[partial_hash] = max(
+                            partial_bytes.get(partial_hash, 0), blob_bytes_present(f)
+                        )
                     else:
                         if expected_hashes:
                             if f.name not in expected_hashes:
@@ -539,6 +545,7 @@ def compute_snapshot_progress(
                     # persisted download whose target may be intact behind the error.
                     scan_errors.append(exc)
                     continue
+        in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)
         )
@@ -554,7 +561,7 @@ def compute_snapshot_progress(
             # The best reading across every retained snapshot, for the same reason presence is
             # established across all of them: the variant can live in an older revision while
             # the newest holds a sibling, and reading only the newest reported 0 bytes for a
-            # complete cached quant. Do this even when hashes resolved: huggingface_hub 1.27's
+            # complete cached quant. Do this even when hashes resolved: huggingface_hub 1.18's
             # Windows copy layout can move a completed file directly into the snapshot and
             # leave no finalized entry in blobs/, so a blob-only tally stays at zero.
             manifest = entry_manifest.get()
@@ -564,7 +571,7 @@ def compute_snapshot_progress(
                         manifest,
                         snap,
                         variant_file_matcher,
-                        frozenset(in_progress_hashes),
+                        frozenset(partial_bytes),
                     )
                     for snap in snapshot_dirs.get()
                     if not expected_hashes

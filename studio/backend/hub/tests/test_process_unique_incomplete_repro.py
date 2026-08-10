@@ -147,3 +147,81 @@ def test_progress_counts_completed_materialized_snapshot_file(monkeypatch, tmp_p
     assert result["completed_bytes"] == 5
     assert result["downloaded_bytes"] == 5
     assert result["progress"] == 0.05
+
+
+def test_progress_groups_duplicate_process_unique_writers(monkeypatch, tmp_path):
+    """Racing writers for one etag each fetch the whole file, so keep the largest."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / f"{_BLOB_HASH}.11111111.incomplete").write_bytes(b"x" * 60)
+    (blobs / f"{_BLOB_HASH}.22222222.incomplete").write_bytes(b"x" * 60)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        job_key = "model:org/model-gguf#q4_k_m",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "Q4_K_M",
+    )
+
+    assert result["downloaded_bytes"] == 60
+    assert result["progress"] == 0.6
+
+
+def test_progress_ignores_stale_revision_in_copy_layout(monkeypatch, tmp_path):
+    """A copy-layout snapshot from another commit is not this download's bytes."""
+    commit = "b" * 40
+    entry = tmp_path / "models--Org--Model"
+    (entry / "blobs").mkdir(parents = True)
+    stale = entry / "snapshots" / ("c" * 40)
+    stale.mkdir(parents = True)
+    (stale / "model.safetensors").write_bytes(b"x" * 100)
+    (entry / "snapshots" / commit).mkdir(parents = True)
+    manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "@diffusion",
+        started_at = "",
+        expected_files = (
+            download_manifest.ExpectedFile(
+                path = "model.safetensors",
+                size = 100,
+                sha256 = _BLOB_HASH,
+            ),
+        ),
+        commit_hash = commit,
+    )
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: manifest,
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        job_key = "model:org/model#@diffusion",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "@diffusion",
+        variant_file_matcher = lambda path, **_kwargs: path == "model.safetensors",
+    )
+
+    assert result["completed_bytes"] == 0
+    assert result["downloaded_bytes"] == 0
