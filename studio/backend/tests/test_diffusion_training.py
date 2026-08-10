@@ -629,7 +629,9 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
-def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch, dit_train_host):
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(
+    client, monkeypatch, dit_train_host
+):
     """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
 
     It ran unconditionally and fires on any folder with a clip in it, above the discovery that
