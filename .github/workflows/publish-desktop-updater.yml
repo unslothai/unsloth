@@ -97,7 +97,7 @@ jobs:
           platforms = data.get('platforms')
           if not isinstance(platforms, dict) or not platforms:
               sys.exit('latest.json missing platforms')
-          required = {'linux-x86_64': False, 'windows-x86_64': False}
+          required = {'darwin-aarch64': False, 'linux-x86_64': False, 'windows-x86_64': False}
           expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
           forbidden = ('/releases/latest/', '/releases/download/desktop-latest/')
           for platform, entry in platforms.items():

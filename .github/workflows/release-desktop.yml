@@ -27,7 +27,7 @@ on:
         type: string
         required: false
       draft:
-        description: 'Create the normal v... release as a draft for title/description review; publish it later without rebuilding'
+        description: 'Build and validate only; nothing is uploaded to the v... release and GitHub latest is left untouched'
         type: boolean
         default: true
 
@@ -220,36 +220,39 @@ jobs:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
+          ASSET_VERSION: ${{ steps.prepare.outputs.asset_version }}
         run: |
           set -euo pipefail
-          print_retry_hint() {
-            echo "To retry a failed publish of this version:" >&2
-            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
-            echo "  If release creation failed after reserving only the tag, delete the orphan tag: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
-          }
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
+          # v{version} is tagged and published when main is tagged, before this runs,
+          # so the tag existing is normal. What must be absent is the desktop asset set.
+          if ! response="$(gh api --include "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" 2>&1)"; then
             if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
+              echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+              echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
+              exit 1
             fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
+            echo "Could not read release ${DESKTOP_RELEASE_TAG}; refusing to publish." >&2
             printf '%s\n' "$response" >&2
             exit 1
-          }
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}"; then
-            echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            print_retry_hint
-            exit 1
           fi
-          # A read token cannot see drafts, so publish-release repeats this check.
-          if resource_exists "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" "release ${DESKTOP_RELEASE_TAG}"; then
-            echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
-            print_retry_hint
-            exit 1
-          fi
+          gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
+          python3 <<'PY'
+          import json, os, pathlib, sys
+
+          release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release.json').read_text())
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if asset.get('name') == 'latest.json' or str(asset.get('name', '')).startswith(prefix)
+          )
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              sys.exit(1)
+          PY
 
       - name: Verify PyPI package and Unsloth stamp
         shell: bash
@@ -409,14 +412,22 @@ jobs:
   build:
     strategy:
       fail-fast: false
-      max-parallel: 1
+      # Legs run in parallel: they share no state, only upload per-platform
+      # artifacts, and publish-release does every release mutation once.
       matrix:
         include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            label: macOS (Apple Silicon)
+            artifact: macos-aarch64
+          # - platform: macos-latest
+          #   args: '--target x86_64-apple-darwin'
+          #   label: macOS (Intel)
           - platform: ubuntu-22.04
             args: ''
             label: Linux (x64)
             artifact: linux-x64
-          - platform: windows-2022
+          - platform: windows-latest
             args: ''
             label: Windows (x64)
             artifact: windows-x64
@@ -733,7 +744,7 @@ jobs:
       # compile off the critical path independently of the big Rust cache.
       - name: Restore trusted-signing-cli
         id: cache_trusted_signing_cli
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cargo/bin/trusted-signing-cli.exe
@@ -742,14 +753,14 @@ jobs:
           key: trusted-signing-cli-0.10.0-${{ runner.os }}-${{ runner.arch }}
 
       - name: Install trusted-signing-cli
-        if: matrix.platform == 'windows-2022' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
+        if: matrix.platform == 'windows-latest' && steps.cache_trusted_signing_cli.outputs.cache-hit != 'true'
         run: |
           cargo install trusted-signing-cli --version 0.10.0 --locked
 
       # Unconditional: on a cache hit the install step above is skipped, and the
       # cargo bin dir still has to reach PATH or signing fails.
       - name: Add cargo bin to PATH
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         run: |
           echo "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
@@ -761,7 +772,7 @@ jobs:
       # cache: a truncated or corrupt cache entry restores, skips the install
       # above, and would otherwise sail through this check.
       - name: Verify trusted-signing-cli
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         run: |
           $ErrorActionPreference = "Stop"
           Write-Output "PATH: $env:PATH"
@@ -1060,7 +1071,7 @@ jobs:
       # runs it first. Sign before the build packs it in; the signature is an
       # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
       - name: Sign the bundled install script
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -1078,7 +1089,7 @@ jobs:
 
       - name: Build Windows app
         id: build_windows
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5  # v0.6.2
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -1106,7 +1117,7 @@ jobs:
       # so restore it and verify the restore took; "!ml" is a cloud verdict, so
       # MAPS must be on; MpCmdRun exit codes are ambiguous, so read the output.
       - name: Scan Windows bundles with Defender
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         # A custom MpCmdRun scan defaults to a one-day timeout.
         timeout-minutes: 20
         shell: pwsh
@@ -1313,7 +1324,7 @@ jobs:
       # Later steps carry an implicit success(), so on a detection the flagged
       # bundle would be discarded with the runner.
       - name: Preserve flagged Windows bundles
-        if: failure() && matrix.platform == 'windows-2022'
+        if: failure() && matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: flagged-windows-bundles-${{ matrix.artifact }}
@@ -1325,7 +1336,7 @@ jobs:
       # ── Windows: every executable in the bundle must be signed ──
       # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
       - name: Verify every executable in the Windows bundles is signed
-        if: matrix.platform == 'windows-2022'
+        if: matrix.platform == 'windows-latest'
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
@@ -1339,7 +1350,7 @@ jobs:
       # The WDSI portal is a web form with no API, so this cannot be automated,
       # but pre-filling the lookups makes submitting a build take seconds.
       - name: Prepare Microsoft submission packet
-        if: (success() || failure()) && matrix.platform == 'windows-2022' && steps.build_windows.outcome == 'success'
+        if: (success() || failure()) && matrix.platform == 'windows-latest' && steps.build_windows.outcome == 'success'
         shell: pwsh
         env:
           ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
@@ -1507,6 +1518,9 @@ jobs:
           files = [path for path in asset_dir.iterdir() if path.is_file()]
           base_name = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           expected_names = {
+              f'{base_name}-MacOS.dmg',
+              f'{base_name}-ARM64.app.tar.gz',
+              f'{base_name}-ARM64.app.tar.gz.sig',
               f'{base_name}-Linux.AppImage',
               f'{base_name}-Linux.AppImage.sig',
               f'{base_name}-Ubuntu.deb',
@@ -1534,60 +1548,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
-            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
-            fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
-            printf '%s\n' "$response" >&2
-            exit 1
-          }
-          print_retry_hint() {
-            echo "Release a new studio_version, or recover the failed publish before retrying:" >&2
-            echo "  If a release exists, delete it and its tag: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
-            echo "  If only a tag exists, delete it: gh api --method DELETE repos/${GH_REPO}/git/refs/tags/${DESKTOP_RELEASE_TAG}" >&2
-          }
-
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
           printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
-          releases_file="$RUNNER_TEMP/desktop-releases.json"
-          # Both release REST endpoints omit drafts. `gh release list` uses the
-          # draft-aware GraphQL path and fails nonzero on API/auth errors.
-          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
-            echo "Could not list releases, including drafts; refusing to publish." >&2
+          # The v{version} release already exists; re-checked here because the
+          # read-scoped prepare-version token cannot see drafts.
+          if ! gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" \
+            > "$RUNNER_TEMP/target-release-publish.json" 2>/dev/null; then
+            echo "Release ${DESKTOP_RELEASE_TAG} does not exist." >&2
+            echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
             exit 1
           fi
-          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
-          import json
-          import pathlib
-          import sys
+          python3 <<'PY'
+          import json, os, pathlib, sys
 
-          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          if not isinstance(releases, list):
-              sys.exit('Unexpected response while listing desktop releases')
-          matches = [
-              release
-              for release in releases
-              if isinstance(release, dict) and release.get('tagName') == sys.argv[2]
-          ]
-          if len(matches) > 1:
-              sys.exit(f'Found duplicate releases for {sys.argv[2]}')
-          print('exists' if matches else 'absent')
+          release = json.loads(
+              pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release-publish.json').read_text()
+          )
+          tag = os.environ['DESKTOP_RELEASE_TAG']
+          prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
+          clashing = sorted(
+              asset['name']
+              for asset in release.get('assets', [])
+              if asset.get('name') == 'latest.json' or str(asset.get('name', '')).startswith(prefix)
+          )
+          if clashing:
+              print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
+              for name in clashing:
+                  print(f'  gh release delete-asset {tag} {name} --yes', file=sys.stderr)
+              sys.exit(1)
           PY
-          )"
-
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
-            || [ "$release_state" = "exists" ]; then
-            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
-            print_retry_hint
-            exit 1
-          fi
-          echo "create=true" >> "$GITHUB_OUTPUT"
 
       # ── Advisory multi-engine scan of the bundles we are about to publish ──
       # Defender (build job) is one vendor and gates only Windows. VirusTotal
@@ -1677,6 +1667,7 @@ jobs:
                   ),
               }
 
+          darwin = entry('.app.tar.gz.sig')
           linux = entry('.AppImage.sig')
           windows = entry('.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
@@ -1687,6 +1678,8 @@ jobs:
               'notes': notes,
               'pub_date': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
               'platforms': {
+                  'darwin-aarch64': darwin,
+                  'darwin-aarch64-app': darwin,
                   'linux-x86_64': linux,
                   'linux-x86_64-appimage': linux,
                   'windows-x86_64': windows,
@@ -1697,11 +1690,11 @@ jobs:
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
 
-          # Keep provenance out of the notes displayed in the updater popup.
+          # Keep provenance out of the notes displayed in the updater popup. This is
+          # appended to the existing release body, so it carries no copy of the notes.
           body_file="$RUNNER_TEMP/desktop-release-body.md"
           {
-            cat "$RUNNER_TEMP/desktop-release-notes.md"
-            printf '\n### Build provenance\n\n'
+            printf '### Desktop build provenance\n\n'
             printf 'Source commit: %s\n\n' "$GITHUB_SHA"
             printf 'Asset SHA-256:\n\n```\n'
             (
@@ -1721,69 +1714,24 @@ jobs:
       # Deferred until immediately before upload so public releases are not left
       # empty during the VirusTotal scan. Repeat the absence checks here to close
       # the race introduced by that scan before atomically reserving the tag.
-      - name: Create versioned release
-        if: steps.versioned_release_state.outputs.create == 'true'
+      # The release body is the maintainer's changelog, so provenance is appended
+      # rather than replacing it.
+      - name: Record desktop build provenance on the release
+        if: ${{ !inputs.draft }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          resource_exists() {
-            local response
-            if response="$(gh api --include "$1" 2>&1)"; then
-              return 0
-            fi
-            if [[ "$response" =~ ^HTTP/[0-9.]+\ 404\  ]]; then
-              return 1
-            fi
-            echo "Could not verify that ${2} is absent; refusing to publish." >&2
-            printf '%s\n' "$response" >&2
-            exit 1
-          }
-
-          releases_file="$RUNNER_TEMP/desktop-releases-before-create.json"
-          if ! gh release list --limit 10000 --json tagName > "$releases_file"; then
-            echo "Could not list releases, including drafts; refusing to publish." >&2
-            exit 1
+          current="$RUNNER_TEMP/current-release-body.md"
+          merged="$RUNNER_TEMP/merged-release-body.md"
+          gh release view "$DESKTOP_RELEASE_TAG" --json body --jq '.body // ""' > "$current"
+          if grep -Fq '### Desktop build provenance' "$current"; then
+            echo "Release ${DESKTOP_RELEASE_TAG} already records desktop provenance."
+            exit 0
           fi
-          release_state="$(python3 - "$releases_file" "$DESKTOP_RELEASE_TAG" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          if not isinstance(releases, list):
-              sys.exit('Unexpected response while listing desktop releases')
-          print('exists' if any(
-              isinstance(release, dict) and release.get('tagName') == sys.argv[2]
-              for release in releases
-          ) else 'absent')
-          PY
-          )"
-          if resource_exists "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" "tag ${DESKTOP_RELEASE_TAG}" \
-            || [ "$release_state" = "exists" ]; then
-            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag appeared during the pre-flight scan." >&2
-            exit 1
-          fi
-
-          # Reserve the tag at this source commit before creating the release.
-          gh api --method POST "repos/${GH_REPO}/git/refs" \
-            -f "ref=refs/tags/${DESKTOP_RELEASE_TAG}" \
-            -f "sha=${GITHUB_SHA}"
-
-          release_flags=(
-            --title "Unsloth ${STUDIO_VERSION}"
-            --notes-file "$RUNNER_TEMP/desktop-release-body.md"
-            --verify-tag
-            --latest=false
-          )
-          if [ "$RELEASE_DRAFT" = "true" ]; then
-            release_flags+=(--draft)
-          fi
-          # A SemVer suffix such as -beta is part of the app version, not a GitHub
-          # prerelease flag. Normal releases are required for /releases/latest.
-          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+          { cat "$current"; printf '\n\n'; cat "$RUNNER_TEMP/desktop-release-body.md"; } > "$merged"
+          gh release edit "$DESKTOP_RELEASE_TAG" --notes-file "$merged"
 
       - name: Publish versioned release assets
         shell: bash
@@ -1862,6 +1810,7 @@ jobs:
               sys.exit('latest.json missing platforms')
 
           required_families = {
+              'darwin-aarch64': False,
               'linux-x86_64': False,
               'windows-x86_64': False,
           }

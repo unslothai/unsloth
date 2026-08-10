@@ -157,5 +157,4 @@ def test_desktop_surfaces_do_not_restore_studio_branding() -> None:
 
     workflow = read(REPO / ".github/workflows/release-desktop.yml")
     assert "Desktop app for Unsloth." in workflow
-    assert '--title "Unsloth ${STUDIO_VERSION}"' in workflow
     assert '--title "Unsloth Desktop updater channel"' not in workflow
