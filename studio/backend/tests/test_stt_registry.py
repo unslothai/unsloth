@@ -234,3 +234,18 @@ def test_a_failed_load_leaves_the_engine_the_user_was_using(monkeypatch):
 
     assert not sidecars["transformers"].unloaded
     assert not sidecars["gguf"].unloaded
+
+
+def test_a_non_curated_whisper_cache_row_cannot_chat():
+    """`_hidden_stt` comes from the config sniff, so it covers distil-whisper and a user's own
+    fine-tune, not just the seven curated ids. can_chat is what auto-load and the chat picker
+    filter on, and neither looks at the task."""
+    from hub.services.models.cache_inventory import _cache_inventory_fields
+
+    fields = _cache_inventory_fields(
+        "distil-whisper/distil-large-v3",
+        "safetensors",
+        stt_only = True,
+    )
+    assert fields["capabilities"]["can_chat"] is False
+    assert fields["capabilities"]["supports_vision"] is False

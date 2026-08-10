@@ -9282,8 +9282,14 @@ async def openai_audio_speech(
             status_code = 400,
             detail = f"Unsupported response_format '{body.response_format}'. Only 'wav' is supported.",
         )
-    # the tts core reads its sampling knobs from a chat request shape; defaults apply here
-    payload = ChatCompletionRequest(messages = [{"role": "user", "content": body.input}])
+    # The tts core reads its sampling knobs from a chat request shape; defaults apply here.
+    # max_tokens is set explicitly because the OpenAI CreateSpeech shape has no field for it,
+    # so the chat default of 2048 would silently truncate any input past ~30s of speech and
+    # still return HTTP 200 with a short WAV.
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.input}],
+        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+    )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.input, payload, request, current_subject
     )

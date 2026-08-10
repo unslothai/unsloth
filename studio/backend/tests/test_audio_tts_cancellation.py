@@ -196,6 +196,9 @@ def test_audio_response_cancellation_before_worker_start_is_still_bounded(monkey
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_GENERATION_TIMEOUT", 100.0)
     monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_DRAIN_TIMEOUT", 0.03)
+    # Before audio_started there is nobody to receive the cancel, so this window is the
+    # teardown budget, not the drain: a prefill pass is slow, not unresponsive. Still bounded.
+    monkeypatch.setattr(orchestrator_module, "_AUDIO_CANCEL_TEARDOWN_TIMEOUT", 0.05)
     caller_cancel = threading.Event()
 
     def send(_cmd):

@@ -361,6 +361,7 @@ def _cache_inventory_fields(
     repo_info = None,
     hidden_infra: bool = False,
     companion: bool = False,
+    stt_only: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -402,7 +403,10 @@ def _cache_inventory_fields(
     # Qwen3-ASR's required mmproj is an audio projector, not a vision
     # projector. Curated STT rows are visible only to task-scoped consumers and
     # must never become eligible for chat auto-load.
-    if is_curated_stt_repo_id(repo_id):
+    # ``stt_only`` covers any repo whose config sniffs as Whisper, curated or not: a
+    # third-party checkpoint or a user's own fine-tune is just as unchattable, and can_chat
+    # is what auto-load and the chat picker filter on, neither of which looks at the task.
+    if stt_only or is_curated_stt_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     if hidden_infra:
@@ -1090,6 +1094,7 @@ def _scan_cached_models(
                         partial = bool(row["partial"]),
                         hidden_infra = is_hidden_infra,
                         companion = bool(row["companion"]),
+                        stt_only = bool(is_whisper_stt),
                     )
                 )
                 if _prefer_cache_row(row, existing):

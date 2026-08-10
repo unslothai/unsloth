@@ -70,6 +70,10 @@ _AUDIO_GENERATION_TIMEOUT = 900.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
 AUDIO_GENERATION_MAX_TOKENS = 8192
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0
+# Before audio_started there is nobody to receive the cancel, and a prefill pass (a 3B TTS
+# model on CPU, or OuteTTS's per-token Python repetition penalty) routinely outlasts the
+# drain window. Tearing down on that budget unloads the model the user just loaded.
+_AUDIO_CANCEL_TEARDOWN_TIMEOUT = 30.0
 
 # Max wait for a cancelled generation to release _gen_lock before unload_model
 # tears the subprocess down. Only bounds a wedged worker.
@@ -2153,8 +2157,10 @@ class InferenceOrchestrator:
                             and cancel_event.is_set()
                             and cancel_deadline is None
                         ):
-                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_DRAIN_TIMEOUT
-                            deadline = cancel_deadline
+                            cancel_deadline = (
+                                time.monotonic() + _AUDIO_CANCEL_TEARDOWN_TIMEOUT
+                            )
+                            deadline = min(deadline, cancel_deadline)
                         if (
                             worker_started
                             and cancel_event is not None
@@ -2166,6 +2172,10 @@ class InferenceOrchestrator:
                             # so this signal cannot be erased or hit an earlier request.
                             self._cancel_generation()
                             cancel_signalled = True
+                            # The cancel is delivered now, so hold the worker to the drain
+                            # window from here rather than from when the caller asked.
+                            cancel_deadline = time.monotonic() + _AUDIO_CANCEL_DRAIN_TIMEOUT
+                            deadline = min(deadline, cancel_deadline)
                         remaining = max(0.1, deadline - time.monotonic())
                         resp = read_one(timeout = min(remaining, 1.0))
 

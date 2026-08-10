@@ -145,6 +145,10 @@ const HUB_TASKS_BY_MODE = {
 
 const PAGE_SIZE = 50;
 const TTS_MAX_TOKENS = 8192;
+// Max tokens caps the OUTPUT, and the prompt's own tokens sit in the same context window, so
+// loading at exactly TTS_MAX_TOKENS made the advertised maximum unreachable for any nonempty
+// prompt. Load with room for both.
+const TTS_PROMPT_CONTEXT_RESERVE = 2048;
 // WAV clips run a few MB a minute; 64 MB keeps a healthy scrollback resident.
 const CLIP_BLOB_BUDGET_BYTES = 64 * 1024 * 1024;
 
@@ -263,6 +267,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<InferenceStatusResponse | null>(null);
   const [prompt, setPrompt] = useState("");
   const [temperature, setTemperature] = useState(0.6);
+  // Sending temperature unconditionally puts it in the request's model_fields_set, which the
+  // backend reads as an explicit client override and which then beats the per-model
+  // recommendation (Spark-TTS wants 0.8, OuteTTS 0.4). Only send it once the user has moved
+  // the slider, so an untouched page gets the model's own sampling.
+  const [temperatureEdited, setTemperatureEdited] = useState(false);
+  const handleTemperatureChange = useCallback((value: number) => {
+    setTemperatureEdited(true);
+    setTemperature(value);
+  }, []);
   const [maxTokens, setMaxTokens] = useState(2048);
   const generateAbort = useRef<AbortController | null>(null);
   const ttsLoadInFlight = useRef(false);
@@ -648,7 +661,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             model_path: repoId,
             load_request_id: loadRequestId,
             hf_token: hfApiToken(getHfToken()) ?? null,
-            max_seq_length: TTS_MAX_TOKENS,
+            max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
             load_in_4bit: false,
             is_lora: false,
             gguf_variant: ggufFilename ?? null,
@@ -1235,7 +1248,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     generateAbort.current = controller;
     try {
       const generated = await generateAudio(text, {
-        temperature,
+        ...(temperatureEdited ? { temperature } : {}),
         max_tokens: maxTokens,
         signal: controller.signal,
       });
@@ -1279,6 +1292,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [
     prompt,
     temperature,
+    temperatureEdited,
     maxTokens,
     refreshGallery,
     refreshStatus,
@@ -1748,7 +1762,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     min={0}
                     max={1.5}
                     step={0.05}
-                    onChange={setTemperature}
+                    onChange={handleTemperatureChange}
                   />
                   <ParamSlider
                     label="Max tokens"

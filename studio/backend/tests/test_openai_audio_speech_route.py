@@ -139,3 +139,31 @@ def test_wav_duration_seconds_reads_header():
     # Unreadable bytes fall back to the 16-bit mono PCM estimate.
     fallback = routes_module._wav_duration_seconds(b"\x00" * (44 + 48000), 24000)
     assert fallback == 1.0
+
+
+def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
+    """CreateSpeech has no field for it, so the chat default of 2048 silently truncated
+    any input past roughly half a minute and still returned HTTP 200 with a short WAV."""
+    from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
+
+    cli, calls, _saved = _make_client(monkeypatch)
+    assert cli.post("/v1/audio/speech", json = {"input": "a long script"}).status_code == 200
+    payload = calls[0]["payload"]
+    assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
+
+
+def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):
+    import core.inference.audio_gallery as gallery
+
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "3")
+    meta = {
+        "prompt": "p", "model": "m", "audio_type": "snac",
+        "sample_rate": 24000, "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+    }
+    ids = [gallery.save(b"RIFFfake", meta)["id"] for _ in range(6)]
+
+    remaining = {clip["id"] for clip in gallery.list_audio()}
+    assert len(remaining) == 3
+    # Newest kept, oldest dropped.
+    assert set(ids[-3:]) == remaining

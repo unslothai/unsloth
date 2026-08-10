@@ -766,6 +766,11 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 "type": "audio_error",
                 "request_id": request_id,
                 "error": str(exc),
+                # The route's own cancel event is not set when the worker's shared event is
+                # (an unload, a training admission, the GPU arbiter), so without this flag the
+                # orchestrator reports a cancellation as HTTP 500. Matching on the message text
+                # is what AudioGenerationCancelledError exists to avoid.
+                "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
                 "stack": traceback.format_exc(limit = 20),
             },
         )

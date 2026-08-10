@@ -55,7 +55,54 @@ def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
             except OSError:
                 pass
         raise
+    _prune_to_cap()
     return _record(audio_id, meta)
+
+
+# The OpenAI-compatible /v1/audio/speech route persists every call, so an automated client
+# can grow the gallery until the disk fills. Bounded here rather than at that route so the
+# UI's own runaway is covered too. Generous by default: this is a convenience gallery, and
+# the clip is returned to the caller either way.
+_MAX_CLIPS_ENV = "UNSLOTH_AUDIO_GALLERY_MAX_CLIPS"
+_DEFAULT_MAX_CLIPS = 2000
+
+
+def _max_clips() -> int:
+    """0 or a non-numeric value disables pruning."""
+    raw = os.environ.get(_MAX_CLIPS_ENV)
+    if raw is None:
+        return _DEFAULT_MAX_CLIPS
+    try:
+        return max(0, int(raw.strip()))
+    except (AttributeError, ValueError):
+        return _DEFAULT_MAX_CLIPS
+
+
+def _prune_to_cap() -> int:
+    """Drop the oldest owned pairs beyond the cap; return the count removed.
+
+    Best-effort: a save must not fail because housekeeping did. Only Studio-owned pairs are
+    considered, so a foreign or orphan wav is never destroyed.
+    """
+    cap = _max_clips()
+    if cap <= 0:
+        return 0
+    try:
+        entries = _list_audio_entries()
+    except Exception:  # noqa: BLE001 - never fail the save that triggered this
+        return 0
+    if len(entries) <= cap:
+        return 0
+    removed = 0
+    for record, _cursor in entries[cap:]:
+        try:
+            if delete(record["id"]):
+                removed += 1
+        except Exception:  # noqa: BLE001
+            continue
+    if removed:
+        logger.info("audio_gallery.pruned: removed %d clip(s) over the %d cap", removed, cap)
+    return removed
 
 
 def _record(audio_id: str, meta: dict[str, Any]) -> dict[str, Any]:
