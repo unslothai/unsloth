@@ -2378,9 +2378,7 @@ def test_a_mirror_backed_run_records_the_canonical_revision(monkeypatch, run_dir
 
     source = "black-forest-labs/FLUX.2-klein-base-9B"
     mirror = "unsloth/FLUX.2-klein-base-9B"
-    base = dataclasses.replace(
-        _Run(run_dir).cfg, base_model = source, resolved_family = "flux.2-klein"
-    )
+    base = dataclasses.replace(_Run(run_dir).cfg, base_model = source, resolved_family = "flux.2-klein")
     seen = []
 
     def _revision(ref):

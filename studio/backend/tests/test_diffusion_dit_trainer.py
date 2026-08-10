@@ -234,9 +234,11 @@ def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
         lambda base, token: seen.append(base),
     )
     monkeypatch.setattr(
-        diffusion_families, "prefer_ungated_mirror",
+        diffusion_families,
+        "prefer_ungated_mirror",
         lambda base, token = None: "unsloth/FLUX.1-dev"
-        if base.lower() == "black-forest-labs/flux.1-dev" else base,
+        if base.lower() == "black-forest-labs/flux.1-dev"
+        else base,
     )
     cfg = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",
