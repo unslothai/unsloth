@@ -10,17 +10,16 @@ function isPhysicalDropPosition(): boolean {
   );
 }
 
-// Windows text scaling and page zoom put devicePixelRatio above the monitor
-// scale, and the DOM is measured in CSS pixels, not logical window ones. Same
-// distinction app/provider.tsx draws with `devicePixelRatio / monitorScale`.
+// The DOM is measured in CSS pixels, not the logical window ones the monitor
+// scale gives. devicePixelRatio is physical per CSS by definition, so it is the
+// divisor whenever it is readable; webview zoom moves it either side of the
+// monitor scale. Same distinction app/provider.tsx draws for layout.
 function physicalPerCssPx(windowScaleFactor: number): number {
-  const scale =
-    Number.isFinite(windowScaleFactor) && windowScaleFactor > 0
-      ? windowScaleFactor
-      : 1;
-  if (typeof window === "undefined") return scale;
-  const ratio = window.devicePixelRatio;
-  return Number.isFinite(ratio) && ratio > scale ? ratio : scale;
+  const ratio = typeof window === "undefined" ? NaN : window.devicePixelRatio;
+  if (Number.isFinite(ratio) && ratio > 0) return ratio;
+  return Number.isFinite(windowScaleFactor) && windowScaleFactor > 0
+    ? windowScaleFactor
+    : 1;
 }
 
 /** A drop position in the CSS pixels the DOM is measured in. */
