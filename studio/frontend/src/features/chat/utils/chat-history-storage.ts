@@ -736,10 +736,9 @@ export async function deleteStoredChatThreads(
   idsToDelete: string[],
   args: { deleteFiles?: boolean } = {},
 ): Promise<string[]> {
-  // An incognito chat stores no history row, but a tool call it made sent
-  // this id as the sandbox session, so closing it is the last thing that can
-  // name that folder. The backend delete runs for those ids too; only the
-  // Dexie work below is skipped, since there is nothing of theirs in it.
+  // An incognito chat stores no history row, but a tool call it made sent this
+  // id as the sandbox session, so closing it is the last thing that can name
+  // that folder. Only the Dexie work below is skipped: it holds nothing.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
   if (idsToDelete.length === 0) return [];
   const kept = await deleteChatThreads(idsToDelete, args);

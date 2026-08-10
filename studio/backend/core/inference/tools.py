@@ -7212,10 +7212,9 @@ def _orphan_records_dir() -> str:
         )
 
 
-# One record per kept folder. Chats and projects live in different tables and
-# can carry the same client-supplied id, and a project id is not always
-# something a filename can hold, so the name is the kind plus a digest and the
-# exact id lives inside the record.
+# One record per kept folder, named by kind and a digest of the id, with the
+# exact id inside: chats and projects are different tables and can carry the
+# same client-supplied id, which is not always one a filename can hold.
 _ORPHAN_CHAT = "chat"
 _ORPHAN_PROJECT = "project"
 # A pass reads every record: they are a few hundred bytes each, one per deleted
@@ -7586,9 +7585,8 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     if not project:
         # The project is gone but a chat forked out of it still shows cards for
-        # this sandbox, and the workspace was kept for exactly that. The folder
-        # name carries the project id, so it is found without the row, which
-        # needs an id a filename can hold.
+        # this sandbox, and the workspace was kept for exactly that: the record
+        # answers for any id, and the folder-name guess needs a usable one.
         return _orphaned_project_workdir(project_id)
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
@@ -7636,8 +7634,7 @@ def _sandbox_name(session_id: str) -> str:
         return session_id
     # An id that already looks derived is derived too, or it would land on the
     # directory of whichever unusable id hashes to it. surrogatepass because a
-    # lone surrogate reaches here both from JSON and from a directory name
-    # decoded with surrogateescape, and a strict encode raises on it.
+    # lone surrogate reaches here from JSON and from surrogateescape alike.
     encoded = session_id.encode("utf-8", "surrogatepass")
     return _DERIVED_PREFIX + hashlib.sha256(encoded).hexdigest()[:16]
 
@@ -7822,9 +7819,8 @@ def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
     """
     name = _sandbox_name(session_id)
     # Only names derived from this id, the plain name a half-finished migration
-    # staged beside, and their staging names. The marker alone is not enough to
-    # adopt on: tool code can write any owner into that file, so a scan for
-    # "whoever claims to be me" would hand one chat another's files.
+    # staged beside, and their staging names: tool code can write any owner into
+    # the marker, so "whoever claims to be me" would hand over another's files.
     candidates = [os.path.join(root, name), *_fallback_candidates(root, session_id)]
     # Listed once: there are 33 candidate names, and a scan each would be 33
     # walks of a root that can hold a folder per chat, on a first call.
@@ -8037,9 +8033,8 @@ def _legacy_session_dir(session_id: str) -> "str | None":
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one
-        # bucket with every other such chat. Read where they are, never moved
-        # or deleted since they are not this chat's alone, and only for such an
-        # id: any other chat would be reading somebody else's files.
+        # bucket with every other such chat: read where they are, never moved or
+        # deleted, and only for such an id, or a chat reads somebody else's.
         names.append(_LEGACY_SHARED_BUCKET)
     elif session_id not in names and session_id not in _FALLBACK_NAMES:
         # Only the derived-prefix case: an id the old code could hold kept its
@@ -8050,10 +8045,9 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         candidate = os.path.join(legacy_root, name)
         if not os.path.isdir(candidate) or os.path.islink(candidate):
             continue
-        # Under this session's move lock, and checked again inside it: within
-        # one filesystem the move is a rename, so a path handed back while it
-        # runs lists nothing and 404s every card in the transcript. A move that
-        # has already run sends the caller to the destination instead.
+        # Under this session's move lock, and checked again inside it: the move
+        # is a rename, so a path handed back mid-move lists nothing and 404s
+        # every card. One that already ran sends the caller to the destination.
         with _legacy_lock_for(name):
             if os.path.isdir(candidate) and not os.path.islink(candidate):
                 return candidate
@@ -8584,9 +8578,8 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # from _get_workdir, and would otherwise never be cleaned up.
     if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
         # Unless this id has a sandbox of its own: a chat named like a project
-        # session had one while its row existed, and the row is deleted before
-        # this runs, so the project would otherwise inherit the question and
-        # the chat's files would be left behind.
+        # session had one while its row existed, and the row goes first, so the
+        # project would inherit the question and those files stay behind.
         root_here = os.path.realpath(sandbox_root())
         if not _claimed_by_this_run(session_id, root_here) and not _marked_sandbox_in(
             root_here,
@@ -12141,8 +12134,7 @@ _scratch_lock = threading.Lock()
 
 # Tool calls running in each workdir. Chats in one project share one and each
 # call diffs the whole tree, so the other call's file would land on this card.
-# A call ever alongside another claims nothing: no clock is involved, since a
-# coarse or remote one is exactly what this cannot depend on.
+# A call ever alongside another claims nothing, and no clock is involved.
 _workdir_calls: "dict[str, list]" = {}
 _calls_lock = threading.Lock()
 

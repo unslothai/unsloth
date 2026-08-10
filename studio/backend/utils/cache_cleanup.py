@@ -246,10 +246,9 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
             # a symlink, and ignore_errors would leave the whole cache in place.
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
             shutil.rmtree(Path(os.path.realpath(cache_dir)), ignore_errors = True)
-        # The marker goes with whatever was cleared, and nothing rewrites it
-        # (setup_cache_env only writes it when it first sets the variable), so
-        # the next cleanup would demote our own cache to "shared". Built-in
-        # paths are recognised without one and stay deleted.
+        # The marker goes with whatever was cleared and nothing rewrites it
+        # (setup_cache_env writes it only when it first sets the variable), so
+        # the next cleanup would demote our own cache to "shared".
         # A built-in path needs no marker, so no restoring either, unless it
         # is a link: the clear removed the target and left it dangling.
         if dedicated and (str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()):

@@ -310,10 +310,9 @@ def _setup_cache_env() -> None:
                 except FileExistsError:
                     created = False
                 if key == "UNSLOTH_COMPILE_LOCATION" and created:
-                    # Marks the directory as ours, so the cleanup can delete from
-                    # it without inferring that from its contents. Only when this
-                    # call made it: a directory that was already there holds
-                    # someone else's files, and the marker licenses an rmtree.
+                    # Marks the directory as ours, so the cleanup can delete
+                    # from it without inferring that from its contents. Only when
+                    # this call made it: the marker is what licenses an rmtree.
                     from utils.cache_cleanup import CACHE_MARKER
                     (Path(value) / CACHE_MARKER).touch(exist_ok = True)
             except (OSError, ImportError):

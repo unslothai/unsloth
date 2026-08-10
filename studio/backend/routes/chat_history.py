@@ -712,9 +712,8 @@ async def delete_project(
         )
 
         # Cancelling only asks: a call already in the executor still has its
-        # cwd in there, and removing it kills the call or strands what it
-        # writes next. The shared id first, since a call in a project runs as
-        # `project-<id>` and waiting on the member ids alone returned at once.
+        # cwd in there, and removing it strands what it writes next. The shared
+        # id first, since a call in a project runs as `project-<id>`.
         shared = project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
@@ -778,8 +777,7 @@ async def delete_project(
                 )
                 # Only when the new row is about these folders: the default
                 # root carries the project's name, so a project remade under
-                # this id can sit somewhere else entirely, and dropping the
-                # record would strand the old workspace for good.
+                # this id can sit elsewhere and the old one would be stranded.
                 if await run_in_threadpool(
                     live_project_owns,
                     project_id,
@@ -797,9 +795,8 @@ async def delete_project(
                 )
         elif delete_files and not recreated:
             # Written down so it can be resolved and later collected: the row
-            # that knew where it lives is gone. The root as well, since the
-            # deferred delete has to remove what the immediate one would. Not
-            # for a recreated project: its own row knows where its files are.
+            # that knew where it lives is gone. The root too, since the deferred
+            # delete removes what the immediate one would; not for a live id.
             await run_in_threadpool(
                 record_orphaned_project,
                 project_id,

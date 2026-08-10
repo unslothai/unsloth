@@ -29,17 +29,15 @@ function SandboxFileRow({
   const [busy, setBusy] = useState(false);
 
   // Streamed to the chosen path rather than buffered: a tool can write a
-  // multi-gigabyte artifact, and a Blob plus the IPC copy of it would be two
-  // more of it in the renderer. The route takes the bearer as a query
-  // parameter, since nothing here sends headers.
+  // multi-gigabyte artifact, and a Blob plus its IPC copy would be two more of
+  // it in the renderer. The bearer goes in the query: no headers are sent.
   const save = useCallback(async () => {
     setBusy(true);
     try {
       const path = sandboxFilePath(sessionId, file.name);
-      // The bearer rides in the URL, so nothing refreshes it: an access token
-      // that expired during the session would otherwise save a 401 body under
-      // the file's name. authFetch refreshes and retries, and the token is read
-      // after it; the HEAD also settles whether the file is still there.
+      // The bearer rides in the URL, so nothing refreshes it: an expired
+      // access token would save a 401 body under the file's name. authFetch
+      // refreshes and retries, and the HEAD settles that the file is there.
       const probe = await authFetch(apiUrl(path), { method: "HEAD" });
       if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
       const token = getAuthToken();

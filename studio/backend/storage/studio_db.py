@@ -137,10 +137,9 @@ def sandbox_is_referenced_elsewhere(
         return False
     conn = get_connection()
     try:
-        # The LIKE only narrows, on the id as JSON writes it, so an id carrying
-        # a quote or a backslash is still found. Every hit is then parsed and
-        # the id has to appear as a sessionId value: a short id is otherwise a
-        # substring of ordinary prose and would keep the sandbox for ever.
+        # The LIKE only narrows, on the id as JSON writes it, so a quote or a
+        # backslash is still found. Every hit is parsed and the id has to be a
+        # sessionId value: a short one is a substring of ordinary prose.
         escaped = json.dumps(session_id)[1:-1]
         rows = conn.execute(
             """
