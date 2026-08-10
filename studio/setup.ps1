@@ -3035,6 +3035,15 @@ function Get-NodeDecision {
     return "bundled"
 }
 
+
+function Test-PackagedFrontend {
+    param([string]$LocalInstall, [string]$IndexPath)
+    # install.ps1 and `unsloth studio update` explicitly pass 0 for PyPI
+    # installs. Wheel extraction mtimes do not preserve build ordering, so use
+    # the release-built dist whenever its entry point is present.
+    return $LocalInstall -eq "0" -and (Test-Path -LiteralPath $IndexPath -PathType Leaf)
+}
+
 $SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
 $NodeOverride = $null
 $NodeParent = $null
@@ -3276,10 +3285,13 @@ Write-StudioLine ""
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
 $DistDir = Join-Path $FrontendDir "dist"
-# Skip build if dist/ exists and no tracked input is newer than dist/.
-# Checks src/, public/, package.json, config files -- not just src/.
+$PackagedFrontend = Test-PackagedFrontend `
+    -LocalInstall "$($env:STUDIO_LOCAL_INSTALL)" `
+    -IndexPath (Join-Path $DistDir "index.html")
+# Wheel extraction mtimes are not a source-freshness signal. Standard PyPI
+# installs use the release-built dist; local/source installs retain mtime checks.
 $NeedFrontendBuild = $true
-if ($IsPipInstall) {
+if ($IsPipInstall -or $PackagedFrontend) {
     $NeedFrontendBuild = $false
     step "frontend" "bundled (pip install)"
 } elseif ($SkipFrontend) {

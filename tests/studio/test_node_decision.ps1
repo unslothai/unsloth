@@ -19,6 +19,13 @@ $fn = $ast.FindAll({ param($n)
 if ($fn.Count -ne 1) { throw "expected exactly one Get-NodeDecision in setup.ps1, found $($fn.Count)" }
 Invoke-Expression $fn[0].Extent.Text
 
+
+$packagedFn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "Test-PackagedFrontend"
+}, $true)
+if ($packagedFn.Count -ne 1) { throw "expected exactly one Test-PackagedFrontend in setup.ps1, found $($packagedFn.Count)" }
+Invoke-Expression $packagedFn[0].Extent.Text
+
 $failures = 0
 function Check($name, $cond) {
     if ($cond) { Write-Host "  PASS  $name" }
@@ -26,6 +33,21 @@ function Check($name, $cond) {
 }
 
 function D($node, $npm, $skip) { Get-NodeDecision -NodeVersion $node -NpmVersion $npm -SkipInstall $skip }
+
+
+$packagedRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-packaged-frontend-" + [guid]::NewGuid())
+$packagedIndex = Join-Path $packagedRoot "frontend\dist\index.html"
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $packagedIndex) | Out-Null
+Set-Content -Path $packagedIndex -Value "<!doctype html>" -Encoding Ascii
+try {
+    Check "PyPI install uses packaged frontend" (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex)
+    Check "local install rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "1" -IndexPath $packagedIndex))
+    Check "unset install mode rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "" -IndexPath $packagedIndex))
+    Remove-Item -LiteralPath $packagedIndex -Force
+    Check "missing packaged index rebuilds frontend" (-not (Test-PackagedFrontend -LocalInstall "0" -IndexPath $packagedIndex))
+} finally {
+    Remove-Item -LiteralPath $packagedRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host "Get-NodeDecision"
 # system
