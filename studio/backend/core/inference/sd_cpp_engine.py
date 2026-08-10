@@ -275,21 +275,39 @@ def legacy_sibling_install_root() -> Optional[Path]:
 
     Kept only so a tree an older build really did install still resolves. Returned solely when it
     carries the ownership marker, so a checkout that merely happens to sit next to the Studio home
-    is never adopted."""
+    is never adopted.
+
+    The LEXICAL parent first, because that is the one the old code took: ``Path(home).parent`` does
+    not resolve symlinks, so for a home under a symlinked directory the tree an older build really
+    created sits next to the link, not next to its target. Resolving first looked in the wrong
+    place, re-downloaded the bundle and left the old install orphaned from uninstall as well. The
+    resolved parent is still tried after it, for a home reached through a link the other way
+    around."""
     home = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
     if not home:
         return None
-    try:
-        root = Path(home).expanduser().resolve().parent / "stable-diffusion.cpp"
-    except (OSError, ValueError):
-        return None
     current = managed_install_root()
-    try:
-        if root == current or not (root / OWNER_MARKER).is_file():
-            return None
-    except OSError:
-        return None
-    return root
+    for base in _legacy_sibling_bases(home):
+        root = base / "stable-diffusion.cpp"
+        try:
+            if root != current and (root / OWNER_MARKER).is_file():
+                return root
+        except OSError:
+            continue
+    return None
+
+
+def _legacy_sibling_bases(home: str) -> list[Path]:
+    """The directories an older build could have taken as ``<studio home>/..``, lexical first."""
+    bases: list[Path] = []
+    for candidate in (lambda p: p.absolute(), lambda p: p.resolve()):
+        try:
+            base = candidate(Path(home).expanduser()).parent
+        except (OSError, ValueError):
+            continue
+        if base not in bases:
+            bases.append(base)
+    return bases
 
 
 def in_tree_install_root() -> Optional[Path]:

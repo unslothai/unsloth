@@ -1773,3 +1773,49 @@ def test_a_stale_server_that_cannot_be_removed_fails_the_install(tmp_path, monke
     with pytest.raises(RuntimeError) as exc:
         sdmod._discard_stale_sd_server(root)
     assert "superseded sd-server" in str(exc.value)
+
+
+def test_the_legacy_lookup_uses_the_lexical_parent_of_a_symlinked_home(tmp_path, monkeypatch):
+    """The old code took Path(home).parent, which does not resolve symlinks. For a home that IS a
+    link, the tree an older build created sits next to the LINK, so resolving first looked in the
+    wrong place: a needless re-download, and the old install left orphaned from uninstall too."""
+    import core.inference.sd_cpp_engine as eng
+
+    target = tmp_path / "elsewhere" / "studio"
+    target.mkdir(parents = True)
+    home = tmp_path / "studio-home"
+    home.symlink_to(target, target_is_directory = True)
+    legacy = tmp_path / "stable-diffusion.cpp"  # beside the LINK, where the old build put it
+    legacy.mkdir()
+    (legacy / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+
+    # Resolving first lands in <tmp>/elsewhere, which holds nothing.
+    assert not (tmp_path / "elsewhere" / "stable-diffusion.cpp").exists()
+    assert eng.legacy_sibling_install_root() == legacy
+
+
+def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, monkeypatch):
+    """The finder also probes the tree beside the Studio home, so when the bundle just installed
+    ships no sd-server the hit can be the legacy one, built for another accelerator. Returning it
+    ran a forced CUDA load on the old CPU build instead of the one-shot CLI."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    # The install "succeeds" but ships only the CLI, so the finder still sees the legacy server.
+    monkeypatch.setattr(sdmod, "install", lambda **_kw: None)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None

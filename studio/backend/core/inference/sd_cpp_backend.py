@@ -469,7 +469,16 @@ def ensure_sd_server_binary(
             if fallback is not None or find_sd_cpp_binary() is not None:
                 _note_failed_upgrade(accelerator)
             return fallback
-        return find_sd_server_binary() or fallback
+        installed = find_sd_server_binary()
+        # The finder also probes the tree an older build left beside the Studio home, so when the
+        # bundle just installed ships no sd-server the hit here can be that legacy server, built
+        # for a different accelerator. None, not the fallback: an install just completed, so the
+        # router's next step resolves the sd-cli it landed, and a one-shot run on the right build
+        # beats a resident server on the wrong one. The fallback stays for the failure path above,
+        # where no matching binary was fetched at all.
+        if installed and _accelerator_changed(installed, accelerator):
+            return None
+        return installed or fallback
 
 
 @dataclass(frozen = True)
