@@ -456,6 +456,34 @@ def test_health_and_auth_status_share_the_liveness_bucket(logs, monkeypatch):
     assert len(_paths_logged(logs)) == 1, _paths_logged(logs)
 
 
+def test_a_parameterized_stt_status_keeps_its_own_line(logs, monkeypatch):
+    # fetchSttStatus(refreshKey, model) asks whether a custom repo is downloaded,
+    # which is not the background "still up" poll and must not be swallowed by it.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    _run(mw(_http_scope("/api/health"), _noop_receive, _drop))
+    scope = _http_scope("/api/inference/audio/stt/status")
+    scope["query_string"] = b"model=acme%2Fwhisper-custom"
+    _run(mw(scope, _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 2, _paths_logged(logs)
+
+
+def test_two_different_stt_models_do_not_collapse(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for repo in (b"model=a%2Fone", b"model=b%2Ftwo"):
+        scope = _http_scope("/api/inference/audio/stt/status")
+        scope["query_string"] = repo
+        _run(mw(scope, _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 2, _paths_logged(logs)
+
+
 def test_non_liveness_quiet_polls_keep_their_own_heartbeat(logs, monkeypatch):
     # Only the liveness group is shared. These report on different subsystems, so
     # collapsing them together would genuinely lose information.

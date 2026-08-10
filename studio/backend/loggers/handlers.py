@@ -243,7 +243,10 @@ class LoggingMiddleware:
         heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
-        is_liveness = path in _LIVENESS_POLL_PATHS
+        # A query makes the request something other than the background poll:
+        # /api/inference/audio/stt/status?model=... extends the downloaded check to a
+        # custom repo, so it keeps its own identity rather than joining the bucket.
+        is_liveness = path in _LIVENESS_POLL_PATHS and not query
         window_ms = (
             _QUIET_POLL_DEDUP_MS
             if is_liveness or path in _QUIET_POLL_PATHS
@@ -252,8 +255,8 @@ class LoggingMiddleware:
         if window_ms <= 0:
             return False
         # The liveness group shares one bucket, so a burst of them logs once, not once
-        # per path. The query string is dropped from that key on purpose: these polls
-        # carry no meaningful query, and keeping it would split the bucket again.
+        # per path. Only the query-less form joins it, so a parameterized call still
+        # gets its own status and latency line.
         key = _LIVENESS_DEDUP_KEY if is_liveness else (method, path, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:
