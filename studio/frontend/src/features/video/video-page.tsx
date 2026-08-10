@@ -17,6 +17,16 @@ import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -845,6 +855,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [clearingGallery, setClearingGallery] = useState(false);
   // Autoplay replays per selected clip (3 total plays, then pause). Reset on every selection change.
   const playCountRef = useRef(0);
   useEffect(() => {
@@ -1296,23 +1308,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   }, []);
 
   const handleClearAll = useCallback(async () => {
+    setClearingGallery(true);
     try {
       await clearVideoGallery();
+      galleryCache.srcById.clear();
+      galleryCache.refreshed.clear();
+      // Every mint in flight now belongs to a cleared gallery, so their links are discarded on arrival. The epoch covers unlisted ids too.
+      galleryCache.epoch += 1;
+      galleryCache.videos = [];
+      galleryCache.hasMore = false;
+      galleryCache.selectedId = null;
+      setSrcById({});
+      setVideos([]);
+      setHasMore(false);
+      setSelectedId(null);
+      setClearConfirmOpen(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to clear gallery");
-      return;
+    } finally {
+      setClearingGallery(false);
     }
-    galleryCache.srcById.clear();
-    galleryCache.refreshed.clear();
-    // Every mint in flight now belongs to a cleared gallery, so their links are discarded on arrival. The epoch covers unlisted ids too.
-    galleryCache.epoch += 1;
-    galleryCache.videos = [];
-    galleryCache.hasMore = false;
-    galleryCache.selectedId = null;
-    setSrcById({});
-    setVideos([]);
-    setHasMore(false);
-    setSelectedId(null);
   }, []);
 
   // Load a clip's recipe back into the form inputs.
@@ -2599,6 +2614,35 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <AlertDialog
+        open={clearConfirmOpen}
+        onOpenChange={(open) => {
+          if (!clearingGallery) setClearConfirmOpen(open);
+        }}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear all videos?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently deletes every generated video from the gallery. This action cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={clearingGallery}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={clearingGallery}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleClearAll();
+              }}
+            >
+              {clearingGallery ? "Clearing…" : "Clear all"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Dialog
         open={pendingH3Load !== null}
         onOpenChange={(open) => {
@@ -3286,7 +3330,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   <TooltipTrigger asChild={true}>
                     <button
                       type="button"
-                      onClick={() => void handleClearAll()}
+                      onClick={() => setClearConfirmOpen(true)}
                       className="flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-[10px] text-muted-foreground ring-1 ring-border transition-colors hover:text-destructive hover:ring-destructive/40"
                     >
                       <HugeiconsIcon icon={Delete02Icon} className="size-4" />
