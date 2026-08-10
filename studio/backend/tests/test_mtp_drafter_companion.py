@@ -1607,7 +1607,6 @@ def test_is_dflash_drafter_path(path, expected):
         _is_dspark_drafter_path,
         _is_mtp_only_drafter_path,
     )
-
     assert _is_dflash_drafter_path(path) is expected
     if expected:
         # The three kinds partition: a DFlash sidecar launched as MTP or DSpark
@@ -1628,7 +1627,6 @@ def test_is_dflash_drafter_path(path, expected):
 )
 def test_canonicalize_spec_mode_accepts_dflash(value, expected):
     from core.inference.llama_cpp import _canonicalize_spec_mode
-
     assert _canonicalize_spec_mode(value) == expected
 
 
@@ -1684,7 +1682,12 @@ def test_missing_binary_reports_no_dflash():
 # ── Emission ─────────────────────────────────────────────────────────
 
 
-def _spec_backend(monkeypatch, *, supports_dflash = True, supports_dspark = True):
+def _spec_backend(
+    monkeypatch,
+    *,
+    supports_dflash = True,
+    supports_dspark = True,
+):
     from core.inference.llama_cpp import LlamaCppBackend
 
     caps = {
@@ -1744,9 +1747,7 @@ def test_auto_launches_dflash_when_a_sidecar_is_present(monkeypatch):
 
 def test_auto_uses_the_cpu_draft_depth_off_gpu(monkeypatch):
     backend = _spec_backend(monkeypatch)
-    flags = _spec_flags(
-        backend, speculative_type = "auto", dflash_draft_path = "/m/d.gguf", gpus = False
-    )
+    flags = _spec_flags(backend, speculative_type = "auto", dflash_draft_path = "/m/d.gguf", gpus = False)
     assert flags[-2:] == ["--spec-draft-n-max", "3"]
 
 
@@ -1928,7 +1929,12 @@ def test_model_config_reports_a_local_dflash_sidecar(tmp_path):
 # ── Download gating ──────────────────────────────────────────────────
 
 
-def _dflash_download_probe(monkeypatch, *, supports_dflash, cached = None):
+def _dflash_download_probe(
+    monkeypatch,
+    *,
+    supports_dflash,
+    cached = None,
+):
     import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
 
