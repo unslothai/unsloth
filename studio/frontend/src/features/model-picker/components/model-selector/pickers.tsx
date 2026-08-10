@@ -1335,7 +1335,7 @@ function GgufVariantExpander({
       isLocalPath ? [] : (displayVariants ?? []).map((variant) => variant.filename),
     [isLocalPath, displayVariants],
   );
-  const { bytes: companionBytes, pending: companionBytesPending } =
+  const { bytes: companionBytes, asked: companionBytesAsked } =
     useCompanionBytes(repoId, companionQueryFilenames);
   const showsCompanionBytes = useMemo(
     () => [...companionBytes.values()].some((bytes) => bytes > 0),
@@ -1424,8 +1424,10 @@ function GgufVariantExpander({
         const expectedBytes = ggufVariantExpectedBytes(v);
         // A folder has no download to resume; a quant short a shard has no files to load.
         const unusableLocal = isLocalPath && v.partial === true;
-        // A downloaded quant costs nothing more, so it stays clickable while the batch runs.
-        const awaitingSize = companionBytesPending && v.downloaded !== true;
+        // `downloaded` covers the checkpoint only, so it says nothing about the companions: a
+        // GGUF fetched from the Hub page has them missing, and loadOrStage skips the plan for an
+        // already-downloaded pick and fetches them inline.
+        const awaitingSize = companionBytesAsked && !companionBytes.has(v.filename);
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (

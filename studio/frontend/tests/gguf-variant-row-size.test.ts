@@ -115,8 +115,14 @@ test("a row cannot be picked before its size is known", () => {
   // Until the batch lands there is no companion figure, so the row would show the GGUF-only size
   // and still be clickable: picking there stages the full plan, which is the original bug.
   assert.ok(
-    pickers.includes("const awaitingSize = companionBytesPending && v.downloaded !== true;"),
-    "rows must know they are still waiting on a size",
+    pickers.includes(
+      "const awaitingSize = companionBytesAsked && !companionBytes.has(v.filename);",
+    ),
+    "a row waits on its OWN answer, not on the batch and not on v.downloaded",
+  );
+  assert.ok(
+    !pickers.includes("v.downloaded !== true"),
+    "downloaded covers the checkpoint only, so it cannot excuse a row from waiting",
   );
   assert.ok(
     pickers.includes("disabled={unusableLocal || awaitingSize}"),

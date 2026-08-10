@@ -6240,6 +6240,56 @@ def test_download_plan_reports_the_companion_share_of_the_pick(monkeypatch):
     assert DiffusionDownloadPlanResponse(**plan).companion_bytes == base["bytes"]
 
 
+def test_a_half_cached_base_is_charged_only_for_what_is_missing(monkeypatch):
+    """A base partly filled by an interrupted pull, or by another model's tokenizer and configs,
+    keeps its whole file list for job adoption but transfers only the rest. Sized from the list it
+    advertised every cached file as a fresh download."""
+    from models.inference import DiffusionDownloadPlanResponse
+
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_quant_prefetch_needed",
+        lambda self, fam, kwargs, **_: False,
+    )
+    _no_cache(monkeypatch)
+    # Not enough to drop the base entry, so it stays listed and stays whole.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_missing_from_live_root",
+        staticmethod(
+            # The base entry names the mirror, not the vendor id; the checkpoint repo is untouched.
+            lambda repo_id, files, revision = None: (
+                set(files)
+                if repo_id.endswith("-GGUF")
+                else {n for n in files if not n.endswith(".json")}
+            )
+        ),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    base = next(e for e in plan["entries"] if not e["repo_id"].endswith("-GGUF"))
+    assert "model_index.json" in base["files"]
+    staged = [s for s in _FLUX_BASE_SIBLINGS if s.rfilename in set(base["files"])]
+    assert base["bytes"] == sum(s.size for s in staged if not s.rfilename.endswith(".json"))
+    # The cached configs are real bytes, so this is a narrowing, not a rounding.
+    assert base["bytes"] < sum(s.size for s in staged)
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == base["bytes"]
+
+
 def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     # A pipeline load has no separate checkpoint repo: the repo IS the pipeline.
     _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _FLUX_BASE_SIBLINGS})
@@ -7148,7 +7198,9 @@ def test_download_plan_stages_a_repo_split_across_two_cache_roots(monkeypatch, t
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert base in by_repo, "a split base repo must keep its row"
     assert by_repo[base]["files"] == staged
-    assert by_repo[base]["bytes"] == sum(_FLUX_BASE_SIBLINGS_BY_NAME[n] for n in staged)
+    # The whole list is kept for job adoption, but the pinned load reads staged[0] off the live
+    # root and refetches only the rest, so that is what the row is allowed to charge for.
+    assert by_repo[base]["bytes"] == sum(_FLUX_BASE_SIBLINGS_BY_NAME[n] for n in staged[1:])
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
 
 

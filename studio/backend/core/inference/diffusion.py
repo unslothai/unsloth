@@ -610,6 +610,8 @@ def _assert_base_repo_accessible(
             HfHubHTTPError,
             RepositoryNotFoundError,
         )
+
+        from .plan_metadata import plan_model_info
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return None
 
@@ -652,7 +654,13 @@ def _assert_base_repo_accessible(
         return status in (401, 403)
 
     try:
-        gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
+        # Through the batch cache: this probe runs per candidate, and its verdict is a property of
+        # the repo, so an open base cost one uncached lookup per row of a 63-quant expander.
+        gated = getattr(
+            plan_model_info(HfApi(), repo, files_metadata = False, token = hf_token),
+            "gated",
+            None,
+        )
     except GatedRepoError:  # a gated repo can also withhold its metadata
         if _already_downloaded():
             return other_root_snapshot
@@ -2222,13 +2230,19 @@ class DiffusionBackend:
             cached = self._files_already_cached(repo, files, revision)
             if files and cached.issuperset(files):
                 return
+            # The list stays whole for job adoption, but only the missing share transfers: a base
+            # half filled by an interrupted pull, or by another model's tokenizer and configs, was
+            # otherwise advertised as if none of it were there.
+            transferring = self._files_missing_from_live_root(repo, files, revision)
             entries.append(
                 {
                     "repo_id": repo,
                     "files": files,
-                    "bytes": int(sum(sized.get(name, 0) for name in files)),
+                    "bytes": int(sum(sized.get(name, 0) for name in transferring)),
                     "gguf_filename": gguf,
-                    "gguf_bytes": int(sized.get(gguf, 0)) if gguf else 0,
+                    "gguf_bytes": (
+                        int(sized.get(gguf, 0)) if gguf and gguf in transferring else 0
+                    ),
                 }
             )
 
