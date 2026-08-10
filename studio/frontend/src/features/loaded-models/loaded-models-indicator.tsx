@@ -299,7 +299,7 @@ export function LoadedModelsIndicator({
         </Tooltip>
       ) : (
         <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
-          <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
+          <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
               strokeWidth={1.75}
