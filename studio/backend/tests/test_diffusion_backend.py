@@ -7456,6 +7456,31 @@ def _fake_hf_api_with_shas(monkeypatch, repos):
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
 
 
+def test_a_commit_pinned_copy_with_no_ref_does_not_count_as_cached(monkeypatch):
+    """A cache hit has to be one a load can reproduce. Every resolver here reads refs/main, so a
+    snapshot fetched under an explicit commit with no ref is unopenable, and treating it as cached
+    dropped a multi-GB entry the load then pulled inline."""
+    probes: list = []
+
+    def _cache(repo_id, filename, cache_dir = None, revision = None):
+        probes.append(revision)
+        # Present at the recorded commit, but nothing resolves refs/main to it.
+        return "/cache/blob" if revision else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+
+    assert DiffusionBackend._files_already_cached("org/repo", ["a.bin"], "sha") == set()
+    assert None in probes, "the reachability probe must run, not just the pinned one"
+
+    # Resolvable both ways is the ordinary warm cache, and still drops.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, revision = None: "/cache/blob",
+    )
+    assert DiffusionBackend._files_already_cached("org/repo", ["a.bin"], "sha") == {"a.bin"}
+
+
 def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
     """Each probe gets the sha its own model_info reported, the MIRROR at ITS commit: a mirror is a
     separate repo with its own history, so the vendor's sha would never hit and a cached mirror

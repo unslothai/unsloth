@@ -2065,12 +2065,20 @@ class DiffusionBackend:
         def _hits(root: Optional[str]) -> set[str]:
             found: set[str] = set()
             for name in wanted:
+                # Both probes must agree. The pinned one is freshness: a republished repo leaves
+                # refs/main on the superseded blob. The unpinned one is reachability: every loader
+                # here resolves through refs/main, so a snapshot fetched under an explicit commit
+                # with no ref is one no load can open, and claiming it drops a multi-GB entry the
+                # load then pulls inline.
                 try:
-                    hit = try_to_load_from_cache(repo_id, name, cache_dir = root, revision = revision)
+                    hits = [
+                        try_to_load_from_cache(repo_id, name, cache_dir = root, revision = rev)
+                        for rev in (revision, None)
+                    ]
                 except Exception:  # noqa: BLE001 — a cache we cannot read is not a verdict
                     continue
                 # is_file() is belt and braces: hub already ends on os.path.isfile today.
-                if isinstance(hit, str) and Path(hit).is_file():
+                if all(isinstance(hit, str) and Path(hit).is_file() for hit in hits):
                     found.add(name)
             return found
 

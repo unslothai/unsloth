@@ -407,7 +407,10 @@ def _resolve_checkpoint_path(source: TePrequantSource, hf_token: Optional[str]) 
         # Both roots, because the download plan drops this repo when either serves it whole: pinned
         # to one, a checkpoint the picker reported as no transfer was fetched again at load.
         return hf_hub_download_with_xet_fallback(
-            source.location, source.filename, hf_token, reuse_other_cache_root = True
+            source.location,
+            source.filename,
+            hf_token,
+            reuse_other_cache_root = True,
         )
     return None
 
