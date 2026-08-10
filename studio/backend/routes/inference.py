@@ -13731,7 +13731,8 @@ async def serve_sandbox_file(
             _dir, again = _contained_sandbox_path(session or session_id, filename)
             checked = os.stat(again)
             if not _stat.S_ISREG(info.st_mode) or (checked.st_dev, checked.st_ino) != (
-                info.st_dev, info.st_ino
+                info.st_dev,
+                info.st_ino,
             ):
                 raise HTTPException(status_code = 404, detail = "Not found")
         except BaseException:

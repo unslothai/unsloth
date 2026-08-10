@@ -4185,9 +4185,9 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
     assert "if delete_files and idle and not referenced and not recreated:" in route
-    assert route.index("if delete_files and idle and not referenced and not recreated:") < route.index(
-        "run_in_threadpool(delete_project_workspace, project)"
-    )
+    assert route.index(
+        "if delete_files and idle and not referenced and not recreated:"
+    ) < route.index("run_in_threadpool(delete_project_workspace, project)")
     # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id)" in route
 
@@ -4233,7 +4233,10 @@ def test_the_last_fork_going_takes_the_kept_workspace(tmp_path, monkeypatch):
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "report.csv").write_text("a,b\n", encoding = "utf-8")
     tools.record_orphaned_project(
-        project_id, str(workspace / "sandbox"), True, str(workspace),
+        project_id,
+        str(workspace / "sandbox"),
+        True,
+        str(workspace),
     )
 
     # While a fork still shows it, the collection leaves it alone.
@@ -4363,7 +4366,10 @@ def test_a_workspace_delete_finishes_once_the_tool_call_ends(tmp_path, monkeypat
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
     tools.record_orphaned_project(
-        project_id, str(workspace / "sandbox"), True, str(workspace),
+        project_id,
+        str(workspace / "sandbox"),
+        True,
+        str(workspace),
     )
 
     with tools._session_in_flight(tools.project_session_id(project_id)):
@@ -4397,7 +4403,10 @@ def test_a_pending_workspace_is_collected_by_a_plain_delete(tmp_path, monkeypatc
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "out.csv").write_text("a,b\n", encoding = "utf-8")
     tools.record_orphaned_project(
-        "projplain", str(workspace / "sandbox"), True, str(workspace),
+        "projplain",
+        str(workspace / "sandbox"),
+        True,
+        str(workspace),
     )
 
     # The plain path, no switch.
@@ -4539,16 +4548,19 @@ def test_a_failed_workspace_delete_stays_pending(tmp_path, monkeypatch):
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "locked.bin").write_bytes(b"x")
     tools.record_orphaned_project(
-        "projstuck", str(workspace / "sandbox"), True, str(workspace),
+        "projstuck",
+        str(workspace / "sandbox"),
+        True,
+        str(workspace),
     )
 
     monkeypatch.setattr(studio_db.shutil, "rmtree", lambda *a, **k: None)
     tools.collect_orphaned_project_workspaces()
 
     assert workspace.is_dir()
-    assert [
-        name for name, _p, _r, pending, _c in tools.list_orphaned_projects() if pending
-    ] == ["projstuck"], "the record was forgotten with the workspace still there"
+    assert [name for name, _p, _r, pending, _c in tools.list_orphaned_projects() if pending] == [
+        "projstuck"
+    ], "the record was forgotten with the workspace still there"
 
     monkeypatch.undo()
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
@@ -5016,7 +5028,8 @@ def test_a_record_never_deletes_what_the_helper_refused(tmp_path, monkeypatch):
     refused = []
     real_delete = studio_db.delete_project_workspace
     monkeypatch.setattr(
-        studio_db, "delete_project_workspace",
+        studio_db,
+        "delete_project_workspace",
         lambda project: refused.append(project) or real_delete({"id": "x", "rootPath": None}),
     )
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
@@ -5045,7 +5058,9 @@ def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch
     monkeypatch.setattr(chat_history, "get_chat_thread", lambda tid: None)
     # The fork still shows the source's cards, so its files are kept.
     monkeypatch.setattr(
-        studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: s == source,
+        studio_db,
+        "sandbox_is_referenced_elsewhere",
+        lambda s, e = None: s == source,
     )
     _removed, kept = asyncio.new_event_loop().run_until_complete(
         chat_history._remove_sandboxes([source], True)
@@ -5055,9 +5070,7 @@ def test_the_last_fork_going_takes_the_source_chat_s_files(tmp_path, monkeypatch
 
     # Now the fork is deleted too, and nothing references the source any more.
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
-    asyncio.new_event_loop().run_until_complete(
-        chat_history._remove_sandboxes([fork], True)
-    )
+    asyncio.new_event_loop().run_until_complete(chat_history._remove_sandboxes([fork], True))
     assert not workdir.exists(), "the source's files were orphaned for good"
 
 
@@ -5073,9 +5086,13 @@ def test_a_chat_called_like_a_project_session_keeps_its_own_sandbox(tmp_path, mo
     workspace = tmp_path / "Notes-proj7777"
     (workspace / "sandbox").mkdir(parents = True)
     monkeypatch.setattr(
-        studio_db, "ensure_chat_project_workspace",
-        lambda pid: {"id": pid, "rootPath": str(workspace),
-                     "sandboxPath": str(workspace / "sandbox")},
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
     )
     session = tools.project_session_id("proj7777")
     assert Path(tools.get_sandbox_workdir(session)) == (workspace / "sandbox").resolve()
@@ -5101,9 +5118,13 @@ def test_a_long_project_id_still_reaches_its_workspace(tmp_path, monkeypatch):
     workspace = tmp_path / "Long-pppppppp"
     (workspace / "sandbox").mkdir(parents = True)
     monkeypatch.setattr(
-        studio_db, "ensure_chat_project_workspace",
-        lambda pid: {"id": pid, "rootPath": str(workspace),
-                     "sandboxPath": str(workspace / "sandbox")},
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
     )
     session = tools.project_session_id(project_id)
     assert not tools._usable_session_id(session), "the prefixed id fits after all"
@@ -5150,13 +5171,19 @@ def test_a_download_serves_the_file_it_checked(tmp_path, monkeypatch):
 
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(
-        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: str(sandbox),
     )
 
     loop = asyncio.new_event_loop()
     response = loop.run_until_complete(
         inference.serve_sandbox_file(
-            "thread-1", "report.csv", request = None, token = None, session = None,
+            "thread-1",
+            "report.csv",
+            request = None,
+            token = None,
+            session = None,
         )
     )
     # The swap happens after the check, before anything is read.
@@ -5191,13 +5218,19 @@ def test_a_download_refuses_a_file_swapped_for_a_link(tmp_path, monkeypatch):
 
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(
-        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: str(sandbox),
     )
 
     with pytest.raises(HTTPException) as raised:
         asyncio.new_event_loop().run_until_complete(
             inference.serve_sandbox_file(
-                "thread-1", "report.csv", request = None, token = None, session = None,
+                "thread-1",
+                "report.csv",
+                request = None,
+                token = None,
+                session = None,
             )
         )
     assert raised.value.status_code in (403, 404)

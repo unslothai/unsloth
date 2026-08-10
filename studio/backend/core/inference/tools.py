@@ -7225,19 +7225,21 @@ def record_orphaned_project(
         return
     import json as _json
 
-    _write_orphan_record(project_id, {
-        "path": os.path.realpath(workspace),
-        # The whole workspace is what the delete dialog offers, and the sandbox
-        # is one directory inside it.
-        "rootPath": os.path.realpath(root_path) if root_path else None,
-        "pendingDelete": bool(pending_delete),
-    })
+    _write_orphan_record(
+        project_id,
+        {
+            "path": os.path.realpath(workspace),
+            # The whole workspace is what the delete dialog offers, and the sandbox
+            # is one directory inside it.
+            "rootPath": os.path.realpath(root_path) if root_path else None,
+            "pendingDelete": bool(pending_delete),
+        },
+    )
 
 
 def _write_orphan_record(record_id: str, record: dict) -> None:
     """One small JSON file per kept folder, named by the id that owned it."""
     import json as _json
-
     try:
         os.makedirs(_orphan_records_dir(), exist_ok = True)
         with open(os.path.join(_orphan_records_dir(), record_id), "w", encoding = "utf-8") as fh:
@@ -7260,9 +7262,15 @@ def record_kept_sandbox(session_id: str) -> None:
         return
     if not os.path.isdir(workdir):
         return
-    _write_orphan_record(session_id, {
-        "path": workdir, "rootPath": None, "pendingDelete": True, "chat": True,
-    })
+    _write_orphan_record(
+        session_id,
+        {
+            "path": workdir,
+            "rootPath": None,
+            "pendingDelete": True,
+            "chat": True,
+        },
+    )
 
 
 def forget_orphaned_project(project_id: str) -> None:
