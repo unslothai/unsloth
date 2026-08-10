@@ -2642,12 +2642,10 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
-# Whether _REPO_ROOT may be trusted for the scripts sitting next to install.sh. A piped
-# install (curl ... | sh) has $0 = "sh", so _REPO_ROOT is whatever directory the user
-# happened to be in; running from a writable or shared one would execute that directory's
-# copy instead of ours. Marker files cannot decide this (anyone who can plant a helper can
-# plant those too), so require the user to have asked for a local install AND to have run
-# install.sh as a file. Everything else fetches the official helper.
+# Whether the scripts next to install.sh may be trusted. A piped install (curl ... | sh)
+# has $0 = "sh", so _REPO_ROOT is just the caller's cwd and a file planted there would run.
+# Marker files cannot decide this (whoever can plant a helper can plant those), so require
+# the explicit --local intent AND a run from the file itself; else fetch the official copy.
 _REPO_IS_CHECKOUT=0
 case "$0" in
     */install.sh|install.sh)
@@ -3511,11 +3509,9 @@ _maybe_bootstrap_rocm_wsl() {
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
-    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The
-    # local copy counts only for a --local checkout run: this executes automatically with
-    # no prompt, so otherwise _REPO_ROOT may be the caller's cwd and a file planted there
-    # would run instead. Fetching the official helper is the same code path that already
-    # runs whenever the local copy is absent, and pulls the same script.
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
+    # copy counts only for a --local checkout run, since this executes with no prompt and
+    # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
