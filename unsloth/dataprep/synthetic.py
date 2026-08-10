@@ -293,7 +293,11 @@ class SyntheticDataKit:
         self._await_metrics_endpoint()
         return
 
-    def _await_metrics_endpoint(self, timeout = 100.0, poll_interval = 1.0):
+    def _await_metrics_endpoint(
+        self,
+        timeout = 100.0,
+        poll_interval = 1.0,
+    ):
         """Block until `/metrics` answers, or raise saying it never did.
 
         Bounded by elapsed time rather than by a count of attempts.

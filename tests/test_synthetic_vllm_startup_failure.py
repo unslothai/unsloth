@@ -355,6 +355,5 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
         kit._await_metrics_endpoint()
     spent = clock["now"] - started
     assert spent <= 110, (
-        f"spent {spent:.0f}s of simulated time on a wait the message calls "
-        f"100 seconds"
+        f"spent {spent:.0f}s of simulated time on a wait the message calls " f"100 seconds"
     )
