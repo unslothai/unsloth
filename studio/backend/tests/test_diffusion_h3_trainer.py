@@ -11,6 +11,7 @@ the forward contract is checkable without the 66 GB checkpoint.
 
 from __future__ import annotations
 
+import importlib
 import json
 import random
 import sys
@@ -1466,6 +1467,41 @@ def test_the_audio_decode_stops_at_the_training_window(tmp_path):
     assert decoded == 1, f"decoded {decoded} blocks for a window one block wide"
 
 
+def _stub_training_stack(monkeypatch):
+    """Satisfy the four training-stack names ``_train_h3`` binds on entry.
+
+    The backend CI image installs neither diffusers nor peft, so the function-level
+    ``from diffusers.optimization import get_scheduler`` aborted the cache-gate tests before they
+    reached the gate. None of the four is called on the path under test -- the gate raises, or
+    the faked ``_load_transformer`` does -- so binding them to placeholders keeps the tests
+    running everywhere rather than skipping them on the only host that runs them in CI."""
+    scheduler = types.ModuleType("diffusers.optimization")
+    scheduler.get_scheduler = lambda *_a, **_k: None
+    training_utils = types.ModuleType("diffusers.training_utils")
+    training_utils.cast_training_params = lambda *_a, **_k: None
+    peft_utils = types.ModuleType("peft.utils")
+    peft_utils.get_peft_model_state_dict = lambda *_a, **_k: {}
+    peft = types.ModuleType("peft")
+    peft.LoraConfig = object
+    peft.utils = peft_utils
+    for name, module in (
+        # The SUBMODULES only, never a bare ``diffusers`` parent. ``from a.b import c`` is
+        # satisfied straight from ``sys.modules["a.b"]`` without importing ``a``, and a stub
+        # parent would be worse than none here: ``resolve_trainable_family`` absorbs an
+        # unimportable diffusers but REFUSES one that imports and lacks
+        # MiniMaxH3Transformer3DModel, so faking the package turns a skipped probe into a raise.
+        ("diffusers.optimization", scheduler),
+        ("diffusers.training_utils", training_utils),
+        ("peft", peft),
+        ("peft.utils", peft_utils),
+    ):
+        # Only where the real one is absent, so a developer host keeps running the real imports.
+        try:
+            importlib.import_module(name)
+        except Exception:  # noqa: BLE001 -- absent or broken both mean "use the placeholder"
+            monkeypatch.setitem(sys.modules, name, module)
+
+
 def _h3_cache_run(monkeypatch, *, num_clips: int):
     """Drive ``_train_h3`` through phase 2 only, with every model call faked.
 
@@ -1474,6 +1510,8 @@ def _h3_cache_run(monkeypatch, *, num_clips: int):
     import torch
 
     from core.training import diffusion_h3_trainer as h3
+
+    _stub_training_stack(monkeypatch)
 
     class _Placed:
         def to(self, _device):
