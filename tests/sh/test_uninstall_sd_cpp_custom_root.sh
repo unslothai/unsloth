@@ -183,12 +183,22 @@ mkdir -p "$p7/stable-diffusion.cpp/build/bin"
 _custom_studio_roots() { printf '%s\n' "$p7"; }
 assert_lists "nested <root>/stable-diffusion.cpp is stopped before removal" "$p7/stable-diffusion.cpp"
 
-# 8. An unowned checkout the user happens to keep inside their Studio root is never signalled.
+# 8. A root this run does NOT delete (no Studio sentinels) keeps its unowned nested build running.
 p8="$_TMP_ROOT/inst8/studioF"
 mkdir -p "$p8/stable-diffusion.cpp/build/bin"
 : > "$p8/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker: the user's own build
 _custom_studio_roots() { printf '%s\n' "$p8"; }
-assert_not_lists "unowned nested stable-diffusion.cpp is left running" "$p8/stable-diffusion.cpp"
+assert_not_lists "unowned nested build under a non-Studio root is left running" "$p8/stable-diffusion.cpp"
+
+# 8b. But under a real Studio root, which the loop deletes wholesale, the unmarked nested build is
+#     stopped anyway: the current-root finder can select it without a marker, and deleting the tree
+#     around a live server just leaves it holding its port.
+p8b="$_TMP_ROOT/inst8b/studioF2"
+mkdir -p "$p8b/share" "$p8b/stable-diffusion.cpp/build/bin"
+: > "$p8b/share/studio.conf"
+: > "$p8b/stable-diffusion.cpp/build/bin/sd-server"  # no owner marker
+_custom_studio_roots() { printf '%s\n' "$p8b"; }
+assert_lists "unmarked nested build under a doomed Studio root is stopped" "$p8b/stable-diffusion.cpp"
 
 # 9. The legacy sibling an older build installed is still listed (it is still deleted).
 p9="$_TMP_ROOT/inst9"
@@ -254,6 +264,23 @@ UNSLOTH_STUDIO_HOME="$p14/link"
 run_lexical_removal
 assert_dir "symlinked home: unowned sd.cpp beside the link kept" "$p14/stable-diffusion.cpp"
 assert_not_lists "symlinked home: unowned sd.cpp beside the link is left running" "$p14/stable-diffusion.cpp"
+
+# 15. The deny list is a string match, so the lexical path has to be canonicalized before it is
+#     applied: a home carrying ".." (or a symlinked ancestor) otherwise produces a sibling that
+#     misses the pattern while resolving straight into a protected tree. $HOME's parent is on that
+#     list, so point HOME inside the fixture to get a deterministic denied target.
+p15="$_TMP_ROOT/inst15"
+mkdir -p "$p15/sub" "$p15/studioL/share" "$p15/stable-diffusion.cpp"
+: > "$p15/studioL/share/studio.conf"
+: > "$p15/stable-diffusion.cpp/sd-cli"
+: > "$p15/stable-diffusion.cpp/.unsloth-studio-owned"
+_HOME_BEFORE="$HOME"
+HOME="$p15/stable-diffusion.cpp/home"  # so dirname "$HOME" is the denied path
+mkdir -p "$HOME"
+UNSLOTH_STUDIO_HOME="$p15/sub/../studioL"  # lexical parent "$p15/sub/.." -> misses the raw match
+run_lexical_removal
+assert_dir "lexical sibling resolving into a denied tree is refused" "$p15/stable-diffusion.cpp"
+HOME="$_HOME_BEFORE"
 unset UNSLOTH_STUDIO_HOME
 
 echo ""

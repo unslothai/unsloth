@@ -75,19 +75,25 @@ _pkill_escape() {
     printf '%s' "$1" | sed -e 's:[][\\.^$*+?{|}()/]:\\&:g'
 }
 
-# Owned sd.cpp roots (default $HOME/.unsloth/stable-diffusion.cpp, plus for each custom root both
+# sd.cpp roots whose sd-server has to be stopped: the default
+# $HOME/.unsloth/stable-diffusion.cpp, plus for each custom root both
 # <root>/stable-diffusion.cpp, where the install now lives, and the legacy
-# <parent>/stable-diffusion.cpp sibling an older build wrote), each gated on the install-time owner
-# marker so we never stop a user-managed sd-server from an unrelated checkout at one of these paths.
-# The nested one matters most: a resident sd-server survives unlinking its binary, and the custom
-# root is removed wholesale below, so without it the tree goes and the server keeps running.
+# <parent>/stable-diffusion.cpp sibling an older build wrote. The nested one matters most: a
+# resident sd-server survives unlinking its binary, and the custom root is removed wholesale
+# below, so without it the tree goes and the server keeps running.
+# The owner marker gates the paths that SURVIVE when unowned (the default and the sibling), so an
+# unrelated checkout there keeps its server. It does not gate the nested path of a root this run
+# deletes: the current-root finder can select an unmarked binary there, and deleting the tree out
+# from under a live server is exactly what leaves it holding its port.
 _owned_sd_cpp_roots() {
     _default_sd="$HOME/.unsloth/stable-diffusion.cpp"
     [ -f "$_default_sd/.unsloth-studio-owned" ] && printf '%s\n' "$_default_sd"
     _custom_studio_roots 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
         _sd_root="$_root/stable-diffusion.cpp"
-        [ -f "$_sd_root/.unsloth-studio-owned" ] && printf '%s\n' "$_sd_root"
+        if [ -f "$_sd_root/.unsloth-studio-owned" ] || _is_studio_root "$_root"; then
+            [ -d "$_sd_root" ] && printf '%s\n' "$_sd_root"
+        fi
     done
     _sd_cpp_sibling_bases 2>/dev/null | while IFS= read -r _root; do
         [ -n "$_root" ] || continue
@@ -562,7 +568,13 @@ _unsloth_uninstall_main() {
         [ -n "$_lex_root" ] || continue
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
-        if _is_unsafe_root "$_lex_sd_cpp"; then
+        # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can
+        # carry ".." or a symlinked ancestor and slip a protected tree ("/tmp/../usr/...") past it.
+        # Canonicalize a copy for the check only; the removal still uses the lexical path.
+        # shellcheck disable=SC1007
+        _lex_sd_canon=$(CDPATH= cd -P -- "$_lex_sd_cpp" 2>/dev/null && pwd -P)
+        [ -n "$_lex_sd_canon" ] || _lex_sd_canon="$_lex_sd_cpp"
+        if _is_unsafe_root "$_lex_sd_cpp" || _is_unsafe_root "$_lex_sd_canon"; then
             echo "  refusing to remove unsafe path: $_lex_sd_cpp" >&2
         else
             _remove_path "$_lex_sd_cpp"

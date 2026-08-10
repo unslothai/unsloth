@@ -371,22 +371,35 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         # From the root the binary is actually in, not the current default: an install an older
         # build put beside the Studio home keeps its own record, and reading the wrong root would
         # report it unrecorded and re-download a bundle that is already here.
-        have = mod.installed_accelerator(root)
-        if want == "cpu":
-            return have is not None and have != "cpu"
-        return have != want
+        return _record_mismatch(mod, root, want)
     except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary, as before
         return False
 
 
-def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
-    """True when ``binary`` is an sd-server out of the tree an older build left beside the Studio
-    home, while the CURRENT managed root already holds a completed install for ``accelerator``.
+def _record_mismatch(mod, root: Path, want: str) -> bool:
+    """True when ``root``'s install record names an accelerator other than ``want``. Unrecorded is
+    unknown, and on a CPU target unknown is left alone (see ``_accelerator_changed``)."""
+    have = mod.installed_accelerator(root)
+    if want == "cpu":
+        return have is not None and have != "cpu"
+    return have != want
 
-    That install is the authoritative one, and a bundle that ships no sd-server makes it a
-    serverless install: the answer is "no server", not "install again". Without this the finder
-    keeps handing back the legacy server, ``_accelerator_changed`` keeps rejecting it as the wrong
-    build, and every single load reinstalls the bundle that is already on disk."""
+
+def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
+    """True when ``binary`` is a MISMATCHED sd-server out of the tree an older build left beside
+    the Studio home, while the CURRENT managed root holds a completed install for ``accelerator``
+    whose bundle shipped no sd-server.
+
+    That install is the authoritative one, and the recorded fact that its bundle is serverless
+    makes "no server" the answer rather than "install again": otherwise the finder keeps handing
+    the legacy server back, ``_accelerator_changed`` keeps rejecting it as the wrong build, and
+    every single load reinstalls the bundle that is already on disk.
+
+    Both halves are required. A legacy server that MATCHES the wanted accelerator is a working
+    server and is still preferred over the one-shot CLI. And an install whose record does not say
+    ``ships_server: false`` -- an older record without the field, or a bundle that did ship one
+    whose binary was later deleted or removed by the runnability repair -- is NOT evidence of a
+    serverless bundle, so it must keep reinstalling, which is what repairs the missing server."""
     root = owning_managed_root(binary)
     if root is None:
         return False
@@ -398,8 +411,10 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
         return False
     try:
         mod = _installer_module()
-        have = mod.installed_accelerator(current)
-        return have is not None and have == mod.accelerator_class(accelerator)
+        want = mod.accelerator_class(accelerator)
+        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+            return False
+        return mod.installed_ships_server(current) is False
     except Exception:  # noqa: BLE001 -- cannot tell -> leave the existing behavior alone
         return False
 
@@ -462,22 +477,23 @@ def ensure_sd_server_binary(
     """
     found = find_sd_server_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
-    if usable and not _accelerator_changed(found, accelerator):
-        return found
-    # A mismatched server left in the legacy tree, with the matching install already here and
-    # serverless: None IS the answer, so the one-shot sd-cli of the right build runs instead of
-    # the bundle being downloaded again on this and every later load.
+    # Ahead of _accelerator_changed, which reports "unchanged" while the managed tree is in use
+    # (an install would overwrite a running binary) and would hand the mismatched legacy server to
+    # a load that has the matching serverless build right here. None IS the answer: the one-shot
+    # sd-cli of the right build runs, and the bundle is not downloaded again on every later load.
     if usable and _superseded_legacy_server(found, accelerator):
         return None
+    if usable and not _accelerator_changed(found, accelerator):
+        return found
     if not allow_install:
         return found
     with _install_lock:
         found = find_sd_server_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
-        if usable and not _accelerator_changed(found, accelerator):
-            return found
         if usable and _superseded_legacy_server(found, accelerator):
             return None
+        if usable and not _accelerator_changed(found, accelerator):
+            return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched.
         fallback = found if usable else None
         # An install REPLACES the binaries in the managed tree, so refuse it while a native

@@ -1841,7 +1841,9 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     current = home / "stable-diffusion.cpp"
     current.mkdir()
     (current / ".unsloth-studio-owned").touch()
-    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._write_install_record(
+        current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
+    )
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
 
     installs: list[dict] = []
@@ -1854,3 +1856,110 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     assert installs == []  # the bundle is already here; nothing to download
     # ... and with installs switched off the answer is the same, not the wrong-build server.
     assert bk.ensure_sd_server_binary(accelerator = "cuda", allow_install = False) is None
+    # ... and while the managed tree is busy, where _accelerator_changed reports "unchanged"
+    # because an install would overwrite a running binary.
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert installs == []
+
+
+def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):
+    """The serverless guard must fire only on a MISMATCHED legacy server. One built for the
+    accelerator being asked for is a working resident server, and dropping to the one-shot CLI
+    would re-run the model load on every single generation."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    server = legacy / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(
+        current, accelerator = "cpu", repo = "r", tag = "t", ships_server = False
+    )
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    assert bk.ensure_sd_server_binary(accelerator = "cpu") == str(server)
+
+
+def test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless(tmp_path, monkeypatch):
+    """A missing sd-server is not proof the bundle never had one: the runnability repair unlinks a
+    broken managed server precisely so the next load puts it back. Only a record that positively
+    says the bundle shipped none may suppress that reinstall, so an install predating the field
+    keeps repairing itself."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    # A record from before ships_server existed: the bundle's server capability is unknown.
+    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    assert sdmod.installed_ships_server(current) is None
+
+    installs: list[dict] = []
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    bk.ensure_sd_server_binary(accelerator = "cuda")
+    assert [kw["accelerator"] for kw in installs] == ["cuda"]
+
+
+def test_install_records_that_the_bundle_shipped_no_server(tmp_path, monkeypatch):
+    """The capability comes off the archive member list during install(), so a later load reads it
+    as fact. Without it, "no sd-server in the tree" is indistinguishable from one that was deleted
+    and the reinstall that would repair it gets suppressed."""
+    zb = _zip_with_sd_cli()  # sd-cli only
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    install(install_dir = tmp_path)
+    assert sdmod.installed_ships_server(tmp_path) is False
+
+
+def test_install_records_that_the_bundle_shipped_a_server(tmp_path, monkeypatch):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"#!/bin/sh\necho sd-cli\n")
+        zf.writestr("build/bin/sd-server", b"#!/bin/sh\necho sd-server\n")
+    zb = buf.getvalue()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    install(install_dir = tmp_path)
+    assert sdmod.installed_ships_server(tmp_path) is True
+
+
+def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_path):
+    """Read off the archive member list at install time, so no later load has to guess."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
+    assert sdmod.installed_ships_server(root) is None  # unrecorded stays unknown
+    sdmod._write_install_record(
+        root, accelerator = "cpu", repo = "r", tag = "t", ships_server = True
+    )
+    assert sdmod.installed_ships_server(root) is True
+    sdmod._write_install_record(
+        root, accelerator = "cpu", repo = "r", tag = "t", ships_server = False
+    )
+    assert sdmod.installed_ships_server(root) is False
+    assert sdmod.installed_accelerator(root) == "cpu"

@@ -105,7 +105,25 @@ def installed_accelerator(root: Path) -> Optional[str]:
 _INSTALLED_ACCELERATOR_MEMO: dict[str, str] = {}
 
 
-def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
+def installed_ships_server(root: Path) -> Optional[bool]:
+    """Whether the bundle installed in ``root`` carried an sd-server, or None when unrecorded.
+
+    None is the honest answer for every install that predates this field, and callers must treat
+    it as "unknown" rather than "serverless": a missing sd-server is otherwise indistinguishable
+    from one a bundle never shipped, and suppressing the reinstall on a guess would strand a tree
+    whose server was deleted (by hand, or by the runnability repair) on the one-shot CLI forever."""
+    val = read_install_record(root).get("ships_server")
+    return val if isinstance(val, bool) else None
+
+
+def _write_install_record(
+    root: Path,
+    *,
+    accelerator: str,
+    repo: str,
+    tag: Optional[str],
+    ships_server: Optional[bool] = None,
+) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
 
     The write itself stays best-effort -- a metadata failure must not throw away binaries that
@@ -113,9 +131,12 @@ def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optio
     what it just installed."""
     klass = accelerator_class(accelerator)
     _INSTALLED_ACCELERATOR_MEMO[str(root)] = klass
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    if ships_server is not None:
+        rec["ships_server"] = ships_server
     try:
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
-            json.dump({"accelerator": klass, "repo": repo, "tag": tag}, f)
+            json.dump(rec, f)
     except OSError as exc:
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
@@ -637,6 +658,9 @@ def install(
             accelerator = accelerator,
             repo = used_repo,
             tag = release.get("tag_name"),
+            # Read off the archive's member list, so "this bundle is serverless" is recorded fact
+            # rather than something a later load has to infer from an sd-server not being there.
+            ships_server = ships_server,
         )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli
