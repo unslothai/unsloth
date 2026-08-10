@@ -257,6 +257,15 @@ def assert_video_precision_available(
     # support is consulted, and that path needs no torchao. Refusing on the raw int8
     # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
     # where the torchao stub kills int8 while fp8 still works.
+    # A family with a HOSTED quantized conditioner never touches the generic path this gate
+    # reasons about. Studio loads that artifact itself: INT8 storage, a Hadamard rotation and an
+    # ordinary F.linear, no torchao and no fp8 tensor cores. Left to the code below, the request is
+    # first rewritten int8 -> fp8 by effective_te_quant (H3 has no keep-bf16 schedule) and then
+    # refused for want of hardware neither the rewrite nor the real loader needs, so a supported
+    # CPU load comes back as a 409. Whether the artifact suits THIS base is decided at the seed,
+    # which is not a host-level impossibility and so is not this gate's question.
+    if getattr(fam, "modular_workflow", None) and h3_te_quant_scheme(te_mode) is not None:
+        return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
     if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
@@ -952,7 +961,11 @@ class VideoBackend:
             )
             # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
             # repo's 62 GB dense text_encoder/ shards outright.
-            h3_te_scheme = self._h3_te_quant_scheme(fam, kwargs.get("text_encoder_quant"), base)
+            # Verified, not just name-matched: this scheme decides whether the base pull DROPS the
+            # dense encoder, and a derivative that the seed will decline must keep its own.
+            h3_te_scheme = self._h3_te_quant_scheme_verified(
+                fam, kwargs.get("text_encoder_quant"), base, kwargs.get("hf_token")
+            )
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -1334,6 +1347,75 @@ class VideoBackend:
             return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense encoder
             return None
+
+    @staticmethod
+    def _h3_te_base_index_source(base: Optional[str], hf_token: Optional[str]) -> Optional[str]:
+        """The text-encoder source ``base``'s own ``modular_model_index.json`` names, or None.
+
+        The staging twin of ``_h3_te_index_source``, which can only run once the pipeline exists.
+        The seed is the final authority, but by then the base snapshot has already been pulled
+        WITHOUT its dense ``text_encoder/`` shards, so a decline there leaves the load to fetch
+        62 GB inline. Reading the index first makes the skip as exact as the substitution.
+
+        A few KB, from the repo the load is about to pull anyway, pinned to the live cache root.
+        None on anything unanswerable, which keeps the dense shards."""
+        if not base:
+            return None
+        try:
+            import json
+
+            root = Path(base).expanduser()
+            if root.is_dir():
+                path = root / "modular_model_index.json"
+            else:
+                from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+                path = Path(
+                    hf_hub_download_with_xet_fallback(
+                        base,
+                        "modular_model_index.json",
+                        hf_token,
+                        cache_dir = hub_cache_dir(),
+                    )
+                )
+            with open(path, "r", encoding = "utf-8") as handle:
+                entry = json.load(handle).get("text_encoder")
+            # ["library", "ClassName", {spec}]; "repo" is the spec field's deprecated spelling.
+            spec = entry[2] if isinstance(entry, (list, tuple)) and len(entry) == 3 else None
+            source = (spec or {}).get("pretrained_model_name_or_path") or (spec or {}).get("repo")
+            return source if isinstance(source, str) and source else None
+        except Exception:  # noqa: BLE001 -- unanswerable keeps the dense shards
+            return None
+
+    def _h3_te_quant_scheme_verified(
+        self,
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        base: Optional[str],
+        hf_token: Optional[str],
+    ) -> Optional[str]:
+        """``_h3_te_quant_scheme`` plus the exact index check, for the decisions that COMMIT.
+
+        The pure resolver compares repo NAMES, which is right for a plan (it must not raise and
+        must not touch the network) but not for dropping a derivative's dense encoder from the
+        pull. This one is allowed the few-KB index read, so the staged snapshot and the seed agree
+        on the same base."""
+        scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
+        if scheme is None:
+            return None
+        source = self._h3_te_base_index_source(base, hf_token)
+        if source is None or _h3_te_canonical(source) != _h3_te_canonical(
+            getattr(fam, "base_repo", None)
+        ):
+            logger.info(
+                "video.h3_te_quant: %s names %s as its conditioner, not %s; keeping its dense "
+                "text_encoder shards",
+                base,
+                source or "an unreadable index",
+                getattr(fam, "base_repo", None),
+            )
+            return None
+        return scheme
 
     @staticmethod
     def _h3_te_index_source(pipe: Any) -> Optional[str]:
@@ -2879,7 +2961,7 @@ class VideoBackend:
                     f"no hosted quantized {text_encoder_quant} conditioner for {fam.name}; "
                     f"loaded the released bfloat16 encoder instead"
                 )
-        elif te_scheme is not None:
+        if te_scheme is not None:
             from .video_minimax_h3_te import load_h3_quantized_text_encoder
             text_encoder = load_h3_quantized_text_encoder(
                 base,
@@ -2912,6 +2994,30 @@ class VideoBackend:
                     te_scheme,
                     fam.name,
                 )
+        # Fail closed, exactly as the conventional path does for the same request: an explicit
+        # encoder precision that engaged NOTHING leaves a dense bf16 encoder the caller did not ask
+        # for, and a render that succeeds at an unrequested precision quietly invalidates whatever
+        # it was measuring. Covers all three ways this can end up dense -- no hosted artifact for
+        # the scheme, an artifact that is not this pipeline's conditioner, and one that failed to
+        # load -- because the caller cannot tell them apart from the result.
+        #
+        # Raised HERE, before load_components, so the refusal costs nothing rather than arriving
+        # after every component has been built. precision_fallback_allowed() is the documented
+        # escape hatch, and it lands the dense encoder with the reason recorded as before.
+        if (
+            text_encoder_quant is not None
+            and text_encoder_quant_engaged is None
+            and not precision_fallback_allowed()
+        ):
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    text_encoder_quant,
+                    text_encoder_quant_reason,
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
         # The token above only opens the modular index. Every component's own from_pretrained runs
         # here, against the repos that index names, so it has to be passed again or a gated/private
         # component load goes out anonymously (load_components only WARNS on a failed component).

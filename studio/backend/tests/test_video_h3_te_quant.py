@@ -545,3 +545,102 @@ def test_a_known_mirror_is_still_the_same_conditioner():
 
     for mirror, upstream in _MIRROR_UPSTREAM.items():
         assert _h3_te_canonical(mirror) == _h3_te_canonical(upstream)
+
+
+# ── the precision contract ───────────────────────────────────────────────────────
+def test_a_hosted_conditioner_is_not_judged_by_the_generic_precision_gate(monkeypatch):
+    """The gate rewrites int8 -> fp8 (H3 has no keep-bf16 schedule) and then asks for fp8 tensor
+    cores. This loader uses neither: INT8 storage, a Hadamard rotation, an ordinary F.linear. Left
+    to the generic path, a CPU H3 int8 load comes back as a 409 for hardware nothing needs."""
+    from core.inference.video import assert_video_precision_available
+
+    fam = detect_video_family(H3_BASE)
+    monkeypatch.setattr(
+        "core.inference.video.precision_fallback_allowed", lambda: False, raising = False
+    )
+    monkeypatch.setattr(
+        "core.inference.video.te_quant_supported", lambda *_a, **_k: False, raising = False
+    )
+    # The hosted scheme is exempt.
+    assert_video_precision_available(fam, model_kind = "pipeline", text_encoder_quant = "int8")
+    # A scheme with no hosted artifact is still judged by the generic gate.
+    with pytest.raises(RuntimeError):
+        assert_video_precision_available(fam, model_kind = "pipeline", text_encoder_quant = "fp8")
+
+
+def test_an_explicit_encoder_request_that_engages_nothing_is_refused(monkeypatch):
+    """The conventional path already raises here: a render that succeeds at an unrequested
+    precision quietly invalidates whatever it was measuring. The modular path has to match, with
+    the same documented escape hatch."""
+    import core.inference.video as video_mod
+
+    seen: dict = {}
+
+    class _Pipe:
+        def get_component_spec(self, _name):
+            return types.SimpleNamespace(pretrained_model_name_or_path = "someone/MiniMax-H3")
+
+        def update_components(self, **kwargs):
+            seen["seeded"] = kwargs
+
+        def load_components(self, **kwargs):
+            seen["loaded"] = kwargs
+
+    fam = detect_video_family(H3_BASE)
+    backend = video_mod.VideoBackend()
+    fake_diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: object(),
+        ModularPipeline = types.SimpleNamespace(from_pretrained = lambda *a, **k: _Pipe()),
+    )
+    monkeypatch.setattr(video_mod, "precision_fallback_allowed", lambda: False)
+
+    with pytest.raises(RuntimeError) as exc:
+        backend._load_h3_modular_pipeline(
+            fam = fam,
+            repo_id = H3_BASE,
+            base = H3_BASE,
+            kind = "pipeline",
+            dtype = None,
+            device = "cpu",
+            hf_token = None,
+            memory_mode = None,
+            text_encoder_quant = "int8",
+            diffusers = fake_diffusers,
+            torch = None,
+        )
+    assert "text_encoder_quant" in str(exc.value)
+    # Refused BEFORE anything is built, so the refusal costs nothing.
+    assert "loaded" not in seen and "seeded" not in seen
+
+
+def test_the_staging_skip_reads_the_same_index_the_seed_will(tmp_path):
+    """The plan compares repo NAMES, which is right for a plan and wrong for dropping a
+    derivative's dense encoder: the seed would then decline and leave load_components to fetch
+    62 GB inline. The staging resolver reads the base's own index first."""
+    import json
+
+    backend = VideoBackend()
+    fam = detect_video_family(H3_BASE)
+
+    def _base_dir(source):
+        root = tmp_path / source.replace("/", "_")
+        root.mkdir(parents = True, exist_ok = True)
+        entry = [
+            "transformers",
+            "Qwen3VLForConditionalGeneration",
+            {"pretrained_model_name_or_path": source, "subfolder": "text_encoder"},
+        ]
+        with open(root / "modular_model_index.json", "w", encoding = "utf-8") as handle:
+            json.dump({"text_encoder": entry}, handle)
+        return str(root)
+
+    canonical = _base_dir(H3_BASE)
+    derivative = _base_dir("someone/MiniMax-H3")
+    # Both pass the NAME comparison: the directories are called MiniMaxAI_MiniMax-H3 and
+    # someone_MiniMax-H3, so this is the index doing the work, not the path.
+    assert backend._h3_te_base_index_source(canonical, None) == H3_BASE
+    assert backend._h3_te_base_index_source(derivative, None) == "someone/MiniMax-H3"
+    assert backend._h3_te_quant_scheme_verified(fam, "int8", derivative, None) is None
+    # An unreadable index keeps the dense shards rather than guessing.
+    assert backend._h3_te_base_index_source(str(tmp_path / "nope"), None) is None
+    assert backend._h3_te_quant_scheme_verified(fam, "int8", str(tmp_path / "nope"), None) is None
