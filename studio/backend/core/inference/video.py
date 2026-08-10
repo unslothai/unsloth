@@ -58,7 +58,11 @@ from .diffusion_cache import (
     maybe_toggle_step_cache,
     normalize_transformer_cache,
 )
-from .diffusion_device import resolve_diffusion_device_target
+from .diffusion_device import (
+    force_float32_rope,
+    install_decoder_sync,
+    resolve_diffusion_device_target,
+)
 from .diffusion_memory import (
     apply_memory_plan,
     estimate_gguf_resident_mib,
@@ -705,6 +709,24 @@ class VideoBackend:
                 f"model{gguf_hint}."
             )
         if fam.modular_workflow and kind == "pipeline":
+            # Metal cannot place a modular workflow at all. _load_h3_modular_pipeline hands every
+            # non-CPU device to ComponentsManager.enable_auto_cpu_offload, which reads
+            # torch.<device>.mem_get_info and raises NotImplementedError for a device module
+            # without one; torch.mps has never exposed it. Refuse here, before ~145 GB downloads
+            # and the resident pipeline is torn down to make room for it.
+            if resolve_diffusion_device_target().device == "mps":
+                gguf_hint = (
+                    f" Load a .gguf checkpoint from '{fam.gguf_repo}' instead, which runs on the "
+                    f"native engine."
+                    if fam.gguf_repo
+                    else ""
+                )
+                raise ValueError(
+                    f"'{fam.name}' cannot run on Apple Silicon: its Modular Diffusers workflow "
+                    f"places components through the Diffusers auto CPU offload, which needs a "
+                    f"torch device exposing mem_get_info, and Metal (MPS) does not have it."
+                    f"{gguf_hint}"
+                )
             # Same normaliser the load uses, so a malformed value raises the identical message it
             # would below and only a real scheme reaches the availability check.
             requested_scheme = normalize_transformer_quant(transformer_quant)
@@ -2872,6 +2894,9 @@ class VideoBackend:
             if effective_speed not in (SPEED_OFF, SPEED_MAX)
             else False
         )
+        # Sets a flag the pipelines read when they first build their frequency tables, so it need
+        # only happen before generation, not before placement.
+        force_float32_rope(pipe, target, logger = logger)
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
@@ -2918,6 +2943,8 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Wan's decode also grows within a single tile, which tiling alone cannot bound.
+            install_decoder_sync(pipe, target, logger = logger)
 
             resolved = build_resolved_record(
                 {
@@ -3899,7 +3926,12 @@ class VideoBackend:
                                 "available. Load the GGUF artifact instead."
                             )
 
-                generator = torch.Generator(device = "cpu" if fam.modular_workflow else state.device)
+                # MPS seeds from the CPU generator too: diffusers reproduces a Metal seed only
+                # that way, and the pipelines move the noise to the device themselves.
+                generator_device = (
+                    "cpu" if fam.modular_workflow or str(state.device) == "mps" else state.device
+                )
+                generator = torch.Generator(device = generator_device)
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))
