@@ -360,9 +360,7 @@ def test_a_validation_only_run_touches_nothing_public():
 
 def test_the_guard_rejects_a_prerelease_target_before_anything_is_built():
     workflow = _workflow()
-    guard = _step(
-        workflow, "prepare-version", "Guard against republishing an existing version"
-    )
+    guard = _step(workflow, "prepare-version", "Guard against republishing an existing version")
     assert "is a prerelease" in guard["run"]
     # And again in publish-release, which is the one holding write scope.
     state = _step(workflow, "publish-release", "Validate versioned release state")
