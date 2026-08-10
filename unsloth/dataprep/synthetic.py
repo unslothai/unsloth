@@ -160,20 +160,17 @@ class PipeCapture:
 
 
 def _deadline(timeout):
-    """The monotonic instant `timeout` seconds from now, or `None` for never.
+    """Monotonic instant `timeout` seconds from now, `None` for never.
 
-    `SyntheticDataKit` takes `timeout` straight from the caller and puts no
-    type assert on it, and the wait it used to feed was `Event.wait`, where
-    `None` is the documented way to say "wait as long as it takes". A first
-    load of a large model over a slow link is exactly that case, so `None`
-    has to stay a wait rather than become a `TypeError` thrown seconds after
-    vLLM was spawned.
+    `timeout` arrives here untyped from the caller, and the `Event.wait` this
+    replaced read `None` as an unbounded wait, which is what a first load of a
+    large model over a slow link needs.
     """
     return None if timeout is None else time.monotonic() + timeout
 
 
 def _remaining(deadline):
-    """Seconds left, or `None` when there is no deadline to run out of."""
+    """Seconds left, `None` when there is no deadline to run out of."""
     return None if deadline is None else deadline - time.monotonic()
 
 
@@ -318,12 +315,9 @@ class SyntheticDataKit:
     ):
         """Block until `/metrics` answers, or raise saying it never did.
 
-        Bounded by elapsed time rather than by a count of attempts.
-        `check_vllm_status` allows each request 5 seconds, so a server that
-        accepts the connection and then stalls spent 5s per attempt plus the
-        sleep: a hundred attempts is ten minutes, not the hundred seconds the
-        message promises, and this is the path meant to surface a bad startup
-        promptly.
+        Bounded by the clock, not by a count of attempts: `check_vllm_status`
+        allows each request 5 seconds, so 100 attempts against a stalled server
+        is ten minutes, not the hundred the message promises.
         """
         deadline = _deadline(timeout)
         while not self.check_vllm_status():
@@ -341,21 +335,17 @@ class SyntheticDataKit:
     ):
         """Block until the server is ready, or raise saying why it is not.
 
-        Waiting on the readiness event alone cannot notice the child dying, so
-        a server that fails to import in twenty seconds still burned the whole
-        `timeout`. Poll the readiness event, the exit status and the closed
-        pipe together, and stop at whichever happens first.
+        The readiness event alone cannot notice the child dying, so a server
+        that failed to import in twenty seconds still burned the whole
+        `timeout`. Poll readiness, exit status and the closed pipe together.
         """
         deadline = _deadline(timeout)
         while True:
-            # Cap the wait at whatever is left, so `timeout` keeps the exact
-            # meaning it had when it was passed straight to `wait_for_ready`.
-            # A flat `poll_interval` overshoots any timeout shorter than it, and
-            # readiness arriving inside that overshoot would return success from
-            # a deadline that had already expired. `None` has no deadline to
-            # run out of, so every lap is a full `poll_interval` -- which still
-            # notices a dead child, where the old bare `Event.wait(None)` would
-            # have hung on one forever.
+            # Cap each lap at the time left: a flat `poll_interval` overshoots
+            # any shorter timeout, and readiness inside that overshoot would
+            # return success from an expired deadline. No deadline means full
+            # laps, which still notice a dead child where the bare
+            # `Event.wait(None)` this replaced would have hung forever.
             remaining = _remaining(deadline)
             if remaining is not None and remaining <= 0:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
@@ -367,19 +357,16 @@ class SyntheticDataKit:
                 self._fail_vllm_server(f"exited with code {returncode} before it was ready")
             if self.stdout_capture.has_closed():
                 self._fail_vllm_server("closed its stdout before it was ready")
-            # The expiry check is at the top of the loop, so a dead or closed
-            # child is still diagnosed by its own branch above rather than being
-            # reported as a plain timeout on the last lap.
+            # Expiry is checked at the top, so a dead or closed child keeps
+            # its own message rather than being reported as a timeout.
 
     def _fail_vllm_server(self, what_happened):
         """Terminate the server and raise, quoting what it managed to say.
 
-        This used to print and `return`, handing back a SyntheticDataKit whose
-        server was gone. Every `synthetic-data-kit` step then reported "VLLM
-        server not available", wrote no file and still exited 0, so the first
-        error that stopped the notebook was a FileNotFoundError on
-        `data/final/..._qa_pairs_ft.json` five cells later, with the real
-        traceback long since scrolled away.
+        This used to print and `return`, handing back a kit with no server.
+        Every `synthetic-data-kit` step then wrote no file and still exited 0,
+        so the first error to stop the notebook was a FileNotFoundError five
+        cells later, with the real traceback scrolled away.
         """
         stdout_tail = self.stdout_capture.tail(50)
         stderr_tail = self.stderr_capture.tail(50)
@@ -421,13 +408,12 @@ class SyntheticDataKit:
     @staticmethod
     def check_vllm_status():
         try:
-            # A server that accepts the connection and then stalls used to hang
-            # here forever, since requests has no default timeout.
+            # requests has no default timeout, so a stalled server hung here.
             response = requests.get("http://localhost:8000/metrics", timeout = 5)
             return response.status_code == 200
         except requests.exceptions.RequestException:
-            # ConnectionError alone let a read timeout or a chunked-encoding
-            # error out of the readiness loop as an unrelated traceback.
+            # ConnectionError alone let a read timeout escape as a stray
+            # traceback out of the readiness loop.
             return False
 
     def cleanup(self):

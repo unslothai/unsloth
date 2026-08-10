@@ -269,14 +269,10 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
 
 
-# --------------------------------------------------------------------------
-# The timeout is a deadline, not a number of laps.
-#
-# Both of these bound work by ELAPSED time. The earlier shapes bounded it by
-# attempt count and by a flat poll interval, which are only the same thing when
-# each attempt is instant, and the failing cases here are exactly the ones where
-# it is not.
-# --------------------------------------------------------------------------
+# --- the timeout is a deadline, not a number of laps ----------------------
+# Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
+# only agree with that when each attempt is instant, which is exactly what the
+# failing cases below are not.
 
 
 class _RecordingCapture(_FakeCapture):
@@ -292,11 +288,8 @@ class _RecordingCapture(_FakeCapture):
 
 
 def test_no_single_wait_outruns_the_callers_timeout():
-    """A flat poll interval overshoots any timeout shorter than it.
-
-    `timeout = 0.05` used to wait a full second on the first lap, so the method
-    could return success from a deadline that had already passed.
-    """
+    """`timeout = 0.05` used to wait a full second on the first lap, so the
+    method could return success from a deadline that had already passed."""
     capture = _RecordingCapture(ready = False)
     kit = _kit(capture, _FakeCapture(), _FakeProcess())
     with pytest.raises(RuntimeError):
@@ -329,12 +322,8 @@ def test_the_whole_timeout_is_still_used_when_it_is_long():
 
 
 def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
-    """`check_vllm_status` allows each request 5 seconds.
-
-    Counting to 100 with a 1 second sleep therefore spent up to ten minutes,
-    while the message promised 100 seconds. Bound it by the clock so the two
-    agree however slow a request is.
-    """
+    """Each request gets 5 seconds, so counting to 100 with a 1 second sleep
+    spent up to ten minutes against a message promising 100 seconds."""
     clock = {"now": 0.0}
     monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
     # each health check burns its full 5s request timeout, then the 1s sleep
@@ -360,13 +349,10 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
 
 def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
-    """`SyntheticDataKit(..., timeout = None)` is a legal call.
+    """`timeout = None` is a legal call meaning wait as long as it takes.
 
-    Nothing asserts a type on `timeout`, and the wait it used to reach was
-    `Event.wait`, where `None` means wait as long as it takes -- the case of a
-    first, slow download of a large model. Deadline arithmetic on `None` raised
-    `TypeError` seconds after vLLM had already been spawned, so the caller lost
-    both the wait they asked for and the child they started.
+    Deadline arithmetic on `None` raised `TypeError` seconds after vLLM was
+    spawned, losing both the wait asked for and the child started.
     """
     kit = _kit(
         _FakeCapture(ready = False, ready_after = 0.05),
@@ -377,11 +363,8 @@ def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
 
 
 def test_an_unbounded_wait_still_notices_a_dead_child():
-    """`None` removes the deadline, not the other three exit conditions.
-
-    The bare `Event.wait(None)` this replaces would have blocked forever on a
-    server that had already exited.
-    """
+    """`None` removes the deadline, not the other exit conditions. The bare
+    `Event.wait(None)` this replaces blocked forever on a dead server."""
     kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess(returncode = 1))
     started = time.monotonic()
     with pytest.raises(RuntimeError, match = "exited with code 1"):
@@ -411,8 +394,7 @@ def test_an_unbounded_wait_never_expires(monkeypatch):
 
 
 def test_the_metrics_wait_accepts_an_unbounded_timeout():
-    """Same arithmetic, same fix, so pin it here too rather than leave the
-    private helper the next caller reaches for half-converted."""
+    """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
     def check():
