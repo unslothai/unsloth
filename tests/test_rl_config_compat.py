@@ -1,19 +1,12 @@
 """Config arguments the installed TRL retired must not crash trainer construction.
 
-`unsloth/models/rl.py` emits `Unsloth<X>Config.__init__` with a `**kwargs`
-catch-all that used to be splatted raw into `super().__init__()`. TRL removed
-`GRPOConfig.max_prompt_length` in 0.28.0, so every pinned notebook that sets it
-died with
+The `**kwargs` catch-all in the generated `Unsloth<X>Config.__init__` used to be
+splatted raw into `super().__init__()`, so a pinned notebook setting
+`GRPOConfig.max_prompt_length` (removed in TRL 0.28.0) died with a `TypeError`
+on upgrade. `filter_config_init_kwargs` is what absorbs that.
 
-    TypeError: GRPOConfig.__init__() got an unexpected keyword argument
-    'max_prompt_length'
-
-the moment TRL was upgraded. Fourteen `DPOConfig` fields went the same way in
-0.29.0. `filter_config_init_kwargs` is what absorbs that.
-
-The module is loaded by file spec: `import unsloth.models.rl_config_compat`
-would execute `unsloth/__init__.py` first and drag in torch, numpy and
-unsloth_zoo, which these tests neither need nor want.
+The module is loaded by file spec because `import unsloth.models.rl_config_compat`
+would run `unsloth/__init__.py` first and drag in torch, numpy and unsloth_zoo.
 """
 
 import dataclasses
@@ -42,8 +35,7 @@ TRL_CONFIG_RENAMES = _MODULE.TRL_CONFIG_RENAMES
 
 @dataclasses.dataclass
 class ModernGRPOConfig:
-    """Stands in for TRL >= 0.28 `GRPOConfig`: no `max_prompt_length`, and the
-    post-rename spellings of the three arguments TRL renamed."""
+    """TRL >= 0.28 `GRPOConfig`: no `max_prompt_length`, post-rename spellings."""
 
     output_dir: str = "out"
     max_completion_length: int = 256
@@ -54,7 +46,7 @@ class ModernGRPOConfig:
 
 @dataclasses.dataclass
 class LegacyGRPOConfig:
-    """Stands in for TRL <= 0.27: the retired spellings are still real fields."""
+    """TRL <= 0.27: the retired spellings are still real fields."""
 
     output_dir: str = "out"
     max_prompt_length: int = None
@@ -106,8 +98,8 @@ def test_every_documented_rename_is_carried_across():
 
 
 def test_a_rename_overwrites_the_mirrored_default_not_a_real_value():
-    """The generated __init__ always passes the new name, carrying the class
-    default when untouched. The rename must win over that default..."""
+    """The generated __init__ always passes the new name, so the rename must win
+    over the class default it carries when untouched..."""
     kept, _ = _collect(ModernGRPOConfig, {"use_liger_kernel": False, "use_liger_loss": True})
     assert kept["use_liger_kernel"] is True
 
@@ -143,8 +135,7 @@ def test_an_older_trl_that_still_has_the_field_is_left_alone():
 
 
 def test_a_field_retired_on_one_config_survives_on_another():
-    """`max_completion_length` is gone from DPOConfig but current on GRPOConfig,
-    so the advice table must never fire on acceptance alone."""
+    """`max_completion_length` is gone from DPOConfig but current on GRPOConfig."""
     kept, messages = _collect(ModernGRPOConfig, {"max_completion_length": 64})
     assert kept == {"max_completion_length": 64}
     assert messages == []
@@ -201,8 +192,7 @@ def test_rename_targets_are_real_fields_of_the_modern_config():
 
 
 def test_a_default_factory_field_is_compared_not_crashed_on():
-    """`include_for_metrics` is a real GRPOConfig field with a list factory;
-    reading its default must not raise while resolving a rename."""
+    """Reading a `default_factory` default must not raise while resolving a rename."""
 
     @dataclasses.dataclass
     class WithFactory:
@@ -214,10 +204,8 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
     assert kept["include_for_metrics"] == []
 
 
-# The tests above exercise the filter. These two guard the wiring: without
-# them, reverting the rl.py template edit would leave every test above green
-# while the generated config went back to splatting kwargs raw into
-# super().__init__(). rl.py is read as text because importing it pulls in
+# These two guard the wiring: reverting the rl.py template edit would leave
+# every test above green. rl.py is read as text because importing it pulls in
 # torch, trl and unsloth_zoo.
 
 RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text()

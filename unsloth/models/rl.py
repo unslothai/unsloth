@@ -397,10 +397,8 @@ try:
 except Exception:
     def _unsloth_reset_stray_compile_cache(self): pass
 # Drops/renames config arguments the installed TRL no longer accepts, so a
-# script pinned to an older TRL keeps working after an upgrade instead of
-# dying inside super().__init__(). Falls back to the historical raw
-# passthrough if it cannot be imported, so this can never be what breaks
-# trainer construction.
+# script pinned to an older TRL keeps working after an upgrade. Falls back to
+# the historical raw passthrough so this can never break trainer construction.
 try:
     from unsloth.models.rl_config_compat import filter_config_init_kwargs as _unsloth_filter_config_init_kwargs
 except Exception:
@@ -514,11 +512,9 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         **kwargs,
     ):
 {RLConfig_extra_args}
-        # Every argument goes through one dict so the compatibility filter sees
-        # the whole picture: the mirrored parameters above AND the `**kwargs`
-        # catch-all. Passing the mirrored ones positionally and filtering only
-        # kwargs would double-bind any argument TRL renamed, since the new name
-        # is itself a mirrored parameter.
+        # One dict so the filter sees the mirrored parameters AND `**kwargs`:
+        # filtering kwargs alone would double-bind any argument TRL renamed,
+        # since the new name is itself a mirrored parameter.
         _unsloth_config_arguments = dict({RLConfig_call_args}{RLConfig_kwargs})
         super().__init__(**_unsloth_filter_config_init_kwargs({RLConfig_name}, _unsloth_config_arguments))
         self.vllm_sampling_params = vllm_sampling_params
