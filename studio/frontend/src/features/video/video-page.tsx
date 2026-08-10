@@ -683,6 +683,14 @@ type PendingH3Load = {
 
 const H3_BF16_REPO = "MiniMaxAI/MiniMax-H3";
 
+/** Whether a pick is the H3 base pipeline, whose denoiser partition the user must choose.
+ *  Shared by both entry points: a chat-picker pick arrives as ?model= and reaches loadOrStage
+ *  without passing through handleModelSelect, so checking it in one place staged the default
+ *  fl2va partition, tens of GB, with no way to ask for References. */
+function isH3PipelinePick(repoId: string, kind: VideoLoadOptions["kind"]): boolean {
+  return kind === "pipeline" && repoId.toLowerCase() === H3_BF16_REPO.toLowerCase();
+}
+
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
 function VideoGate({ children }: { children: ReactNode }) {
   return (
@@ -1884,6 +1892,16 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       void Promise.resolve().then(() => loadGgufRepoPick(pick.repoId, null, false));
       return;
     }
+    // A routed pick owns the page exactly like a direct one, so it has to offer the same choice.
+    if (isH3PipelinePick(pick.repoId, pick.opts.kind)) {
+      setPendingH3Load({
+        repoId: pick.repoId,
+        opts: pick.opts,
+        isDownloaded: false,
+        token,
+      });
+      return;
+    }
     void loadOrStage(pick.repoId, pick.opts, false, token);
   }, [
     active,
@@ -1945,7 +1963,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         const d = defaultsFor(spec.filename ? `${id}/${spec.filename}` : id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        if (id.toLowerCase() === H3_BF16_REPO.toLowerCase() && spec.kind === "pipeline") {
+        if (isH3PipelinePick(id, spec.kind)) {
           setPendingH3Load({
             repoId: id,
             opts: { kind: spec.kind, filename: spec.filename },

@@ -88,6 +88,32 @@ test("the selected H3 task reaches both the plan and the load", () => {
   assert.ok(source.includes('chooseH3Task("ref2va")'));
 });
 
+test("a routed H3 pipeline pick asks for the task instead of loading a default", () => {
+  // The chat picker cannot load a diffusion model, so a pick there arrives on this page as
+  // ?model=. That route calls loadOrStage directly: without the same interception the direct
+  // pick makes, a cached MiniMax H3 silently staged the fl2va denoiser, tens of GB, and left no
+  // way to ask for References.
+  const routeEffect = source.slice(
+    source.indexOf("const pick = diffusionRoutePick("),
+    source.indexOf("const chooseH3Task = useCallback"),
+  );
+  assert.ok(routeEffect.length > 0, "the routed pick branch must exist");
+  assert.ok(
+    routeEffect.includes("isH3PipelinePick(pick.repoId, pick.opts.kind)"),
+    "the routed branch must intercept an H3 pipeline pick",
+  );
+  const intercept = routeEffect.indexOf("isH3PipelinePick(");
+  const load = routeEffect.indexOf("void loadOrStage(pick.repoId");
+  assert.ok(
+    intercept >= 0 && load > intercept,
+    "the interception must come before the unconditional load",
+  );
+  assert.ok(routeEffect.includes("setPendingH3Load({"));
+  // One predicate, so the two entry points cannot drift apart again.
+  assert.ok(source.includes("function isH3PipelinePick("));
+  assert.ok(source.includes("isH3PipelinePick(id, spec.kind)"));
+});
+
 test("reapply preserves the loaded H3 task", () => {
   const reapply = source.slice(
     source.indexOf("const handleReapply = useCallback"),
