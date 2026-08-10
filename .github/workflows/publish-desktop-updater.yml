@@ -105,12 +105,23 @@ jobs:
           # a manifest carried onto one of those cannot repair the endpoint this step
           # exists for, however well the upload itself goes. The source filter below
           # already refuses them; hold the target to the same rule rather than report
-          # a repair it could never deliver. Read from the listing already fetched.
+          # a repair it could never deliver. Read from the listing already fetched:
+          # it is the only view that carries the answer, because /releases/tags/{tag}
+          # returns 404 for a draft, which has no git tag until it is published.
           target = next(
               (r for r in releases if r.get('tag_name') == os.environ['RELEASE_TAG']),
               None,
           )
-          if target is not None and (target.get('draft') or target.get('prerelease')):
+          # Fail closed: that listing is one page, so a target beyond it is a state
+          # this step cannot read, not a state it may assume is fine. Skipping the
+          # check below would upload the manifest and report a repair anyway.
+          if target is None:
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is not among the 100 most recent releases; "
+                  'refusing to carry a manifest onto a target whose draft or '
+                  'prerelease state cannot be checked'
+              )
+          if target.get('draft') or target.get('prerelease'):
               state = 'draft' if target.get('draft') else 'prerelease'
               sys.exit(
                   f"{os.environ['RELEASE_TAG']} is a {state}, which /releases/latest never "

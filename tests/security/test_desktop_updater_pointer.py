@@ -155,6 +155,7 @@ def test_drafts_prereleases_and_bundleless_releases_are_never_the_source(tmp_pat
         tmp_path,
         release_tag = "v0.1.53-beta",
         releases = [
+            _release("v0.1.53-beta", has_manifest = False, published_at = "2026-04-01T00:00:00Z"),
             _release("v0.1.52-beta", draft = True, published_at = "2026-03-01T00:00:00Z"),
             _release("v0.1.51-beta", prerelease = True, published_at = "2026-02-01T00:00:00Z"),
             _release("v0.1.50-beta", has_manifest = False, published_at = "2026-01-01T00:00:00Z"),
@@ -185,6 +186,7 @@ def test_an_already_carried_manifest_is_carried_forward_again(tmp_path):
         tmp_path,
         release_tag = "v0.1.54-beta",
         releases = [
+            _release("v0.1.54-beta", has_manifest = False, published_at = "2026-05-01T00:00:00Z"),
             _release("v0.1.53-beta", published_at = "2026-04-01T00:00:00Z"),
             _release("v0.1.52-beta", published_at = "2026-03-01T00:00:00Z"),
         ],
@@ -198,7 +200,10 @@ def test_a_manifest_that_is_not_pinned_to_its_own_version_is_refused(tmp_path):
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
-        releases = [_release("v0.1.52-beta")],
+        releases = [
+            _release("v0.1.53-beta", has_manifest = False),
+            _release("v0.1.52-beta"),
+        ],
         manifest = {
             "version": "v0.1.52-beta",
             "platforms": {
@@ -218,7 +223,10 @@ def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
     result, _ = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
-        releases = [_release("v0.1.52-beta")],
+        releases = [
+            _release("v0.1.53-beta", has_manifest = False),
+            _release("v0.1.52-beta"),
+        ],
         manifest = {"version": "latest", "platforms": {}},
     )
     assert result.returncode == 1
@@ -242,3 +250,20 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
         assert result.returncode != 0, f"{state} target was accepted"
         assert f"is a {state}" in result.stderr, result.stderr
         assert not [line for line in commands if line.startswith("gh release upload")], commands
+
+
+def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
+    # The listing is the only view that shows the target's draft state at all:
+    # /releases/tags/{tag} answers 404 for a draft, which has no git tag until it
+    # is published. So a target absent from the single page fetched above has an
+    # unverifiable state, and the draft/prerelease refusal degrades into no check.
+    # Refuse rather than report a repair /releases/latest may never resolve to.
+    result, commands = _run(
+        tmp_path,
+        release_tag = "v0.1.53-beta",
+        releases = [_release("v0.1.52-beta")],
+        manifest = _manifest("v0.1.52-beta"),
+    )
+    assert result.returncode != 0, result.stdout
+    assert "is not among the 100 most recent releases" in result.stderr, result.stderr
+    assert not [line for line in commands if line.startswith("gh release upload")], commands
