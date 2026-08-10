@@ -351,3 +351,91 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- the kwargs the wrapper exists to move -------------------------------
+#
+# These use a real trl config rather than a stand-in, deliberately. Every trl
+# config subclasses transformers.TrainingArguments, and that is exactly what
+# `new_init` branches on, so a plain dataclass takes the other branch and the
+# tests would pass against the bug.
+
+
+def _sft_config():
+    trl_module = pytest.importorskip("trl")
+    return trl_module.SFTConfig
+
+
+class _RecordingTrainer:
+    """trl.SFTTrainer's signature, enough of it to see what arrives."""
+
+    def __init__(self, model = None, args = None, train_dataset = None, processing_class = None):
+        self.args = args
+        self.train_dataset = train_dataset
+
+
+def _wrapped_recording():
+    config_class = _sft_config()
+    ns = _load(
+        "_ensure_warnings_issued", "_resolve_trainer_params", "_backwards_compatible_trainer"
+    )
+    if "trl" not in ns:
+        pytest.skip("trl not installed")
+
+    class T(_RecordingTrainer):
+        pass
+
+    T.__init__ = ns["_backwards_compatible_trainer"](T, config_class)
+    return T, config_class
+
+
+def test_config_kwargs_reach_the_config_the_caller_passed(tmp_path):
+    """The whole point of the wrapper: settings that used to be trainer kwargs
+    have to end up on the config. They were computed and then dropped whenever
+    `args` was given, which is every real call."""
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+    assert config.packing is False and config.max_length != 2048
+
+    trainer = Trainer(
+        model = _Bare(),
+        args = config,
+        train_dataset = "DS",
+        packing = True,
+        max_length = 2048,
+        dataset_num_proc = 4,
+    )
+
+    assert trainer.args.packing is True
+    assert trainer.args.max_length == 2048
+    assert trainer.args.dataset_num_proc == 4
+
+
+def test_the_callers_own_config_object_is_the_one_used(tmp_path):
+    """Reinitialising re-triggers trl's mutually exclusive checks, which is why
+    this branch exists at all, so the values have to be set rather than a new
+    config built."""
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    trainer = Trainer(model = _Bare(), args = config, packing = True)
+
+    assert trainer.args is config
+
+
+def test_untouched_config_values_keep_what_the_caller_set(tmp_path):
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [], max_length = 777)
+
+    trainer = Trainer(model = _Bare(), args = config, packing = True)
+
+    assert trainer.args.max_length == 777
+
+
+def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
+    Trainer, config_class = _wrapped_recording()
+    config = config_class(output_dir = str(tmp_path), report_to = [])
+
+    trainer = Trainer(model = _Bare(), args = config, train_dataset = "DS", packing = True)
+
+    assert trainer.train_dataset == "DS"

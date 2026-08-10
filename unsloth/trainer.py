@@ -766,7 +766,14 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             else:
+                # Every trl config subclasses TrainingArguments, so this is the
+                # branch real calls take, and config_dict was going nowhere.
+                # Reinitialising is what the comment above rules out, so set the
+                # caller's values on the config they passed instead of dropping them.
                 config = training_args
+                for key, value in additional_config_kwargs.items():
+                    if key in config_fields or key in moved_params:
+                        setattr(config, key, value)
 
             # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
