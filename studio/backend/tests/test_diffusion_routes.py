@@ -1913,6 +1913,35 @@ def test_companion_sizes_survives_an_unloadable_first_candidate(client, monkeypa
     assert resp.json()["sizes"] == {"flux1-dev-Q4_K_M.gguf": 7}
 
 
+def test_companion_sizes_surfaces_a_gated_base_rather_than_an_empty_map(client, monkeypatch):
+    # The base-access preflight raises the same ValueError an unloadable filename does, so skipping
+    # to the next candidate swallowed a refusal that applies to every row: the picker got an empty
+    # success and disabled the whole repo instead of the 400 naming the licence to accept.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    detail = "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face"
+
+    def _plan(model_path, **kwargs):
+        raise ValueError(detail)
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": ["flux1-dev-Q4_K_M.gguf", "flux1-dev-Q6_K.gguf"],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert detail in resp.json()["detail"]
+
+
 def test_companion_sizes_still_refuses_a_host_wide_precision_failure(client, monkeypatch):
     # The head candidate carries the precision check on purpose: a scheme this host cannot honour
     # is not one bad row, and must reach the picker as the 409 the load would give.

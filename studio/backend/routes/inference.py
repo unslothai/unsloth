@@ -20138,15 +20138,24 @@ async def _companion_sizes_for(
         # validating it first would 400 the batch and leave every real transformer row disabled.
         sizes: dict[str, int] = {}
         rest = list(ordered)
+        refused: Optional[Exception] = None
+        planned_one = False
         while rest:
             name = rest.pop(0)
             try:
                 head = _answer(await plan_for(name, True))
-            except (ValueError, FileNotFoundError):
+            except (ValueError, FileNotFoundError) as exc:
+                refused = exc
                 continue
+            planned_one = True
             if head is not None:
                 sizes[name] = head
             break
+        # Nothing planned at all: the refusal was not this candidate, it was the pick. A gated base
+        # raises the same ValueError as an unloadable filename, and swallowing it returned an empty
+        # map that left every row disabled instead of the 400 naming the licence to accept.
+        if not planned_one and refused is not None:
+            raise refused
         gate = asyncio.Semaphore(_COMPANION_SIZE_CONCURRENCY)
 
         async def _one(name: str):
