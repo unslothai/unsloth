@@ -3551,6 +3551,28 @@ class VideoBackend:
                 )
         offload_policy = "none"
         denoiser_pinned = False
+        # load_components just spent minutes building ~145 GB of components, and everything below
+        # this line either moves weights onto the card or mutates process-wide backend flags. The
+        # conventional placement path fences on the token for exactly that reason; without the
+        # same fence here a cancelled or superseded worker resumes into a GPU a replacement load
+        # already owns and puts a 66.3 GB denoiser next to it. The next check was the state commit,
+        # which is after the placement it is meant to prevent.
+        if _load_token is not None and _load_token != self._load_token:
+            del pipe
+            clear_gpu_cache()
+            raise RuntimeError("Video load was cancelled or superseded.")
+        # Resolved BEFORE the placement below, not after it: the dense pin is a speed optimisation
+        # by its own reasoning, so "off" has to be known in time to decline it.
+        effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
+        if effective_speed == SPEED_MAX:
+            # SPEED_MAX compiles with dynamic=False. H3's packed sequence length carries the
+            # caption's token rows, so a static graph recompiles per prompt: measured 0.957-1.000
+            # s/step static against 1.000-1.040 dynamic, and two recompiles paid for it.
+            logger.info(
+                "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
+                "(a static graph retraces on the caption's contribution to the packed length)"
+            )
+            effective_speed = SPEED_DEFAULT
         if device != "cpu":
             manager.enable_auto_cpu_offload(
                 # Measured H3 activations need substantially more than the
@@ -3570,8 +3592,13 @@ class VideoBackend:
                 # keep their hooks and still offload around it.
                 from .diffusion_prequant import pin_prequantized_module
                 denoiser_pinned = pin_prequantized_module(manager, denoiser, device, logger = logger)
-            elif denoiser is not None:
+            elif denoiser is not None and effective_speed != SPEED_OFF:
                 # The RELEASED bfloat16 denoiser, for a different reason: not correctness, speed.
+                # Which is why speed=off skips this branch and keeps the rotation: taking a module
+                # out of the offload rotation is not free, it trades the ability to budget the
+                # denoiser against the requested frame count for throughput, and an explicit "off"
+                # is the one request that says do not make that trade. The pre-quantized pin above
+                # is NOT gated the same way: there it is correctness, not speed.
                 # Every denoise step moves the same 66.3 GB module in and out, and a module that
                 # moves cannot be compiled either (the onload hooks fight the graph). Quantizing
                 # the conditioner is what makes pinning affordable -- 66.3 GB denoiser + 27.2 GB
@@ -3612,16 +3639,7 @@ class VideoBackend:
         # load_pipeline, which returns first, so every H3 load reported speed_optims [] and
         # attention_backend null. Called here rather than by moving the dispatch, because the
         # compile decision below needs ``denoiser_pinned``, which only exists after the offload.
-        effective_speed = resolve_speed_mode(speed_mode, is_gguf = False, dense_default = SPEED_DEFAULT)
-        if effective_speed == SPEED_MAX:
-            # SPEED_MAX compiles with dynamic=False. H3's packed sequence length carries the
-            # caption's token rows, so a static graph recompiles per prompt: measured 0.957-1.000
-            # s/step static against 1.000-1.040 dynamic, and two recompiles paid for it.
-            logger.info(
-                "video.speed_mode: MiniMax-H3 runs the 'default' regional profile under max "
-                "(a static graph retraces on the caption's contribution to the packed length)"
-            )
-            effective_speed = SPEED_DEFAULT
+        # ``effective_speed`` itself was resolved above the offload, because the pin reads it.
         if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not denoiser_pinned:
             # Compile ONLY over a resident denoiser: inside the rotation the compiled graph fights
             # the onload hooks, measured 69-85 s against 30-115 s eager on the same job at a

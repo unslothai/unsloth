@@ -433,3 +433,125 @@ def test_the_pin_decision_itself_refuses_a_card_that_cannot_hold_it():
     # No estimate and no reading both keep the rotation, which is today's behaviour.
     assert _h3_dense_denoiser_fits(None, need) is False
     assert _h3_dense_denoiser_fits(sizes, None) is False
+
+
+# ── the conditioner opt-out has to be reachable ──────────────────────────────────
+
+
+def test_the_released_conditioner_is_reachable_through_the_load_api():
+    """The new default makes an omitted ``text_encoder_quant`` select the hosted INT8 conditioner,
+    so ``none``/``off`` became the only way to ask for the released bfloat16 one. That request has
+    to survive both gates it passes through -- the request model and the cheap normaliser -- or the
+    bfloat16 reference configuration is unreachable and no comparison against it can be run."""
+    from pydantic import ValidationError
+
+    from core.inference.diffusion_precision import normalize_te_quant
+    from models.inference import VideoLoadRequest
+
+    for opt_out in ("none", "off", "None", " OFF "):
+        assert normalize_te_quant(opt_out) is None
+    # "auto" is the same no-scheme answer to this normaliser; the tri-state that distinguishes it
+    # from an opt-out reads the RAW request before normalising.
+    assert normalize_te_quant("auto") is None
+    # A genuinely unsupported scheme is still refused here, cheaply, as before.
+    with pytest.raises(ValueError):
+        normalize_te_quant("int3")
+
+    def _request(value):
+        return VideoLoadRequest(
+            model_path = "MiniMaxAI/MiniMax-H3", text_encoder_quant = value
+        )
+
+    for accepted in (None, "auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"):
+        assert _request(accepted).text_encoder_quant == accepted
+    with pytest.raises(ValidationError):
+        _request("int3")
+
+
+def test_the_opt_out_spellings_reach_the_h3_tri_state():
+    """Reaching the model is only useful if the tri-state then reads them as the dense pin rather
+    than folding them into the unset branch that takes the hosted checkpoint."""
+    from core.inference.video import _h3_precision_pinned_dense, _h3_precision_unset
+
+    for opt_out in ("none", "off", "OFF", " none "):
+        assert _h3_precision_pinned_dense(opt_out) is True
+        assert _h3_precision_unset(opt_out) is False
+    for unset in (None, "", "auto", "AUTO"):
+        assert _h3_precision_unset(unset) is True
+        assert _h3_precision_pinned_dense(unset) is False
+
+
+def test_speed_off_declines_the_dense_pin_but_never_the_prequantized_one():
+    """The dense pin is a speed optimisation by its own reasoning, so an explicit ``speed=off``
+    has to decline it: taking the denoiser out of the rotation trades the ability to budget it
+    against the requested frame count for throughput. The pre-quantized pin is NOT the same
+    decision -- a torchao module does not survive the mid-block move -- so it stays unconditional.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.diffusion_speed import SPEED_DEFAULT, SPEED_OFF, resolve_speed_mode
+
+    # "off" is the only profile that reaches the gate as SPEED_OFF, so it is the only one the
+    # gate can decline. Asserted on the resolver rather than assumed.
+    assert resolve_speed_mode("off", is_gguf = False, dense_default = SPEED_DEFAULT) == SPEED_OFF
+    for on in ("default", "max"):
+        assert resolve_speed_mode(on, is_gguf = False, dense_default = SPEED_DEFAULT) != SPEED_OFF
+
+    # The gate itself, read off the loader: the dense branch is the ``elif`` beside the
+    # pre-quantized ``if``, and only the dense one may mention the speed profile. Read from the
+    # source because standing up a modular load to observe the placement is not something this
+    # network-free suite can do, and an ungated pin is exactly the regression worth catching.
+    source = textwrap.dedent(inspect.getsource(VideoBackend._load_h3_modular_pipeline))
+    pins = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.If)
+        and "transformer_quant_engaged" == getattr(node.test, "id", None)
+        and node.orelse
+    ]
+    assert len(pins) == 1, "the two denoiser placements are no longer one if/elif pair"
+    prequantized_branch, dense_branch = pins[0], pins[0].orelse[0]
+    assert isinstance(dense_branch, ast.If)
+    dense_test = ast.dump(dense_branch.test)
+    assert "SPEED_OFF" in dense_test, "the dense pin no longer honours an explicit speed=off"
+    assert "denoiser" in dense_test
+    # And the correctness pin is still unconditional on the profile.
+    assert "SPEED_OFF" not in ast.dump(prequantized_branch.test)
+    for stmt in prequantized_branch.body:
+        assert "SPEED_OFF" not in ast.dump(stmt)
+
+
+def test_the_dense_placement_is_fenced_on_the_load_token():
+    """``load_components`` spends minutes building ~145 GB, and everything after it either moves
+    weights onto the card or mutates process-wide backend flags. A cancelled or superseded worker
+    that resumes there puts a 66.3 GB denoiser next to a model a replacement load already owns.
+    The conventional placement path fences for exactly that reason; this one has to as well, and
+    the fence has to sit BEFORE the placement rather than at the state commit after it."""
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(VideoBackend._load_h3_modular_pipeline))
+    tree = ast.parse(source)
+
+    def _line(predicate) -> int:
+        hits = [node.lineno for node in ast.walk(tree) if predicate(node)]
+        assert hits, "landmark not found in the modular loader"
+        return min(hits)
+
+    load_components = _line(
+        lambda n: isinstance(n, ast.Attribute) and n.attr == "load_components"
+    )
+    fence = _line(
+        lambda n: isinstance(n, ast.Compare)
+        and "_load_token" in ast.dump(n)
+        and n.lineno > load_components
+    )
+    placement = _line(
+        lambda n: isinstance(n, ast.Attribute) and n.attr == "enable_auto_cpu_offload"
+    )
+    assert load_components < fence < placement, (
+        "the token fence must sit between load_components and the placement it guards"
+    )
