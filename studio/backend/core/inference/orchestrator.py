@@ -81,8 +81,7 @@ _UNLOAD_GEN_LOCK_TIMEOUT = 15.0
 
 
 def _audio_generation_timeout(
-    max_new_tokens: int,
-    base: float = _AUDIO_GENERATION_TIMEOUT,
+    max_new_tokens: int, base: float = _AUDIO_GENERATION_TIMEOUT
 ) -> float:
     """Scale a floor by the requested token count.
 
