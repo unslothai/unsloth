@@ -162,9 +162,9 @@ assert_present "macOS: Cookies kept when the app owns it"                  "$H/L
 assert_gone    "macOS: shell launcher bundle still removed"                "$H/Applications/Unsloth Studio.app"
 
 # ── 1c. macOS: the app is found by bundle id, not by path ──
-# Renaming the bundle or keeping it in a subfolder is a supported layout, so the
-# data must survive there too.
-for _case in "Unsloth Studio Beta.app" "AI & ML/Unsloth.app"; do
+# Renaming the bundle or filing it under subfolders is a supported layout, at any
+# depth, so the data must survive there too.
+for _case in "Unsloth Studio Beta.app" "AI & ML/Unsloth.app" "Development/AI/Local/Unsloth.app"; do
     MOVED_APPS="$_TMP_ROOT/Applications-moved"
     rm -rf "$MOVED_APPS"
     make_app "$MOVED_APPS/$_case" unsloth-studio

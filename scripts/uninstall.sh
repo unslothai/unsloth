@@ -461,8 +461,9 @@ _bundle_id_owner() {
             return 0
         fi
     fi
-    # Spotlight can be off or still indexing, so walk the usual roots too.
-    find "$_bio_apps" "$HOME/Applications" -maxdepth 3 -name '*.app' -type d 2>/dev/null |
+    # Spotlight can be off or still indexing, so walk the usual roots too. No depth cap:
+    # -prune stops the walk at each bundle, so nesting is free and bundles are never entered.
+    find "$_bio_apps" "$HOME/Applications" -name '*.app' -type d -prune -print 2>/dev/null |
     while IFS= read -r _bio_app; do
         if _owns_bundle_id "$_bio_app" "$1"; then
             printf '%s\n' "$_bio_app"
