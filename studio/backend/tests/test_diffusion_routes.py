@@ -1790,6 +1790,82 @@ def test_companion_sizes_lists_each_repo_once_for_the_whole_batch(client, monkey
     assert sorted(listed) == ["black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev-GGUF"]
 
 
+def test_companion_sizes_stops_planning_once_the_client_is_gone(client, monkeypatch):
+    # Aborting the fetch closes the client request; FastAPI runs the handler to completion anyway,
+    # so a collapsed 63-row expander kept the backend planning every remaining candidate.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    planned: list[str] = []
+
+    def _plan(model_path, **kwargs):
+        planned.append(kwargs["gguf_filename"])
+        return {
+            "entries": [
+                {
+                    "repo_id": "black-forest-labs/FLUX.1-dev",
+                    "files": ["x"],
+                    "bytes": 7,
+                    "gguf_filename": None,
+                }
+            ],
+            "total_bytes": 7,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    # Gone the moment the first candidate is done, which is where the batch can still stop.
+    monkeypatch.setattr(
+        "starlette.requests.Request.is_disconnected",
+        lambda self: _disconnected_after_first(planned),
+    )
+
+    resp = client.post(
+        "/api/inference/images/companion-sizes",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filenames": [f"flux1-dev-Q{n}.gguf" for n in range(8)],
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    # The first candidate is planned before the disconnect can be seen; the rest are not.
+    assert planned == ["flux1-dev-Q0.gguf"]
+    assert resp.json()["sizes"] == {"flux1-dev-Q0.gguf": 7}
+
+
+async def _disconnected_after_first(planned: list[str]) -> bool:
+    return bool(planned)
+
+
+def test_a_failing_listing_is_not_retried_by_every_candidate():
+    # An offline or rate-limiting Hub would otherwise have all 63 LTX candidates repeat the same
+    # slow failing call, turning one outage into a request storm.
+    from core.inference.plan_metadata import plan_model_info, shared_plan_metadata
+
+    calls: list[str] = []
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            calls.append(repo_id)
+            raise OSError("hub is offline")
+
+    api = _Api()
+    with shared_plan_metadata():
+        for _ in range(8):
+            # Re-raised, never swallowed: the caller still reports no size for its candidate.
+            with pytest.raises(OSError):
+                plan_model_info(api, "unsloth/LTX-2.3-GGUF")
+    assert calls == ["unsloth/LTX-2.3-GGUF"]
+
+    # Outside a batch nothing is remembered, so the next request tries the Hub again.
+    with pytest.raises(OSError):
+        plan_model_info(api, "unsloth/LTX-2.3-GGUF")
+    assert len(calls) == 2
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router

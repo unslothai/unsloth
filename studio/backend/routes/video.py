@@ -24,7 +24,7 @@ import secrets as _secrets
 import time as _time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 
 from auth.authentication import get_current_subject
@@ -177,7 +177,9 @@ async def video_download_plan(
 
 @router.post("/video/companion-sizes", response_model = CompanionSizesResponse)
 async def video_companion_sizes(
-    request: VideoCompanionSizesRequest, current_subject: str = Depends(get_current_subject)
+    request: VideoCompanionSizesRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """What each candidate quant downloads beyond its own checkpoint. Mirrors
     /images/companion-sizes.
@@ -195,6 +197,7 @@ async def video_companion_sizes(
             lambda name, check_precision: _video_plan_for_pick(
                 request, name, check_precision = check_precision
             ),
+            http_request.is_disconnected,
         )
         return CompanionSizesResponse(sizes = sizes)
     except (ValueError, FileNotFoundError) as exc:

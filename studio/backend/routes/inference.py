@@ -20102,7 +20102,7 @@ def _guard_diffusion_load_against_training() -> None:
 _COMPANION_SIZE_CONCURRENCY = 4
 
 
-async def _companion_sizes_for(filenames, plan_for) -> dict[str, int]:
+async def _companion_sizes_for(filenames, plan_for, is_cancelled = None) -> dict[str, int]:
     """``filename -> companion bytes`` for each candidate, planned concurrently.
 
     ``plan_for(name, check_precision)`` returns that candidate's download plan. Only the first
@@ -20137,6 +20137,11 @@ async def _companion_sizes_for(filenames, plan_for) -> dict[str, int]:
 
         async def _one(name: str):
             async with gate:
+                # Checked after the gate, where a queued candidate has not started yet: aborting
+                # the fetch closes the client request, and FastAPI runs the handler to completion
+                # regardless, so nothing else stops a collapsed 63-row expander.
+                if is_cancelled is not None and await is_cancelled():
+                    return name, None
                 try:
                     return name, _answer(await plan_for(name, False))
                 except Exception:  # noqa: BLE001 -- one unplannable row must not fail the expander
@@ -20262,7 +20267,9 @@ async def diffusion_download_plan(
 
 @studio_router.post("/images/companion-sizes", response_model = CompanionSizesResponse)
 async def diffusion_companion_sizes(
-    request: DiffusionCompanionSizesRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionCompanionSizesRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """What each candidate quant downloads beyond its own checkpoint, so the picker can size a
     whole expander in one call.
@@ -20277,6 +20284,7 @@ async def diffusion_companion_sizes(
             lambda name, check_precision: _diffusion_plan_for_pick(
                 request, name, check_precision = check_precision
             ),
+            http_request.is_disconnected,
         )
         return CompanionSizesResponse(sizes = sizes)
     except (ValueError, FileNotFoundError) as exc:

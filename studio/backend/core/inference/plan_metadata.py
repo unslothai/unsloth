@@ -40,12 +40,20 @@ def plan_model_info(
 ) -> Any:
     """``api.model_info(repo_id, ...)``, served from the batch's listings when one is active.
 
-    Raises exactly what the underlying call raises: a failure is not cached, so one repo that was
-    unreachable for a single candidate does not decide the rest of the batch."""
+    Failures are remembered and re-raised, not retried: an offline or rate-limiting Hub would
+    otherwise have all 63 LTX candidates repeat the same slow failing call, turning one outage
+    into a request storm. Each candidate still reports no size, which is the same answer a retry
+    would have reached."""
     cache = _cache.get()
     if cache is None:
         return api.model_info(repo_id, files_metadata = files_metadata, token = token)
     key = (repo_id, files_metadata, token)
     if key not in cache:
-        cache[key] = api.model_info(repo_id, files_metadata = files_metadata, token = token)
-    return cache[key]
+        try:
+            cache[key] = api.model_info(repo_id, files_metadata = files_metadata, token = token)
+        except Exception as exc:  # noqa: BLE001 -- cached to re-raise, never swallowed
+            cache[key] = exc
+    hit = cache[key]
+    if isinstance(hit, BaseException):
+        raise hit
+    return hit
