@@ -169,6 +169,10 @@ def _store_identity(identity: tuple[int, int]) -> tuple[int | str, int | str]:
     return tuple(value if value <= _SQLITE_INTEGER_MAX else f"x{value:x}" for value in identity)
 
 
+def _file_identity(metadata: dict) -> tuple[int | str, int | str]:
+    return _store_identity((metadata["device"], metadata["inode"]))
+
+
 def _load_identity(device_id: int | str, file_id: int | str) -> tuple[int, int]:
     def load(value: int | str) -> int:
         return (
@@ -1092,8 +1096,7 @@ def _install_mapping(
                 rel,
                 metadata["size_bytes"],
                 metadata["mtime_ns"],
-                metadata["device"],
-                metadata["inode"],
+                *_file_identity(metadata),
                 document_id,
                 _now(),
                 content_hash,
@@ -1119,8 +1122,7 @@ def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_h
             (
                 metadata["size_bytes"],
                 metadata["mtime_ns"],
-                metadata["device"],
-                metadata["inode"],
+                *_file_identity(metadata),
                 content_hash,
                 _now(),
                 folder_id,
@@ -1242,8 +1244,7 @@ def _reconcile_folder(job_id: str) -> None:
         for rel in set(current) & set(known)
         if current[rel]["size_bytes"] != known[rel]["size_bytes"]
         or current[rel]["mtime_ns"] != known[rel]["mtime_ns"]
-        or current[rel]["device"] != known[rel]["device"]
-        or current[rel]["inode"] != known[rel]["inode"]
+        or _file_identity(current[rel]) != (known[rel]["device"], known[rel]["inode"])
     }
     changed = set(current) & set(known) if rebuild else materially_changed
     work = sorted(new | changed)

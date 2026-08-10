@@ -620,6 +620,41 @@ def test_large_windows_root_identity_round_trips_through_sqlite(rag_home, monkey
     assert folder_sync._load_identity(folder["root_device"], folder["root_inode"]) == identity
 
 
+@requires_sqlite_vec
+def test_large_windows_file_identity_round_trips_through_sqlite(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """CPython 3.12+ reads st_ino from FILE_ID_INFO, so a ReFS file id is 128-bit."""
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("large identity text", encoding = "utf-8")
+    identity = (1 << 63, 1 << 127)
+    real_scan, real_snapshot = folder_sync._scan, folder_sync._snapshot
+
+    def scan(root, expected_identity = None):
+        found, root_identity = real_scan(root, expected_identity)
+        for metadata in found.values():
+            metadata["scanned"], (metadata["device"], metadata["inode"]) = (
+                (metadata["device"], metadata["inode"]),
+                identity,
+            )
+        return found, root_identity
+
+    monkeypatch.setattr(folder_sync, "_scan", scan)
+    monkeypatch.setattr(
+        folder_sync,
+        "_snapshot",
+        lambda root, metadata: real_snapshot(
+            root, {**metadata, "device": metadata["scanned"][0], "inode": metadata["scanned"][1]}
+        ),
+    )
+
+    assert _run(folder["id"])["status"] == "completed"
+    row = _mapping(folder)
+    assert folder_sync._load_identity(row["device"], row["inode"]) == identity
+    # The same identity must still compare equal, so nothing re-embeds every sync.
+    assert _run(folder["id"])["changed"] == 0
+
+
 def test_validate_folder_rejects_symlink_root(rag_home):
     source = rag_home / "source"
     source.mkdir()
