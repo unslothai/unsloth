@@ -758,8 +758,17 @@ def clear_gpu_cache():
         except Exception as e:
             logger.debug("Failed to clear XPU cache: %s", e)
     elif device == DeviceType.MLX:
-        # MLX manages memory automatically; gc.collect() above is enough.
-        pass
+        # MLX manages its own memory, but Apple Silicon also runs torch MPS (diffusion/video),
+        # and torch's MPS caching allocator keeps freed buffers reserved from the shared pool.
+        # Those bytes read as used system memory, so a teardown that skips this leaves the next
+        # load budgeting against a pool that looks smaller than it is.
+        try:
+            import torch
+            empty_cache = getattr(getattr(torch, "mps", None), "empty_cache", None)
+            if callable(empty_cache):
+                empty_cache()
+        except Exception as e:
+            logger.debug("Failed to clear MPS cache: %s", e)
 
 
 def get_gpu_memory_info() -> Dict[str, Any]:

@@ -101,9 +101,14 @@ for check in "$@"; do
       #   triton-kernels  -- a git URL under the triton repo's python/triton_kernels
       #     subdir: 75 Python files, no setup.py, kernels compiled at runtime. Named by
       #     the installer, not chosen by resolution, and only the Linux legs reach it.
+      #   diffusers  -- pinned to a source archive because MiniMax-H3 support is not in
+      #     any release yet. Plain setuptools, no ext_modules, and the tree has zero
+      #     .c/.cpp/.pyx/.rs/.cu files, so the PEP 517 build is a pure-Python copy.
+      #     REMOVE this entry once a diffusers release carries H3 and the requirement
+      #     goes back to a version specifier.
       # UNSLOTH_ALLOW_SDIST extends it. Lowercased and underscore-folded on both sides:
       # the distribution name and the name uv prints can differ on the separator.
-      _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
+      _allow="$(printf '%s' "openai-whisper argbind randomname antlr4-python3-runtime triton-kernels diffusers ${UNSLOTH_ALLOW_SDIST:-}" | tr 'A-Z_' 'a-z-')"
       if [ ! -f "$LOG" ]; then
         fail "nobuild requested but $LOG is missing"
       else

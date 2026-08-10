@@ -1,9 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type DragEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { Settings02Icon, Upload01Icon } from "@hugeicons/core-free-icons";
+import {
+  FolderAddIcon,
+  Settings02Icon,
+  Upload01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
@@ -24,6 +36,11 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -36,6 +53,11 @@ import type { TrainingSeriesPoint } from "@/features/training";
 // eslint-disable-next-line no-restricted-imports -- matches images-page.tsx's token access
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { cn } from "@/lib/utils";
+import {
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 
 import {
@@ -49,12 +71,23 @@ import {
   getDiffusionTrainingRun,
   getDiffusionTrainingStatus,
   listDiffusionDatasetExamples,
+  listDiffusionDatasetImages,
   listDiffusionTrainingRuns,
   startDiffusionTraining,
   stopDiffusionTraining,
   uploadDiffusionDataset,
 } from "../api";
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
+import {
+  DATASET_FILE_ACCEPT,
+  DATASET_IMAGE_EXTS,
+  chunkDatasetUpload,
+  existingStemClash,
+  filesFromDataTransfer,
+  metadataKeyedOnSubfolders,
+  oversizedChunk,
+  selectDatasetFiles,
+} from "./dataset-files";
 import { DatasetShowcase } from "./dataset-showcase";
 import { DiffusionCharts } from "./diffusion-charts";
 import {
@@ -62,6 +95,10 @@ import {
   runExampleImport,
   shortExampleLabel,
 } from "./example-dataset-cards";
+import {
+  buildDiffusionResumePayload,
+  resumeActionLabel,
+} from "./resume-diffusion-run";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
@@ -135,7 +172,6 @@ function repoIsPrequantized(baseModel: string): boolean {
 }
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
-const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 // min-w-0 + a truncating value: a long option would otherwise set the grid column min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
@@ -144,6 +180,34 @@ const selectClass =
 // implicit column auto-sized, so the track froze at its widest child's min-content
 // (150px for the run-length pair) and the cell painted over the next column.
 const fieldClass = "grid grid-cols-1 min-w-0 gap-2";
+
+/** opens the folder picker; icon-only because the 416px rail already holds the select and the file-pick button. */
+function FolderPickButton({
+  disabled,
+  onPick,
+}: {
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <Button
+          type="button"
+          size="icon"
+          variant="outline"
+          aria-label="Add a folder of images"
+          className="size-8 shrink-0"
+          onClick={onPick}
+          disabled={disabled}
+        >
+          <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>Add a whole folder of images</TooltipContent>
+    </Tooltip>
+  );
+}
 
 /** A field's label with its guidance behind an "i" tooltip, keeping the grid scannable.
  *  Only facts a user must act on stay on the page as text. */
@@ -346,6 +410,12 @@ export function DiffusionTrainPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Adds to the selected set; the other input creates a new one.
   const addInputRef = useRef<HTMLInputElement | null>(null);
+  // one folder picker serves both targets, so the destination is captured when it opens.
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const folderTarget = useRef("");
+  const [dropActive, setDropActive] = useState(false);
+  // the authoritative in-flight guard: `uploading` is render state and reads stale in a closure.
+  const uploadInFlight = useRef(false);
   const [gridOpen, setGridOpen] = useState(false);
   const [gridRefresh, setGridRefresh] = useState(0);
   const [examples, setExamples] = useState<DiffusionDatasetExample[]>([]);
@@ -364,6 +434,9 @@ export function DiffusionTrainPanel({
   const [batchSize, setBatchSize] = useState(1);
   const [gradAccum, setGradAccum] = useState(1);
   const [seed, setSeed] = useState(42);
+  // Periodic resume points. 0 (off) keeps the default behaviour: only a stop-and-save writes one,
+  // so nothing is spent on disk unless the user asks to survive a crash.
+  const [saveSteps, setSaveSteps] = useState(0);
   // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
   const [lrScheduler, setLrScheduler] = useState<
     "constant" | "constant_with_warmup" | "cosine" | "linear"
@@ -404,6 +477,8 @@ export function DiffusionTrainPanel({
   const [stopDialogOpen, setStopDialogOpen] = useState(false);
   // Set when the user confirms a stop. Clamped to the running state at read time so a fresh run never inherits it.
   const [stopRequestedLocal, setStopRequestedLocal] = useState(false);
+  // The run whose Resume request is in flight, so its button alone shows the pending label.
+  const [resumingJobId, setResumingJobId] = useState<string | null>(null);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
     try {
@@ -576,6 +651,14 @@ export function DiffusionTrainPanel({
   // The pending-stop flag only matters while a run is active; clamping at read time means a fresh run never inherits a stale "Stopping...".
   const stopRequested = running && stopRequestedLocal;
 
+  // The just-finished run's persisted record, which is where can_resume lives (the live status has
+  // no way to know whether the checkpoint survived on disk). It appears a beat after the terminal
+  // status, via the delayed refetch below, so the Resume action enables itself once it lands.
+  const liveRunSummary = useMemo(
+    () => prevRuns.find((r) => r.job_id === status?.job_id) ?? null,
+    [prevRuns, status?.job_id],
+  );
+
   // Whether there is a run to show live: running, or ANY terminal run the user has not dismissed. Dismissing must cover every
   // terminal status, or "Train another" after a stop would trap the run view with no way back to the settings.
   const terminalStatuses = ["completed", "stopped", "error"];
@@ -673,30 +756,215 @@ export function DiffusionTrainPanel({
   }, [viewRun?.metric_history]);
 
   // Uploads accumulate, so the same call both creates a folder and adds to an existing one.
+  // `picked` can come from a file pick, a folder pick or a drop, so it is filtered here.
   const uploadTo = useCallback(
-    async (name: string, files: File[]) => {
-      if (files.length === 0) return; // the picker was cancelled
+    async (name: string, picked: File[]) => {
+      if (picked.length === 0) return; // the picker was cancelled
       if (!name) {
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
       }
+      const { files, imageCount, skipped, collisions } = selectDatasetFiles(picked);
+      if (collisions.length > 0) {
+        const { kind, first, second } = collisions[0];
+        const more =
+          collisions.length > 1
+            ? ` ${collisions.length - 1} other pair${collisions.length === 2 ? "" : "s"} clash too.`
+            : "";
+        toast.error(
+          (kind === "name"
+            ? `"${first}" and "${second}" have the same file name, and a dataset folder is ` +
+              "flat, so one would overwrite the other."
+            : `"${first}" and "${second}" differ only by extension, so they would share one ` +
+              "caption file.") + `${more} Rename them and upload again.`,
+        );
+        return;
+      }
+      if (files.length === 0) {
+        toast.error(
+          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) and, ` +
+            "optionally, a caption file beside each one.",
+        );
+        return;
+      }
+      // /diffusion/info only lists folders holding an image, so say why the set will not
+      // appear yet rather than refusing a captions-first upload.
+      const newCaptionsOnly =
+        imageCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
+      if (uploadInFlight.current) {
+        toast.error("An upload is already running. Wait for it to finish, then try again.");
+        return;
+      }
+      uploadInFlight.current = true;
       setUploading(true);
       try {
-        const res = await uploadDiffusionDataset(name, files);
-        toast.success(
-          `Uploaded ${res.uploaded} file${res.uploaded === 1 ? "" : "s"} - ` +
-            `"${res.name}" now has ${res.image_count} images`,
-        );
+        const misKeyed = await metadataKeyedOnSubfolders(files);
+        // the endpoint accumulates into the same folder, so a tree past the multipart part or
+        // byte cap goes up in slices rather than being refused outright.
+        // the cap decides where the slices fall, so a guess makes the refusal below either too
+        // strict or useless. Forced past the cache, which another tab can leave behind, and a
+        // cap that cannot be read stops the upload.
+        let maxBytes: number;
+        try {
+          maxBytes = (await loadUploadLimitSettings({ force: true })).maxUploadSizeBytes;
+        } catch (e) {
+          toast.error(
+            "Could not read the upload size limit, so nothing was uploaded: " +
+              `${e instanceof Error ? e.message : "the limit could not be read"}. Try again.`,
+          );
+          return;
+        }
+        const chunks = chunkDatasetUpload(files, maxBytes);
+        // a slice no split can fit under the cap 413s, so refuse before the first request:
+        // otherwise the slices ahead of it are already committed.
+        const over = oversizedChunk(chunks, maxBytes);
+        if (over) {
+          toast.error(
+            `"${over}" is over the ${getCachedUploadLimitLabel()} upload limit, so nothing was ` +
+              "uploaded. Raise the limit in Settings, or leave that file out.",
+          );
+          return;
+        }
+        // one request is all-or-nothing on the backend, so only a split top-up needs the folder
+        // checked as well: there a stem it already holds would 400 a later slice, mid-commit.
+        if (chunks.length > 1) {
+          // the list held here is the one from mount, so it cannot say the folder is new.
+          // One more GET is nothing against a selection already going up in several requests.
+          const known = await refreshInfo();
+          if (!known) {
+            toast.error(
+              "Could not read the dataset list, so nothing was uploaded. Try again.",
+            );
+            return;
+          }
+          // a case-insensitive dataset root resolves "photos" onto an existing "Photos", so an
+          // exact match would call that folder new and skip the check. Fall back to a folded
+          // match and list the folder under the name the backend reports.
+          const folder =
+            known.datasets.find((d) => d.name === name) ??
+            known.datasets.find((d) => d.name.toLowerCase() === name.toLowerCase());
+          if (folder) {
+            // no listing, no guarantee: skipping the check would upload the slices it exists to
+            // hold back, so a failure here stops the upload rather than proceeding blind.
+            let held: Awaited<ReturnType<typeof listDiffusionDatasetImages>>;
+            try {
+              held = await listDiffusionDatasetImages(folder.name);
+            } catch (e) {
+              toast.error(
+                `Could not read what "${folder.name}" already holds, so nothing was uploaded: ` +
+                  `${e instanceof Error ? e.message : "the dataset could not be listed"}. Try again.`,
+              );
+              return;
+            }
+            const clash = existingStemClash(files, held.images.map((i) => i.filename));
+            if (clash) {
+              toast.error(
+                `"${clash.second}" and "${clash.first}", already in "${folder.name}", differ only by ` +
+                  "extension, so they would share one caption file. Nothing was uploaded; " +
+                  "rename it and try again.",
+              );
+              return;
+            }
+          }
+        }
+        let res = await uploadDiffusionDataset(name, chunks[0]);
+        let sent = res.uploaded;
+        let stopped: string | null = null;
+        for (const chunk of chunks.slice(1)) {
+          try {
+            res = await uploadDiffusionDataset(name, chunk);
+            sent += res.uploaded;
+          } catch (e) {
+            stopped = e instanceof Error ? e.message : "upload failed";
+            break;
+          }
+        }
+        // caption_count is the folder total the backend resolves over sidecars and metadata alike.
+        if (stopped) {
+          toast.error(
+            `Uploaded ${sent} of ${files.length} files into "${res.name}", then stopped: ` +
+              `${stopped}`,
+          );
+        } else {
+          toast.success(
+            `Uploaded ${sent} file${sent === 1 ? "" : "s"} - ` +
+              `"${res.name}" now has ${res.image_count} images, ` +
+              `${res.caption_count} captioned`,
+          );
+        }
+        if (skipped > 0) {
+          toast.info(
+            `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ` +
+              `${skipped === 1 ? "was" : "were"} neither an image nor a caption.`,
+          );
+        }
+        if (newCaptionsOnly) {
+          toast.info(
+            `"${res.name}" holds captions but no images yet, so it stays out of the dataset ` +
+              "picker until you add some.",
+          );
+        }
+        if (misKeyed) {
+          toast.info(
+            `${misKeyed} keys its captions on subfolder paths, and a dataset folder is flat, ` +
+              "so those rows will not match. A .txt beside each image always will.",
+          );
+        }
         await refreshInfo();
         setDataset(res.name);
         setGridRefresh((k) => k + 1);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Upload failed");
       } finally {
+        uploadInFlight.current = false;
         setUploading(false);
       }
     },
-    [refreshInfo],
+    [info, refreshInfo],
+  );
+
+  const pickFolder = useCallback((name: string) => {
+    folderTarget.current = name;
+    folderInputRef.current?.click();
+  }, []);
+
+  // a drop lands on whichever set the field is showing, filling a new folder or topping up the selected one.
+  const dropTarget = uploadMode ? uploadName.trim() : dataset;
+  const onDrop = useCallback(
+    async (event: DragEvent) => {
+      if (isTauri) return;
+      // only claim file drops: preventDefault on a text drag kills editing in the caption boxes.
+      if (!event.dataTransfer.types.includes("Files")) return;
+      event.preventDefault();
+      setDropActive(false);
+      if (uploadInFlight.current) {
+        toast.error("An upload is already running. Wait for it to finish, then drop again.");
+        return;
+      }
+      let dropped: File[];
+      // held across the walk too: a big tree takes seconds, and every control is live until then.
+      uploadInFlight.current = true;
+      setUploading(true);
+      try {
+        dropped = await filesFromDataTransfer(event.dataTransfer);
+      } catch {
+        toast.error(
+          "Could not read every file in that folder, so nothing was uploaded. Try the folder " +
+            "button instead.",
+        );
+        return;
+      } finally {
+        // uploadTo re-takes it synchronously below, so no await sits in the gap.
+        uploadInFlight.current = false;
+        setUploading(false);
+      }
+      if (dropped.length === 0) {
+        toast.error("That drop had no files in it.");
+        return;
+      }
+      await uploadTo(dropTarget, dropped);
+    },
+    [dropTarget, uploadTo],
   );
 
   const onStart = useCallback(async () => {
@@ -768,6 +1036,7 @@ export function DiffusionTrainPanel({
         lr_scheduler: lrScheduler,
         lr_warmup_steps: lrScheduler === "constant" ? 0 : lrWarmupSteps,
         lora_rank: rank,
+        save_steps: Math.max(0, Math.floor(saveSteps)),
         mixed_precision: precision,
         // DiT families quantise the base weights; sdxl uses mixed_precision above and ignores this. Only send compile where supported.
         base_precision: isDiT ? basePrecision : undefined,
@@ -797,6 +1066,7 @@ export function DiffusionTrainPanel({
     batchSize,
     gradAccum,
     seed,
+    saveSteps,
     gradCheckpoint,
     lrScheduler,
     lrWarmupSteps,
@@ -808,6 +1078,41 @@ export function DiffusionTrainPanel({
     compileTransformer,
     poll,
   ]);
+
+  // Continue a stopped run from its newest checkpoint. The stored config is replayed verbatim
+  // (same hyperparameters, same output folder, same TARGET step count), with the run's output
+  // directory as resume_from_checkpoint -- the same approach as the LLM tab's resumeTrainingRun.
+  // The detail is re-fetched on click so `can_resume` reflects the checkpoints on disk right now,
+  // not whatever the list was showing when it was last polled.
+  const onResume = useCallback(
+    async (jobId: string) => {
+      setResumingJobId(jobId);
+      try {
+        const detail = await getDiffusionTrainingRun(jobId);
+        const payload = buildDiffusionResumePayload(detail, {
+          hfToken: hfApiToken(getHfToken()) || undefined,
+        });
+        await startDiffusionTraining(payload);
+        // Only after the start is ACCEPTED: a refusal (identity mismatch, a job already running)
+        // must leave the history detail the user was reading exactly as it was.
+        setStopRequestedLocal(false);
+        notifiedComplete.current = false;
+        setViewRun(null);
+        setDismissedJobId(null);
+        toast.success(
+          detail.checkpoint_step != null
+            ? `Resuming from step ${detail.checkpoint_step}`
+            : "Resuming training",
+        );
+        void poll();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to resume training");
+      } finally {
+        setResumingJobId(null);
+      }
+    },
+    [poll],
+  );
 
   // Confirm-then-stop, mirroring the LLM Train tab. `save` writes the current adapter before halting; false discards it.
   const onStop = useCallback(
@@ -973,6 +1278,10 @@ export function DiffusionTrainPanel({
           min: 0,
           hint: "Fixes the run's randomness, so the same settings and images reproduce the same LoRA.",
         })}
+        {numberField("Checkpoint every", saveSteps, setSaveSteps, 0, {
+          min: 0,
+          hint: "Saves a resume point every this many steps, so a crash or a shutdown can be picked up where it left off. 0 turns it off; stopping and saving always leaves one either way.",
+        })}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
@@ -1114,13 +1423,10 @@ export function DiffusionTrainPanel({
   // overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
   // letting a wide row pan the page sideways on a phone.
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
-      {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
-      {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
-          selector above; pr-8 sets the gap to the rule. */}
-      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-8 md:w-[416px] md:overflow-hidden md:border-r md:border-b-0">
-        {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
-            matches the right pane's p-1.5, so both headings start on the same line. */}
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
+      {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
+      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
@@ -1128,7 +1434,7 @@ export function DiffusionTrainPanel({
             // pb-20 at every width: the floating Start training button below is absolutely
             // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
             // phone padding puts it on top of the Adapter name field.
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5 md:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1202,7 +1508,29 @@ export function DiffusionTrainPanel({
           </div>
 
           {/* Dataset */}
-          <div className={fieldClass}>
+          {/* the whole field is the drop zone, so a folder can land on the picker, the thumbnails or the caption grid. */}
+          <div
+            className={cn(
+              fieldClass,
+              "rounded-lg transition-colors",
+              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+            )}
+            onDragOver={(e) => {
+              // tauri consumes os drags before the webview, as the chat composer notes.
+              if (isTauri) return;
+              // files only: without this a text-selection drag also arms the zone.
+              if (!e.dataTransfer.types.includes("Files")) return;
+              e.preventDefault();
+              setDropActive(true);
+            }}
+            onDragLeave={(e) => {
+              // dragging onto a child fires leave on the parent, so ignore inner moves.
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setDropActive(false);
+              }
+            }}
+            onDrop={(e) => void onDrop(e)}
+          >
             <FieldLabel hint="The set the LoRA learns from. 10-50 images is plenty, and captions are optional.">
               Training images
             </FieldLabel>
@@ -1270,9 +1598,24 @@ export function DiffusionTrainPanel({
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Add"}
                   </Button>
+                  <FolderPickButton disabled={uploading} onPick={() => pickFolder(dataset)} />
                 </>
               )}
             </div>
+            {/* a folder pick carries the whole tree, so an images-plus-captions set arrives paired in one go. */}
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              {...({ webkitdirectory: "", directory: "" } as object)}
+              className="hidden"
+              aria-label="Training image folder"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                e.target.value = "";
+                void uploadTo(folderTarget.current, files);
+              }}
+            />
             {importingId && (
               <p className="text-ui-11 text-muted-foreground">
                 Importing {examples.find((e) => e.id === importingId)?.label ?? "example"}...
@@ -1325,7 +1668,22 @@ export function DiffusionTrainPanel({
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
+                  <FolderPickButton
+                    disabled={uploading}
+                    onPick={() => {
+                      if (!uploadName.trim()) {
+                        toast.error("Give the dataset a folder name, e.g. my-style-photos.");
+                        return;
+                      }
+                      pickFolder(uploadName.trim());
+                    }}
+                  />
                 </div>
+                <p className="text-ui-11 leading-snug text-muted-foreground">
+                  {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
+                  A caption file beside an image (cat.png and cat.txt) is read as that image's
+                  caption.
+                </p>
               </div>
             ) : (
               selectedDataset && (
@@ -1425,7 +1783,8 @@ export function DiffusionTrainPanel({
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
+      {/* This pane remains a query container for its own stat and chart breakpoints. */}
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1442,7 +1801,7 @@ export function DiffusionTrainPanel({
                   Back
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat label="Status" value={viewRun.status} />
                 <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
                 <Stat
@@ -1465,8 +1824,12 @@ export function DiffusionTrainPanel({
                   ? ` - ${new Date(viewRun.ended_at * 1000).toLocaleString()}`
                   : ""}
               </p>
-              {viewRun.saved && viewRun.catalog_path && (
-                <div>
+              {/* Deploy and Resume sit together: a stopped run's two next steps are "use what I
+                  have" and "carry on training it". Resume stays visible but disabled when the
+                  backend says it cannot, with the reason as the tooltip, so the absence of a
+                  checkpoint is explained rather than silently hiding the action. */}
+              <div className="flex flex-wrap items-center gap-2">
+                {viewRun.saved && viewRun.catalog_path && (
                   <Button
                     type="button"
                     size="sm"
@@ -1481,8 +1844,27 @@ export function DiffusionTrainPanel({
                   >
                     Deploy to Create
                   </Button>
-                </div>
-              )}
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void onResume(viewRun.job_id)}
+                  disabled={
+                    !viewRun.can_resume || running || resumingJobId === viewRun.job_id
+                  }
+                  title={
+                    viewRun.can_resume
+                      ? undefined
+                      : viewRun.resume_blocked_reason ||
+                        "This run has no checkpoint to continue from."
+                  }
+                >
+                  {resumingJobId === viewRun.job_id
+                    ? "Resuming..."
+                    : resumeActionLabel(viewRun)}
+                </Button>
+              </div>
             </div>
             <DiffusionCharts
               lossHistory={viewLossHistory}
@@ -1575,7 +1957,7 @@ export function DiffusionTrainPanel({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
                   label="Loss"
                   value={status?.loss != null ? status.loss.toFixed(4) : "-"}
@@ -1615,20 +1997,36 @@ export function DiffusionTrainPanel({
                   {stopRequested ? "Stopping..." : "Stop training"}
                 </Button>
               )}
-              {/* Terminal runs WITHOUT an adapter card (error, or a discarded stop) still need a way back to the settings. */}
+              {/* Terminal runs WITHOUT an adapter card (error, or a discarded stop) still need a way back to the settings.
+                  They can also be the most worth resuming: a crash mid-run leaves no adapter but may well have left a
+                  periodic checkpoint, so offer Resume here too when the backend says there is one. */}
               {!running &&
                 status &&
                 terminalStatuses.includes(status.status) &&
                 !completed &&
                 !stoppedWithAdapter && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="w-full"
-                    onClick={() => setDismissedJobId(status.job_id)}
-                  >
-                    Back to settings
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {liveRunSummary?.can_resume && status.job_id && (
+                      <Button
+                        type="button"
+                        className="flex-1"
+                        onClick={() => void onResume(status.job_id as string)}
+                        disabled={resumingJobId === status.job_id}
+                      >
+                        {resumingJobId === status.job_id
+                          ? "Resuming..."
+                          : resumeActionLabel(liveRunSummary)}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setDismissedJobId(status.job_id)}
+                    >
+                      Back to settings
+                    </Button>
+                  </div>
                 )}
             </div>
 
@@ -1641,7 +2039,14 @@ export function DiffusionTrainPanel({
                   {completed
                     ? "Trained"
                     : "Stopped early; the adapter as of the last finished step was saved"}
-                  {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
+                  {status?.family ? ` (${status.family})` : ""}
+                  {/* The LoRA picker and Deploy to Create are the Images surface, and only an
+                      adapter published into the diffusion LoRA catalog reaches them. A family
+                      trained here without that catalog (video) still saves a loadable adapter,
+                      so report the file and claim nothing more. */}
+                  {status?.catalog_path
+                    ? " and added to the LoRA picker."
+                    : ". Load it from the path below."}
                   {status?.lora_path && (
                     <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
@@ -1649,10 +2054,42 @@ export function DiffusionTrainPanel({
                     <span className="mt-1 block break-all">EMA adapter: {status.ema_path}</span>
                   )}
                 </p>
-                <div className="mt-1 flex gap-2">
-                  <Button type="button" size="sm" onClick={onDeployClick}>
-                    Deploy to Create
-                  </Button>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {/* A video run publishes no catalog entry, so there is nothing to deploy. */}
+                  {status?.catalog_path && (
+                    <Button type="button" size="sm" onClick={onDeployClick}>
+                      Deploy to Create
+                    </Button>
+                  )}
+                  {/* Only a run stopped short can be continued; a completed one is already at its
+                      target. Disabled until the run record lands (and enabled only if its
+                      checkpoint really is on disk), with the backend's reason as the tooltip. */}
+                  {!completed && status?.job_id && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void onResume(status.job_id as string)}
+                      disabled={
+                        !liveRunSummary?.can_resume ||
+                        running ||
+                        resumingJobId === status.job_id
+                      }
+                      title={
+                        liveRunSummary?.can_resume
+                          ? undefined
+                          : liveRunSummary?.resume_blocked_reason ||
+                            status.resume_blocked_reason ||
+                            "Saving this run's checkpoint..."
+                      }
+                    >
+                      {resumingJobId === status.job_id
+                        ? "Resuming..."
+                        : resumeActionLabel(
+                            liveRunSummary ?? { checkpoint_step: status.checkpoint_step },
+                          )}
+                    </Button>
+                  )}
                   <Button
                     type="button"
                     size="sm"

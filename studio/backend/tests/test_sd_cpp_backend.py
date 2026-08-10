@@ -469,6 +469,7 @@ def test_status_loaded_shape():
     assert st["engine"] == "sd_cpp"
     assert st["family"] == "z-image"
     assert st["device"] == "cpu"
+    assert st["gguf_variant"] is None
     # diffusers-only fields are present (route response parity) but null.
     for k in ("transformer_quant", "attention_backend", "transformer_cache", "text_encoder_quant"):
         assert st[k] is None
@@ -522,6 +523,55 @@ def test_generate_cancellation_raises_cancelled_not_failure():
     b = _loaded_backend(engine = eng)
     with pytest.raises(RuntimeError, match = "cancelled"):
         b.generate(prompt = "x", steps = 8, seed = 5)
+
+
+def test_cancel_generate_stops_a_running_native_run():
+    # The native engine serves the same Images page, so the cancel route must reach it too. Here
+    # the cancel arrives from ANOTHER thread mid-run, which is what the route does: the engine
+    # polls the event, kills the sd-cli process tree, and the backend reports a cancellation.
+    started = threading.Event()
+    b = None
+
+    class _BlockingEngine(_FakeEngine):
+        def generate(
+            self,
+            files,
+            params,
+            *,
+            output_path,
+            cancel_event = None,
+            **kw,
+        ):
+            started.set()
+            assert cancel_event is not None and cancel_event.wait(5)
+            raise SdCppCancelled("cancelled")
+
+    b = _loaded_backend(engine = _BlockingEngine())
+    # Nothing running yet.
+    assert b.cancel_generate() is False
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            b.generate(prompt = "x", steps = 8, seed = 5)
+        except BaseException as exc:  # noqa: BLE001 -- the assertion below pins the type
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert started.wait(5)
+
+    assert b.cancel_generate() is True
+    worker.join(10)
+    assert isinstance(outcome["error"], RuntimeError)
+    # Deregistered on exit, so a later cancel cannot poke a finished run.
+    assert b.cancel_generate() is False
+
+
+def test_cancel_generate_is_a_no_op_when_idle():
+    # The route calls this unconditionally; an idle native backend answers False rather than raising.
+    assert SdCppDiffusionBackend(engine = _FakeEngine()).cancel_generate() is False
 
 
 def test_generate_progress_tracks_parsed_steps():
@@ -633,6 +683,83 @@ def test_ensure_binary_returns_found(monkeypatch):
 def test_ensure_binary_install_disabled_returns_none(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
     assert ensure_sd_cpp_binary(allow_install = False) is None
+
+
+# A --help extract shaped like the real one: the mode list and --audio-vae are old enough to be in
+# a pre-H3 build too (they came with LTX-2), so only the H3-only --ref-video separates the two.
+_PRE_H3_HELP = (
+    "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale, convert]\n"
+    "  --audio-vae <string>          path to standalone LTX audio vae model\n"
+)
+_H3_HELP = _PRE_H3_HELP + (
+    "  --ref-video                   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+)
+
+
+def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
+    # An upgraded Studio still carrying an older managed sd-cli got that binary handed straight
+    # back: only runnability was probed, so the H3 load reported ready on a build with no H3
+    # support and the first generation failed, after the whole bundle had already downloaded.
+    stale = tmp_path / "stale" / "sd-cli"
+    fresh = tmp_path / "fresh" / "sd-cli"
+    for p in (stale, fresh):
+        p.parent.mkdir()
+        p.write_text("binary")
+    found = [str(stale), str(fresh)]
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: found.pop(0))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda binary, *_args: _H3_HELP if binary == str(fresh) else _PRE_H3_HELP,
+    )
+
+    assert bk.ensure_h3_sd_cpp_binary() == str(fresh)
+    # A copy we own is dropped, which is what lets the installer put the pinned prebuilt back.
+    assert not stale.exists()
+
+
+def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp_path):
+    # Same ownership split as _usable_or_discard_managed: the user's own build is not ours to
+    # delete (install() then refuses the still non-empty unmarked directory, leaving no binary at
+    # all), so the load fails with a message naming the binary instead.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+        bk.ensure_h3_sd_cpp_binary()
+    assert own.exists()
+
+
+def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
+    # An unreadable --help is "cannot tell", not "no H3": the load's own version() gate already
+    # refuses a binary that will not run, and guessing here would strand a working build.
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: "/usr/bin/sd-cli")
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: None)
+    assert bk.ensure_h3_sd_cpp_binary() == "/usr/bin/sd-cli"
+
+
+def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
+    # --list-devices is the only way to tell a reused CPU prebuilt from an accelerator build after
+    # the fact: the finder returns whichever binary is installed, whatever accelerator was asked for.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "CPU\tIntel(R) Xeon(R) Platinum\n")
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is False
+
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "CUDA0\tNVIDIA GeForce RTX 4090\nCPU\tIntel(R) Xeon(R) Platinum\n",
+    )
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+
+    # An older build rejects the flag with a non-zero exit: "cannot tell", not "no accelerator".
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+    assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
 def test_unload_clears_state_and_signals_cancel():
@@ -750,6 +877,7 @@ def _run_server_load(
     servers,
     fam_name = "z-image",
     device = "cpu",
+    gguf_filename = "z.gguf",
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -775,7 +903,7 @@ def _run_server_load(
     b._load_token = 1
     b._run_load(
         repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
+        gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
         hf_token = None,
@@ -791,6 +919,13 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert servers[0].started is not None  # the model is loaded once, at spawn
     assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
     assert b.status()["native_mode"] == "server"
+
+
+def test_server_status_reports_selected_gguf_quant(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, gguf_filename = "z-image-turbo-Q8_0.gguf")
+    assert b.status()["gguf_variant"] == "Q8_0"
 
 
 def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
@@ -1025,6 +1160,11 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
         _load_token = 1,
     )
     assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
+    # The server it started and stopped must not stay published: _pending_server means "a native
+    # process is running out of the managed tree", which suppresses every later accelerator
+    # install, so a stale one would pin this process to the wrong build until a restart.
+    assert b._pending_server is None
+    assert bk._tree_in_use(b) is False
     # and it can still generate via the one-shot engine
     out = b.generate(prompt = "x", steps = 4, seed = 1)
     assert len(out["images"]) == 1 and len(fake.calls) == 1
@@ -1262,3 +1402,157 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
     assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
     assert "Comfy-Org/z_image_turbo" in protected
+
+
+def test_begin_load_answers_without_waiting_on_the_header_probe(monkeypatch):
+    """begin_load returns at once by contract: the route thread hands the UI a status and the
+    multi-gigabyte pull happens on the worker. The FLUX.2 encoder pick needs the checkpoint's
+    inner_dim, which for an uncached pick means a range request over the wire -- bounded, but
+    bounded in SECONDS, and the route would wear every one of them on a load button press.
+
+    So the pre-lock probe is offline-only. The guard it feeds is a hint at that moment; the worker
+    re-probes with the network and publishes the real repos before it fetches a byte, which is the
+    second half of this test."""
+    import time as _time
+
+    from core.inference import diffusion_compat
+
+    diffusion_compat._reset_inner_dim_cache()
+    probed: list[str] = []
+
+    class _Slow:
+        def get(
+            self,
+            url,
+            headers = None,
+            timeout = None,
+            stream = False,
+        ):
+            probed.append(url)
+            _time.sleep(30)
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Slow())
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)  # skip the download thread
+
+    started = _time.monotonic()
+    b.begin_load("unsloth/FLUX.2-klein-4B-GGUF", gguf_filename = "flux-2-klein-4b-Q4_K_M.gguf")
+    elapsed = _time.monotonic() - started
+
+    assert probed == [], "begin_load must not range-read the header on the route thread"
+    assert elapsed < 5, f"begin_load blocked for {elapsed:.1f}s"
+
+
+def test_the_worker_publishes_the_real_encoder_repos_before_fetching(monkeypatch):
+    # The delete-cached guard reads _loading.asset_repos. begin_load can only guess them for a
+    # FLUX.2 pick it has no header for, so an unrefreshed list would leave the 9B encoders
+    # deletable while the load is writing into them.
+    from core.inference import diffusion_compat
+
+    diffusion_compat._reset_inner_dim_cache()
+    nine_b = {repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS}
+    # The discriminating pick: a repo and filename that name no size, so the string fallback the
+    # offline probe leaves in place answers 4B, while the header says 9B. A hand-renamed file or a
+    # local On Device directory lands exactly here.
+    repo, filename = "unsloth/FLUX.2-klein-GGUF", "flux-2-klein-Q4_K_M.gguf"
+    monkeypatch.setattr(
+        bk.SdCppDiffusionBackend,
+        "_flux2_inner_dim",
+        staticmethod(
+            lambda repo_id, fn, fam, tok, allow_network = True: 4096 if allow_network else None
+        ),
+    )
+
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(b, "_run_load", lambda **kwargs: None)
+    b.begin_load(repo, gguf_filename = filename)
+    token = b._load_token
+    assert not nine_b & set(
+        b.loading_repo_ids()
+    ), "fixture is not discriminating: begin_load already guessed the 9B encoders"
+
+    monkeypatch.setattr(b, "_resolve_backend", lambda: ("oneshot", None, _FakeEngine()))
+    monkeypatch.setattr(b, "_preflight_companion_repos", lambda *a, **k: None)
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    seen_at_fetch: list[tuple[str, ...]] = []
+
+    def _fetch(*_a, **_k):
+        seen_at_fetch.append(b.loading_repo_ids())
+        raise SdCppCancelled("stop here; the publish already had to happen")
+
+    monkeypatch.setattr(b, "_fetch_assets", _fetch)
+    # The class method, not the instance attribute: begin_load's thread is stubbed out above, so
+    # the worker body has to be driven by hand.
+    bk.SdCppDiffusionBackend._run_load(
+        b,
+        repo_id = repo,
+        gguf_filename = filename,
+        base = "black-forest-labs/FLUX.2-klein-9B",
+        fam = detect_family(repo),
+        hf_token = None,
+        _load_token = token,
+    )
+
+    assert seen_at_fetch, "the fetch was never reached"
+    assert nine_b <= set(
+        seen_at_fetch[0]
+    ), "the delete guard did not name the encoders this load is about to write"
+
+
+def test_generate_reports_the_build_the_recipe_persists():
+    # The route writes the recipe straight off these keys, so a key the native result omits is
+    # persisted as null. The engine has no dense quant and no memory planner (honest nulls), but
+    # the offload it ran under is real -- and every native image recorded it as "unknown".
+    b = _loaded_backend()
+    s = b._state
+    b._state = bk._SdState(
+        repo_id = s.repo_id,
+        base_repo = s.base_repo,
+        family = s.family,
+        device = "cuda",
+        files = s.files,
+        vae_format = s.vae_format,
+        sampling_method = s.sampling_method,
+        flow_shift = s.flow_shift,
+        mode = s.mode,
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
+    )
+    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["model_kind"] == "gguf"
+    assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
+    assert out["offload_policy"] == "active"
+    # Same derivation status() uses, so the recipe and the Loaded build panel cannot disagree.
+    assert out["offload_policy"] == b.status()["offload_policy"]
+    assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
+    assert out["memory_mode"] is None
+
+
+def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
+    # /images/generate/cancel resolves through the engine router, so the native backend owes the
+    # same answer as the diffusers one: the final check and the deregistration are one critical
+    # section under the lock cancel_generate takes, and no Stop can be answered true for a run that
+    # then returns its images.
+    b = _loaded_backend()
+    seen: list[bool] = []
+    real_oneshot = b._generate_oneshot
+
+    def _oneshot(*args, **kwargs):
+        out = real_oneshot(*args, **kwargs)
+        # Still mid-generate, so a Stop here is genuine and must be honoured.
+        assert b.cancel_generate() is True
+        return out
+
+    monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+
+    # And once a run completes, the event is gone before the result is handed back.
+    b2 = _loaded_backend()
+    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["images"]
+    seen.append(b2.cancel_generate())
+    assert seen == [False]
