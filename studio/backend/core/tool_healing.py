@@ -90,6 +90,10 @@ _PAT_REQUIRED_TOKEN = {
     _TC_JSON_CLOSED_PAT: "</tool_call>",
     _TC_GEMMA_CLOSED_PAT: "<tool_call|>",
     _TC_FUNC_CLOSED_PAT: "</function>",
+    # Literal in both rehearsal patterns: skips the sub AND its _code_spans scan on the
+    # common answer that has no rehearsal at all.
+    _REHEARSAL_CLOSED_STRIP_RE: "[ARGS]",
+    _REHEARSAL_TAIL_STRIP_RE: "[ARGS]",
 }
 
 
@@ -103,6 +107,28 @@ def strip_tool_patterns(text: str, patterns) -> str:
     return text
 
 
+def _rehearsal_strip(m, pat, text, spans, enabled_tool_names) -> str:
+    """Replacement for one rehearsal strip match: "" to remove it, else what to keep.
+
+    An inactive name or a quoted example is kept. The tail pattern runs to EOF, so a match
+    that opens on a quoted example can still cover a later real call; keep the quoted part
+    and strip from that call on, or the truncated markup leaks into the answer."""
+    if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        return m.group(0)
+    if not _in_code(spans, m.start()):
+        return ""
+    pos = m.start()
+    while True:
+        nxt = pat.search(text, pos + 1)
+        if nxt is None or nxt.start() >= m.end():
+            return m.group(0)
+        if not _in_code(spans, nxt.start()) and (
+            enabled_tool_names is None or nxt.group(1) in enabled_tool_names
+        ):
+            return m.group(0)[: nxt.start() - m.start()]
+        pos = nxt.start()
+
+
 def apply_tool_strip_patterns(
     text: str,
     patterns,
@@ -110,14 +136,19 @@ def apply_tool_strip_patterns(
 ) -> str:
     """Apply strip ``patterns`` to ``text``. A bare rehearsal ``name[ARGS]{..}`` pattern
     strips only when ``name`` is an enabled tool (or when ``enabled_tool_names`` is
-    ``None``); every other pattern is removed unconditionally. A closed-pair pattern whose
-    close token is absent is skipped so an unclosed-marker stream stays linear."""
+    ``None``) and the match is not inside markdown code; every other pattern is removed
+    unconditionally. A closed-pair pattern whose close token is absent is skipped so an
+    unclosed-marker stream stays linear."""
     for pat in patterns:
         token = _PAT_REQUIRED_TOKEN.get(pat)
         if token is not None and token not in text:
             continue
-        if enabled_tool_names is not None and pat in _REHEARSAL_STRIP_PATS:
-            text = pat.sub(lambda m: "" if m.group(1) in enabled_tool_names else m.group(0), text)
+        if pat in _REHEARSAL_STRIP_PATS:
+            # Same two gates the parser applies in _iter_bracket_spans, so a rehearsal that
+            # is not promoted to a call stays visible instead of vanishing from the answer.
+            spans = _code_spans(text)
+            _t = text
+            text = pat.sub(lambda m: _rehearsal_strip(m, pat, _t, spans, enabled_tool_names), text)
         else:
             text = pat.sub("", text)
     return text
@@ -165,6 +196,24 @@ _MISTRAL_BRACKET_RE = re.compile(
 # Rehearsal ``name[ARGS]{json}`` (no [TOOL_CALLS]); the lookbehind keeps the v11 call-id
 # from being taken as the function name.
 _REHEARSAL_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]\s*(?=\{)")
+
+# Markdown code: a fenced block (closing fence optional so a streaming block counts) or
+# an inline span. Gates the markerless rehearsal form only, so quoting the syntax as
+# documentation stays text instead of executing. ``>`` container prefixes are allowed so
+# a fence inside a block quote counts. A backtick fence's info string cannot itself contain
+# backticks, so ```` ```a``` ```` opening a line is an inline span and not a fence running
+# to EOF; the closer tolerates a CR so a CRLF block still closes. Both would otherwise
+# swallow the rest of the message and drop a real call after it. Inline runs are enumerated by length (double before
+# single) rather than backreferenced: ``code`` must be one span and not two empty pairs
+# around live markup, but a ``(`+)..\1`` form backtracks over every candidate length and
+# turned 21 KB of unmatched runs into a 1.8s scan. A lone backtick is valid content inside
+# a doubled span, so only a run of two closes it.
+_CODE_SPAN_RE = re.compile(
+    r"^[ \t]*(?:>[ \t]*)*(?:```+[^`\n]*|~~~+[^\n]*)$"
+    r".*?(?:^[ \t]*(?:>[ \t]*)*(?:```+|~~~+)[ \t\r]*$|\Z)"
+    r"|``(?:[^`]|`(?!`))*?``|`[^`\n]*`",
+    re.DOTALL | re.MULTILINE,
+)
 
 # Above this size skip the balanced scan; the linear regex catch-all bounds pathological output.
 _MAX_BRACKET_SCAN_CHARS = 1_000_000
@@ -297,6 +346,25 @@ def _decode_array_items(text: str, body_start: int, body_end: int):
     return objs, ends
 
 
+def _code_spans(text: str) -> list[tuple[int, int]]:
+    """Markdown code spans, used to keep a quoted rehearsal out of the call set.
+
+    A line-start fence cannot occur inside a call's JSON body (a raw newline is
+    invalid JSON there), so no tool-markup exclusion is needed; a stray inline span
+    can at worst hide a same-line rehearsal, which drops a call rather than
+    inventing one. Spans are ordered and non-overlapping, so ``_in_code`` bisects
+    them instead of rescanning from the front per candidate."""
+    if "`" not in text and "~~~" not in text:
+        return []
+    return [m.span() for m in _CODE_SPAN_RE.finditer(text)]
+
+
+def _in_code(spans, pos: int) -> bool:
+    """Whether ``pos`` falls in one of ``spans`` (ordered, non-overlapping)."""
+    i = bisect.bisect_right(spans, (pos, pos)) - 1
+    return i >= 0 and spans[i][0] <= pos < spans[i][1]
+
+
 def _iter_bracket_spans(
     text: str,
     start: int = 0,
@@ -312,6 +380,12 @@ def _iter_bracket_spans(
     prose ``foo[ARGS]{..}`` (foo disabled) is neither parsed nor stripped. Explicit
     [TOOL_CALLS] markers stay unconditional, keeping parse/strip/detection symmetric.
 
+    A rehearsal inside markdown code (fenced block or inline span) is documentation
+    for the same reason -- the syntax has no sentinel, so quoting it would otherwise
+    BE a call -- and is likewise neither parsed nor stripped. Explicit markers stay
+    unconditional there too: a ```json block is still a real call for the templates
+    that emit one.
+
     Balance-only (no JSON validation) so strip and parse share one scan. The cursor
     jumps past each consumed span, so a marker inside consumed JSON is never
     re-matched and each regex re-searches only once its match falls behind: linear."""
@@ -323,6 +397,7 @@ def _iter_bracket_spans(
     )
     nexts = {kind: rx.search(text, start) for kind, rx in specs}
     cursor = start
+    code_spans: list | None = None  # computed on the first rehearsal candidate only
     while cursor < n:
         for kind, rx in specs:
             m = nexts[kind]
@@ -349,6 +424,13 @@ def _iter_bracket_spans(
             # Inactive-name rehearsal is prose: advance past its body without yielding.
             cursor = end + 1
             continue
+        if kind == "rehearsal":
+            if code_spans is None:
+                code_spans = _code_spans(text)
+            if _in_code(code_spans, m.start()):
+                # Quoted syntax, not a call: advance past its body without yielding.
+                cursor = end + 1
+                continue
         yield (m.start(), end + 1, kind, m)
         cursor = end + 1
 

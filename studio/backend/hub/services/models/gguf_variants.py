@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 import threading
 import time
@@ -30,6 +31,7 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     GgufVariantInfo,
     extract_quant_label,
+    gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
@@ -335,6 +337,56 @@ def _quants_from_state(
     return variants, has_vision
 
 
+def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
+    """Group key for variants that share one companion download footprint.
+
+    The companion set (text encoders, VAE, tokenizer, configs) is not a property of
+    the repo: ``detect_family_for_pick`` falls back to ``repo_id/filename``, so a
+    neutral repo can hold GGUFs of different families with different base repos,
+    and ``sd_cpp_text_encoders_for`` picks Qwen3-8B vs Qwen3-4B per klein checkpoint
+    size within one family. Both sources of variation therefore go into the key, so
+    a client that resolves the footprint once per key never advertises one row's
+    total on another row.
+
+    Local resolution only, and never raises: the key is an optimization for the
+    client's grouping, so an unknown key (None) must not fail the listing.
+    """
+    try:
+        from core.inference.diffusion_families import (
+            detect_family_for_pick,
+            sd_cpp_text_encoders_for,
+        )
+
+        fam = detect_family_for_pick(repo_id, filename)
+        if fam is None:
+            return None
+        inner_dim = None
+        if fam.name == "flux.2-klein":
+            from core.inference.diffusion_compat import flux2_inner_dim_for_pick
+
+            inner_dim = flux2_inner_dim_for_pick(repo_id, filename, allow_network = False)
+            identity = f"{repo_id}/{filename}".lower()
+            sized = re.search(r"(?<![a-z0-9])(?:4b|9b)(?![a-z0-9])", identity)
+            if (
+                inner_dim is None
+                and sized is None
+                and "klein4b" not in identity
+                and "klein9b" not in identity
+            ):
+                unknown = hashlib.sha256(filename.lower().encode("utf-8")).hexdigest()[:16]
+                return f"{fam.name}:unknown:{unknown}"
+        encoders = sd_cpp_text_encoders_for(fam, repo_id, filename, inner_dim = inner_dim)
+        # Hashed, not joined raw: the encoder table is long, and the key is opaque
+        # to the client, which only ever compares it for equality.
+        digest = hashlib.sha256(
+            "\n".join("/".join(str(part) for part in entry) for entry in encoders).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"{fam.name}:{digest}"
+    except Exception as e:
+        logger.debug("Dependency key unavailable for %s/%s: %s", repo_id, filename, e)
+        return None
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -392,8 +444,11 @@ def _local_main_gguf_blobs_by_quant(
                         str(blob) for blob in hashes if blob
                     )
                     continue
-                quant = extract_quant_label(normalized).lower()
-                if is_big_endian_gguf_path(normalized, quant):
+                quant = gguf_variant_key(normalized).lower()
+                # The endian predicate reads a quant TOKEN so it can tell a parent-only quant
+                # from a big-endian build; the qualified key makes it misread the path and drop
+                # the blob, which leaves update detection with no local main files to compare.
+                if is_big_endian_gguf_path(normalized, extract_quant_label(normalized)):
                     continue
                 bucket = result.setdefault(quant, {}).setdefault(normalized, set())
                 bucket.update(str(blob) for blob in hashes if blob)
@@ -877,6 +932,20 @@ class VariantsAnswer(NamedTuple):
     context_source: Optional[str]
 
 
+def _default_variant_candidates(variants) -> list[str]:
+    """The filenames the automatic default may be picked from: ROOT rows when there are any.
+
+    ``pick_best_gguf`` keeps whichever filename it met first among equals, so a repo with
+    ``model-Q6_K.gguf`` beside ``distilled/model-Q6_K.gguf`` could make the qualified sibling the
+    default -- and then a bare repo id would mean one checkpoint here and another to
+    ``_match_variant(None, ...)`` and ``local_model_resolver``, which both define it as the root.
+    Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
+    depends on which one served the request. Nothing at the root falls back to the whole set.
+    """
+    root_rows = [v.filename for v in variants if "/" not in v.quant]
+    return root_rows or [v.filename for v in variants]
+
+
 async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -924,8 +993,8 @@ async def get_gguf_variants_answer(
 
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
-            best = pick_best_gguf([v.filename for v in (ready or variants)])
-            default_variant = extract_quant_label(best) if best else None
+            best = pick_best_gguf(_default_variant_candidates(ready or variants))
+            default_variant = gguf_variant_key(best) if best else None
 
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -938,6 +1007,7 @@ async def get_gguf_variants_answer(
                         download_size_bytes = v.size_bytes,
                         downloaded = _downloaded(v),
                         partial = not _downloaded(v),
+                        dependency_key = _variant_dependency_key(response_repo_id, v.filename),
                     )
                     for v in variants
                 ],
@@ -948,9 +1018,8 @@ async def get_gguf_variants_answer(
         def _partial_local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
-            filenames = [v.filename for v in variants]
-            best = pick_best_gguf(filenames)
-            default_variant = extract_quant_label(best) if best else None
+            best = pick_best_gguf(_default_variant_candidates(variants))
+            default_variant = gguf_variant_key(best) if best else None
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
                 variants = [
@@ -967,6 +1036,7 @@ async def get_gguf_variants_answer(
                             v.quant,
                             repo_cache_dir,
                         ),
+                        dependency_key = _variant_dependency_key(response_repo_id, v.filename),
                     )
                     for v in variants
                 ],
@@ -995,6 +1065,7 @@ async def get_gguf_variants_answer(
                     partial_transport = _partial_transport_for_variant(
                         repo_id, v.quant, repo_cache_dir
                     ),
+                    dependency_key = _variant_dependency_key(repo_id, v.filename),
                 )
                 for v in state[0]
                 if v.quant and v.quant.lower() not in listed
@@ -1163,9 +1234,8 @@ async def get_gguf_variants_answer(
             if fallback is not None:
                 return fallback
 
-        filenames = [v.filename for v in variants]
-        best = pick_best_gguf(filenames)
-        default_variant = extract_quant_label(best) if best else None
+        best = pick_best_gguf(_default_variant_candidates(variants))
+        default_variant = gguf_variant_key(best) if best else None
 
         # Per-snapshot accounting: a variant counts as present only when one
         # snapshot holds all its files (split GGUFs need every shard together),
@@ -1199,8 +1269,8 @@ async def get_gguf_variants_answer(
                     by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
-                    q = extract_quant_label(rel)
-                    if is_big_endian_gguf_path(rel, q):
+                    q = gguf_variant_key(rel)
+                    if is_big_endian_gguf_path(rel, extract_quant_label(rel)):
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
@@ -1404,6 +1474,7 @@ async def get_gguf_variants_answer(
                 ),
                 partial = is_partial,
                 partial_transport = (partial_quant_transports.get(v.quant) if is_partial else None),
+                dependency_key = _variant_dependency_key(repo_id, v.filename),
             )
 
         return GgufVariantsResponse(

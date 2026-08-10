@@ -67,7 +67,8 @@ from .diffusion_memory import (
     file_size_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
-    snapshot_device_memory,
+    raise_on_unified_memory_shortfall,
+    settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -131,7 +132,13 @@ from .video_minimax_h3 import (
     fit_h3_reference_image,
     h3_canvas_for_aspect,
     h3_conditioning_mode,
+    h3_transformer_resident_gb,
     h3_transformer_task,
+)
+from .video_minimax_h3_te import (
+    H3_TE_QUANT_REPO,
+    h3_te_quant_scheme,
+    h3_te_resident_gb,
 )
 from utils.hardware import clear_gpu_cache
 
@@ -251,6 +258,23 @@ def assert_video_precision_available(
     # support is consulted, and that path needs no torchao. Refusing on the raw int8
     # rejected loads the runtime would run and report as fell_back -- Windows ROCm,
     # where the torchao stub kills int8 while fp8 still works.
+    # A family with a HOSTED quantized conditioner never touches the generic path this gate
+    # reasons about. Studio loads that artifact itself: INT8 storage, a Hadamard rotation and an
+    # ordinary F.linear, no torchao and no fp8 tensor cores. Left to the code below, the request is
+    # first rewritten int8 -> fp8 by effective_te_quant (H3 has no keep-bf16 schedule) and then
+    # refused for want of hardware neither the rewrite nor the real loader needs, so a supported
+    # CPU load comes back as a 409. Whether the artifact suits THIS base is decided at the seed,
+    # which is not a host-level impossibility and so is not this gate's question.
+    # PIPELINE loads only. The hosted conditioner is a Diffusers-path artifact; the native GGUF
+    # path picks its Q2/Q4 encoder off the denoiser filename and discards text_encoder_quant
+    # entirely, so exempting it would let an explicit request through to a load that answers it at
+    # an unrelated precision -- the very thing the fail-closed contract exists to stop.
+    if (
+        model_kind == "pipeline"
+        and getattr(fam, "modular_workflow", None)
+        and h3_te_quant_scheme(te_mode) is not None
+    ):
+        return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
     if te_quant_needs_resident_weights(te_effective) and not torchao_quantize_importable():
@@ -455,6 +479,10 @@ class _VideoLoadState:
     transformer_quant: Optional[str] = None
     # Text-encoder quant engaged ("fp8"|"fp8_dynamic"|"int8"|"nvfp4") or None. Often the largest resident; shrunk in place.
     text_encoder_quant: Optional[str] = None
+    # MiniMax-H3 only: the pre-quantized denoiser was PINNED to the device and taken out of the
+    # offload rotation, so it is resident alongside whatever component is running. The memory
+    # preflight has to know, because that turns its floor from a max into a sum.
+    h3_denoiser_pinned: bool = False
     resolved: Optional[dict] = None
 
 
@@ -467,6 +495,14 @@ class _VideoLoadingState:
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3
     # GGUF and component repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
+
+
+def _h3_te_canonical(repo_id: Optional[str]) -> str:
+    """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
+    then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
+    is a different repo with different weights."""
+    from .diffusion_families import canonical_base
+    return canonical_base(repo_id).strip().lower()
 
 
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
@@ -813,7 +849,8 @@ class VideoBackend:
                 )
         # Reject a malformed transformer_quant cheaply, before the handoff (pipeline-kind only, matching the image backend).
         normalize_transformer_quant(transformer_quant)
-        # Reject a malformed text_encoder_quant the same way (any kind: the encoder is always dense).
+        # Reject a malformed text_encoder_quant the same way. Every kind: an unsupported scheme is
+        # a bad request regardless of whether this family has a hosted quantized encoder for it.
         normalize_te_quant(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
@@ -931,6 +968,13 @@ class VideoBackend:
             skip_transformer_weights = self._denoiser_prequant_covered(
                 fam, kwargs.get("transformer_quant"), base
             )
+            # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
+            # repo's 62 GB dense text_encoder/ shards outright.
+            # Verified, not just name-matched: this scheme decides whether the base pull DROPS the
+            # dense encoder, and a derivative that the seed will decline must keep its own.
+            h3_te_scheme = self._h3_te_quant_scheme_verified(
+                fam, kwargs.get("text_encoder_quant"), base, kwargs.get("hf_token")
+            )
             expected = self._estimate_download_bytes(
                 kwargs["repo_id"],
                 kwargs.get("gguf_filename"),
@@ -939,10 +983,19 @@ class VideoBackend:
                 kind,
                 te_sources = te_sources,
                 skip_transformer_weights = skip_transformer_weights,
+                h3_task = kwargs.get("h3_task"),
+                h3_te_scheme = h3_te_scheme,
             )
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
+                    # The conditioner artifact comes from a THIRD repo, neither repo_id nor
+                    # base_repo, so without this the delete-cached guard would let it be deleted
+                    # out from under the in-flight fetch (or out from under the assembly, while
+                    # the base snapshot that no longer carries a dense encoder is still coming
+                    # down). Same registration the native H3 path makes for its companions.
+                    if h3_te_scheme:
+                        self._loading.asset_repos = self._loading.asset_repos + (H3_TE_QUANT_REPO,)
                     self._loading.expected_bytes = expected
             # Checkpoint downloads outside the lock so an unload can preempt the multi-GB pull; companions pre-download the same way.
             checkpoint_local: Optional[Path] = None
@@ -954,6 +1007,9 @@ class VideoBackend:
                         kwargs["gguf_filename"],
                         kwargs.get("hf_token"),
                         cancel_event = cancel_event,
+                        # The plan counts a file cached under EITHER root and stages neither, so the
+                        # load has to resolve through both or it re-pulls what the planner skipped.
+                        reuse_other_cache_root = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE + tokenizer; recompute the estimate.
@@ -987,6 +1043,7 @@ class VideoBackend:
                         ltx23 = True,
                         te_sources = te_sources,
                         skip_transformer_weights = skip_transformer_weights,
+                        h3_te_scheme = h3_te_scheme,
                     )
                     with self._lock:
                         if self._load_token == token and self._loading is not None:
@@ -996,13 +1053,21 @@ class VideoBackend:
                 te_sources, kwargs.get("hf_token"), cancel_event = cancel_event
             )
             kwargs["_te_prequant_skipped"] = te_skipped
+            # Same rule for the H3 conditioner: the artifact has to be on disk before the base pull
+            # is allowed to leave the dense encoder behind.
+            h3_te_skipped = self._fetch_h3_te_quant(
+                h3_te_scheme, kwargs.get("hf_token"), cancel_event = cancel_event
+            )
             base_local = self._predownload_base(
                 base,
                 kwargs.get("hf_token"),
                 kind,
                 ltx23 = ltx23,
-                skip_te_components = te_skipped,
+                skip_te_components = te_skipped + h3_te_skipped,
                 skip_transformer_weights = skip_transformer_weights,
+                # Picks the H3 denoiser partition: fl2va stages transformer/, ref2va stages the
+                # separate 66.28 GB transformer_ref/ that load_components(workflow="ref2va") opens.
+                h3_task = kwargs.get("h3_task"),
                 cancel_event = cancel_event,
             )
             # The 2.3 assembly pulls per component from the hub id (its snapshot lacks the base VAEs), so it only gets the warmed cache.
@@ -1065,7 +1130,7 @@ class VideoBackend:
         qwen_filename = h3_text_encoder_filename(filename)
         requests = (
             (repo_id, filename),
-            (H3_GGUF_REPO, qwen_filename),
+            (self._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (H3_COMPONENT_REPO, H3_VIDEO_VAE),
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
@@ -1104,7 +1169,11 @@ class VideoBackend:
                 try:
                     local = Path(
                         hf_hub_download_with_xet_fallback(
-                            repo, wanted, hf_token, cancel_event = cancel_event
+                            repo,
+                            wanted,
+                            hf_token,
+                            cancel_event = cancel_event,
+                            reuse_other_cache_root = True,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
@@ -1264,6 +1333,201 @@ class VideoBackend:
         )
 
     @staticmethod
+    def _h3_te_quant_scheme(
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        base: Optional[str] = None,
+    ) -> Optional[str]:
+        """The hosted QUANTIZED conditioner scheme this pick would load, or None.
+
+        The one resolver the plan, the byte estimate, the pre-fetch and the load itself all ask, so
+        none of them can stage an encoder another one skipped -- staging the dense conditioner for a
+        quantized load wastes 62 GB, and dropping one the load actually wants costs a surprise
+        mid-load pull of the same size.
+
+        Only a modular-workflow family qualifies. Every other family casts its own dense encoder in
+        place and still needs those shards.
+
+        And only against the base the artifact was cut from. A custom derivative can keep the
+        Qwen3-VL architecture and still carry different conditioner weights, and the strict load
+        cannot tell the difference -- every name and shape still matches -- so it would silently
+        condition on someone else's encoder. ``te_base_equivalent`` is the same test the pre-cast
+        encoder path uses: the same base, or one verified to ship byte-identical component weights.
+        Anything else keeps the pipeline's own dense encoder.
+
+        Pure, never raises, never touches the network."""
+        try:
+            if not getattr(fam, "modular_workflow", None):
+                return None
+            from .diffusion_te_prequant import te_base_equivalent
+
+            canonical = getattr(fam, "base_repo", None)
+            if not canonical or not base or not te_base_equivalent(canonical, base):
+                return None
+            return h3_te_quant_scheme(normalize_te_quant(text_encoder_quant))
+        except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense encoder
+            return None
+
+    @staticmethod
+    def _h3_te_base_index_source(base: Optional[str], hf_token: Optional[str]) -> Optional[str]:
+        """The text-encoder source ``base``'s own ``modular_model_index.json`` names, or None.
+
+        The staging twin of ``_h3_te_index_source``, which can only run once the pipeline exists.
+        The seed is the final authority, but by then the base snapshot has already been pulled
+        WITHOUT its dense ``text_encoder/`` shards, so a decline there leaves the load to fetch
+        62 GB inline. Reading the index first makes the skip as exact as the substitution.
+
+        A few KB, from the repo the load is about to pull anyway, pinned to the live cache root.
+        None on anything unanswerable, which keeps the dense shards."""
+        if not base:
+            return None
+        try:
+            import json
+
+            root = Path(base).expanduser()
+            if root.is_dir():
+                path = root / "modular_model_index.json"
+            else:
+                from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+                path = Path(
+                    hf_hub_download_with_xet_fallback(
+                        base,
+                        "modular_model_index.json",
+                        hf_token,
+                        cache_dir = hub_cache_dir(),
+                        reuse_other_cache_root = True,
+                    )
+                )
+            with open(path, "r", encoding = "utf-8") as handle:
+                entry = json.load(handle).get("text_encoder")
+            # ["library", "ClassName", {spec}]; "repo" is the spec field's deprecated spelling.
+            spec = entry[2] if isinstance(entry, (list, tuple)) and len(entry) == 3 else None
+            source = (spec or {}).get("pretrained_model_name_or_path") or (spec or {}).get("repo")
+            return source if isinstance(source, str) and source else None
+        except Exception:  # noqa: BLE001 -- unanswerable keeps the dense shards
+            return None
+
+    def _h3_te_quant_scheme_verified(
+        self,
+        fam: Any,
+        text_encoder_quant: Optional[str],
+        base: Optional[str],
+        hf_token: Optional[str],
+    ) -> Optional[str]:
+        """``_h3_te_quant_scheme`` plus the exact index check, for the decisions that COMMIT.
+
+        The pure resolver compares repo NAMES, which is right for a plan (it must not raise and
+        must not touch the network) but not for dropping a derivative's dense encoder from the
+        pull. This one is allowed the few-KB index read, so the staged snapshot and the seed agree
+        on the same base."""
+        scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
+        if scheme is None:
+            return None
+        source = self._h3_te_base_index_source(base, hf_token)
+        if source is None or _h3_te_canonical(source) != _h3_te_canonical(
+            getattr(fam, "base_repo", None)
+        ):
+            logger.info(
+                "video.h3_te_quant: %s names %s as its conditioner, not %s; keeping its dense "
+                "text_encoder shards",
+                base,
+                source or "an unreadable index",
+                getattr(fam, "base_repo", None),
+            )
+            return None
+        return scheme
+
+    @staticmethod
+    def _h3_te_index_source(pipe: Any) -> Optional[str]:
+        """The repo THIS pipeline's own modular index names as the source of its ``text_encoder``.
+
+        ``modular_model_index.json`` records a ``pretrained_model_name_or_path`` per component, and
+        diffusers has already parsed it by the time the pipeline exists, so this is free and cannot
+        disagree with what ``load_components`` would have fetched. ``repo`` is the field's
+        deprecated spelling; ``ComponentSpec.__post_init__`` folds it into the new name, and the
+        fallback here covers a spec built by hand.
+
+        None means the question could not be answered. The caller treats that as a refusal: not
+        knowing which conditioner a pipeline uses is not a licence to substitute one."""
+        try:
+            spec = pipe.get_component_spec("text_encoder")
+        except Exception:  # noqa: BLE001 -- no spec, no substitution
+            return None
+        source = getattr(spec, "pretrained_model_name_or_path", None) or getattr(spec, "repo", None)
+        # A list means several sources for one component; nothing here can vouch for that.
+        return source if isinstance(source, str) and source else None
+
+    @staticmethod
+    def _h3_te_quant_hub_files(
+        scheme: Optional[str], api: Any
+    ) -> tuple[Optional[str], list[tuple[str, int]]]:
+        """``(repo_id, [(rfilename, size)])`` for the hosted quantized conditioner, or ``(None, [])``.
+
+        The conditioner mirror of ``_denoiser_prequant_hub_files``, and it earns its keep the same
+        way: the base entry drops the dense ``text_encoder/`` shards whenever this resolves, so
+        without it the artifact that replaces them is in no entry at all and the disk preflight
+        passes on a volume that cannot hold the 27 GB it is about to pull."""
+        from .video_minimax_h3_te import h3_te_quant_filename
+
+        filename = h3_te_quant_filename(scheme)
+        if filename is None:
+            return None, []
+        try:
+            info = api.model_info(H3_TE_QUANT_REPO, files_metadata = True)
+        except Exception:  # noqa: BLE001 -- an unavailable artifact keeps the dense encoder
+            return None, []
+        files = [
+            (s.rfilename, int(getattr(s, "size", 0) or 0))
+            for s in (info.siblings or [])
+            if s.rfilename == filename
+        ]
+        return (H3_TE_QUANT_REPO, files) if files else (None, [])
+
+    def _fetch_h3_te_quant(
+        self,
+        scheme: Optional[str],
+        hf_token: Optional[str],
+        *,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> tuple[str, ...]:
+        """Pre-fetch the hosted quantized conditioner; return ``("text_encoder",)`` when it landed.
+
+        Same contract as ``_fetch_te_prequant``: only a file already on disk earns the right to drop
+        the dense shards, and the pull is cancellable and resumable like every other load download
+        instead of an untracked stall inside ``from_pretrained``. A failed fetch keeps the dense
+        encoder, so the load still has one to fall back to.
+
+        A file that lands and then fails to LOAD (corrupt, or a re-upload this loader does not
+        implement) is slow rather than broken: the base snapshot has no dense encoder, so
+        ``load_components`` pulls it from the modular index's own repo id inline. Degrading to the
+        download this skip avoided is the right failure -- the alternative is refusing the load."""
+        from .video_minimax_h3_te import h3_te_quant_filename
+
+        filename = h3_te_quant_filename(scheme)
+        if filename is None:
+            return ()
+        cancel = cancel_event if cancel_event is not None else self._cancel_event
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        try:
+            hf_hub_download_with_xet_fallback(
+                H3_TE_QUANT_REPO,
+                filename,
+                hf_token,
+                cancel_event = cancel,
+                cache_dir = hub_cache_dir(),
+                reuse_other_cache_root = True,
+            )
+        except Exception as exc:  # noqa: BLE001 -- no artifact just means the dense encoder
+            if cancel.is_set():
+                raise
+            logger.warning(
+                "video.h3_te_quant_fetch_failed: %s/%s: %s", H3_TE_QUANT_REPO, filename, exc
+            )
+            return ()
+        return ("text_encoder",)
+
+    @staticmethod
     def _denoiser_prequant_covered(
         fam: Any, transformer_quant: Optional[str], base: Optional[str]
     ) -> bool:
@@ -1373,6 +1637,7 @@ class VideoBackend:
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
     ) -> list[tuple[str, int]]:
         """The (rfilename, size) list a load actually needs from the base repo.
 
@@ -1396,11 +1661,22 @@ class VideoBackend:
           denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
           ``transformer/config.json`` is kept for the same reason the pre-cast
           encoders keep theirs: the pre-quant loader meta-inits the DiT from it,
-          so dropping it would break the very load that made the skip safe."""
+          so dropping it would break the very load that made the skip safe.
+
+        ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
+        brings up one: ``transformer/`` for fl2va (which also covers text-only) and
+        ``transformer_ref/`` for ref2va. They are 66.28 GB each, so the scoped list carries exactly
+        one of them, never both."""
         from .diffusion_te_prequant import is_prequant_covered_weight
+        from .video_minimax_h3 import H3_TASK_REFERENCES
 
         siblings = list(info.siblings or [])
         is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
+        h3_denoiser_prefix = (
+            "transformer_ref/"
+            if (h3_task or "").strip().lower() == H3_TASK_REFERENCES
+            else "transformer/"
+        )
         h3_prefixes = (
             "audio_scheduler/",
             "audio_vae/",
@@ -1408,7 +1684,7 @@ class VideoBackend:
             "scheduler/",
             "text_encoder/",
             "tokenizer/",
-            "transformer/",
+            h3_denoiser_prefix,
             "vae/",
         )
         files: list[tuple[str, int]] = []
@@ -1449,21 +1725,25 @@ class VideoBackend:
         ltx23: bool = False,
         te_sources: Optional[dict[str, Any]] = None,
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
+        h3_te_scheme: Optional[str] = None,
     ) -> Optional[int]:
         """Total bytes this load will pull (checkpoint + companions), or None.
 
         Dense encoder shards covered by an available pre-cast checkpoint are excluded, since
         the pull below skips them too, and so are the dense denoiser shards a hosted
-        pre-quantized checkpoint replaces (``skip_transformer_weights``). Neither hosted
-        checkpoint's own bytes are added: the progress bar counts cached bytes for the checkpoint
-        and base repos only, so a third repo in the total would leave the bar permanently short
-        of 100%."""
+        pre-quantized checkpoint replaces (``skip_transformer_weights``) and H3's dense
+        ``text_encoder/`` under ``h3_te_scheme``. None of those hosted checkpoints' own bytes are
+        added: the progress bar counts cached bytes for the checkpoint and base repos only, so a
+        third repo in the total would leave the bar permanently short of 100%."""
         try:
             from huggingface_hub import HfApi
 
             total = 0
             api = HfApi(token = hf_token or None)
             skip_te_components = tuple(self._te_prequant_hub_files(te_sources or {}, api))
+            if self._h3_te_quant_hub_files(h3_te_scheme, api)[1]:
+                skip_te_components = skip_te_components + ("text_encoder",)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
                 for sibling in info.siblings or []:
@@ -1479,6 +1759,7 @@ class VideoBackend:
                         ltx23 = ltx23,
                         skip_te_components = skip_te_components,
                         skip_transformer_weights = skip_transformer_weights,
+                        h3_task = h3_task,
                     )
                 )
             return total or None
@@ -1496,6 +1777,7 @@ class VideoBackend:
         hf_token: Optional[str] = None,
         transformer_quant: Optional[str] = None,
         text_encoder_quant: Optional[str] = None,
+        h3_task: Optional[str] = None,
         **load_kwargs: Any,
     ) -> dict[str, Any]:
         """The repos + exact files this pick needs, for staging through the Hub download
@@ -1510,7 +1792,11 @@ class VideoBackend:
         ``transformer_quant`` is read for the mirror-image reason on the denoiser: a scheme with a
         hosted PRE-QUANTIZED checkpoint replaces the dense DiT, so staging those shards would cost
         66.3 GB the load never opens. It used to be swallowed by ``**load_kwargs`` and the plan
-        stayed dense-sized."""
+        stayed dense-sized.
+
+        ``h3_task`` picks which MiniMax-H3 denoiser partition is staged. It was swallowed by
+        ``**load_kwargs`` too, so a ref2va plan staged the fl2va ``transformer/`` and left the
+        66.28 GB ``transformer_ref/`` the load then needs to be pulled inline."""
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
@@ -1525,29 +1811,62 @@ class VideoBackend:
         # Keyed by repo so a 2.3 pick's checkpoint and extras stay ONE scoped job; two entries would collide on the job key.
         entries: dict[str, dict[str, Any]] = {}
         total = 0
+        checkpoint_bytes = 0
+        planned: dict[str, set[str]] = {}
+        # Where the loader would resolve each file (live root / other root / nowhere), and the
+        # entry labels, both keyed by repo so the staging decision can be made once per repo.
+        located: dict[str, dict[str, tuple[Optional[str], int]]] = {}
+        labels: dict[str, dict[str, Any]] = {}
 
         def add(
             repo: str,
             files: list[tuple[str, int]],
             gguf: Optional[str] = None,
+            revision: Optional[str] = None,
+            checkpoint: bool = False,
         ) -> int:
-            if not files:
-                return 0
-            entry = entries.setdefault(
-                repo, {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None}
-            )
-            seen = set(entry["files"])
-            added = 0
+            """Count every required file and record, per root, where the loader would find it.
+            Which of them to stage is decided per REPO once every add is in (see below), not here:
+            the 2.3 path adds one repo across several calls, and a call that happens to hold only
+            other-root files cannot see that the repo straddles both. Returns the full size.
+
+            ``checkpoint`` marks the entry holding the SELECTED model so the panel can label it
+            without re-deriving the answer from the repo id, which the plan itself may have
+            rewritten. Same envelope key the image planners emit, so one page-side map serves both."""
+            from core.inference.diffusion import DiffusionBackend
+
+            def _where(name: str, size: int) -> Optional[str]:
+                live = hub_cache_dir()
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, size, roots = (live,)):
+                    return "live"
+                if not DiffusionBackend._hub_file_is_cached(
+                    repo, name, revision, size, roots = (None,)
+                ):
+                    return None
+                # A stale live copy under the right name shadows the good one, because
+                # reuse_other_cache_root switches roots only when the live lookup finds NOTHING.
+                # Presence alone is what that switch tests, so ask without the size.
+                if DiffusionBackend._hub_file_is_cached(repo, name, revision, None, roots = (live,)):
+                    return None
+                return "other"
+
+            seen = planned.setdefault(repo, set())
+            where = located.setdefault(repo, {})
+            label = labels.setdefault(repo, {"gguf": None, "checkpoint": False})
+            if gguf:
+                label["gguf"] = gguf
+            # Only ever raised, never cleared: a repo holding both the checkpoint and companion
+            # files (a 2.3 pick whose extras live in the checkpoint repo) is keyed once, so a later
+            # companion add would otherwise unflag what the checkpoint add marked.
+            label["checkpoint"] = label["checkpoint"] or checkpoint
+            required = 0
             for name, size in files:
                 if name in seen:
                     continue
                 seen.add(name)
-                entry["files"].append(name)
-                entry["bytes"] += int(size)
-                added += int(size)
-            if gguf:
-                entry["gguf_filename"] = gguf
-            return added
+                required += int(size)
+                where[name] = (_where(name, int(size)), int(size))
+            return required
 
         try:
             api = HfApi(token = hf_token or None)
@@ -1558,7 +1877,14 @@ class VideoBackend:
                     for s in (info.siblings or [])
                     if s.rfilename == gguf_filename
                 ]
-                total += add(repo_id, sizes, gguf = gguf_filename)
+                checkpoint_bytes = sum(size for _name, size in sizes)
+                total += add(
+                    repo_id,
+                    sizes,
+                    gguf = gguf_filename,
+                    revision = getattr(info, "sha", None),
+                    checkpoint = True,
+                )
                 if ltx23:
                     # The 2.3 assembly reads these companion files at load; without them here they would be pulled inline, outside the panel's disk preflight.
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
@@ -1576,6 +1902,7 @@ class VideoBackend:
                             for s in (extras_info.siblings or [])
                             if s.rfilename in wanted
                         ],
+                        revision = getattr(extras_info, "sha", None),
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(fam, text_encoder_quant)
@@ -1587,6 +1914,18 @@ class VideoBackend:
             dq_repo, dq_files = self._denoiser_prequant_hub_files(fam, transformer_quant, base, api)
             if dq_repo:
                 total += add(dq_repo, dq_files)
+            # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/.
+            # VERIFIED, like the load: this entry both ADDS 27 GB and REMOVES the dense encoder
+            # from the base entry below, so a name match that the load will decline gets the plan
+            # and the disk preflight wrong in both directions at once -- 27 GB staged and never
+            # used, 62 GB needed and never advertised. This function is already the network-bound
+            # one (it is nothing but model_info calls, wrapped in the try below), so the few-KB
+            # index read is in keeping.
+            h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
+                self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
+            )
+            if h3_te_repo:
+                total += add(h3_te_repo, h3_te_files)
             if base and not Path(base).expanduser().exists():
                 info = api.model_info(base, files_metadata = True)
                 total += add(
@@ -1595,16 +1934,84 @@ class VideoBackend:
                         info,
                         kind,
                         ltx23 = ltx23,
-                        skip_te_components = tuple(te_files),
+                        skip_te_components = (
+                            tuple(te_files) + (("text_encoder",) if h3_te_repo else ())
+                        ),
                         skip_transformer_weights = self._denoiser_prequant_covered(
                             fam, transformer_quant, base
                         ),
+                        h3_task = h3_task,
                     ),
+                    revision = getattr(info, "sha", None),
+                    # A pipeline pick has no single file: the base IS the selected model (base =
+                    # repo_id above). Under a GGUF pick the base is a companion, so it stays unflagged.
+                    checkpoint = kind == "pipeline",
                 )
         except Exception as exc:  # noqa: BLE001 -- an unavailable plan falls back to the inline pull
             logger.warning("video.download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
-        return {"entries": list(entries.values()), "total_bytes": total}
+            return {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+        for repo, where in located.items():
+            # Files STRADDLING the two roots cannot be handed to from_pretrained as one snapshot:
+            # _predownload_base returns no directory in that state and the assembly is pinned to
+            # hub_cache_dir(), so the other-root subset is invisible to it and gets re-pulled
+            # inline, past this plan's progress, cancel and disk preflight, failing offline after a
+            # plan that reported nothing left to do. A repo living wholly in the other root is fine,
+            # which is what reuse_other_cache_root is for. A file missing everywhere downloads INTO
+            # the live root, so it counts as live: dropping it would read a mixed repo as unsplit
+            # and stage only the missing part, manufacturing the very split this avoids.
+            split = {w or "live" for w, _size in where.values()} == {"live", "other"}
+            staged = [
+                (name, size)
+                for name, (w, size) in where.items()
+                if w is None or (split and w != "live")
+            ]
+            if not staged:
+                continue
+            missing_names = [name for name, _size in staged]
+            # Keep the scoped claim stable while this repo warms so a second pick adopts the
+            # running @diffusion job instead of 409ing on a smaller file list. Cached names are
+            # no-op Hub calls; only ``staged`` contributes to bytes/preflight.
+            names = list(where)
+            gguf = labels[repo]["gguf"]
+            entries[repo] = {
+                "repo_id": repo,
+                "files": names,
+                "bytes": sum(size for _name, size in staged),
+                "gguf_filename": gguf,
+                # The flag describes the ENTRY, not the pick: a 2.3 repo holding both the cached
+                # checkpoint and its missing extras stages companion files only, and labelling that
+                # "Model file" misdescribes what is downloading. A pipeline pick has no single file,
+                # so the repo itself is the model and anything staged from it is part of it.
+                "checkpoint": labels[repo]["checkpoint"]
+                and (gguf is None or gguf in missing_names),
+            }
+        return {
+            "entries": list(entries.values()),
+            # Remaining vs the full footprint: cache state changes what is left to fetch, never
+            # what the load needs on disk.
+            "total_bytes": sum(entry["bytes"] for entry in entries.values()),
+            "required_bytes": total,
+            "checkpoint_bytes": int(checkpoint_bytes),
+        }
+
+    @staticmethod
+    def _h3_text_encoder_repo(repo_id: str, qwen_filename: str) -> str:
+        """Which repo the H3 native text encoder comes from, preferring a local bundle.
+
+        The GGUF bundle ships the Qwen encoder beside the denoiser partitions, so when the pick is
+        a LOCAL clone of it the encoder is already on disk. Hardcoding the Hub repo instead would
+        re-fetch multiple GB that are sitting next to the checkpoint, and fail outright offline."""
+        from .video_minimax_h3 import H3_GGUF_REPO
+
+        root = Path(repo_id).expanduser()
+        if root.is_dir():
+            from .diffusion_families import resolve_local_gguf_child
+            try:
+                resolve_local_gguf_child(root, qwen_filename)
+            except Exception:  # noqa: BLE001 -- not in the local clone, so the Hub copy it is
+                return H3_GGUF_REPO
+            return repo_id
+        return H3_GGUF_REPO
 
     @staticmethod
     def _h3_native_download_plan(
@@ -1615,21 +2022,25 @@ class VideoBackend:
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
             H3_COMPONENT_REPO,
-            H3_GGUF_REPO,
             H3_VIDEO_VAE,
             h3_text_encoder_filename,
             validate_h3_transformer_filename,
         )
+        from core.inference.diffusion import DiffusionBackend
 
         validate_h3_transformer_filename(gguf_filename)
+        qwen_filename = h3_text_encoder_filename(gguf_filename)
         wanted = (
             (repo_id, gguf_filename),
-            (H3_GGUF_REPO, h3_text_encoder_filename(gguf_filename)),
+            (VideoBackend._h3_text_encoder_repo(repo_id, qwen_filename), qwen_filename),
             (H3_COMPONENT_REPO, H3_VIDEO_VAE),
             (H3_COMPONENT_REPO, H3_AUDIO_VAE),
         )
         grouped: dict[str, dict[str, Any]] = {}
+        missing_files: dict[str, set[str]] = {}
         total = 0
+        required_total = 0
+        checkpoint_bytes = 0
         try:
             api = HfApi(token = hf_token or None)
             for repo, filename in wanted:
@@ -1640,20 +2051,49 @@ class VideoBackend:
                 if match is None:
                     raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
                 size = int(match.size or 0)
+                required_total += size
+                if repo == repo_id and filename == gguf_filename:
+                    checkpoint_bytes = size
                 entry = grouped.setdefault(
                     repo,
-                    {"repo_id": repo, "files": [], "bytes": 0, "gguf_filename": None},
+                    {
+                        "repo_id": repo,
+                        "files": [],
+                        "bytes": 0,
+                        "gguf_filename": None,
+                        "checkpoint": False,
+                    },
                 )
                 if filename not in entry["files"]:
                     entry["files"].append(filename)
-                    entry["bytes"] += size
-                    total += size
+                    revision = getattr(info, "sha", None)
+                    if not DiffusionBackend._hub_file_is_loadable(repo, filename, revision, size):
+                        missing_files.setdefault(repo, set()).add(filename)
+                        entry["bytes"] += size
+                        total += size
                 if filename == gguf_filename:
                     entry["gguf_filename"] = filename
         except Exception as exc:  # noqa: BLE001 -- inline loading remains the fallback
             logger.warning("video.h3_native_download_plan_failed: %s", exc)
-            return {"entries": [], "total_bytes": 0}
-        return {"entries": list(grouped.values()), "total_bytes": total}
+            return {
+                "entries": [],
+                "total_bytes": 0,
+                "required_bytes": 0,
+                "checkpoint_bytes": 0,
+            }
+        entries = []
+        for repo, entry in grouped.items():
+            missing = missing_files.get(repo, set())
+            if not missing:
+                continue
+            entry["checkpoint"] = entry["gguf_filename"] in missing
+            entries.append(entry)
+        return {
+            "entries": entries,
+            "total_bytes": total,
+            "required_bytes": required_total,
+            "checkpoint_bytes": checkpoint_bytes,
+        }
 
     @staticmethod
     def _pick_looks_like_ltx23(
@@ -1702,6 +2142,8 @@ class VideoBackend:
                     source.filename,
                     hf_token,
                     cancel_event = cancel,
+                    # Pre-quant encoders are planned with the same both-roots probe.
+                    reuse_other_cache_root = True,
                 )
             except Exception as exc:  # noqa: BLE001 -- no pre-cast file just means the dense encoder
                 if cancel.is_set():
@@ -1725,6 +2167,7 @@ class VideoBackend:
         ltx23: bool = False,
         skip_te_components: tuple[str, ...] = (),
         skip_transformer_weights: bool = False,
+        h3_task: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> Optional[str]:
         """Pull exactly the base-repo files the load needs; return the local snapshot dir.
@@ -1749,22 +2192,44 @@ class VideoBackend:
                 ltx23 = ltx23,
                 skip_te_components = skip_te_components,
                 skip_transformer_weights = skip_transformer_weights,
+                h3_task = h3_task,
             )
             if not any(name == "model_index.json" for name, _ in files):
                 return None
             from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-            snapshot_root: Optional[Path] = None
+            snapshot_root: Optional[str] = None
+            roots: set[str] = set()
             for name, _ in files:
                 # Explicit check: a cached file returns without consulting the event, so a warm-cache sweep would run to completion after a cancel.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
-                    hf_hub_download_with_xet_fallback(base, name, hf_token, cancel_event = cancel)
+                    hf_hub_download_with_xet_fallback(
+                        base,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
+                        # Same reason as the checkpoint: the plan already treats either root as cached.
+                        reuse_other_cache_root = True,
+                    )
                 )
+                # The resolved path minus the file's own relative parts, so a subfolder entry yields
+                # the same root as a top-level one. Not resolve()d: that follows the link into blobs/.
+                try:
+                    root = str(local.parents[len(Path(name).parts) - 1])
+                except (IndexError, ValueError, OSError):
+                    root = ""
+                roots.add(root)
                 if name == "model_index.json":
-                    snapshot_root = local.parent
-            return str(snapshot_root) if snapshot_root is not None else None
+                    snapshot_root = root or None
+            # Only hand back a snapshot the WHOLE set lives in. reuse_other_cache_root resolves each
+            # file through whichever root holds it, so a moved cache can serve the manifest from the
+            # old root while the rest land in the live one, and from_pretrained would then be pointed
+            # at a tree missing the others. Mirrors the image prefetch path.
+            if snapshot_root is not None and roots != {snapshot_root}:
+                return None
+            return snapshot_root
         except Exception as exc:  # noqa: BLE001 -- fall back to from_pretrained's own pull
             if cancel.is_set():
                 raise
@@ -1946,6 +2411,7 @@ class VideoBackend:
                 diffusers = diffusers,
                 torch = torch,
                 fam = fam,
+                target = target,
                 repo_id = repo_id,
                 base = base,
                 kind = kind,
@@ -1958,6 +2424,9 @@ class VideoBackend:
                 # than moving the dispatch past a block written for the conventional path (its
                 # speed_mode/auto-ladder defaulting means nothing to a modular workflow).
                 transformer_quant = normalize_transformer_quant(transformer_quant),
+                # Same reason as transformer_quant above: the conventional path normalises the
+                # encoder request below this dispatch, which the modular branch never reaches.
+                text_encoder_quant = normalize_te_quant(text_encoder_quant),
                 h3_task = h3_task,
                 _load_token = _load_token,
                 _base_local_dir = _base_local_dir,
@@ -1980,7 +2449,9 @@ class VideoBackend:
             transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
-        device_memory = snapshot_device_memory(target)
+        # Settled, not raw: this plan is the one the unified-memory refusal below judges, so the
+        # previous pipeline's cached-but-free allocator buffers must not read as occupied.
+        device_memory = settled_snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its
@@ -2012,7 +2483,16 @@ class VideoBackend:
             its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
             dense-encoder plan can be rebuilt below if the pre-cast injection does not land."""
             text_encoder_gb = components[1] * scale if components is not None else 0.0
-            companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+            # dtype_scale doubles bf16 terms when the fp16 promotion lands fp32 on an accelerator.
+            # A vae_force_fp32 family is the one component it must NOT touch: its table term is
+            # already recorded at fp32 and assembly pins the VAE to fp32 either way, so scaling it
+            # counts those bytes twice (2.8 GB on Wan TI2V-5B) against a hard refusal.
+            vae_gb = components[2] if components is not None else 0.0
+            vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
+            scaled_te_gb = text_encoder_gb * dtype_scale
+            scaled_vae_gb = vae_gb * vae_scale
+            companions_gb = text_encoder_gb + vae_gb if components is not None else 0.0
+            scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
                     "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
@@ -2024,16 +2504,14 @@ class VideoBackend:
                 )
             if kind == "pipeline":
                 model_dense_mib = (
-                    int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                    int((components[0] * dtype_scale + scaled_companions_gb) * mib_per_gb)
                     if components is not None
                     else None
                 )
                 companion_mib = None
             else:
                 companion_mib = (
-                    int(companions_gb * mib_per_gb * dtype_scale)
-                    if components is not None
-                    else None
+                    int(scaled_companions_gb * mib_per_gb) if components is not None else None
                 )
                 # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
                 model_dense_mib = (
@@ -2050,6 +2528,14 @@ class VideoBackend:
             # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
             dense_plan = planned
             replanned_for_quant = False
+            # NOT re-triggered by a unified-memory shortfall, deliberately. This re-plan prices the
+            # quantised DiT's STEADY size, but the video path has no pre-quantised artifact: the DiT
+            # is always materialised dense (from_pretrained / from_single_file) and
+            # quantize_transformer rewrites it in place afterwards, so the build PEAK is the bf16
+            # figure whatever scheme is picked. On discrete VRAM the steady state is the right thing
+            # to plan placement against -- an oversized peak raises a catchable torch OOM and offload
+            # is still there -- but on unified memory the peak is what the OS kills for, with no
+            # exception to catch, so the refusal below has to keep reading the dense plan.
             if (
                 kind == "pipeline"
                 and planned.offload_policy != "none"
@@ -2085,6 +2571,12 @@ class VideoBackend:
             return planned, dense_plan, replanned_for_quant
 
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = True)
+
+        # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
+        # offload tier left to fall back to, so an oversized load is killed by the OS with no
+        # torch OOM to catch. Refuse now, after the eviction above and before any weight is
+        # materialised -- on the dense plan, which is what the DiT build peaks at (see above).
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
@@ -2533,6 +3025,66 @@ class VideoBackend:
         )
         return self.status()
 
+    @staticmethod
+    def _raise_on_modular_unified_shortfall(
+        fam: VideoFamily,
+        *,
+        target: Any,
+        dtype: Any,
+        device: str,
+        memory_mode: Optional[str],
+        scheme: Optional[str],
+    ) -> None:
+        """Refuse a modular (MiniMax-H3) load whose components cannot fit unified memory.
+
+        The conventional path plans and refuses in ``load_pipeline``; the modular dispatch returns
+        before that, so the one family whose dense component set is 144.2 GB -- the largest by a
+        wide margin, and the one the refusal matrix says must be declined on every Mac it models --
+        was the only one that never reached the check.
+
+        Sized on what ``load_components`` will actually build: the family's dense bf16 table, with
+        the denoiser priced at its steady quantised size when a hosted pre-quantized checkpoint is
+        about to be seeded in its place. Best-effort like the rest of the sizing helpers -- a
+        family with no table, or an unreadable device, plans nothing and the load proceeds as
+        before."""
+        components = getattr(fam, "bf16_components_gb", None)
+        if not components:
+            return
+        import torch
+
+        # Same rule as the conventional path: the table is bf16, so an fp32 promotion on an
+        # accelerator doubles it.
+        dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
+        transformer_gb, text_encoder_gb, vae_gb = components
+        # Only a scheme with a hosted checkpoint replaces the dense denoiser; anything else (auto
+        # included) keeps the released bfloat16 components, which is what the modular loader does.
+        #
+        # Its MEASURED size when the family publishes one, not the generic steady factor: H3's
+        # hosted denoisers are quantized AND structurally pruned (the curve-form adaLN), so 0.55 x
+        # 66.3 GB reads 36.5 GB against a real ~20.3 GB, and the 16 GB gap is enough to refuse a
+        # supported prequant load that fits on a 128 GB Mac.
+        measured = getattr(fam, "prequant_resident_gb", None) if scheme else None
+        factor = _QUANT_STEADY_FACTOR.get(scheme) if scheme else None
+        if measured:
+            transformer_gb = float(measured)
+        elif factor is not None:
+            transformer_gb *= factor
+        mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+        plan = plan_diffusion_memory(
+            target = target,
+            device_memory = settled_snapshot_device_memory(target),
+            model_dense_mib = int(
+                (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
+            ),
+            runtime_headroom_mib = estimate_video_runtime_mib(
+                width = fam.resolution_presets[0][0],
+                height = fam.resolution_presets[0][1],
+                num_frames = fam.default_num_frames,
+            ),
+            requested_mode = normalize_memory_mode(memory_mode),
+        )
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
+
     def _load_h3_modular_pipeline(
         self,
         *,
@@ -2547,15 +3099,17 @@ class VideoBackend:
         hf_token: Optional[str],
         memory_mode: Optional[str],
         transformer_quant: Optional[str] = None,
+        text_encoder_quant: Optional[str] = None,
         h3_task: Optional[str] = None,
+        target: Any = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
         """Load MiniMax-H3 through its official Modular Diffusers workflow.
 
-        ``transformer_quant`` is an ALREADY-normalised scheme (or None / "auto"). A scheme with a
-        hosted pre-quantized denoiser checkpoint is built here and pre-seeded into the pipeline;
-        anything else keeps the released bfloat16 components."""
+        ``transformer_quant`` and ``text_encoder_quant`` are ALREADY-normalised schemes (or None /
+        "auto"). A scheme with a hosted pre-quantized checkpoint is built here and pre-seeded into
+        the pipeline; anything else keeps the released bfloat16 components."""
         # Defence in depth: validate_load_request now refuses a single_file modular pick outright,
         # so this is unreachable from the routes. It stays because this method is also reachable
         # directly, and by the time it runs the resident pipeline has already been torn down.
@@ -2586,6 +3140,22 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} reference video"
             )
             scheme = None
+        # The conventional loader refuses an oversized unified-memory load before any weight is
+        # materialised; this workflow returns above that check, so it runs its own here. It has to:
+        # load_components builds every component dense, and the ComponentsManager's CPU offload
+        # frees nothing on unified memory (host and device are one pool), so H3's 144.2 GB
+        # component set is an OS kill with no torch OOM to catch. Placed after `scheme` settles and
+        # before ANY weight is opened -- the hosted pre-quantized denoiser below is materialised on
+        # the CPU, which is the same memory.
+        umem_target = target if target is not None else resolve_diffusion_device_target()
+        self._raise_on_modular_unified_shortfall(
+            fam,
+            target = umem_target,
+            dtype = dtype,
+            device = device,
+            memory_mode = memory_mode,
+            scheme = scheme,
+        )
         if scheme is not None:
             from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
@@ -2648,6 +3218,118 @@ class VideoBackend:
                         scheme,
                         fam.name,
                     )
+        # ── hosted quantized conditioner, for the same reason and in the same place.
+        #
+        # Under enable_auto_cpu_offload the VRAM floor is the LARGEST resident component, so the
+        # 66.7 GB Qwen3-VL conditioner -- not the denoiser -- is what has been pinning it. Seeding
+        # here rather than casting after load_components is the entire point: a runtime cast has to
+        # materialise the dense encoder first, so its PEAK is the bfloat16 size it was meant to
+        # avoid, and on this workflow it would also have to download the 62 GB dense component.
+        text_encoder_quant_engaged: Optional[str] = None
+        text_encoder_quant_reason = "released bfloat16 components"
+        # Base-gated, through the same resolver the plan and the pre-fetch use, so a derivative
+        # base that keeps its own conditioner can never be handed this one.
+        te_scheme = self._h3_te_quant_scheme(fam, text_encoder_quant, base)
+        # And gated a second time, on the identity the base NAME cannot establish. That resolver
+        # compares repo ids, so a derivative stored under a directory (or repo) whose last segment
+        # is also MiniMax-H3 passes it. This pipeline's own modular index names the repo its
+        # conditioner would have come from, which is the actual question: a derivative that
+        # retrained the encoder ships it under its own id and says so here, while one that reuses
+        # the released encoder still points at it, and quantizing exactly those weights is what
+        # the hosted artifact IS. Free, and it cannot disagree with the load, because it reads what
+        # diffusers already parsed for it. Unanswerable is a refusal, not a pass.
+        te_index_source = self._h3_te_index_source(pipe) if te_scheme is not None else None
+        te_index_declined = False
+        if te_scheme is not None:
+            # EXACT here, unlike the plan-side comparison. te_base_equivalent falls through to
+            # _same_base_model, which accepts a matching final path segment, and that tolerance is
+            # the hole this gate exists to close: someone/MiniMax-H3 is a different repo with
+            # different weights and would have passed it. canonical_base still folds a known mirror
+            # onto the id it copies, so mirrors are not collateral. A pipeline re-saved locally
+            # names local paths here and is refused, which costs the optimisation, not correctness.
+            if te_index_source is None or _h3_te_canonical(te_index_source) != _h3_te_canonical(
+                fam.base_repo
+            ):
+                te_scheme = None
+                te_index_declined = True
+        if text_encoder_quant is not None and te_scheme is None:
+            # A valid request this workflow has no hosted artifact for, or one it has but not for
+            # THIS pipeline's conditioner. Say which; do NOT erase the request.
+            if te_index_declined:
+                text_encoder_quant_reason = (
+                    f"this pipeline's conditioner comes from "
+                    f"{te_index_source or 'a source that could not be read'}, not {fam.base_repo}, "
+                    f"so the hosted quantized {text_encoder_quant} conditioner is not its "
+                    f"quantization; loaded this pipeline's own bfloat16 encoder instead"
+                )
+            elif h3_te_quant_scheme(text_encoder_quant) is not None:
+                text_encoder_quant_reason = (
+                    f"the hosted quantized {text_encoder_quant} conditioner is cut from "
+                    f"{fam.base_repo}, not {base}; loaded this pipeline's own bfloat16 encoder "
+                    f"instead"
+                )
+            else:
+                text_encoder_quant_reason = (
+                    f"no hosted quantized {text_encoder_quant} conditioner for {fam.name}; "
+                    f"loaded the released bfloat16 encoder instead"
+                )
+        if te_scheme is not None:
+            from .video_minimax_h3_te import load_h3_quantized_text_encoder
+            text_encoder = load_h3_quantized_text_encoder(
+                base,
+                te_scheme,
+                dtype = dtype,
+                hf_token = hf_token,
+                # Pin the live cache root, exactly as the denoiser fetch above does.
+                cache_dir = hub_cache_dir(),
+                # The scoped pre-download keeps every component config, so the staged snapshot
+                # already holds text_encoder/config.json: read it from there rather than sending
+                # the config resolution back to the hub.
+                local_base = _base_local_dir,
+                logger = logger,
+            )
+            if text_encoder is None:
+                # Best-effort by contract, like the denoiser: a missing / unreadable / mismatched
+                # artifact continues dense rather than failing after the teardown.
+                text_encoder_quant_reason = (
+                    f"hosted quantized {te_scheme} conditioner unusable; "
+                    f"loaded the released bfloat16 encoder instead"
+                )
+            else:
+                pipe.update_components(text_encoder = text_encoder)
+                text_encoder_quant_engaged = te_scheme
+                text_encoder_quant_reason = (
+                    f"hosted quantized {te_scheme} conditioner ({H3_TE_QUANT_REPO})"
+                )
+                logger.info(
+                    "video.text_encoder_quant: %s quantized conditioner seeded for %s",
+                    te_scheme,
+                    fam.name,
+                )
+        # Fail closed, exactly as the conventional path does for the same request: an explicit
+        # encoder precision that engaged NOTHING leaves a dense bf16 encoder the caller did not ask
+        # for, and a render that succeeds at an unrequested precision quietly invalidates whatever
+        # it was measuring. Covers all three ways this can end up dense -- no hosted artifact for
+        # the scheme, an artifact that is not this pipeline's conditioner, and one that failed to
+        # load -- because the caller cannot tell them apart from the result.
+        #
+        # Raised HERE, before load_components, so the refusal costs nothing rather than arriving
+        # after every component has been built. precision_fallback_allowed() is the documented
+        # escape hatch, and it lands the dense encoder with the reason recorded as before.
+        if (
+            text_encoder_quant is not None
+            and text_encoder_quant_engaged is None
+            and not precision_fallback_allowed()
+        ):
+            raise RuntimeError(
+                precision_refusal_message(
+                    "text_encoder_quant",
+                    text_encoder_quant,
+                    text_encoder_quant_reason,
+                    off_label = "leave it unset to keep the dense bf16 encoder",
+                    auto_available = False,
+                )
+            )
         # The token above only opens the modular index. Every component's own from_pretrained runs
         # here, against the repos that index names, so it has to be passed again or a gated/private
         # component load goes out anonymously (load_components only WARNS on a failed component).
@@ -2656,9 +3338,28 @@ class VideoBackend:
         # keyframe/reference paths). workflow= only narrows the name list load_components already
         # built, and that list skips every component whose attribute is set, so the seeding above
         # still keeps the dense 66.3 GB transformer from being fetched.
+        if scheme is not None and transformer_quant_engaged is None:
+            # The seeding above is best-effort by contract: a missing, corrupt, stale or
+            # base-mismatched checkpoint drops to the released bfloat16 denoiser, and that is the
+            # 66.3 GB the check before it did not size. load_components would then build it with
+            # no refusal left to stop it, which on unified memory is the OS kill this whole guard
+            # exists to prevent. Re-run it on the dense set, still before any weight is opened.
+            self._raise_on_modular_unified_shortfall(
+                fam,
+                target = umem_target,
+                dtype = dtype,
+                device = device,
+                memory_mode = memory_mode,
+                scheme = None,
+            )
+        # cache_dir is passed here too, for the same reason the token is: load_components forwards
+        # its extra kwargs through ComponentSpec.load into each component's from_pretrained, and
+        # without it those ~145 GB of Hub-pinned components resolve against the HF_HUB_CACHE snapshot
+        # taken at import time rather than Studio's live cache folder, which the user can move.
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,
+            cache_dir = hub_cache_dir(),
             **({"token": hf_token} if hf_token else {}),
         )
         # The video VAE loads at float32 and the decode runs under float16 autocast, so both
@@ -2719,7 +3420,14 @@ class VideoBackend:
                     transformer_quant_engaged or "off",
                     transformer_quant_reason,
                 ),
-                "text_encoder_quant": (None, "off", "released bfloat16 components"),
+                # The REQUEST on the left, not None: a declined or failed request has to read as a
+                # fallback in the resolved record, never disappear into a bare "off" that looks
+                # like the caller never asked.
+                "text_encoder_quant": (
+                    text_encoder_quant,
+                    text_encoder_quant_engaged or "off",
+                    text_encoder_quant_reason,
+                ),
             }
         )
         with self._lock:
@@ -2745,13 +3453,19 @@ class VideoBackend:
                 # records it: status() reports this field, and a dense fallback must not claim a
                 # quant the resident denoiser does not have.
                 transformer_quant = transformer_quant_engaged,
+                # Ditto for the conditioner: the memory preflight reads this field back to size the
+                # resident encoder, so a dense fallback recorded as int8 would under-state the floor
+                # by 39 GB and let a doomed generation start.
+                text_encoder_quant = text_encoder_quant_engaged,
+                h3_denoiser_pinned = denoiser_pinned,
                 resolved = resolved,
             )
         logger.info(
-            "video.loaded: %s (%s, modular diffusers, transformer_quant=%s)",
+            "video.loaded: %s (%s, modular diffusers, transformer_quant=%s, text_encoder_quant=%s)",
             repo_id,
             fam.name,
             transformer_quant_engaged or "off",
+            text_encoder_quant_engaged or "off",
         )
         return self.status()
 
@@ -2769,7 +3483,15 @@ class VideoBackend:
             return root
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        return Path(hf_hub_download_with_xet_fallback(repo_id, gguf_filename or "", hf_token))
+        return Path(
+            hf_hub_download_with_xet_fallback(
+                repo_id,
+                gguf_filename or "",
+                hf_token,
+                # Matches the planner's both-roots cache probe, as the diffusion fetches already do.
+                reuse_other_cache_root = True,
+            )
+        )
 
     # ── generation ───────────────────────────────────────────────────────────
 
@@ -3085,6 +3807,11 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+                if not fam.supports_cfg:
+                    # A CFG-free family never reads this number: diffusers gets no guidance kwarg
+                    # and the native path pins cfg_scale to 1.0. Clamp it here so the recipe cannot
+                    # record a guidance that did not run.
+                    guidance = float(fam.default_guidance)
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
                 )
@@ -3112,6 +3839,7 @@ class VideoBackend:
 
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (
+                        H3_TEXT_ENCODER_BF16_GB,
                         estimate_h3_diffusers_host_ram_gb,
                         estimate_h3_diffusers_vram_gb,
                     )
@@ -3126,7 +3854,20 @@ class VideoBackend:
                             else 0
                         )
                         available_vram_gb = (free_bytes + reserved_bytes) / 1_000_000_000
-                        required_vram_gb = estimate_h3_diffusers_vram_gb(width, height, frames)
+                        # Size the floor from the components this load ACTUALLY holds, not from
+                        # the released bfloat16 pair. Both fields are the ENGAGED schemes (a
+                        # declined or failed request is recorded as None at load), so a dense
+                        # fallback keeps the dense floor.
+                        required_vram_gb = estimate_h3_diffusers_vram_gb(
+                            width,
+                            height,
+                            frames,
+                            text_encoder_gb = h3_te_resident_gb(
+                                state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                            ),
+                            transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
+                            transformer_pinned = bool(getattr(state, "h3_denoiser_pinned", False)),
+                        )
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
@@ -3141,7 +3882,16 @@ class VideoBackend:
                         host_capacity_gb = (
                             psutil.virtual_memory().available + process_rss
                         ) / 1_000_000_000
-                        required_host_gb = estimate_h3_diffusers_host_ram_gb(available_vram_gb)
+                        # Same engaged components as the VRAM floor above. Sizing one from what
+                        # the load holds and the other from the released pair refuses exactly the
+                        # configuration the quantized components exist for.
+                        required_host_gb = estimate_h3_diffusers_host_ram_gb(
+                            available_vram_gb,
+                            text_encoder_gb = h3_te_resident_gb(
+                                state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                            ),
+                            transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
+                        )
                         if host_capacity_gb + 0.5 < required_host_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
@@ -3704,6 +4454,15 @@ class VideoBackend:
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,
+                    # The BUILD this clip came off, read from the ENGAGED state and never from the
+                    # request, exactly as the diffusers path records it. Without these six the
+                    # sidecar of every native GGUF clip saves a blank recipe.
+                    "model_kind": state.kind,
+                    "gguf_filename": state.gguf_filename,
+                    "transformer_quant": state.transformer_quant,
+                    "text_encoder_quant": state.text_encoder_quant,
+                    "memory_mode": state.memory_mode,
+                    "offload_policy": state.offload_policy,
                 }
             finally:
                 output_path.unlink(missing_ok = True)
