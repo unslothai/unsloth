@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import subprocess
@@ -122,16 +123,22 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
     """Create release assets and return their digests."""
     asset_dir = tmp_path / "desktop-release-assets"
     asset_dir.mkdir(exist_ok = True)
+    signature = base64.b64encode(
+        b"untrusted comment: signature from tauri secret key\n"
+        b"test signature bytes\n"
+        b"trusted comment: timestamp:1\tfile:test\n"
+        b"test global signature bytes\n"
+    )
     digests = {}
     for name, payload in (
         ("Unsloth-Desktop-0_1_50_beta-MacOS.dmg", b"disk image"),
         ("Unsloth-Desktop-0_1_50_beta-Ubuntu.deb", b"package"),
         ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz", b"mac updater"),
-        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz.sig", b"mac signature"),
+        ("Unsloth-Desktop-0_1_50_beta-ARM64.app.tar.gz.sig", signature),
         ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage", b"linux updater"),
-        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig", b"linux signature"),
+        ("Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig", signature),
         ("Unsloth-Desktop-0_1_50_beta-Windows.exe", b"installer"),
-        ("Unsloth-Desktop-0_1_50_beta-Windows.exe.sig", b"windows signature"),
+        ("Unsloth-Desktop-0_1_50_beta-Windows.exe.sig", signature),
     ):
         (asset_dir / name).write_bytes(payload)
         if not name.endswith(".sig"):
@@ -139,8 +146,12 @@ def _stage_assets(tmp_path: Path) -> dict[str, str]:
     return digests
 
 
-def _run_create_release(workflow, tmp_path: Path, **kwargs):
+def _run_create_release(workflow, tmp_path: Path, *, invalid_signature = False, **kwargs):
     _stage_assets(tmp_path)
+    if invalid_signature:
+        (tmp_path / "desktop-release-assets" / "Unsloth-Desktop-0_1_50_beta-Linux.AppImage.sig").write_text(
+            "Tauri signer diagnostic, not a signature\n", encoding = "utf-8"
+        )
     env = {
         "DESKTOP_RELEASE_NOTES": workflow["env"]["DESKTOP_RELEASE_NOTES"],
         "APP_VERSION": "0.1.50",
@@ -258,6 +269,15 @@ def test_publish_fails_closed_when_draft_listing_errors(tmp_path):
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
+def test_publish_rejects_signer_diagnostics_as_updater_signatures(tmp_path):
+    workflow = _workflow()
+    result, commands = _run_create_release(workflow, tmp_path, invalid_signature = True)
+    assert result.returncode == 1
+    assert "Invalid base64 updater signature" in result.stderr
+    assert not [line for line in commands if line.startswith("gh release create")]
+
+
+
 def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path):
     workflow = _workflow()
     digests = _stage_assets(tmp_path)
@@ -280,6 +300,11 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     for name, digest in digests.items():
         assert f"{digest}  {name}" in body
     latest = tmp_path / "latest.json"
+    metadata = yaml.safe_load(latest.read_text(encoding = "utf-8"))
+    for platform in metadata["platforms"].values():
+        decoded = base64.b64decode(platform["signature"], validate = True)
+        assert decoded.startswith(b"untrusted comment:")
+        assert b"\ntrusted comment:" in decoded
     assert latest.is_file()
     assert f"{hashlib.sha256(latest.read_bytes()).hexdigest()}  latest.json" in body
     assert ".sig" not in body

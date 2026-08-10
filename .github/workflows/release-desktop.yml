@@ -882,10 +882,22 @@ jobs:
             "$appimage"
           signature="${appimage}.sig"
           npx --prefix studio tauri signer sign "$appimage" > "$signature"
-          if [[ ! -s "$signature" ]]; then
-            echo "Tauri signer did not create a nonempty signature: $signature" >&2
-            exit 1
-          fi
+          python3 - "$signature" <<'PY'
+          import base64
+          import binascii
+          import pathlib
+          import sys
+
+          signature_path = pathlib.Path(sys.argv[1])
+          signature_value = signature_path.read_text(encoding='utf-8').strip()
+          try:
+              decoded = base64.b64decode(signature_value, validate=True)
+          except (binascii.Error, ValueError):
+              sys.exit('Tauri signer stdout was not a base64 minisign signature')
+          if not decoded.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded:
+              sys.exit('Tauri signer stdout was not a minisign signature payload')
+          signature_path.write_text(signature_value + '\n', encoding='utf-8')
+          PY
           python3 - <<'PY'
           import json
           import os
@@ -1623,6 +1635,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 <<'PY'
+          import base64
+          import binascii
           import datetime
           import json
           import os
@@ -1645,10 +1659,17 @@ jobs:
               bundle_path = asset_dir / bundle_name
               if not bundle_path.is_file():
                   sys.exit(f'Missing updater bundle for {signature_path.name}: {bundle_name}')
+              signature_value = signature_path.read_text(encoding='utf-8').strip()
+              try:
+                  decoded_signature = base64.b64decode(signature_value, validate=True)
+              except (binascii.Error, ValueError):
+                  sys.exit(f'Invalid base64 updater signature: {signature_path.name}')
+              if not decoded_signature.startswith(b'untrusted comment:') or b'\ntrusted comment:' not in decoded_signature:
+                  sys.exit(f'Invalid minisign updater signature: {signature_path.name}')
               encoded_tag = urllib.parse.quote(os.environ['DESKTOP_RELEASE_TAG'], safe='')
               encoded_name = urllib.parse.quote(bundle_name, safe='')
               return {
-                  'signature': signature_path.read_text(),
+                  'signature': signature_value,
                   'url': (
                       f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/'
                       f'{encoded_tag}/{encoded_name}'
