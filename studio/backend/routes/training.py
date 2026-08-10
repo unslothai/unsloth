@@ -37,6 +37,7 @@ if str(backend_path) not in sys.path:
 
 try:
     from core.training import get_training_backend
+    from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -57,6 +58,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
+    from core.training.diffusion_clip_formats import CLIP_EXTS as _CLIP_EXTS
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
@@ -2972,18 +2974,34 @@ async def get_diffusion_training_run(
         raise HTTPException(status_code = 404, detail = "No such training run.")
 
 
-# Extensions accepted into an image-training dataset folder: images the trainer reads, plus its caption sources (per-image sidecars and metadata/captions jsonl).
+# Extensions accepted into a diffusion-training dataset folder: the media the trainer reads, plus its caption sources (per-item sidecars and metadata/captions jsonl).
 _DIFFUSION_DATASET_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# Video containers, for the families that train from clips rather than stills. Read from the one
+# shared definition so the trainer's discovery and this endpoint cannot drift apart.
+_DIFFUSION_DATASET_CLIP_EXTS = set(_CLIP_EXTS)
+# The trainable unit of a dataset, whichever kind it is. Every rule that is about "an item and its
+# caption" -- the upload allowlist, the shared-sidecar check, the delete -- keys off this set, and
+# only the rules that are genuinely about pixels (the decompression-bomb check, the labeling grid's
+# thumbnails) stay on _DIFFUSION_DATASET_IMAGE_EXTS.
+#
+# The two halves are DISJOINT and the caption rules over them are IDENTICAL (a <stem>.txt /
+# <stem>.caption sidecar wins, then a metadata.jsonl / captions.jsonl row, then the trigger
+# prompt), which is what makes clip support purely additive: no path an image dataset can take
+# through this file changes. test_diffusion_dataset_clips.py asserts both of those properties.
+_DIFFUSION_DATASET_MEDIA_EXTS = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_CLIP_EXTS
 _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
 def _resolve_dataset_caption(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> Optional[str]:
-    """Resolve an image's caption using the same sidecar > metadata precedence the trainer
-    applies in ``discover_image_caption_pairs``. A per-image .txt/.caption sidecar wins and
+    """Resolve an item's caption using the same sidecar > metadata precedence the trainer
+    applies in ``discover_image_caption_pairs``. A per-item .txt/.caption sidecar wins and
     is stripped, so an empty (tombstone) sidecar shadows metadata and yields "" -- the
-    trainer then skips that image (``if caption:``), so it must not count as captioned."""
+    trainer then skips that item (``if caption:``), so it must not count as captioned.
+
+    Clips resolve through this same function unchanged: the clip discovery the video trainers
+    use applies the identical precedence, only over a different extension set."""
     caption: Optional[str] = None
     sidecar_present = False
     for ext in (".txt", ".caption"):
@@ -3035,6 +3053,7 @@ def _import_response(
         name = folder.name,
         path = str(folder),
         image_count = summary.image_count,
+        clip_count = summary.clip_count,
         caption_count = summary.caption_count,
         imported = imported,
         license = entry["license"],
@@ -3043,17 +3062,29 @@ def _import_response(
 
 
 def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
-    # Count an image as captioned only when it resolves to a NON-EMPTY caption via the trainer's sidecar-over-metadata precedence: an empty tombstone makes the trainer skip the image.
+    # Count an item as captioned only when it resolves to a NON-EMPTY caption via the trainer's sidecar-over-metadata precedence: an empty tombstone makes the trainer skip the item.
+    # Images and clips are counted separately (the UI names them differently and only one family
+    # kind can read each), but captions are one folder total: the resolution rule is the same.
     meta_captions = _load_metadata_captions(folder)
-    images = captions = 0
+    images = clips = captions = 0
     for f in folder.iterdir():
-        if not f.is_file() or f.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS:
+        if not f.is_file():
             continue
-        images += 1
+        ext = f.suffix.lower()
+        if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
+            images += 1
+        elif ext in _DIFFUSION_DATASET_CLIP_EXTS:
+            clips += 1
+        else:
+            continue
         if _resolve_dataset_caption(folder, f, meta_captions):
             captions += 1
     return DiffusionDatasetSummary(
-        name = folder.name, path = str(folder), image_count = images, caption_count = captions
+        name = folder.name,
+        path = str(folder),
+        image_count = images,
+        clip_count = clips,
+        caption_count = captions,
     )
 
 
@@ -3062,7 +3093,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
     """Describe where diffusion training reads/writes, and list usable dataset folders.
 
     A dataset folder is any direct child of the datasets root that contains at least one
-    image. The UI uses this to offer a picker instead of a blind free-text path."""
+    trainable item: an image, or a clip for the families that train from video. The UI uses
+    this to offer a picker instead of a blind free-text path."""
     from utils.paths import datasets_root, outputs_root
 
     def scan() -> DiffusionTrainingInfoResponse:
@@ -3083,7 +3115,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
                 summary = _diffusion_dataset_summary(child)
             except OSError:
                 continue
-            if summary.image_count > 0:
+            # A clip-only folder is a real dataset for the video families, so admit on either count.
+            if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
         from core.training.diffusion_train_common import family_train_infos
 
@@ -3210,8 +3243,8 @@ async def upload_diffusion_dataset(
         limit_bytes = get_upload_limit_bytes()
         total_bytes = 0
         uploaded = 0
-        allowed = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
-        # Validate every filename up front so a valid image ahead of a bad one is not left on disk when the 400 fires; the upload is all-or-nothing.
+        allowed = _DIFFUSION_DATASET_MEDIA_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
+        # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires; the upload is all-or-nothing.
         names: list[str] = []
         for f in files:
             # Normalise to a safe basename. Path.name does not split on a backslash on POSIX, so fold
@@ -3236,9 +3269,11 @@ async def upload_diffusion_dataset(
                         "uploading."
                     ),
                 )
-            # Reject a second IMAGE sharing this stem but differing by extension (sample.png vs .jpg):
-            # both resolve to the same <stem>.txt sidecar. Caption files are exempt.
-            if ext in _DIFFUSION_DATASET_IMAGE_EXTS:
+            # Reject a second ITEM sharing this stem but differing by extension (sample.png vs .jpg,
+            # or sample.png vs sample.mp4): both resolve to the same <stem>.txt sidecar. Caption
+            # files are exempt. Images and clips are compared together, not per kind, because the
+            # sidecar they would collide on is keyed on the stem alone and knows nothing of kind.
+            if ext in _DIFFUSION_DATASET_MEDIA_EXTS:
                 stem = Path(filename).stem
                 # Compare stems case-insensitively: on case-insensitive filesystems two stems differing only
                 # by case resolve to the SAME sidecar. cat.PNG vs cat.png is not exempt.
@@ -3248,7 +3283,7 @@ async def upload_diffusion_dataset(
                     other = Path(other_name)
                     if (
                         other_name == filename
-                        or other.suffix.lower() not in _DIFFUSION_DATASET_IMAGE_EXTS
+                        or other.suffix.lower() not in _DIFFUSION_DATASET_MEDIA_EXTS
                         or other.stem.casefold() != stem_cf
                     ):
                         return False
@@ -3265,8 +3300,8 @@ async def upload_diffusion_dataset(
                     raise HTTPException(
                         status_code = 400,
                         detail = (
-                            f"Duplicate image name '{stem}'. '{clash}' is already in this "
-                            f"dataset; two images sharing a name would share one '{stem}.txt' "
+                            f"Duplicate name '{stem}'. '{clash}' is already in this "
+                            f"dataset; two files sharing a name would share one '{stem}.txt' "
                             f"caption. Rename one before uploading."
                         ),
                     )
@@ -3305,11 +3340,13 @@ async def upload_diffusion_dataset(
                                 detail = (
                                     "Dataset upload too large. "
                                     f"Maximum is {get_upload_limit_label()} per upload; "
-                                    "add the remaining images in another batch."
+                                    "add the remaining files in another batch."
                                 ),
                             )
                         out.write(chunk)
                 # Reject a decompression bomb before commit: a small PNG can pass the byte limit yet decode to huge pixels and OOM the trainer's latent cache.
+                # Images only. A clip's frames are bounded by the canvas the video trainer resizes
+                # to, not by the container, so there is no equivalent still to decode here.
                 if Path(filename).suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
                     _validate_uploaded_training_image(tmp, filename)
                 uploaded += 1
@@ -3364,6 +3401,7 @@ async def upload_diffusion_dataset(
             name = cleaned,
             path = str(folder),
             image_count = summary.image_count,
+            clip_count = summary.clip_count,
             caption_count = summary.caption_count,
             uploaded = uploaded,
         )
@@ -3528,17 +3566,20 @@ def _image_record(
         size_bytes = image_path.stat().st_size
     except OSError:
         size_bytes = 0
+    is_clip = image_path.suffix.lower() in _DIFFUSION_DATASET_CLIP_EXTS
     width = height = 0
-    try:
-        from PIL import Image
-        with Image.open(image_path) as im:
-            width, height = im.size
-    except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
-        pass
+    if not is_clip:
+        try:
+            from PIL import Image
+            with Image.open(image_path) as im:
+                width, height = im.size
+        except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
+            pass
     return DiffusionDatasetImageRecord(
         filename = image_path.name,
         caption = caption,
         caption_source = source,  # type: ignore[arg-type]
+        kind = "clip" if is_clip else "image",
         width = width,
         height = height,
         size_bytes = size_bytes,
@@ -3549,15 +3590,19 @@ def _image_record(
 async def list_diffusion_dataset_images(
     name: str, current_subject: str = Depends(get_current_subject)
 ):
-    """List every image in a dataset folder with its resolved caption (including
-    uncaptioned images), for the labeling grid."""
+    """List every item in a dataset folder with its resolved caption (including
+    uncaptioned ones), for the labeling grid.
+
+    Clips are listed with ``kind: "clip"`` and 0x0 dimensions. The grid renders images only,
+    but the upload's pre-flight needs every name that holds a ``<stem>.txt`` sidecar open, and
+    a clip does that just as an image does."""
     folder = _resolve_dataset_folder(name)
 
     def scan() -> DiffusionDatasetImagesResponse:
         meta = _load_metadata_captions(folder)
         records: list[DiffusionDatasetImageRecord] = []
         for p in sorted(folder.iterdir()):
-            if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS:
+            if p.is_file() and p.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
                 records.append(_image_record(folder, p, meta))
         return DiffusionDatasetImagesResponse(name = folder.name, path = str(folder), images = records)
 
@@ -3680,7 +3725,10 @@ async def delete_diffusion_dataset_image(
             p.is_file()
             and p != image_path
             and p.stem == image_path.stem
-            and p.suffix.lower() in _DIFFUSION_DATASET_IMAGE_EXTS
+            # Clips share the stem-keyed sidecar with images, so a cat.mp4 beside cat.png holds
+            # cat.txt open just as a second image would. Checking images alone would strip the
+            # clip's caption when the image is deleted.
+            and p.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS
             for p in folder.iterdir()
         )
         if not stem_still_used:
@@ -3957,7 +4005,10 @@ async def import_diffusion_dataset_example(
 
     def do_import() -> DiffusionDatasetImportResponse:
         folder.mkdir(parents = True, exist_ok = True)
-        if _diffusion_dataset_summary(folder).image_count > 0:
+        # Any trainable item already in the folder makes this a no-op: dropping example images
+        # into a folder the user filled with clips would silently mix two dataset kinds.
+        summary = _diffusion_dataset_summary(folder)
+        if summary.image_count > 0 or summary.clip_count > 0:
             return _import_response(entry, folder, imported = 0)
         # One import at a time per dataset folder: the training interlock COUNTS mutations rather than excluding them, so two
         # imports into the same empty name both passed the emptiness check and merged. Refusing the second is honest.
@@ -3983,7 +4034,7 @@ async def import_diffusion_dataset_example(
         imported = 0
         # Re-read under the lock: a winner may have promoted its staging dir while this request was checking, so returning the folder as-is matches the idempotent path.
         existing = _diffusion_dataset_summary(folder)
-        if existing.image_count == 0:
+        if existing.image_count == 0 and existing.clip_count == 0:
             cap = int(entry["image_cap"])
             # Materialize into a private staging dir and promote only after the whole import succeeds, so a partial materialize
             # leaves only that dir. Staged as a hidden same-filesystem sibling so promotion is an atomic rename.
