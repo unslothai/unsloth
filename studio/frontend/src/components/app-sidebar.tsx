@@ -1660,7 +1660,8 @@ export function AppSidebar() {
             )}
             aria-hidden
           >
-            <span className="size-2 rounded-full bg-[#d07a5f] dark:bg-[#df8a6f]" />
+            {/* Neutral: a finished reply is news, not a fault. */}
+            <span className="size-2 rounded-full bg-muted-foreground/60" />
           </span>
         ) : null}
         {variant === "project" && (

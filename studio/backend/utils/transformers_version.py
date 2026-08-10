@@ -275,11 +275,17 @@ TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma4-12b",
 )
 
-# Lowercase substrings for models that require the Gemma 4 transformers 5.5 sidecar.
+# Lowercase substrings for models that require the transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
     "qwen3.6",
+    "kimi-k3",
+    "kimik3",
+    "locate-anything",
+    "locateanything",
+    "diffusion-gemma",
+    "diffusiongemma",
 )
 
 # Architecture classes / model_type values requiring transformers 5.10.x (via config.json).
@@ -296,10 +302,16 @@ _TRANSFORMERS_510_MODEL_TYPES: set[str] = {
 
 # Architecture classes / model_type values requiring transformers 5.5.0 (via config.json).
 _TRANSFORMERS_550_ARCHITECTURES: set[str] = {
+    "DiffusionGemmaForBlockDiffusion",
     "Gemma4ForConditionalGeneration",
+    "KimiK3ForConditionalGeneration",
+    "LocateAnythingForConditionalGeneration",
 }
 _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
+    "diffusion_gemma",
     "gemma4",
+    "kimi_k3",
+    "locateanything",
 }
 
 # Architecture classes / model_type values requiring transformers 5.3.0 (via config.json).
@@ -348,7 +360,7 @@ _probe_tier_cache: dict[str, str] = {}
 TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
-TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
+TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
 # Backwards-compat alias for the highest 5.x tier; prefer TRANSFORMERS_510_VERSION /
 # TRANSFORMERS_550_VERSION / TRANSFORMERS_530_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
@@ -988,7 +1000,7 @@ def _config_needs_530(cfg: dict) -> bool:
 
 
 def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> bool:
-    """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
+    """True if ``config.json`` needs transformers 5.5.0. Local first, else
     fetched (authenticated with ``hf_token``); cached by (model, token) only for a definitive
     read so a transient miss retries. False on error.
     """
@@ -1683,7 +1695,7 @@ def get_transformers_tier(
     """Return the transformers tier required for *model_name*.
 
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
-    ``"550"`` for models needing transformers 5.5.0 (Gemma 4),
+    ``"550"`` for models needing transformers 5.5.0 (e.g. Gemma 4 or mlx-vlm processors),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 

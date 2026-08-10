@@ -247,3 +247,6 @@ llama.cpp/
 async_task_outputs/
 temp/
 logs/
+
+# Audio fixture downloaded by tests/saving/text_to_speech_models at import time.
+Speech_12dB_s16.flac

@@ -30,6 +30,7 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     GgufVariantInfo,
     extract_quant_label,
+    gguf_variant_key,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
@@ -392,8 +393,11 @@ def _local_main_gguf_blobs_by_quant(
                         str(blob) for blob in hashes if blob
                     )
                     continue
-                quant = extract_quant_label(normalized).lower()
-                if is_big_endian_gguf_path(normalized, quant):
+                quant = gguf_variant_key(normalized).lower()
+                # The endian predicate reads a quant TOKEN so it can tell a parent-only quant
+                # from a big-endian build; the qualified key makes it misread the path and drop
+                # the blob, which leaves update detection with no local main files to compare.
+                if is_big_endian_gguf_path(normalized, extract_quant_label(normalized)):
                     continue
                 bucket = result.setdefault(quant, {}).setdefault(normalized, set())
                 bucket.update(str(blob) for blob in hashes if blob)
@@ -870,6 +874,20 @@ class VariantsAnswer(NamedTuple):
     context_source: Optional[str]
 
 
+def _default_variant_candidates(variants) -> list[str]:
+    """The filenames the automatic default may be picked from: ROOT rows when there are any.
+
+    ``pick_best_gguf`` keeps whichever filename it met first among equals, so a repo with
+    ``model-Q6_K.gguf`` beside ``distilled/model-Q6_K.gguf`` could make the qualified sibling the
+    default -- and then a bare repo id would mean one checkpoint here and another to
+    ``_match_variant(None, ...)`` and ``local_model_resolver``, which both define it as the root.
+    Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
+    depends on which one served the request. Nothing at the root falls back to the whole set.
+    """
+    root_rows = [v.filename for v in variants if "/" not in v.quant]
+    return root_rows or [v.filename for v in variants]
+
+
 async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -917,8 +935,8 @@ async def get_gguf_variants_answer(
 
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
-            best = pick_best_gguf([v.filename for v in (ready or variants)])
-            default_variant = extract_quant_label(best) if best else None
+            best = pick_best_gguf(_default_variant_candidates(ready or variants))
+            default_variant = gguf_variant_key(best) if best else None
 
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -941,9 +959,8 @@ async def get_gguf_variants_answer(
         def _partial_local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
-            filenames = [v.filename for v in variants]
-            best = pick_best_gguf(filenames)
-            default_variant = extract_quant_label(best) if best else None
+            best = pick_best_gguf(_default_variant_candidates(variants))
+            default_variant = gguf_variant_key(best) if best else None
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
                 variants = [
@@ -1156,9 +1173,8 @@ async def get_gguf_variants_answer(
             if fallback is not None:
                 return fallback
 
-        filenames = [v.filename for v in variants]
-        best = pick_best_gguf(filenames)
-        default_variant = extract_quant_label(best) if best else None
+        best = pick_best_gguf(_default_variant_candidates(variants))
+        default_variant = gguf_variant_key(best) if best else None
 
         # Per-snapshot accounting: a variant counts as present only when one
         # snapshot holds all its files (split GGUFs need every shard together),
@@ -1192,8 +1208,8 @@ async def get_gguf_variants_answer(
                     by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
-                    q = extract_quant_label(rel)
-                    if is_big_endian_gguf_path(rel, q):
+                    q = gguf_variant_key(rel)
+                    if is_big_endian_gguf_path(rel, extract_quant_label(rel)):
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
