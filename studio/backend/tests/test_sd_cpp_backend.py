@@ -1362,7 +1362,9 @@ def test_a_oneshot_load_refuses_a_cli_swapped_during_the_asset_download(monkeypa
     # cuda when the engine is chosen, cpu by the time the download finishes: an H3 load putting
     # the CPU fallback in is the documented way this happens.
     installed = ["cuda"]
-    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed[0] if binary else None)
+    monkeypatch.setattr(
+        bk, "_installed_accelerator_of", lambda binary: installed[0] if binary else None
+    )
 
     def _fetch(*a, **k):
         installed[0] = "cpu"

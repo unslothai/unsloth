@@ -1271,8 +1271,7 @@ class SdCppDiffusionBackend:
                                 if self._pending_server is started:
                                     self._pending_server = None
                 if mode == "oneshot" and (
-                    _installed_accelerator_of(getattr(engine, "binary", None))
-                    != engine_accelerator
+                    _installed_accelerator_of(getattr(engine, "binary", None)) != engine_accelerator
                 ):
                     # Runnable, at the same path, and still not the build this load vetted -- the
                     # one-shot half of the check the server path makes just above. Refused at load
