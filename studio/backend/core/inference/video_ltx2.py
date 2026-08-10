@@ -338,7 +338,14 @@ def _load_extras_file(filename: str, hf_token: Optional[str]) -> dict[str, Any]:
 
     from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-    path = hf_hub_download_with_xet_fallback(LTX23_EXTRAS_REPO, filename, hf_token)
+    path = hf_hub_download_with_xet_fallback(
+        LTX23_EXTRAS_REPO,
+        filename,
+        hf_token,
+        # The plan counts an extras file cached under EITHER root and stages neither, so this has to
+        # resolve both or it re-pulls what the planner skipped, inline and outside the manager.
+        reuse_other_cache_root = True,
+    )
     return load_file(path)
 
 

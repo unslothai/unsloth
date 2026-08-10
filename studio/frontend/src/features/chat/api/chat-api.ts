@@ -803,15 +803,20 @@ export async function getForkCount(
   return data.count;
 }
 
-export async function deleteChatThreads(threadIds: string[]): Promise<void> {
-  if (threadIds.length === 0) return;
+/** Thread ids whose sandbox still holds files, for a caller that never asked. */
+export async function deleteChatThreads(
+  threadIds: string[],
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  if (threadIds.length === 0) return [];
   const response = await authFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds }),
+    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatProjects(
@@ -868,10 +873,11 @@ export async function updateChatProject(
   return project;
 }
 
+/** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
@@ -879,8 +885,11 @@ export async function deleteChatProject(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<ProjectRecord>(response);
+  const data = await parseJsonOrThrow<
+    ProjectRecord & { sandboxes_kept?: string[] }
+  >(response);
   notifyChatProjectsUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatMessages(
@@ -978,14 +987,19 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
-): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
-  await parseJsonOrThrow<unknown>(response);
+  options: { notify?: boolean; deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  const response = await authFetch(
+    `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
+    { method: "DELETE" },
+  );
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function buildBackendChatExport(): Promise<{

@@ -100,7 +100,9 @@ def test_both_h3_schemes_resolve_to_one_repo():
 # ── repo-root naming ─────────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "scheme, expected",
-    [("int8", "MiniMax-H3-INT8.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
+    # int8 is the ConvRot-rotated denoiser, which the family names explicitly; fp8 keeps the
+    # derived <Model>-<SCHEME>.pt.
+    [("int8", "MiniMax-H3-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-FP8.pt")],
 )
 def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
     # The name the hosted repo actually publishes. It has to be the PRIMARY, not the fallback:
@@ -111,6 +113,17 @@ def test_h3_resolves_the_primary_name_at_the_repo_root(scheme, expected):
     assert src.filename == expected
     # Root-level: no directory component at all, on any platform.
     assert "/" not in src.filename and "\\" not in src.filename
+
+
+def test_h3_int8_keeps_the_plain_denoiser_as_its_fallback():
+    # The rotated artifact carries the v2 format tag, which a Studio predating the online rotation
+    # refuses. Naming it explicitly and demoting the derived name to the fallback is what stops
+    # that refusal from reaching anyone: an older install still resolves MiniMax-H3-INT8.pt, and
+    # this one takes the rotated file when the repo has it.
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    src = resolve_prequant_source(fam, "int8")
+    assert src.fallback_filename == "MiniMax-H3-INT8.pt"
+    assert "/" not in src.fallback_filename and "\\" not in src.fallback_filename
 
 
 def test_the_h3_primary_name_is_what_memory_planning_credits():
@@ -126,7 +139,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
         cache_dir = None,
     ):
         seen["filename"] = filename
-        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8.pt" else None
+        return "/cache/blobs/h3" if filename == "MiniMax-H3-INT8-ConvRot.pt" else None
 
     import huggingface_hub
     import os
@@ -140,7 +153,7 @@ def test_the_h3_primary_name_is_what_memory_planning_credits():
     finally:
         huggingface_hub.try_to_load_from_cache = real_hub
         os.path.isfile = real_isfile
-    assert seen["filename"] == "MiniMax-H3-INT8.pt"
+    assert seen["filename"] == "MiniMax-H3-INT8-ConvRot.pt"
 
 
 def test_the_names_are_built_from_the_repo_and_the_scheme():
