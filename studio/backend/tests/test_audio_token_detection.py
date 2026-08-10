@@ -72,7 +72,11 @@ def test_a_codec_family_is_not_shadowed_by_a_stray_audio_marker():
 
 
 class _Resp:
-    def __init__(self, status_code: int, payload = None):
+    def __init__(
+        self,
+        status_code: int,
+        payload = None,
+    ):
         self.status_code = status_code
         self.ok = 200 <= status_code < 300
         self._payload = payload
@@ -83,7 +87,11 @@ class _Resp:
         return self._payload
 
 
-def _detect_checked(monkeypatch, responses, model = "acme/tts-model"):
+def _detect_checked(
+    monkeypatch,
+    responses,
+    model = "acme/tts-model",
+):
     """Drive detect_audio_type_checked with a faked Hub, no local cache."""
     from utils.models import model_config as mc
 
@@ -114,9 +122,7 @@ def test_a_readable_repo_without_audio_tokens_is_definitive(monkeypatch):
 
 def test_a_detected_codec_is_definitive(monkeypatch):
     snac = {
-        "added_tokens_decoder": {
-            str(i): {"content": f"<custom_token_{i}>"} for i in range(10_001)
-        }
+        "added_tokens_decoder": {str(i): {"content": f"<custom_token_{i}>"} for i in range(10_001)}
     }
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, snac)])
     assert audio_type == "snac"

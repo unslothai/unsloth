@@ -416,7 +416,6 @@ class InferenceBackend:
                         else:
                             # base_model is an HF ID — download it.
                             from huggingface_hub import snapshot_download
-
                             repo_path = snapshot_download(base_path)
                             abs_repo_path = os.path.abspath(repo_path)
 
@@ -438,9 +437,7 @@ class InferenceBackend:
                         repo_path = snapshot_download(config.path)
                         abs_repo_path = os.path.abspath(repo_path)
                         llm_path = os.path.join(abs_repo_path, "LLM")
-                        logger.info(
-                            f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}"
-                        )
+                        logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
 
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,

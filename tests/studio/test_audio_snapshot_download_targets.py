@@ -83,7 +83,11 @@ def _assignments(tree: ast.Module) -> dict[str, ast.expr]:
     return out
 
 
-def _is_anchored(expr: ast.expr, assigned: dict[str, ast.expr], depth: int = 0) -> bool:
+def _is_anchored(
+    expr: ast.expr,
+    assigned: dict[str, ast.expr],
+    depth: int = 0,
+) -> bool:
     """True when the target is built from an explicit base rather than the CWD."""
     if depth > 3:
         return False
