@@ -161,3 +161,45 @@ def test_a_lossless_mid_run_record_is_still_dropped():
 
     _create_trainer_progress_callback(_Q())(_P())
     assert [e for e in events if e.get("type") == "progress"] == []
+
+
+def test_an_early_stopped_run_still_reports_its_duration():
+    # Stopping at step 12 of 30 still produces HF's lossless summary; the step
+    # comparison alone would discard it and finalize the run with stale timing.
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.training.worker import _create_trainer_progress_callback
+
+    class _P:
+        step = 12
+        total_steps = 30
+        loss = None
+        eval_loss = None
+        epoch = 1.0
+        learning_rate = 0.0
+        elapsed_seconds = 91.0
+        eta_seconds = None
+        grad_norm = None
+        num_tokens = 5
+        status_message = ""
+        is_run_summary = True
+        warnings: list = []
+
+    events = []
+
+    class _Q:
+        def put(self, e):
+            events.append(e)
+
+    _create_trainer_progress_callback(_Q())(_P())
+    progress = [e for e in events if e.get("type") == "progress"]
+    assert progress and progress[0]["elapsed_seconds"] == 91.0
+
+
+def test_the_trainer_marks_the_summary_record():
+    text = (_BACKEND / "core/training/trainer.py").read_text(encoding = "utf-8")
+    assert "is_run_summary = is_run_summary," in text

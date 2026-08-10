@@ -627,6 +627,10 @@ class TrainingProgress:
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
     output_dir: Optional[str] = None
+    # Set on the end-of-run record HF emits after leaving the training loop. It has no
+    # step loss, so the progress filter would drop it, and with it the only elapsed
+    # time that includes the final evaluation, checkpoint save and best-model reload.
+    is_run_summary: bool = False
 
 
 class _MLXTrainerAdapter:

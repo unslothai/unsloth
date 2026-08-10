@@ -307,7 +307,10 @@ class UnslothTrainer:
                 # last step and became `final_loss` on /api/train/runs, disagreeing with the
                 # checkpoint. Keep reporting it, as the summary it is.
                 loss_value = logs.get("loss")
-                if loss_value is None and logs.get("train_loss") is not None:
+                is_run_summary = loss_value is None and (
+                    logs.get("train_loss") is not None or logs.get("train_runtime") is not None
+                )
+                if is_run_summary:
                     logger.info(
                         "training finished: mean train_loss=%s over %s steps",
                         logs.get("train_loss"),
@@ -340,6 +343,7 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
+                    is_run_summary = is_run_summary,
                     status_message = "",
                 )
 

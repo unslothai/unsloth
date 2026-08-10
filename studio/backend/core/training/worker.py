@@ -4524,7 +4524,12 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
         # does carry the elapsed time including the final evaluation, checkpoint save
         # and best-model reload. Without this the run's recorded duration stops at the
         # last step log and under-reports how long the run actually took.
-        is_terminal = progress.total_steps > 0 and progress.step >= progress.total_steps
+        # A run stopped early never reaches total_steps, so the flag the trainer sets
+        # on the summary record is what marks it terminal; the step comparison stays as
+        # a fallback for backends that do not set it.
+        is_terminal = bool(getattr(progress, "is_run_summary", False)) or (
+            progress.total_steps > 0 and progress.step >= progress.total_steps
+        )
         if (
             (progress.step == 0 and progress.total_steps > 0)
             or has_train_loss
