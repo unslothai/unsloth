@@ -295,12 +295,20 @@ function loadToastDescription(p: VideoLoadProgress) {
 }
 
 // Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update in place.
-function loadToastArgs(p: VideoLoadProgress, id?: string | number) {
+// `onCancel` adds chat's Cancel action, the one control that reaches a load already in flight: the model
+// selector's eject is hidden for exactly the span a first load runs (nothing is resident, so it has no
+// selection to eject), which left a multi-gigabyte pull with no way out.
+function loadToastArgs(
+  p: VideoLoadProgress,
+  id?: string | number,
+  onCancel?: () => void,
+) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
     duration: Infinity,
     closeButton: true,
+    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -817,6 +825,30 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     loadToastId.current = null;
   }, []);
 
+  // The load toast is built by handleLoad and the progress poll, both of which are defined above
+  // handleCancelLoad (it needs handleUnload, which needs them). Route the action through a ref so
+  // the toast keeps a stable onClick instead of dragging the whole load graph into its deps.
+  const cancelLoadRef = useRef<() => void>(() => {});
+  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
+  // Bumped by every cancel / eject (see dropResidentState). Requests that were already awaiting a
+  // response when the cancel landed compare against it and discard their own result.
+  const cancelSeq = useRef(0);
+  // Bumped by every load start. The compensating unload below carries no identity, so it must not
+  // fire once a newer load owns the page -- it would tear that one down instead.
+  const loadSeq = useRef(0);
+  // The load currently in flight, if any, as a promise that settles only once handleLoad has run
+  // to the end -- including the compensating unload it may issue. A cancel that lands before the
+  // backend has registered the load has to wait for all of it: begin_load REFUSES a second load
+  // while one is live ("a load is already in progress"), so a model picked in that window would be
+  // rejected while the cancelled one kept going, and the compensating unload names no load, so one
+  // still in flight would tear down whatever the user picked next. Holding busy shuts both.
+  const pendingStart = useRef<Promise<unknown> | null>(null);
+
+  // Set by restoreLoadTracking: handleLoad's compensating unload failed, so the load it was
+  // cancelling is STILL running and its toast and poll are back up. handleUnload reads it to
+  // report that the eject stopped nothing, rather than claiming success over a live load.
+  const loadTrackingRestored = useRef(false);
+
   // Client-side state that only means anything while a model is resident: the
   // in-flight replacement load's tracking, and the Reapply target. Shared with
   // the indicator eject, which frees the runtime without going through the
@@ -826,6 +858,10 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // back what was just ejected. In here rather than only in handleUnload, so
     // an eject driven from the loaded models card is covered by it too.
     pickGuard.cancel();
+    // Everything already in flight is now stale. Clearing the timer below stops the NEXT poll
+    // tick, but not a poll or a start request currently awaiting its response, and those still
+    // apply terminal state when they land. The counter is what they compare against.
+    cancelSeq.current += 1;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -1291,7 +1327,19 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // comes back empty, so only an app reload recovered. Narrowed to
         // "loading" so a generation in flight is left alone, as handleUnload's
         // own finally does.
-        setBusy((prev) => (prev === "loading" ? null : prev));
+        // ...but not while a load start is still in flight. begin_load refuses a second load
+        // while one is registered, so a model picked in that window is rejected while the load
+        // this eject was meant to cancel carries on, and handleLoad's compensating unload names
+        // no load. Hold busy until the whole path settles, exactly as handleCancelLoad does.
+        const pending = pendingStart.current;
+        if (pending) {
+          setBusy((prev) => (prev === "loading" ? "unloading" : prev));
+          void pending
+            .catch(() => {})
+            .finally(() => setBusy((prev) => (prev === "unloading" ? null : prev)));
+        } else {
+          setBusy((prev) => (prev === "loading" ? null : prev));
+        }
         setQuant(null);
         void refreshStatus();
       }),
@@ -1306,11 +1354,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place each tick.
   const pollLoadProgress = useCallback(async () => {
+    // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
+    const seq = cancelSeq.current;
     try {
       const p = await getVideoLoadProgress();
+      if (seq !== cancelSeq.current) return;
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatusIfNewest(++statusTicket.current, await getVideoStatus());
+        const ticket = ++statusTicket.current;
+        const loaded = await getVideoStatus();
+        if (seq !== cancelSeq.current) {
+          // Cancelled while this read was in flight, so it describes a pipeline being torn down.
+          // Drop it and refresh NOTHING: the unload's own response is authoritative and already
+          // holds the newest ticket, and a status read issued from here would take a newer one
+          // still and could re-report the model mid-teardown.
+          return;
+        }
+        setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         setBusy(null);
         quantRevert.current = null;
@@ -1355,13 +1415,26 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const sig = `${p.phase}:${p.downloaded_bytes}:${p.expected_bytes ?? 0}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current));
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
       }
     } catch {
       // Transient poll failure: keep trying.
     }
+    if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+
+  // Put back what a teardown removed when the load it was tearing down is still running: the
+  // unload failed, so the poll and the toast were stopped for nothing. refreshStatus cannot do
+  // this -- a first load is not resident yet, so status has nothing to report -- and without it a
+  // multi-gigabyte load continues with no progress and no way to cancel it a second time.
+  const restoreLoadTracking = useCallback(() => {
+    loadTrackingRestored.current = true;
+    setBusy("loading");
+    lastLoadSig.current = null;
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    void pollLoadProgress();
+  }, [pollLoadProgress, cancelLoadFromToast]);
 
   // Stops the generation poll and its visibilitychange catch-up listener.
   const stopGenPoll = useCallback(() => {
@@ -1435,7 +1508,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
         }
       } catch {
@@ -1470,7 +1543,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       stopGenPoll();
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc, cancelLoadFromToast]);
 
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
@@ -1482,10 +1555,28 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       },
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
+      // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
+      // unload that can reach the backend first, find no load registered, and succeed without
+      // stopping anything.
+      const startSeq = cancelSeq.current;
+      const startLoad = ++loadSeq.current;
+      // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
+      let settleLoad: () => void = () => {};
+      const inFlight = new Promise<void>((resolve) => {
+        settleLoad = resolve;
+      });
+      pendingStart.current = inFlight;
+      // Every exit below goes through this: it settles the promise a cancel is waiting on and
+      // releases the ref, so the page cannot stay busy on a load that has already finished.
+      const settle = (started: boolean): boolean => {
+        settleLoad();
+        if (pendingStart.current === inFlight) pendingStart.current = null;
+        return started;
+      };
       setBusy("loading");
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
@@ -1495,7 +1586,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       try {
         // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id; the "auto"/"off" sentinels map to omitted.
-        await loadVideoModel({
+        const startRequest = loadVideoModel({
           model_path: repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
@@ -1510,6 +1601,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           transformer_quant:
             opts.kind === "pipeline" && transformerQuant !== "auto" ? transformerQuant : undefined,
         });
+        await startRequest;
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
@@ -1518,15 +1610,37 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
-        return false;
+        return settle(false);
+      }
+      if (startSeq !== cancelSeq.current) {
+        // Cancelled during the start request. The unload it sent may have landed before this load
+        // registered, in which case it stopped nothing and the model is loading right now with no
+        // toast and no Cancel button. The load exists on the backend as of this line, so unload
+        // once more -- that one cannot miss it. Unless a NEWER load has since taken the page:
+        // this unload names nothing, so firing it then would cancel that load instead of this
+        // one, and the newer start has already superseded this load's token on the backend.
+        if (startLoad === loadSeq.current) {
+          try {
+            await unloadVideoModel();
+          } catch {
+            // This request is the ONLY one that can still stop the load the first unload missed,
+            // so a failure here is not best-effort: the load is running, untracked. Put the
+            // tracking back exactly as a failed cancel does, so it stays visible and cancellable.
+            restoreLoadTracking();
+            return settle(false);
+          }
+        }
+        void refreshStatus();
+        return settle(false);
       }
       void pollLoadProgress();
-      return true;
+      return settle(true);
     },
     [
       pollLoadProgress,
       refreshStatus,
       dismissLoadToast,
+      cancelLoadFromToast,
       canReapply,
       memoryMode,
       speedMode,
@@ -1890,19 +2004,70 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [busy, handleLoad, loadGgufRepoPick, loadOrStage, pickGuard, quant],
   );
 
-  const handleUnload = useCallback(async () => {
+  // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
+  const handleUnload = useCallback(async (): Promise<boolean> => {
     dropResidentState();
+    loadTrackingRestored.current = false;
     setBusy("unloading");
     try {
       setStatusIfNewest(++statusTicket.current, await unloadVideoModel());
       setQuant(null);
+      // Hold the page until any load start still in flight has run to its END, compensating
+      // unload and all. The selector's eject routes straight here, so without the fence an eject
+      // landing before the start registered returned success and cleared busy: the user picks
+      // another model, the backend refuses it ("a load is already in progress") because the older
+      // start won the race, and that older handler -- seeing the newer loadSeq -- skips its
+      // compensating unload and returns without restarting its poll, leaving a multi-gigabyte
+      // load running with no toast and no cancel control. Same fence handleCancelLoad and the
+      // external-eject listener take.
+      const pending = pendingStart.current;
+      if (pending) {
+        try {
+          await pending;
+        } catch {
+          // Its own handler reports the failure; this only waits for the window to close.
+        }
+      }
+      // The wait above can end with the tracking RESTORED: handleLoad's compensating unload
+      // failed, so the load is still running. This eject stopped nothing, so do not report
+      // success -- the caller would toast "stopped loading" over a live load.
+      return !loadTrackingRestored.current;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
       void refreshStatus();
+      return false;
     } finally {
-      setBusy(null);
+      // Not an unconditional clear. A restore during the wait above put the page back to
+      // "loading" deliberately; wiping it hides the toast's Cancel and the "Cancel load"
+      // button and re-enables the picker over a load that is still running.
+      setBusy((prev) => (prev === "unloading" ? null : prev));
     }
   }, [refreshStatus, dropResidentState]);
+
+  // Cancelling a load IS the unload: it sets the running load's cancel event, bumps the load token so the
+  // worker can never commit, and drops the load marker. What it leaves behind is only cache: bytes already
+  // fetched stay in the HF cache, so loading the same model again resumes instead of restarting, and no
+  // half-built pipeline survives (the worker's commit is token-gated and unload clears the GPU state).
+  const handleCancelLoad = useCallback(async () => {
+    const wasLoading = busy === "loading";
+    if (await handleUnload()) {
+      // handleUnload holds the page for the whole pending-start path before it returns, so by
+      // here the window the backend's "a load is already in progress" refusal lives in is shut.
+      toast.info("Stopped loading the model", {
+        description: "Anything already downloaded stays cached, so loading it again resumes.",
+      });
+      return;
+    }
+    // Already restored inside handleUnload (its own compensating-unload failure), so the toast
+    // and the poll are up: a second restore would raise a duplicate toast and a second poll loop.
+    if (!wasLoading || loadTrackingRestored.current) return;
+    // The unload failed, so the load is still running and its tracking was torn down for nothing.
+    restoreLoadTracking();
+  }, [busy, handleUnload, restoreLoadTracking]);
+
+  useEffect(() => {
+    cancelLoadRef.current = () => void handleCancelLoad();
+  }, [handleCancelLoad]);
 
   const handleCancelGenerate = useCallback(async () => {
     try {
@@ -2142,6 +2307,27 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
           />
+          {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs a
+              resident model, so it is hidden for exactly the span a first load runs. A real button, not the
+              trigger's aria-hidden eject hit area, so it is reachable by keyboard and a screen reader. Says
+              "load", never "download": the download manager's own Cancel stops a staged pull, a different job. */}
+          {busy === "loading" && (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label="Cancel load"
+                  className="!h-[34px] rounded-full text-xs"
+                  onClick={() => void handleCancelLoad()}
+                >
+                  Cancel load
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Stop loading this model</TooltipContent>
+            </Tooltip>
+          )}
           {/* Loaded-model status line: family / kind / offload / speed, as the images page surfaces on load. Hidden until a model is resident. */}
           {status?.loaded && (
             <div className="hidden min-w-0 items-center gap-3 text-ui-11 @min-[720px]:flex">
