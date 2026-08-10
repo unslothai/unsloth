@@ -52,17 +52,12 @@ BOTTOM_COLOR = "#F5F8F7"
 GLOW_CORE = "#17B88B"
 GLOW_EDGE = "#7BE8A6"
 GLOW_EDGE_MIX = 0.45
-GLOW_MIX_RADIUS = 130.0
+GLOW_MIX_RADIUS = 110.0
 
 # strength is the peak tint, sigma sets how far the halo reaches. they trade
 # off: raising strength alone also pushes the visible edge outward.
-GLOW_STRENGTH = 1.85
-GLOW_SIGMA = 47.0
-
-# the icon label sits just below the icon, so the halo is eased off downward.
-# left, right and top keep the full falloff.
-GLOW_BOTTOM_FLOOR = 0.55
-GLOW_BOTTOM_SPAN = 90.0
+GLOW_STRENGTH = 1.48
+GLOW_SIGMA = 50.0
 
 # chevron between the two icons, sized to match the macOS installers this
 # mirrors: a light 16x27pt mark in neutral grey, not a heavy arrow
@@ -97,12 +92,6 @@ def render_glow(canvas: np.ndarray) -> np.ndarray:
 
     radius = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
     weight = GLOW_STRENGTH * np.exp(-(radius**2) / (2.0 * sigma**2))
-
-    # smoothstep so the taper starts flat at the icon's centre line and leaves
-    # no visible seam where it begins
-    weight = weight * (
-        1.0 - (1.0 - GLOW_BOTTOM_FLOOR) * smoothstep((ys - cy) / (GLOW_BOTTOM_SPAN * SCALE))
-    )
 
     # a peak strength above 1 saturates the core rather than extrapolating past
     # the glow colour. that core sits under the app icon either way.
