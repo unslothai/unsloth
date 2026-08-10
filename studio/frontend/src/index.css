@@ -1581,6 +1581,13 @@ html[data-chat-font] .aui-root {
 		--menu-soft-spread: -8px;
 	}
 
+	/* Same surface without the inset edge ring: the update banners' look.
+	   Reuses the vars above, so both themes stay in step. */
+	.menu-soft-surface.menu-soft-edgeless {
+		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
+			var(--menu-soft-spread) var(--menu-soft-shadow);
+	}
+
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
 	   Pin --radius to the light value so the corners match in both themes. */
 	.unsloth-model-selector-menu.menu-soft-surface {
