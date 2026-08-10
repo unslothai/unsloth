@@ -281,7 +281,7 @@ export function LoadedModelsIndicator({
               onClick={() => {
                 if (!justDragged()) setCollapsed(false);
               }}
-              className="menu-soft-surface pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
+              className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
                 icon={SparkleIcon}
@@ -298,7 +298,7 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-1 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
