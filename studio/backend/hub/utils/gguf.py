@@ -288,9 +288,24 @@ _GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw$", re.IGNORECASE)
 
 
 def _gguf_bpw_suffix(filename: str) -> str:
-    """``-3.53bpw`` when the shard-stripped basename ends in one, else ``""``."""
-    match = _GGUF_BPW_SUFFIX_RE.search(_gguf_stem(filename))
-    return match.group(0) if match else ""
+    """``-3.53bpw`` from whichever path segment names the quant, else ``""``.
+
+    Not the basename alone: the quant-directory layout carries it upstairs
+    (``IQ4_XS-3.53bpw/model.gguf``), which is exactly where ``extract_quant_token`` looks next, so
+    reading only ``model`` gave both bpw builds the bare ``IQ4_XS`` key. The walk stops at the
+    segment that named the quant -- a modifier further up the tree belongs to something else.
+    """
+    path = filename.replace("\\", "/")
+    parents = path.rpartition("/")[0]
+    for segment in (_gguf_stem(path), *reversed(parents.split("/"))):
+        if not segment:
+            continue
+        match = _GGUF_BPW_SUFFIX_RE.search(segment)
+        if match:
+            return match.group(0)
+        if _select_quant_match(segment) is not None:
+            return ""
+    return ""
 
 
 def _unknown_gguf_variant_key(filename: str) -> str:

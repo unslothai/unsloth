@@ -2339,13 +2339,23 @@ def _gguf_variant_family(filename: str) -> str:
 
 
 def _gguf_bpw_suffix(filename: str) -> str:
-    """``-3.53bpw`` when the shard-stripped basename ends in one, else ``""``.
+    """``-3.53bpw`` from whichever path segment names the quant, else ``""``.
 
-    MIRROR of ``hub.utils.gguf._gguf_bpw_suffix``; see ``_gguf_variant_key``.
+    MIRROR of ``hub.utils.gguf._gguf_bpw_suffix``; see ``_gguf_variant_key``. The quant-directory
+    layout carries the modifier upstairs (``IQ4_XS-3.53bpw/model.gguf``), so the basename alone
+    gave both bpw builds one key. The walk stops at the segment that named the quant.
     """
-    stem = _gguf_variant_family(filename).rsplit("/", 1)[-1]
-    match = re.search(r"-[0-9]+(?:\.[0-9]+)?bpw$", stem, re.IGNORECASE)
-    return match.group(0) if match else ""
+    path = filename.replace("\\", "/")
+    parents = path.rpartition("/")[0]
+    for segment in (_gguf_variant_family(path).rsplit("/", 1)[-1], *reversed(parents.split("/"))):
+        if not segment:
+            continue
+        match = re.search(r"-[0-9]+(?:\.[0-9]+)?bpw$", segment, re.IGNORECASE)
+        if match:
+            return match.group(0)
+        if _select_known_quant_match(segment) is not None:
+            return ""
+    return ""
 
 
 def _gguf_variant_key(filename: str) -> str:

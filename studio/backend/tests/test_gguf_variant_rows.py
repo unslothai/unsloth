@@ -906,3 +906,39 @@ def test_the_inference_lister_sizes_one_shard_family_not_both_copies():
         ("m-00003-of-00003.gguf", "Q4_K_M", 5),
     ]
     assert _group_gguf_variant_files(split)["Q4_K_M"][1] == 15
+
+
+def test_a_bpw_modifier_in_the_quant_directory_still_makes_two_keys():
+    """The quant-directory layout carries the modifier upstairs (IQ4_XS-3.53bpw/model.gguf),
+    which is exactly where extract_quant_token looks next. Reading only the basename gave both
+    builds the bare IQ4_XS key, so grouping and the plan kept one family and deleting that
+    advertised key unlinked BOTH -- the same data loss as the root-filename case."""
+    a = "IQ4_XS-3.53bpw/model.gguf"
+    b = "IQ4_XS-3.97bpw/model.gguf"
+    assert gguf_variant_key(a) == "IQ4_XS-3.53bpw"
+    assert gguf_variant_key(b) == "IQ4_XS-3.97bpw"
+    assert _gguf_variant_key(a) == gguf_variant_key(a)
+    assert _gguf_variant_key(b) == gguf_variant_key(b)
+    assert group_gguf_variant_files([(a, 10), (b, 20)]) == {
+        "IQ4_XS-3.53bpw": (a, 10),
+        "IQ4_XS-3.97bpw": (b, 20),
+    }
+    # A plain quant directory is untouched, so every stored pin still resolves.
+    assert gguf_variant_key("Q4_K_M/model.gguf") == "Q4_K_M"
+    # The walk stops at the segment that named the quant: a modifier on the FILE under a plain
+    # quant directory is still this build's own.
+    assert gguf_variant_key("Q6_K/model-3.5bpw.gguf") == "Q6_K-3.5bpw"
+
+
+def test_the_remote_default_variant_prefers_the_root_checkpoint():
+    """pick_best_gguf keeps whichever filename it met first among equals, so a repo with
+    model-Q6_K.gguf beside distilled/model-Q6_K.gguf could hand the picker the distilled
+    checkpoint as its automatic default -- while a bare repo id means the ROOT checkpoint to
+    _match_variant(None, ...) and to local_model_resolver."""
+    import inspect
+
+    from hub.services.models import gguf_variants as service
+
+    source = inspect.getsource(service)
+    assert 'root_rows = [v.filename for v in variants if "/" not in v.quant]' in source
+    assert "pick_best_gguf(root_rows or [v.filename for v in variants])" in source
