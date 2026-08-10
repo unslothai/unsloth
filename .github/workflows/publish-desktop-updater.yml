@@ -100,6 +100,23 @@ jobs:
 
           semver = re.compile(r'^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$')
           releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+
+          # /releases/latest resolves only to a non-draft, non-prerelease release, so
+          # a manifest carried onto one of those cannot repair the endpoint this step
+          # exists for, however well the upload itself goes. The source filter below
+          # already refuses them; hold the target to the same rule rather than report
+          # a repair it could never deliver. Read from the listing already fetched.
+          target = next(
+              (r for r in releases if r.get('tag_name') == os.environ['RELEASE_TAG']),
+              None,
+          )
+          if target is not None and (target.get('draft') or target.get('prerelease')):
+              state = 'draft' if target.get('draft') else 'prerelease'
+              sys.exit(
+                  f"{os.environ['RELEASE_TAG']} is a {state}, which /releases/latest never "
+                  'resolves to; refusing to carry a manifest that cannot repair the pointer'
+              )
+
           candidates = [
               release for release in releases
               if semver.fullmatch(release.get('tag_name') or '')

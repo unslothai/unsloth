@@ -85,6 +85,7 @@ def _manifest(tag):
 
 
 def _run(tmp_path, *, release_tag, releases, manifest):
+    tmp_path.mkdir(parents = True, exist_ok = True)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
@@ -222,3 +223,22 @@ def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
     )
     assert result.returncode == 1
     assert "refusing to carry it forward" in result.stderr
+
+
+def test_a_draft_or_prerelease_target_is_refused(tmp_path):
+    # /releases/latest resolves only to a non-draft, non-prerelease release, so
+    # carrying a manifest onto one of those cannot repair the endpoint. The source
+    # filter already refuses them; the target is held to the same rule rather than
+    # reporting a repair it could never deliver.
+    for state in ("draft", "prerelease"):
+        target = _release("v0.1.53-beta", has_manifest = False)
+        target[state] = True
+        result, commands = _run(
+            tmp_path / state,
+            release_tag = "v0.1.53-beta",
+            releases = [target, _release("v0.1.52-beta")],
+            manifest = _manifest("v0.1.52-beta"),
+        )
+        assert result.returncode != 0, f"{state} target was accepted"
+        assert f"is a {state}" in result.stderr, result.stderr
+        assert not [line for line in commands if line.startswith("gh release upload")], commands
