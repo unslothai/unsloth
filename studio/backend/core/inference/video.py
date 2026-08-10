@@ -3698,9 +3698,7 @@ class VideoBackend:
                 # whatever torch.Generator(device="mps") does on the older releases install.sh
                 # leaves in place. The pipelines move the noise to the device themselves.
                 generator_device = (
-                    "cpu"
-                    if fam.modular_workflow or str(state.device) == "mps"
-                    else state.device
+                    "cpu" if fam.modular_workflow or str(state.device) == "mps" else state.device
                 )
                 generator = torch.Generator(device = generator_device)
                 if seed is None:
