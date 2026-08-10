@@ -2599,9 +2599,7 @@ export function HubModelPicker({
         // Size from the catalog, not an id "<n>B" guess: the guess is missing for
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
-        curatedSizeBytes: catalog
-          ? curatedSizeBytesFor(id, catalog)
-          : undefined,
+        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
         // Same reason the size is curated: a seed the listing does not return has no
         // other source for its param chip, and most curated ids carry no "<n>B" token.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
@@ -2718,6 +2716,7 @@ export function HubModelPicker({
     // they render with no size or VRAM chip.
     for (const r of [
       ...recommendedSearch.results,
+      ...catalogSeedRows,
       ...communityBrowse.results,
       ...catalogSeedRows,
     ]) {
