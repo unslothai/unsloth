@@ -8,7 +8,7 @@
 # _CustomStudioRoots only runs System.IO.Path.GetFullPath, which is lexical and leaves the link
 # path as-is, and _StopProcessesLockingRoots matches Win32_Process.ExecutablePath by prefix -- so
 # without the target the server is never stopped, its tree is deleted around it and it keeps
-# holding its port. _ReparseTargetsOf supplies the target for the stop scan only.
+# holding its port. _ManagedPathsUnderReparseTargets supplies the target for the stop scan only.
 #
 # The uninstaller body kills processes and writes to the registry, so it cannot be executed here;
 # the helper is lifted out of the script by AST and exercised on its own.
@@ -32,18 +32,18 @@ Check "uninstall.ps1 parses" ($null -eq $errors -or $errors.Count -eq 0)
 # Lift the helper out. A silently empty extraction is what makes a suite like this vacuous.
 $fn = $ast.FindAll({
         param($n)
-        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "_ReparseTargetsOf"
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq "_ManagedPathsUnderReparseTargets"
     }, $true) | Select-Object -First 1
 if (-not $fn) {
-    Write-Host "  FAIL  _ReparseTargetsOf not found in uninstall.ps1" -ForegroundColor Red
+    Write-Host "  FAIL  _ManagedPathsUnderReparseTargets not found in uninstall.ps1" -ForegroundColor Red
     exit 1
 }
 . ([scriptblock]::Create($fn.Extent.Text))
 
 # The stop-scan call site has to actually pass the targets, or the helper is dead code.
 $ps1Text = Get-Content -LiteralPath $ps1Path -Raw
-Check "the stop scan is given the reparse targets" `
-    ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ReparseTargetsOf \$stopRoots\)\)')
+Check "the stop scan is given the managed paths under the target" `
+    ($ps1Text -match '_StopProcessesLockingRoots -Roots \(\$stopRoots \+ @\(_ManagedPathsUnderReparseTargets \$knownRoots\)\)')
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-reparse-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
@@ -53,21 +53,27 @@ try {
     $link = Join-Path $tmp "studio-home"
     New-Item -ItemType SymbolicLink -Path $link -Target $target -ErrorAction Stop | Out-Null
 
-    $got = @(_ReparseTargetsOf @($link))
-    Check "a linked root yields its physical target" ($got -contains ([System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')))
+    $phys = [System.IO.Path]::GetFullPath($target).TrimEnd('\', '/')
+    $got = @(_ManagedPathsUnderReparseTargets @($link))
+    Check "a linked root yields the sd.cpp tree under its physical target" `
+        ($got -contains (Join-Path $phys "stable-diffusion.cpp"))
+    Check "... and the venv under it" ($got -contains (Join-Path $phys "unsloth_studio"))
+    # Never the bare target: the delete leaves it standing, so anything else there is not ours.
+    Check "the bare physical target is NOT in scope" (-not ($got -contains $phys))
 
     # A plain directory contributes nothing, so the scan does not widen for ordinary installs.
     $plain = Join-Path $tmp "plain"
     New-Item -ItemType Directory -Path $plain -Force | Out-Null
-    Check "a plain root adds nothing" (@(_ReparseTargetsOf @($plain)).Count -eq 0)
+    Check "a plain root adds nothing" (@(_ManagedPathsUnderReparseTargets @($plain)).Count -eq 0)
 
     # Neither does a path that is not there at all, or an empty entry.
-    Check "a missing root adds nothing" (@(_ReparseTargetsOf @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
+    Check "a missing root adds nothing" (@(_ManagedPathsUnderReparseTargets @((Join-Path $tmp "nope"), "", $null)).Count -eq 0)
 
     # Deduplicated: two links onto one target must not stack.
     $link2 = Join-Path $tmp "studio-home-2"
     New-Item -ItemType SymbolicLink -Path $link2 -Target $target -ErrorAction Stop | Out-Null
-    Check "two links onto one target yield it once" (@(_ReparseTargetsOf @($link, $link2)).Count -eq 1)
+    $both = @(_ManagedPathsUnderReparseTargets @($link, $link2))
+    Check "two links onto one target do not duplicate its subtrees" ($both.Count -eq $got.Count)
 }
 finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue

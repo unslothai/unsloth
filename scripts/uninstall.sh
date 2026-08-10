@@ -566,6 +566,11 @@ _unsloth_uninstall_main() {
     # and the canonical pass has already reported the one it looked at.
     _custom_studio_roots lexical 2>/dev/null | while IFS= read -r _lex_root; do
         [ -n "$_lex_root" ] || continue
+        # The same ownership check the canonical loop makes before it touches anything. A stale or
+        # mistyped UNSLOTH_STUDIO_HOME still reaches here (the lexical pass has no cd -P to filter
+        # a path that is not there), and without this "/parent/typo" would take the marked
+        # /parent/stable-diffusion.cpp of somebody else's Studio with it.
+        _is_studio_root "$_lex_root" || continue
         _lex_sd_cpp="$(dirname "$_lex_root")/stable-diffusion.cpp"
         [ -f "$_lex_sd_cpp/.unsloth-studio-owned" ] || continue
         # The deny list is string-based, so it has to see the RESOLVED path: the lexical form can

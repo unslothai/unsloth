@@ -265,6 +265,18 @@ run_lexical_removal
 assert_dir "symlinked home: unowned sd.cpp beside the link kept" "$p14/stable-diffusion.cpp"
 assert_not_lists "symlinked home: unowned sd.cpp beside the link is left running" "$p14/stable-diffusion.cpp"
 
+# 14b. A stale or mistyped home is not a Studio root, and the lexical pass must apply the same
+#      ownership check the canonical loop does: "<parent>/typo" must not take the marked
+#      <parent>/stable-diffusion.cpp belonging to a different, valid install.
+p14b="$_TMP_ROOT/inst14b"
+mkdir -p "$p14b/other/share" "$p14b/stable-diffusion.cpp"
+: > "$p14b/other/share/studio.conf"          # somebody else's Studio, sharing the parent
+: > "$p14b/stable-diffusion.cpp/sd-cli"
+: > "$p14b/stable-diffusion.cpp/.unsloth-studio-owned"
+UNSLOTH_STUDIO_HOME="$p14b/typo"             # never existed
+run_lexical_removal
+assert_dir "a mistyped home does not take a neighbour's legacy sd.cpp" "$p14b/stable-diffusion.cpp"
+
 # 15. The deny list is a string match, so the lexical path has to be canonicalized before it is
 #     applied: a home carrying ".." (or a symlinked ancestor) otherwise produces a sibling that
 #     misses the pattern while resolving straight into a protected tree. $HOME's parent is on that

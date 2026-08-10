@@ -389,7 +389,8 @@ Environment:
         } catch { }
     }
 
-    # The reparse-point TARGETS of $Roots, for the stop scan only.
+    # The Studio-managed subtrees underneath the reparse-point TARGET of each Studio home, for the
+    # stop scan only.
     #
     # A junction or directory symlink Studio home runs its native binaries out of the PHYSICAL
     # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
@@ -399,12 +400,24 @@ Environment:
     # image path, so without the target the running server never matches and survives an uninstall
     # that took its tree.
     #
+    # The SUBTREES, never the bare target. The delete unlinks only the reparse point and leaves the
+    # target standing, so anything there that is not ours is neither locking nor being removed --
+    # a home relocated onto a directory that holds other software must not have those force-stopped.
+    # Homes only, for the same reason: the component dirs ($defaultNode, $defaultLlamaCpp, ...) can
+    # themselves be links onto a shared runtime, and resolving those would put every process out of
+    # it in scope.
+    #
     # Stop scan only, deliberately. _RemoveRootRecordingDb and the deletes still refuse to chase a
     # link out of the expected location -- following one to delete its target is exactly what the
-    # deny list exists to prevent. Ending a process under the target is not destructive.
-    function _ReparseTargetsOf {
+    # deny list exists to prevent. Ending our own process under the target is not destructive.
+    function _ManagedPathsUnderReparseTargets {
         param([string[]]$Roots)
-        $targets = @()
+        # Everything setup.ps1 / the prebuilt installers place inside a Studio home.
+        $managed = @(
+            "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "node",
+            "stable-diffusion.cpp", ".cache", ".venv_t5_510", ".venv_t5_530", ".venv_t5_550"
+        )
+        $out = @()
         foreach ($r in @($Roots | Where-Object { $_ })) {
             try {
                 $item = Get-Item -LiteralPath $r -Force -ErrorAction SilentlyContinue
@@ -417,10 +430,14 @@ Environment:
                     $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
                 }
                 $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
-                if ($t -and ($targets -notcontains $t)) { $targets += $t }
+                if (-not $t) { continue }
+                foreach ($sub in $managed) {
+                    $p = (Join-Path $t $sub).TrimEnd('\', '/')
+                    if ($out -notcontains $p) { $out += $p }
+                }
             } catch { }
         }
-        return $targets
+        return $out
     }
 
     # Stop processes that would block deleting the paths we remove. Unlike
@@ -583,7 +600,7 @@ Environment:
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
     $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
-    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ReparseTargetsOf $stopRoots))
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
