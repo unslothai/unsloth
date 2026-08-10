@@ -173,15 +173,18 @@ def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag
     with _connection() as conn:
         assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
         # delete_folder() fails the claimed job before reconciliation starts.
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='failed' WHERE id=?", (job_id,)
-        )
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='failed' WHERE id=?", (job_id,))
         conn.commit()
 
     folder_sync.reconcile_folder(job_id)
 
-    assert _row("SELECT 1 FROM rag_job_leases WHERE kind=? AND job_id=?",
-                (job_leases.FOLDER_SYNC, job_id)) is None
+    assert (
+        _row(
+            "SELECT 1 FROM rag_job_leases WHERE kind=? AND job_id=?",
+            (job_leases.FOLDER_SYNC, job_id),
+        )
+        is None
+    )
 
 
 @requires_sqlite_vec
