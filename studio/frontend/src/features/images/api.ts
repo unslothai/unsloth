@@ -277,8 +277,14 @@ export interface DiffusionDownloadPlan {
     files: string[];
     bytes: number;
     gguf_filename: string | null;
+    /** Whether this entry holds the selected model. Only the planner knows, because a gated pick is staged from an ungated mirror under a different repo id. Optional: an older backend omits it. */
+    checkpoint?: boolean;
   }[];
   total_bytes: number;
+  /** Full declared footprint, including files already present in cache. */
+  required_bytes?: number;
+  /** Selected checkpoint's contribution to required_bytes. */
+  checkpoint_bytes?: number;
   /**
    * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
    * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
@@ -591,12 +597,22 @@ export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingSta
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
 
-// One image-dataset folder under the Studio datasets root (GET /api/train/diffusion/info).
+// One dataset folder under the Studio datasets root (GET /api/train/diffusion/info): images,
+// clips, or both. `clip_count` is absent on older backends, hence optional.
 export interface DiffusionDatasetSummary {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
+}
+
+/** trainable items in a dataset folder, of whichever kind. */
+export function datasetItemCount(d: {
+  image_count: number;
+  clip_count?: number;
+}): number {
+  return d.image_count + (d.clip_count ?? 0);
 }
 
 // Per-family training defaults (from GET /api/train/diffusion/info). Absent on older backends; the Train tab then falls back to a hardcoded list.
@@ -671,14 +687,23 @@ export async function uploadDiffusionDataset(
   );
 }
 
-// One image in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned images.
+// One item in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned items.
+// `kind` is absent on older backends, which listed images only; treat a missing value as "image".
 export interface DiffusionDatasetImageRecord {
   filename: string;
   caption: string | null;
   caption_source: "sidecar" | "metadata" | "none";
+  kind?: "image" | "clip";
   width: number;
   height: number;
   size_bytes: number;
+}
+
+/** the records the labeling grid can render: clips have no thumbnail endpoint. */
+export function imageRecordsOnly(
+  records: DiffusionDatasetImageRecord[],
+): DiffusionDatasetImageRecord[] {
+  return records.filter((r) => (r.kind ?? "image") === "image");
 }
 
 export interface DiffusionDatasetImages {
@@ -758,6 +783,7 @@ export interface DiffusionDatasetImportResult {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
   imported: number;
   license: string;

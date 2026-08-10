@@ -2952,9 +2952,12 @@ def _profile_probe_env(host: str = "") -> dict:
     if platform.system() == "Windows" and _fold_module_entry(host).rsplit("\\", 1)[-1] in (
         _WINDOWS_PS_HOSTS
     ):
-        reordered = _windows_powershell_module_path(env.get("PSModulePath", ""))
+        # os.environ upper-cases keys on Windows, so the copy is keyed PSMODULEPATH: reading
+        # "PSModulePath" misses the caller's value and adds a second, case-differing entry.
+        key = next((k for k in env if k.upper() == "PSMODULEPATH"), "PSModulePath")
+        reordered = _windows_powershell_module_path(env.get(key, ""))
         if reordered:
-            env["PSModulePath"] = reordered
+            env[key] = reordered
     return env
 
 
