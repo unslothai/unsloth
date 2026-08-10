@@ -7409,7 +7409,12 @@ def collect_orphaned_project_workspaces() -> None:
             # This runs minutes after the row went, and the id is the client's
             # to reuse: a chat or a project created since owns that folder, and
             # a card of its own may not be stored yet.
-            if _thread_exists(record_id, unknown = True) if is_chat else _project_exists(record_id):
+            recreated = (
+                _thread_exists(record_id, unknown = True)
+                if is_chat
+                else live_project_owns(record_id, workspace, root)
+            )
+            if recreated:
                 logger.info("Kept %s: it was created again", record_id)
                 continue
             if not wait_for_sessions_idle([session], timeout = 0.0):
@@ -7507,6 +7512,32 @@ def _thread_exists(thread_id: str, unknown: bool = False) -> bool:
         return get_chat_thread(thread_id) is not None
     except Exception:  # noqa: BLE001 - see `unknown`
         return unknown
+
+
+def live_project_owns(project_id: str, workspace: str, root: "str | None" = None) -> bool:
+    """Whether a project with this id is the one those folders belong to.
+
+    A reused id is not the same workspace: the default root carries the
+    project's name, and renaming a project leaves its root where it was. A
+    folder the live row does not own is still the deleted project's, and still
+    the one the user asked to remove.
+    """
+    try:
+        from storage.studio_db import get_chat_project
+        project = get_chat_project(project_id)
+    except Exception:  # noqa: BLE001 - an unanswerable check keeps the files
+        return True
+    if not project:
+        return False
+    live = [project.get("rootPath"), project.get("sandboxPath")]
+    theirs = {os.path.realpath(path) for path in live if path}
+    for path in (workspace, root):
+        if not path:
+            continue
+        resolved = os.path.realpath(path)
+        if any(resolved == one or resolved.startswith(one + os.sep) for one in theirs):
+            return True
+    return False
 
 
 def _project_exists(project_id: str) -> bool:
@@ -8510,6 +8541,11 @@ def sweep_detached_sandboxes(root: "str | None" = None) -> None:
 _swept_detached = False
 
 
+def start_sandbox_recovery() -> "threading.Thread | None":
+    """Finish what an interrupted run left: renamed trees and pending deletes."""
+    return _start_detached_sweep()
+
+
 def _start_detached_sweep() -> "threading.Thread | None":
     """Run the sweep once per process, off the call that noticed."""
     global _swept_detached
@@ -8543,7 +8579,15 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     # chat whose id merely starts with the prefix gets an ordinary directory
     # from _get_workdir, and would otherwise never be cleaned up.
     if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
-        return False
+        # Unless this id has a sandbox of its own: a chat named like a project
+        # session had one while its row existed, and the row is deleted before
+        # this runs, so the project would otherwise inherit the question and
+        # the chat's files would be left behind.
+        root_here = os.path.realpath(sandbox_root())
+        if not _claimed_by_this_run(session_id, root_here) and not _marked_sandbox_in(
+            root_here, session_id,
+        ):
+            return False
     # The folder may still be at the legacy root right after an upgrade. This
     # session only, or a delete would sit behind a copy of every chat, and
     # outside the lock below, since it moves a tree and takes its own.

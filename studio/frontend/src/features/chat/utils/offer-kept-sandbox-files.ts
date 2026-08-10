@@ -24,11 +24,16 @@ export function offerToDeleteKeptSandboxes(keptThreadIds: string[]): void {
       action: {
         label: "Delete files",
         onClick: () => {
-          void deleteStoredChatThreads(keptThreadIds, {
-            deleteFiles: true,
-          }).catch(() => {
-            toast.error("Could not delete the files.");
-          });
+          void deleteStoredChatThreads(keptThreadIds, { deleteFiles: true })
+            .then((stillKept) => {
+              // A tool still running in there, a surviving fork, or a folder
+              // that would not go: the request succeeded and the files did not,
+              // so this offer is the only way back to them.
+              if (stillKept.length > 0) offerToDeleteKeptSandboxes(stillKept);
+            })
+            .catch(() => {
+              toast.error("Could not delete the files.");
+            });
         },
       },
     },

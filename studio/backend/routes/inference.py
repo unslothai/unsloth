@@ -13768,11 +13768,16 @@ async def serve_sandbox_file(
         return Response(status_code = 200, media_type = media_type, headers = headers)
 
     def _read():
+        # Exactly the length in the header: another call can still append to
+        # this file, and a body longer than Content-Length is cut off or
+        # refused by the client rather than simply carrying the extra.
+        remaining = size
         with os.fdopen(handle, "rb") as opened:
-            while True:
-                chunk = opened.read(64 * 1024)
+            while remaining > 0:
+                chunk = opened.read(min(64 * 1024, remaining))
                 if not chunk:
                     return
+                remaining -= len(chunk)
                 yield chunk
 
     return StreamingResponse(_read(), media_type = media_type, headers = headers)

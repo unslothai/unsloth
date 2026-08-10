@@ -617,8 +617,15 @@ async def lifespan(app: FastAPI):
     # Move the legacy sandbox up here rather than from the first request: the
     # copy can be minutes when the studio home is on another filesystem.
     try:
-        from core.inference.tools import migrate_legacy_sandbox_in_background
+        from core.inference.tools import (
+            migrate_legacy_sandbox_in_background,
+            start_sandbox_recovery,
+        )
         migrate_legacy_sandbox_in_background()
+        # A tree renamed for deletion by a run that was killed, and the
+        # workspace deletes it left pending: both waited for the next Python or
+        # terminal call, which ordinary chat never makes.
+        start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
 

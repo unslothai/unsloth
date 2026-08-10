@@ -5300,7 +5300,12 @@ def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypa
     tools.record_orphaned_project(project_id, str(workspace / "sandbox"), True, str(workspace))
 
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
-    monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: {"id": pid})
+    # The same id and the same folder: this is the project those files belong to.
+    monkeypatch.setattr(
+        studio_db, "get_chat_project",
+        lambda pid: {"id": pid, "rootPath": str(workspace),
+                     "sandboxPath": str(workspace / "sandbox")},
+    )
     tools.collect_orphaned_project_workspaces()
     assert (workspace / "fresh.csv").is_file(), "the new project's files went"
 
@@ -5500,7 +5505,11 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
         "get_chat_project",
         lambda pid: answers.pop(0) if answers else None,
     )
-    monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(
+        studio_db, "get_chat_project",
+        lambda pid: {"id": pid, "rootPath": str(workspace),
+                     "sandboxPath": str(workspace / "sandbox")},
+    )
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
 
@@ -5597,15 +5606,150 @@ def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
     else's result, and replaying only its text drops the rest."""
     src = Path(__file__).resolve().parents[2] / "frontend/src"
     adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
-    assert "function isSandboxWrapper(result: unknown, toolName?: string)" in adapter
+    assert "function isSandboxWrapper(" in adapter
+    assert "): result is { text: string; sessionId: string } {" in adapter
     assert "SANDBOX_FILE_TOOLS.has(toolName)" in adapter
     assert 'isSandboxWrapper(result, tc.toolName ?? "")' in adapter
     # The export paths pass the name too, so a wrapper is stripped in one place.
     dialog = (src / "features/chat/prompt-storage/prompt-storage-dialog.tsx").read_text(
         encoding = "utf-8"
     )
-    assert "toolResultModelText(p.result, p.toolName)" in dialog
+    assert "typeof p.toolName === \"string\" ? p.toolName : undefined," in dialog
     assert "toolResultModelText(p.result, name)" in dialog
+
+
+def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_path, monkeypatch):
+    """The default root carries the project's name, so a project remade under
+    that id can sit somewhere else entirely."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projmoved"
+    old = tmp_path / "Notes-projmove"
+    (old / "sandbox").mkdir(parents = True)
+    (old / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    new = tmp_path / "Renamed-projmove"
+    (new / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project(project_id, str(old / "sandbox"), True, str(old))
+
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setattr(
+        studio_db, "get_chat_project",
+        lambda pid: {"id": pid, "rootPath": str(new), "sandboxPath": str(new / "sandbox")},
+    )
+    assert tools.live_project_owns(project_id, str(old / "sandbox"), str(old)) is False
+    assert tools.live_project_owns(project_id, str(new / "sandbox"), str(new)) is True
+
+    tools.collect_orphaned_project_workspaces()
+    assert not old.exists(), "the old workspace was stranded"
+    assert new.is_dir(), "the live project's workspace went"
+
+
+def test_a_chat_named_like_a_project_session_still_loses_its_files(tmp_path, monkeypatch):
+    """Its row is deleted before the cleanup runs, so the id reads as the
+    project's from then on and its own folder was left behind."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "Shared-foo12345"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "shared.csv").write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(
+        studio_db, "ensure_chat_project_workspace",
+        lambda pid: {"id": pid, "rootPath": str(workspace),
+                     "sandboxPath": str(workspace / "sandbox")},
+    )
+
+    session = tools.project_session_id("foo12345")
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "mine.csv").write_text("a,b\n", encoding = "utf-8")
+    assert workdir != (workspace / "sandbox").resolve()
+
+    # The row goes first, so from here the id reads as the project's session.
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: None)
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    assert not workdir.exists(), "the chat's own files were left behind"
+    assert (workspace / "sandbox" / "shared.csv").is_file(), "the project's files went"
+
+
+def test_a_download_sends_no_more_than_it_promised(tmp_path, monkeypatch):
+    """Another call can append to the file after the length is captured, and a
+    body longer than Content-Length is cut off or refused."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+    )
+
+    loop = asyncio.new_event_loop()
+    response = loop.run_until_complete(
+        inference.serve_sandbox_file(
+            "thread-1", "report.csv", request = None, token = None, session = None,
+        )
+    )
+    declared = int(response.headers["content-length"])
+    with open(sandbox / "report.csv", "a", encoding = "utf-8") as fh:
+        fh.write("c,d\ne,f\n")  # the tool call is still writing
+
+    body = b""
+
+    async def drain():
+        nonlocal body
+        async for chunk in response.body_iterator:
+            body += chunk
+
+    loop.run_until_complete(drain())
+    assert len(body) == declared, f"sent {len(body)} bytes for a declared {declared}"
+
+
+def test_an_interrupted_delete_is_finished_when_studio_starts(tmp_path, monkeypatch):
+    """It waited for the next Python or terminal call, and ordinary chat, a
+    listing and a download never make one."""
+    import inspect
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    tools._swept_detached = False
+    root = Path(tools.sandbox_root())
+    root.mkdir(parents = True, exist_ok = True)
+    stranded = root / "chat-killed-1.deleting-abcdef12"
+    stranded.mkdir()
+    (stranded / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    thread = tools.start_sandbox_recovery()
+    if thread is not None:
+        thread.join(timeout = 10)
+    assert not stranded.exists(), "the tree a killed run left was kept"
+
+    import main
+
+    assert "start_sandbox_recovery()" in inspect.getsource(main.lifespan)
+
+
+def test_a_retry_that_still_keeps_the_files_offers_again():
+    """The request succeeds and the files stay: a tool is still running, a fork
+    still shows them, or the folder would not go."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+    offer = (src / "features/chat/utils/offer-kept-sandbox-files.ts").read_text(encoding = "utf-8")
+    assert "if (stillKept.length > 0) offerToDeleteKeptSandboxes(stillKept);" in offer
 
 
 if __name__ == "__main__":

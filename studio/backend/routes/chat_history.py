@@ -701,6 +701,7 @@ async def delete_project(
             finish_workspace_delete_when_idle,
             forget_orphaned_project,
             forget_orphaned_project_if_gone,
+            live_project_owns,
             project_session_id,
             record_orphaned_project,
             wait_for_sessions_idle,
@@ -775,9 +776,17 @@ async def delete_project(
                     "Kept project workspace %s: a project was created with that id",
                     project_id,
                 )
-                # The new row knows where its files are, so the record written a
-                # moment ago is about a workspace that is somebody's again.
-                await run_in_threadpool(forget_orphaned_project, project_id)
+                # Only when the new row is about these folders: the default
+                # root carries the project's name, so a project remade under
+                # this id can sit somewhere else entirely, and dropping the
+                # record would strand the old workspace for good.
+                if await run_in_threadpool(
+                    live_project_owns,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                ):
+                    await run_in_threadpool(forget_orphaned_project, project_id)
             else:
                 await run_in_threadpool(delete_project_workspace, project)
                 await run_in_threadpool(
