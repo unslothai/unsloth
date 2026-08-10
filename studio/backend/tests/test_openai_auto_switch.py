@@ -6570,9 +6570,7 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
     for storage in (studio_db, scan_folders):
         for rowcount, expected in ((1, True), (0, False)):
             connection = _Connection(rowcount)
-            monkeypatch.setattr(
-                storage, "get_connection", lambda connection = connection: connection
-            )
+            monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
 
             assert storage.remove_scan_folder(7) is expected
             assert connection.committed
@@ -6590,10 +6588,9 @@ def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
     monkeypatch.setattr("storage.studio_db.remove_scan_folder", lambda _folder_id: False)
     monkeypatch.setattr(local_inventory, "remove_scan_folder", lambda _folder_id: False)
 
-    assert (
-        asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester"))
-        == {"ok": True}
-    )
+    assert asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester")) == {
+        "ok": True
+    }
     assert local_inventory.remove_scan_folder_response(404) == {"ok": True}
     assert invalidated == []
     assert warmed == []
