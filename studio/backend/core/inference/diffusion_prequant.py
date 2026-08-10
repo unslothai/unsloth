@@ -739,8 +739,9 @@ def pin_prequantized_module(
     device: Any,
     *,
     logger: Any = None,
+    label: str = "pre-quantized denoiser",
 ) -> bool:
-    """Keep a pre-quantized module resident on ``device``, out of a ComponentsManager's rotation.
+    """Keep a module resident on ``device``, out of a ComponentsManager's rotation.
 
     ``ComponentsManager.enable_auto_cpu_offload`` parks every component on the CPU and moves each
     one onto the accelerator inside its own ``pre_forward``, i.e. from within the block that is
@@ -755,6 +756,12 @@ def pin_prequantized_module(
     66.3 GB dense, so keeping it resident is the saving being spent. The other components keep
     their hooks, and the strategy sizes its decisions from live free memory, so the encoder and
     the VAEs still offload around it.
+
+    For a torchao module that placement is REQUIRED, for the reason above. A caller may also pin a
+    plain dense module, where it is an optimisation rather than a fix: a module that moves per
+    forward cannot be regionally compiled either, because the onload hooks wrap the forward the
+    graph would replace. That caller owns the fit check -- this function does not size anything --
+    and passes its own ``label`` for the log line.
 
     Returns True when the module was pinned. Best-effort on the hook surgery: if the manager does
     not look the way this expects, the module is still placed on ``device`` and False is returned,
@@ -780,7 +787,8 @@ def pin_prequantized_module(
     module.to(device)
     if logger is not None:
         logger.info(
-            "diffusion.prequant: pre-quantized denoiser pinned on %s (offload rotation: %s)",
+            "diffusion.prequant: %s pinned on %s (offload rotation: %s)",
+            label,
             device,
             "removed" if pinned else "unchanged",
         )

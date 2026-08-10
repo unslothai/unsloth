@@ -33,6 +33,9 @@ load bit-identical. torch imported lazily.
 
 from __future__ import annotations
 
+import os
+import sys
+from functools import lru_cache
 from typing import Any, Optional
 
 from . import diffusion_gguf_compile as gguf_compile
@@ -138,12 +141,39 @@ def resolve_speed_mode(
     return normalize_speed_mode(value)
 
 
+@lru_cache(maxsize = 1)
+def torch_compile_runtime_available() -> bool:
+    """Whether THIS process can actually run an inductor compile.
+
+    Inductor needs Triton, and Windows is the one supported platform where the Triton wheel is not
+    part of a normal install. The three Studio workers (inference / training / export) already gate
+    on exactly this import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and
+    video backends run in the SERVER process, which those gates never reach, so ask the same
+    question in the one place both of them decide to compile.
+
+    ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile call under it is a silent no-op
+    that would otherwise be recorded as an engaged optimisation. Cached -- neither answer can change
+    inside a process, and this runs on every load."""
+    if os.environ.get("TORCHDYNAMO_DISABLE", "").strip() not in ("", "0"):
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        import triton  # noqa: F401, PLC0415
+    except Exception:  # noqa: BLE001 -- absent or broken Triton means eager, never a failed load
+        return False
+    return True
+
+
 def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled.
 
-    Only on CUDA (incl. ROCm), for a bf16 transformer, on a compile-friendly family. ``is_gguf``
-    no longer disqualifies (GGUF compiles fine and ~2.3x faster); the param is kept for compat."""
+    Only on CUDA (incl. ROCm), for a bf16 transformer, on a compile-friendly family, in a process
+    that can run inductor. ``is_gguf`` no longer disqualifies (GGUF compiles fine and ~2.3x
+    faster); the param is kept for compat."""
     del is_gguf  # GGUF is compile-eligible now; param kept for call-site compat.
+    if not torch_compile_runtime_available():
+        return False
     if not bool(getattr(target, "supports_default_torch_compile", False)):
         return False
     if not bool(getattr(family, "supports_torch_compile", True)):

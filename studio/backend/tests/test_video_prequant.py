@@ -319,3 +319,85 @@ def test_pinning_still_places_the_module_when_the_manager_is_unrecognisable():
     assert pin_prequantized_module(manager, transformer, "cuda") is False
     assert transformer.moved_to == ["cuda"]
     assert manager.model_hooks == before
+
+
+# ── the denoiser default: measured, and deliberately NOT changed ─────────────────
+# The hosted checkpoints are the fast ones (the same 8-step job runs 23.7 s against 194 s), so the
+# question was whether to make one of them the default. Measured against the released denoiser at
+# MiniMax-H3's own 30-step schedule, fixed prompt and seed, 960x544x124: no NaN, no black frames
+# and no visible degradation, but a re-rolled sample -- mean SSIM 0.49 (int8) and 0.43 (fp8) where
+# the released config compared against ITSELF scores 0.99. They stay opt-in.
+
+
+def _h3_fam():
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.modular_workflow
+    return fam
+
+
+def test_an_unset_denoiser_request_keeps_the_released_weights():
+    fam, base = _h3_fam(), "MiniMaxAI/MiniMax-H3"
+    for unset in (None, "auto"):
+        assert VideoBackend._denoiser_prequant_covered(fam, unset, base) is False
+    # An explicit scheme still takes the hosted checkpoint, and the plan still drops the dense
+    # shards for it -- the opt-in is unchanged.
+    assert VideoBackend._denoiser_prequant_covered(fam, "int8", base) is True
+    assert VideoBackend._denoiser_prequant_covered(fam, "fp8", base) is True
+
+
+def test_the_dense_denoiser_is_pinned_only_when_it_actually_fits():
+    """Pinning the released denoiser is what makes the regional compile possible (a module the
+    offload hooks move per forward cannot be compiled), and quantizing the conditioner is what
+    makes it affordable. It is an optimisation, so the fit test has to be conservative: the
+    denoiser plus everything that still has to run beside it."""
+    import torch
+
+    from core.inference.video import _h3_dense_denoiser_resident_bytes
+
+    fam = _h3_fam()
+
+    class _Denoiser:
+        def __init__(self, gb):
+            self._t = torch.empty(0)
+            self._gb = gb
+
+        def parameters(self):
+            return iter(())
+
+        def buffers(self):
+            # One notional tensor standing in for the module's weight bytes.
+            return iter([torch.empty(int(self._gb * 1e9), dtype = torch.uint8, device = "meta")])
+
+    # A meta tensor is skipped (it holds no memory yet), so an unbuilt module sizes to nothing
+    # rather than to a number that would wrongly authorise a pin.
+    assert (
+        _h3_dense_denoiser_resident_bytes(
+            fam, denoiser = _Denoiser(66.3), te_scheme = "int8", dtype = torch.bfloat16
+        )
+        is None
+    )
+    assert (
+        _h3_dense_denoiser_resident_bytes(
+            fam, denoiser = None, te_scheme = "int8", dtype = torch.bfloat16
+        )
+        is None
+    )
+
+    class _Real(_Denoiser):
+        def buffers(self):
+            return iter([torch.empty(1024, dtype = torch.uint8)])
+
+    sizes = _h3_dense_denoiser_resident_bytes(
+        fam, denoiser = _Real(0), te_scheme = "int8", dtype = torch.bfloat16
+    )
+    assert sizes is not None
+    denoiser_bytes, others = sizes
+    assert denoiser_bytes == 1024
+    # The conditioner is priced at the precision the load ENGAGED, which is the whole reason the
+    # dense denoiser can be resident at all: 27.2 GB hosted against 66.8 GB released.
+    dense_sizes = _h3_dense_denoiser_resident_bytes(
+        fam, denoiser = _Real(0), te_scheme = None, dtype = torch.bfloat16
+    )
+    assert dense_sizes is not None and dense_sizes[1] - others > 38 * 1000**3
+    # And it is never just the weights: the activation headroom is in there too.
+    assert others > (27.2 + fam.bf16_components_gb[2]) * 1000**3

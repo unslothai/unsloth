@@ -52,6 +52,27 @@ def _fam(
     return types.SimpleNamespace(name = name, modular_workflow = modular_workflow, base_repo = base_repo)
 
 
+# Device targets are passed EXPLICITLY everywhere below. The auto default reads the real device
+# when none is given, and a test whose answer depends on whether the runner has a bf16 CUDA card
+# is not a test.
+def _cuda_target():
+    return types.SimpleNamespace(
+        device = "cuda", dtype = torch.bfloat16, supports_default_torch_compile = True
+    )
+
+
+def _cpu_target():
+    return types.SimpleNamespace(
+        device = "cpu", dtype = torch.float32, supports_default_torch_compile = False
+    )
+
+
+def _mps_target():
+    return types.SimpleNamespace(
+        device = "mps", dtype = torch.bfloat16, supports_default_torch_compile = False
+    )
+
+
 # ── the resolver ─────────────────────────────────────────────────────────────────
 def test_only_int8_has_a_hosted_conditioner():
     assert h3_te_quant_scheme("int8") == "int8"
@@ -261,7 +282,46 @@ def test_only_a_modular_family_drops_its_dense_encoder():
     # A conventional family casts its own dense encoder in place and still needs those shards.
     assert VideoBackend._h3_te_quant_scheme(_fam(modular_workflow = None), "int8", H3_BASE) is None
     assert VideoBackend._h3_te_quant_scheme(_fam(), "fp8", H3_BASE) is None
-    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE) is None
+
+
+# ── the tri-state: unset is the fast default, "none" is the escape hatch ─────────
+def test_an_unset_request_takes_the_hosted_conditioner():
+    """Unset is what the video page sends, so this is the whole point: it must resolve to the
+    hosted 27.1 GB / 50-layer conditioner, not to the released 66.7 GB / 64-layer one."""
+    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, _cuda_target()) == "int8"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "auto", H3_BASE, _cuda_target()) == "int8"
+    assert VideoBackend._h3_te_quant_scheme(_fam(), "", H3_BASE, _cuda_target()) == "int8"
+
+
+def test_none_still_pins_the_released_encoder():
+    """The escape hatch has to exist and has to be distinguishable from unset, or a bit-exact
+    comparison against the released components becomes unexpressible."""
+    for pinned in ("none", "None", "off", " OFF "):
+        assert VideoBackend._h3_te_quant_scheme(_fam(), pinned, H3_BASE, _cuda_target()) is None
+
+
+def test_the_auto_default_is_cuda_only():
+    """MPS and CPU keep exactly the components they load today. The ConvRot forward is plain torch
+    and would very likely run there, but nobody has measured it, and the modular loader does not
+    even reach a Mac today (ComponentsManager.enable_auto_cpu_offload needs mem_get_info, which
+    torch.mps does not have). An EXPLICIT request is unaffected by this gate."""
+    for target in (_cpu_target(), _mps_target()):
+        assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, target) is None
+        assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE, target) == "int8"
+    # A CUDA target whose compute dtype is not bf16 (a pre-Ampere card promoted to fp32) is not a
+    # device this was measured on either.
+    fp32_cuda = types.SimpleNamespace(device = "cuda", dtype = torch.float32)
+    assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, fp32_cuda) is None
+
+
+def test_an_unset_request_on_a_derivative_still_keeps_its_own_encoder():
+    """The auto default must not loosen the base gate: substituting someone else's conditioner is
+    exactly as wrong when the backend chose it as when the user asked for it."""
+    assert (
+        VideoBackend._h3_te_quant_scheme(_fam(), None, "someone/MiniMax-H3-anime", _cuda_target())
+        is None
+    )
+    assert VideoBackend._h3_te_quant_scheme(_fam(), None, None, _cuda_target()) is None
 
 
 def test_only_the_base_the_artifact_was_cut_from_gets_the_hosted_conditioner():
@@ -608,6 +668,12 @@ def test_an_explicit_encoder_request_that_engages_nothing_is_refused(monkeypatch
             hf_token = None,
             memory_mode = None,
             text_encoder_quant = "int8",
+            # This test is about the ENCODER refusal, so pin the denoiser dense: unset would now
+            # resolve to the hosted int8 checkpoint and the fake diffusers module has no
+            # transformer class to build it with. A CPU target for the same reason -- the auto
+            # default must not depend on whether the runner happens to have a bf16 CUDA card.
+            transformer_quant = "none",
+            target = _cpu_target(),
             diffusers = fake_diffusers,
             torch = None,
         )
