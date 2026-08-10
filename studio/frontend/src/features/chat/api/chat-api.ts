@@ -729,12 +729,23 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
+  options: { bounded?: boolean } = {},
 ): Promise<ThreadRecord | null> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}`,
-  );
-  if (response.status === 404) return null;
-  return parseJsonOrThrow<ThreadRecord>(response);
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
+  // the write timeout exists to keep moving. Callers on a render path stay unbounded.
+  const timeout = options.bounded
+    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      timeout ? { signal: timeout.signal } : undefined,
+    );
+    if (response.status === 404) return null;
+    return parseJsonOrThrow<ThreadRecord>(response);
+  } finally {
+    timeout?.dispose();
+  }
 }
 
 export class ChatThreadDeletedError extends Error {

@@ -913,9 +913,11 @@ export async function deleteStoredChatThreads(
     // an aborted or dropped response is not proof the delete failed. the caller rolls its
     // tombstone back on a throw, and doing that for a row the backend did remove leaves the
     // thread 410 on every later write, so confirm the rows really survived first.
+    // Bounded: the DELETE only got here by aborting on a wedged socket, and an unbounded read
+    // would hang the delete instead. A read that cannot answer counts the row as surviving.
     const survived = await Promise.all(
       ids.map((id) =>
-        getChatThread(id).then(
+        getChatThread(id, { bounded: true }).then(
           (thread) => thread !== null,
           () => true,
         ),
