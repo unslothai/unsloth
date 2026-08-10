@@ -8278,7 +8278,7 @@ def _retry_detached_delete(target: str, tries: int) -> None:
         return
     try:
         timer = threading.Timer(
-            min(_DETACHED_RETRY_DELAY * 2 ** tries, 30.0),
+            min(_DETACHED_RETRY_DELAY * 2**tries, 30.0),
             _delete_queue.put,
             [(target, tries + 1)],
         )
