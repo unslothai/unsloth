@@ -1213,19 +1213,12 @@ jobs:
           if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
           if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
 
-          # Absent scanner vs. bad verdict. Everything below this point assumes a
-          # Defender that answers; when it does not answer at all there is no scan
-          # to interpret, so skip instead of failing closed. This is deliberately
-          # narrow: it triggers only when the cmdlets themselves fail, which is an
-          # unavailable engine. A Defender that IS present but misconfigured still
-          # fails below, and an actual detection still fails the job.
-          # The cmdlets and MpCmdRun.exe fail independently: the WMI provider and
-          # the service RPC endpoint back the cmdlets, while MpCmdRun talks to the
-          # engine directly. Treating dead cmdlets as "no scanner" was meant to
-          # cover a one-off incident, but they have been down on every Windows
-          # runner since 2026-08-06, so it silently shipped three releases
-          # unscanned. Carry on into the MpCmdRun path instead and let the EICAR
-          # positive control below decide whether a scanner is really there.
+          # Absent scanner vs. bad verdict: only a missing scanner may skip, and a
+          # misconfigured one or a real detection still fails the job. Dead cmdlets
+          # are not a missing scanner - WMI provider and service RPC back the
+          # cmdlets, MpCmdRun talks to the engine directly - and treating them as
+          # one shipped three releases unscanned since 2026-08-06. So carry on and
+          # let the EICAR positive control below decide whether a scanner exists.
           $cmdletsDown = [bool]$unavailable
           if ($cmdletsDown) {
             Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
@@ -1240,14 +1233,10 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
-          # The two cmdlets fail independently, so guard each check on the result
-          # it actually reads rather than on a blanket flag. Get-MpComputerStatus
-          # runs an extrinsic method against the live service through the Defender
-          # WMI provider; Get-MpPreference reads back registry-backed settings, so
-          # one answers while the other throws. Discarding a readable
-          # Get-MpPreference would drop the MAPS and block-at-first-sight checks
-          # while the signature-based EICAR control still passes, publishing on a
-          # scan blind to the cloud "!ml" verdicts this gate exists to catch.
+          # Guard each check on the result it reads, not a blanket flag: the two
+          # cmdlets fail independently ($status is a live-service WMI call, $pref
+          # reads registry-backed settings). Dropping a readable $pref loses the
+          # MAPS and block-at-first-sight checks while the EICAR control passes.
           $fatal = @()
           $degraded = @()
           if ($status) {
@@ -1270,9 +1259,8 @@ jobs:
             Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
             Start-Sleep -Seconds (5 * $try)
           }
-          # With the cmdlets down a release would otherwise be blocked outright, so
-          # losing the cloud degrades the scan rather than failing it: signature
-          # detections still fire, only cloud-delivered "!ml" verdicts go unseen.
+          # Cmdlets down: losing the cloud degrades rather than blocks the release
+          # outright - signature detections still fire, only "!ml" verdicts do not.
           if (-not $maps) {
             if ($cmdletsDown) { $degraded += 'cannot reach the Defender cloud service, so "!ml" cloud verdicts cannot fire' }
             else              { $fatal += 'cannot reach the Defender cloud service' }
@@ -1296,10 +1284,9 @@ jobs:
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
             $controlPassed = $true
           }
-          # This is the real test of whether a scanner exists. With the cmdlets down
-          # it is the only one left, so a control that does not fire means MpCmdRun
-          # cannot scan either: skip exactly as before rather than fail a release on
-          # a missing engine. A control that DOES fire means the scan below is real.
+          # The real test of whether a scanner exists, and the only one left with
+          # the cmdlets down: a control that does not fire means MpCmdRun cannot
+          # scan either, so skip as before rather than fail on a missing engine.
           if (-not $controlPassed) {
             if ($cmdletsDown) {
               Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')) and MpCmdRun could not fire the EICAR positive control either; skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
@@ -1360,12 +1347,10 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          # Keyed on the cmdlet that does the reading, not on the blanket flag: a
-          # live Get-MpPreference can still verify these while Get-MpComputerStatus
-          # is down. With Get-MpPreference itself unreadable there is nothing to
-          # read back; real-time protection may well still be live, so a detection
-          # can quarantine the copy mid-scan, but that surfaces below as a bundle
-          # MpCmdRun could not scan and still fails the job.
+          # Keyed on the cmdlet doing the reading, not the blanket flag: $pref can
+          # be live while $status is down. With $pref unreadable there is nothing
+          # to read back; a detection could then quarantine a copy mid-scan, which
+          # surfaces below as an unscannable bundle and still fails the job.
           if ($pref) {
             $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
             $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })

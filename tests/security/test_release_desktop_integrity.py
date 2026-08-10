@@ -506,13 +506,10 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "exit 0" not in before_control
     ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
-    # The two cmdlets fail independently -- Get-MpComputerStatus runs an extrinsic
-    # method against the live service through the Defender WMI provider, while
-    # Get-MpPreference reads back registry-backed settings -- so each probe must
-    # sit inside the guard for the result it reads, and neither result may be
-    # dereferenced outside one. A blanket $cmdletsDown guard would discard a
-    # readable Get-MpPreference reporting MAPSReporting=0 and publish on a scan
-    # that cannot produce the cloud "!ml" verdict this gate exists for.
+    # The two cmdlets fail independently ($status is a live-service WMI call,
+    # $pref reads registry-backed settings), so each probe must sit inside the
+    # guard for the result it reads. A blanket $cmdletsDown guard would discard a
+    # readable MAPSReporting=0 and publish on a scan blind to cloud "!ml" verdicts.
     bodies = _guarded_bodies(scan, "if ($status) {") + _guarded_bodies(scan, "if ($pref) {")
     for probe in (
         "$status.RealTimeProtectionEnabled",
@@ -537,8 +534,8 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "cmdlet would discard the other cmdlet's readable result"
     )
 
-    # The only remaining skip is a positive control that will not fire, which is
-    # the one signal that MpCmdRun cannot scan either.
+    # The only remaining skip is a control that will not fire, the one signal
+    # that MpCmdRun cannot scan either.
     skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
     assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
     assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]
