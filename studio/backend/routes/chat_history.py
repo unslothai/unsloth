@@ -729,9 +729,10 @@ def _delete_project_rag_sources(project_id: str) -> None:
     # a project id is reusable, and the tombstone outlives the scope, so retiring one that
     # another client already recreated would permanently disable RAG for the new project
     with folder_sync.scope_lock(scope):
+        checked_at = folder_sync.now_iso()
         if get_chat_project(project_id) is not None:
             return
-        folder_sync.retire_scope(scope)
+        folder_sync.retire_scope(scope, checked_at)
     if rag_db.rag_available():
         folder_sync.delete_retired_scope(scope)
 

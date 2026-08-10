@@ -2192,3 +2192,26 @@ def test_periodic_retirement_checks_ownership_under_the_scope_lock(rag_home):
     current = folder_sync.get_folder(folder["id"])
     assert current["status"] == folder["status"]
     assert current["auto_sync"] == folder["auto_sync"]
+
+
+@requires_sqlite_vec
+def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
+    scope = store.project_scope("p1")
+    source = rag_home / "before-check"
+    source.mkdir()
+    existing = folder_sync.create_folder(
+        scope_type = "project", scope_id = "p1", path = str(source)
+    )
+    checked_at = folder_sync.now_iso()
+    # a second backend process links this one after the check and before the write
+    later = rag_home / "after-check"
+    later.mkdir()
+    fresh = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(later))
+
+    folder_sync.retire_scope(scope, checked_at)
+
+    assert folder_sync.get_folder(existing["id"])["status"] == "retired"
+    survivor = folder_sync.get_folder(fresh["id"])
+    assert survivor["status"] == fresh["status"]
+    assert survivor["auto_sync"] == fresh["auto_sync"]
+    assert survivor["last_error"] is None

@@ -71,6 +71,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def now_iso() -> str:
+    """The timestamp format linked-folder rows are written and compared with."""
+    return _now()
+
+
 def _hash_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as source:
@@ -558,35 +563,39 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
-def _retire_scope_rows(conn, scope: str) -> None:
+def _retire_scope_rows(conn, scope: str, linked_before: str | None = None) -> None:
     folders_exist = _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
     conn.execute(
         "INSERT OR IGNORE INTO linked_folder_retired_scopes(scope, retired_at) VALUES(?, ?)",
         (scope, _now()),
     )
+    # the ownership check and this write cannot share a transaction across two databases,
+    # so a folder another process linked after that check keeps its own state
+    bound = "" if linked_before is None else " AND created_at<=?"
+    params = () if linked_before is None else (linked_before,)
     if folders_exist:
         conn.execute(
             "UPDATE linked_folders SET auto_sync=0, status='retired', "
-            "last_error='Owning scope was removed', updated_at=? WHERE scope=?",
-            (_now(), scope),
+            f"last_error='Owning scope was removed', updated_at=? WHERE scope=?{bound}",
+            (_now(), scope, *params),
         )
     if jobs_exist:
         conn.execute(
             "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
             "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
-            "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
-            "AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
-            (_now(), scope),
+            "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?"
+            f"{bound}) AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
+            (_now(), scope, *params),
         )
 
 
-def retire_scope(scope: str) -> None:
+def retire_scope(scope: str, linked_before: str | None = None) -> None:
     """Stop all future work, even when the vector extension cannot load."""
     conn = _retirement_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _retire_scope_rows(conn, scope)
+        _retire_scope_rows(conn, scope, linked_before)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -728,9 +737,10 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
             # under the lock create_folder and upload admission take, and rechecked inside
             # it: a project recreated with the same id must not have its new folders retired
             with _scope_lock(scope):
+                checked_at = _now()
                 if project_exists(project_id):
                     continue
-                retire_scope(scope)
+                retire_scope(scope, checked_at)
             retired_scopes.add(scope)
             retired.append(scope)
         except Exception:
@@ -989,9 +999,10 @@ def _snapshot(root: str, metadata: dict) -> str:
         raise RuntimeError("File escaped the linked folder")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(source, flags)
-    ext = os.path.splitext(source)[1].lower()
-    target = ensure_dir(rag_uploads_root()) / f"linked-{uuid.uuid4().hex}{ext}"
+    target = None
     try:
+        ext = os.path.splitext(source)[1].lower()
+        target = ensure_dir(rag_uploads_root()) / f"linked-{uuid.uuid4().hex}{ext}"
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             raise RuntimeError("Linked source is not a regular file")
@@ -1013,7 +1024,8 @@ def _snapshot(root: str, metadata: dict) -> str:
             raise RuntimeError("Linked source changed while it was copied")
         return str(target)
     except Exception:
-        _remove_snapshot(str(target))
+        if target is not None:
+            _remove_snapshot(str(target))
         raise
     finally:
         os.close(fd)
