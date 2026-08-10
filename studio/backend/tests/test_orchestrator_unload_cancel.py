@@ -2377,9 +2377,7 @@ def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
     inf._SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S = 0.25
     try:
         asyncio.run(
-            asyncio.wait_for(
-                inf._run_tracked_load_model_impl(request, None, "s"), timeout = 30
-            )
+            asyncio.wait_for(inf._run_tracked_load_model_impl(request, None, "s"), timeout = 30)
         )
     finally:
         inf._load_model_impl = original_impl
