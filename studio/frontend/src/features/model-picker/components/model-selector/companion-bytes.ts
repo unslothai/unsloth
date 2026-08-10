@@ -16,12 +16,27 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 export type CompanionBytesResolver = (
   repoId: string,
   ggufFilenames: string[],
+  signal: AbortSignal,
 ) => Promise<Map<string, number> | null>;
 
 /** Installed by the Images and Video pages, which own the load settings the answer depends on. */
 export const CompanionBytesContext = createContext<CompanionBytesResolver | null>(null);
 
 const NO_COMPANION_BYTES: ReadonlyMap<string, number> = new Map();
+
+let resolverSerial = 0;
+// Identifies the settings an answer was planned under. The resolver closes over the Advanced
+// values, so a new one describes a different pick and its predecessor's totals no longer apply.
+const resolverIds = new WeakMap<CompanionBytesResolver, number>();
+
+function resolverId(resolve: CompanionBytesResolver): number {
+  let id = resolverIds.get(resolve);
+  if (id === undefined) {
+    id = ++resolverSerial;
+    resolverIds.set(resolve, id);
+  }
+  return id;
+}
 
 /**
  * Companion bytes per checkpoint of *repoId*, empty until they resolve.
@@ -36,9 +51,13 @@ export function useCompanionBytes(
   ggufFilenames: string[],
 ): ReadonlyMap<string, number> {
   const resolve = useContext(CompanionBytesContext);
-  // Identity, so the effect does not refire on a re-render that rebuilt the same list.
+  // The rows AND the settings they were planned under, so a precision change cannot leave the
+  // previous answer satisfying the check below while its replacement is still in flight.
   const key = useMemo(
-    () => (resolve && ggufFilenames.length > 0 ? ggufFilenames.join("\n") : null),
+    () =>
+      resolve && ggufFilenames.length > 0
+        ? `${resolverId(resolve)}\n${ggufFilenames.join("\n")}`
+        : null,
     [resolve, ggufFilenames],
   );
   const [answer, setAnswer] = useState<{
@@ -48,15 +67,17 @@ export function useCompanionBytes(
 
   useEffect(() => {
     if (!resolve || !key) return;
-    let canceled = false;
+    // Collapsing the expander must stop the work, not just the setState: an abandoned 63-quant
+    // batch keeps the backend planning every candidate against the Hub.
+    const controller = new AbortController();
     const settle = (bytes: ReadonlyMap<string, number>) => {
-      if (!canceled) setAnswer({ key, bytes });
+      if (!controller.signal.aborted) setAnswer({ key, bytes });
     };
-    void resolve(repoId, key.split("\n"))
+    void resolve(repoId, key.split("\n").slice(1), controller.signal)
       .then((sizes) => settle(sizes ?? NO_COMPANION_BYTES))
       .catch(() => settle(NO_COMPANION_BYTES));
     return () => {
-      canceled = true;
+      controller.abort();
     };
   }, [resolve, key, repoId]);
 

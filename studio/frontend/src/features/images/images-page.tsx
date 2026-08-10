@@ -2221,19 +2221,22 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // rather than the GGUF alone: a Qwen-Image-Edit BF16 row read 41 GB and then fetched 58. Planned
   // from the same Advanced values the staging above uses, so both report one number.
   const resolveCompanionBytes = useCallback(
-    async (repoId: string, ggufFilenames: string[]) => {
+    async (repoId: string, ggufFilenames: string[], signal: AbortSignal) => {
       const advanced = currentLoadAdvanced(repoId);
-      const { sizes } = await getDiffusionCompanionSizes({
-        model_path: repoId,
-        gguf_filenames: ggufFilenames,
-        model_kind: "gguf",
-        hf_token: hfApiToken(getHfToken()),
-        cpu_offload: advanced.cpu_offload,
-        speed_mode: advanced.speed_mode,
-        transformer_quant: advanced.transformer_quant,
-        memory_mode: advanced.memory_mode,
-        loras: advanced.loras,
-      });
+      const { sizes } = await getDiffusionCompanionSizes(
+        {
+          model_path: repoId,
+          gguf_filenames: ggufFilenames,
+          model_kind: "gguf",
+          hf_token: hfApiToken(getHfToken()),
+          cpu_offload: advanced.cpu_offload,
+          speed_mode: advanced.speed_mode,
+          transformer_quant: advanced.transformer_quant,
+          memory_mode: advanced.memory_mode,
+          loras: advanced.loras,
+        },
+        signal,
+      );
       return new Map(Object.entries(sizes ?? {}));
     },
     [currentLoadAdvanced],

@@ -1767,14 +1767,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   // What each quant downloads beyond its own checkpoint, so a row advertises the whole pick
   // rather than the GGUF alone. Mirrors the images page.
   const resolveCompanionBytes = useCallback(
-    async (repoId: string, ggufFilenames: string[]) => {
-      const { sizes } = await getVideoCompanionSizes({
-        model_path: repoId,
-        gguf_filenames: ggufFilenames,
-        model_kind: "gguf",
-        hf_token: hfApiToken(getHfToken()),
-        memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-      });
+    async (repoId: string, ggufFilenames: string[], signal: AbortSignal) => {
+      const { sizes } = await getVideoCompanionSizes(
+        {
+          model_path: repoId,
+          gguf_filenames: ggufFilenames,
+          model_kind: "gguf",
+          hf_token: hfApiToken(getHfToken()),
+          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
+        },
+        signal,
+      );
       return new Map(Object.entries(sizes ?? {}));
     },
     // The state, not memoryModeRef: only a new identity makes the picker re-ask on a mode change.

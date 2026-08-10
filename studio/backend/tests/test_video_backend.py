@@ -2066,8 +2066,9 @@ class _PlanSibling:
 
 
 class _PlanInfo:
-    def __init__(self, siblings) -> None:
+    def __init__(self, siblings, sha = None) -> None:
         self.siblings = siblings
+        self.sha = sha
 
 
 _LTX_BASE_SIBLINGS = [
@@ -2983,6 +2984,53 @@ def test_download_plan_swaps_the_dense_encoder_for_the_precast_checkpoint(monkey
     assert "scheduler/scheduler_config.json" in base["files"]
     assert "tokenizer/tokenizer.json" in base["files"]
     assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+
+
+def test_a_cached_precast_encoder_is_neither_staged_nor_charged(monkeypatch):
+    """The pre-cast checkpoint gets a revision like every other repo, so the cached-repo filter
+    can drop it. Without one _files_already_cached returns no hits by design, and a 13 GB encoder
+    already on disk stayed in the plan, charged to the row and preflighted for space."""
+    from core.inference.diffusion import DiffusionBackend
+    from models.inference import DiffusionDownloadPlanResponse
+
+    _cuda_bf16_target(monkeypatch)
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _PlanInfo(
+                {
+                    "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
+                    "Lightricks/LTX-2": _LTX_BASE_SIBLINGS,
+                    "unsloth/LTX-2-FP8": _LTX2_FP8_SIBLINGS,
+                }[repo_id],
+                sha = f"sha-{repo_id}",
+            )
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_already_cached",
+        staticmethod(
+            lambda repo_id, files, revision = None: (
+                set(files) if repo_id == "unsloth/LTX-2-FP8" and revision else set()
+            )
+        ),
+    )
+
+    plan = VideoBackend().download_plan(
+        "unsloth/LTX-2.3-GGUF",
+        gguf_filename = "ltx-2.3-22b-distilled.gguf",
+        family_override = "ltx-2",
+        text_encoder_quant = "fp8",
+    )
+
+    assert "unsloth/LTX-2-FP8" not in {e["repo_id"] for e in plan["entries"]}
+    assert plan["total_bytes"] == sum(e["bytes"] for e in plan["entries"])
+    # The dense encoder still stays dropped: the checkpoint replacing it is on disk, not missing.
+    base = next(e for e in plan["entries"] if e["repo_id"] == "Lightricks/LTX-2")
+    assert not any(f.startswith("text_encoder/") for f in base["files"])
+    # And the 13 GB it would have added is out of what the row advertises.
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == plan["total_bytes"] - 12_000_000_000
 
 
 def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatch):

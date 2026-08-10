@@ -319,12 +319,14 @@ export type CompanionSizesRequest = DiffusionLoadRequest & {
 /** One expander's worth of quant rows, sized in a single call. */
 export async function getDiffusionCompanionSizes(
   body: CompanionSizesRequest,
+  signal?: AbortSignal,
 ): Promise<CompanionSizes> {
   return parseJson(
     await authFetch("/api/inference/images/companion-sizes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     }),
   );
 }

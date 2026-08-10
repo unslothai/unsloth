@@ -283,6 +283,13 @@ def assert_video_precision_available(
         )
 
 
+def _record_plan_sha(shas_out: Optional[dict[str, str]], repo_id: str, info: Any) -> None:
+    """Note ``repo_id``'s current commit, if the Hub gave one."""
+    sha = getattr(info, "sha", None)
+    if shas_out is not None and isinstance(sha, str) and sha:
+        shas_out[repo_id] = sha
+
+
 def _is_trusted_video_repo(repo_id: str) -> bool:
     """Whether a NON-GGUF load may deserialise this repo (see the image twin)."""
     try:
@@ -1289,7 +1296,11 @@ class VideoBackend:
 
     @staticmethod
     def _denoiser_prequant_hub_files(
-        fam: Any, transformer_quant: Optional[str], base: Optional[str], api: Any
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        api: Any,
+        shas_out: Optional[dict[str, str]] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
         """``(repo_id, [(rfilename, size)])`` for the hosted pre-quantized denoiser, or
         ``(None, [])``.
@@ -1329,6 +1340,7 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
             logger.warning("video.denoiser_prequant_unavailable: %s: %s", source.location, exc)
             return None, []
+        _record_plan_sha(shas_out, source.location, info)
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         for name in wanted:
             if name in by_name:
@@ -1337,7 +1349,7 @@ class VideoBackend:
 
     @staticmethod
     def _te_prequant_hub_files(
-        sources: dict[str, Any], api: Any
+        sources: dict[str, Any], api: Any, shas_out: Optional[dict[str, str]] = None
     ) -> dict[str, list[tuple[str, int]]]:
         """``{component: [(rfilename, size)]}`` for every hosted pre-cast checkpoint that really
         resolves on the Hub.
@@ -1345,7 +1357,8 @@ class VideoBackend:
         Only a component listed here may have its dense weights dropped from a plan or an
         estimate: an unpublished / gated / renamed artifact keeps its dense encoder, exactly as
         the load's own fallback does. Checked per source so one missing repo cannot sink the
-        whole plan."""
+        whole plan. ``shas_out`` collects each repo's commit, without which the plan's cached-repo
+        filter cannot drop a pre-cast checkpoint that is already on disk."""
         found: dict[str, list[tuple[str, int]]] = {}
         for component, source in sources.items():
             # A local path override is already on disk; only a hosted checkpoint is staged.
@@ -1356,6 +1369,7 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
                 logger.warning("video.te_prequant_unavailable: %s: %s", source.location, exc)
                 continue
+            _record_plan_sha(shas_out, source.location, info)
             files = [
                 (s.rfilename, int(s.size or 0))
                 for s in (info.siblings or [])
@@ -1529,9 +1543,7 @@ class VideoBackend:
         shas: dict[str, str] = {}
 
         def record_sha(repo: str, info: Any) -> Any:
-            sha = getattr(info, "sha", None)
-            if isinstance(sha, str) and sha:
-                shas[repo] = sha
+            _record_plan_sha(shas, repo, info)
             return info
 
         def add(
@@ -1594,12 +1606,14 @@ class VideoBackend:
                     )
             # Pre-cast encoders first: only a checkpoint that really resolves earns the right to drop the dense shards.
             te_sources = self._te_prequant_sources(fam, text_encoder_quant)
-            te_files = self._te_prequant_hub_files(te_sources, api)
+            te_files = self._te_prequant_hub_files(te_sources, api, shas)
             for component, files in te_files.items():
                 total += add(te_sources[component].location, files)
             # The denoiser's replacement artifact, for the same reason: the base entry below drops
             # the dense DiT shards whenever this resolves, so it has to be staged in their place.
-            dq_repo, dq_files = self._denoiser_prequant_hub_files(fam, transformer_quant, base, api)
+            dq_repo, dq_files = self._denoiser_prequant_hub_files(
+                fam, transformer_quant, base, api, shas
+            )
             if dq_repo:
                 total += add(dq_repo, dq_files)
             if base and not Path(base).expanduser().exists():

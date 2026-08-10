@@ -275,12 +275,14 @@ export async function getVideoDownloadPlan(
 /** One expander's worth of quant rows, sized in a single call. Mirrors the images route. */
 export async function getVideoCompanionSizes(
   body: VideoLoadRequest & { gguf_filenames: string[] },
+  signal?: AbortSignal,
 ): Promise<CompanionSizes> {
   return parseJson(
     await authFetch("/api/inference/video/companion-sizes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     }),
   );
 }

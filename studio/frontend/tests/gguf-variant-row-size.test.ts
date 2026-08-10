@@ -91,3 +91,45 @@ test("the chat picker asks for no companion sizes", () => {
     "no resolver means no request",
   );
 });
+
+test("an answer is scoped to the settings it was planned under", () => {
+  // A precision change hands the picker a new resolver, but the rows are the same filenames. Keyed
+  // on those alone, the old totals kept satisfying the check while the replacement was in flight,
+  // so a click could stage tens of GB the row never advertised.
+  const companionBytes = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/components/model-selector/companion-bytes.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.ok(
+    companionBytes.includes("`${resolverId(resolve)}\\n${ggufFilenames.join(\"\\n\")}`"),
+    "the answer key must carry the resolver identity, not just the filenames",
+  );
+});
+
+test("an abandoned expander stops its batch", () => {
+  // Collapsing must cancel the request, not just the setState: one abandoned 63-quant batch keeps
+  // the backend planning every candidate against the Hub.
+  const companionBytes = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/model-picker/components/model-selector/companion-bytes.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.ok(companionBytes.includes("new AbortController()"));
+  assert.ok(
+    companionBytes.includes("controller.abort();"),
+    "the effect cleanup must abort the in-flight batch",
+  );
+  assert.ok(
+    /resolve\(repoId,[\s\S]*?controller\.signal\)/.test(companionBytes),
+    "the signal must reach the resolver",
+  );
+});
