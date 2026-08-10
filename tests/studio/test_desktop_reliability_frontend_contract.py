@@ -403,6 +403,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
+
+
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
     section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
     dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
@@ -734,17 +744,49 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         source = page.read_text(encoding = "utf-8")
-        before, marker, band = source.partition("h-[48px] shrink-0 items-start justify-between")
+        # matched on the band's size alone: Images lays its header out as a grid and Video as a
+        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
         for token in ("pointer-events-none", "relative", "z-40"):
             assert token in opening, (page.name, token)
 
         band = band.split("MediaPageLink", 1)[0]
-        groups = re.findall(r'<div className="([^"]*flex items-center gap-[^"]*)"', band)
+        groups = re.findall(r'"([^"]*pointer-events-auto flex[^"]*items-center gap-[^"]*)"', band)
         assert len(groups) >= 2, (page.name, groups)
         for group in groups:
             assert "pointer-events-auto" in group, (page.name, group)
+
+
+def test_images_header_clears_collapsed_tauri_titlebar_controls():
+    """Images clears collapsed controls without overlapping its narrow-desktop tabs."""
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    before, marker, after = source.partition("h-[48px] shrink-0")
+    assert marker
+    opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
+    header = opening + after.split("{/* Train mode", 1)[0]
+
+    assert "const { isMobile, pinned } = useSidebar();" in source
+    # The tracks carry the insets, so the grid stays unpadded and centres the pill on the header.
+    assert "grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]" in opening
+    assert not re.search(r"\bp[lrx]-", opening), opening
+    assert "isMobile" in header
+    assert "pl-12" in header
+    assert "!pinned && isTauri" in header
+    assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in header
+    assert "pl-[var(--studio-media-header-left-inset,1.5rem)]" in header
+    left_controls = header.split("Create | Train page-mode switch", 1)[0]
+    assert '"pointer-events-none flex min-w-0 items-center"' in left_controls
+    assert '"pointer-events-auto flex min-w-0 max-w-full items-center gap-2"' in left_controls
+    assert 'className="!h-[34px] max-w-full overflow-hidden"' in left_controls
+
+    # The pill is a grid item at every width, and its padding keys off the header's own width:
+    # md:/xl: are viewport queries, while the header is the viewport minus a resizable sidebar.
+    mode_switch = source.split("Create | Train page-mode switch", 1)[1].split("tabs={[", 1)[0]
+    assert "absolute" not in mode_switch
+    assert "justify-self-center" in mode_switch
+    assert "[&>button]:px-3 @min-[560px]:[&>button]:px-11" in mode_switch
 
 
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():

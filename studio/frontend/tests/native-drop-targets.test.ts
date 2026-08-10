@@ -139,3 +139,15 @@ test("the chat drop handler defers to a registered target", async () => {
     /if \(nativeDropTargetAt\(event\.payload\.position\)\) \{\s*setDropState\(\{ status: "idle" \}\);\s*return;/,
   );
 });
+
+test("the shared image picker owns native drops and ignores stale reads", async () => {
+  const source = await readFile(
+    new URL("../src/components/image-dropzone.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /const nativeDropRef = useNativeDropTarget\(\{/);
+  assert.match(source, /ref=\{nativeDropRef\}/);
+  assert.match(source, /registerNativeAttachmentPath\(path\)/);
+  assert.match(source, /readNativeAttachmentFile\(intent\.path\.token\)/);
+  assert.match(source, /if \(claimed !== selection\.current\) return;/);
+});

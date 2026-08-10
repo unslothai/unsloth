@@ -36,6 +36,7 @@ from core.inference.diffusion_families import (
     supported_family_names,
     trainable_family_names,
 )
+from core.inference.video_families import detect_video_family, supported_video_family_names
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry over. Both import this module first.
 install_xformers_windows_rocm_stub()
@@ -59,8 +60,30 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Keep in sync with the DiT trainer's own specs.
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
 )
+
+# VIDEO families (from the separate ``video_families`` registry) Studio can train a LoRA on.
+# The video registry has no ``trainable`` flag of its own -- it exists for the inference
+# picker -- so the trainable set lives here, next to the trainers, and MUST hold exactly the
+# families ``diffusion_dit_trainer._SPECS`` implements. A video base outside this set is
+# refused by name in ``resolve_trainable_family`` rather than falling through to a trainer
+# that cannot run it.
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2"})
+
+# Families whose ``flow_shift`` default is "auto" (reproduce the family's INFERENCE sigma
+# distribution) rather than the historical identity 1.0. Both schedulers set
+# ``use_dynamic_shifting``, so their static ``shift`` is skipped at init and ``scheduler.sigmas``
+# is the unshifted uniform table; training on it would draw a distribution the model never sees
+# at inference. Qwen-Image pins base_shift = max_shift = log 3 and LTX-2 evaluates its shift at
+# ``max_image_seq_len`` (so mu = max_shift = 2.05 at every resolution): in both cases the
+# inference mu is a constant the "auto" branch can reproduce exactly.
+AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2"})
+
+# Video latents are allocated on the family's spatial compression grid, so a training
+# resolution off that grid silently changes the latent geometry (or trips a reshape).
+# LTX-2's VAE compresses 32x spatially, matching its ``resolution_multiple``.
+_VIDEO_RESOLUTION_MULTIPLE = 32
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 _CAPTION_EXTS = (".txt", ".caption")
@@ -76,15 +99,168 @@ EventCb = Callable[[dict[str, Any]], None]
 StopCb = Callable[[], Any]
 
 
+def _all_trainable_family_names() -> tuple[str, ...]:
+    """Every family with a trainer: the image registry's ``trainable`` families plus the
+    video families listed in ``TRAINABLE_VIDEO_FAMILIES``. The two registries are separate
+    by design (a video checkpoint must never route to an image pipeline), so the trainable
+    view has to union them."""
+    video = tuple(n for n in supported_video_family_names() if n in TRAINABLE_VIDEO_FAMILIES)
+    return tuple(trainable_family_names()) + video
+
+
+def _trainable_family_spec(name: str) -> Any:
+    """The registry entry for a trainable family name, from EITHER registry, or None.
+
+    Every consumer that starts from a resolved family NAME (rather than from a repo id) needs
+    this: the image registry does not know a video family, so a plain ``detect_family`` returns
+    None for one and the caller silently skips it. That is how ``ltx-2`` stayed out of
+    ``/diffusion/info`` and out of the strict pipeline gate."""
+    from core.inference.diffusion_families import detect_family
+
+    key = str(name or "").strip().lower()
+    fam = detect_family("", override = key)
+    if fam is not None:
+        return fam
+    return detect_video_family("", override = key)
+
+
+def _refuse_untrainable_video_family(name: str) -> None:
+    """Raise for a video family Studio has no trainer for.
+
+    Video bases are invisible to the image registry, so before this gate existed every video
+    checkpoint fell through ``resolve_trainable_family``'s unknown-name fallback and was
+    handed to the SDXL trainer, which then failed somewhere inside from_pretrained. Refuse by
+    name instead, with the list of video families that do train."""
+    trainable = ", ".join(sorted(TRAINABLE_VIDEO_FAMILIES))
+    raise ValueError(
+        f"'{name}' is a video model Studio can't train yet. Video LoRA training currently "
+        f"supports: {trainable}. {_trainable_hint()}"
+    )
+
+
+def _component_only_repos() -> dict[str, tuple[str, str, str]]:
+    """Every repo the family registries list only as a COMPONENT source, keyed by lowercased
+    repo id -> (family name, component, that family's base repo).
+
+    A pre-cast text-encoder repo (``te_prequant_repos``, present in both the image and the video
+    registry) ships a single component archive: no ``model_index.json``, no VAE, no scheduler, no
+    pipeline. ``from_pretrained`` on one can only fail. Nothing in the NAME says so, which is the
+    whole problem: ``unsloth/LTX-2-FP8`` carries the ``ltx-2`` token, so the family detectors
+    claim it and the ``unsloth/*`` trust gate passes it. The registries' own tables are the only
+    authority on what a repo actually holds, so read them rather than special-casing repo ids.
+
+    A repo that is ALSO registered as a base somewhere (a full quantized pipeline mirror, a
+    deploy base, a train base) is a base and never appears here."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import detect_video_family
+
+    families = [detect_family("", override = n) for n in supported_family_names()]
+    families += [detect_video_family("", override = n) for n in supported_video_family_names()]
+    components: dict[str, tuple[str, str, str]] = {}
+    bases: set[str] = set()
+    for fam in families:
+        if fam is None:
+            continue
+        for attr in ("base_repo", "deploy_base_repo"):
+            repo = getattr(fam, attr, None)
+            if repo:
+                bases.add(str(repo).strip().lower())
+        bases.update(str(r).strip().lower() for r in getattr(fam, "train_base_repos", ()) if r)
+        # (scheme, repo) and (base, scheme, repo): both name a FULL pipeline mirror, so both are bases.
+        for table in ("prequant_repos", "prequant_variant_repos"):
+            bases.update(str(row[-1]).strip().lower() for row in getattr(fam, table, ()) if row)
+        for _scheme, component, repo in getattr(fam, "te_prequant_repos", ()):
+            components.setdefault(
+                str(repo).strip().lower(), (fam.name, str(component), str(fam.base_repo))
+            )
+    return {repo: hit for repo, hit in components.items() if repo not in bases}
+
+
+def _refuse_component_only_repo(base_model: str) -> None:
+    """Raise for a base model that is a family's component checkpoint rather than a model.
+
+    Runs from ``resolve_trainable_family``, so it fires in the ``/diffusion/start`` preflight
+    BEFORE the resident GPU workloads are freed. Without it the name match resolved a real
+    family, the trust gate passed the ``unsloth/*`` repo, the gated-access probe ignored the
+    resulting ``model_index.json`` 404 (a 404 is not an access problem), and the run evicted the
+    user's loaded model before failing inside ``from_pretrained`` in the child."""
+    hit = _component_only_repos().get(str(base_model or "").strip().lower())
+    if hit is None:
+        return
+    family, component, base_repo = hit
+    raise ValueError(
+        f"'{base_model}' is the pre-cast {component} checkpoint for the '{family}' family, not a "
+        f"full model: it ships no model_index.json and no pipeline, so it cannot be a training "
+        f"base. Train from '{base_repo}' instead."
+    )
+
+
 def _trainable_hint() -> str:
     """A user-facing hint listing the families Studio can train today. Always names SDXL
     explicitly so the message is actionable even as more families become trainable."""
-    names = ", ".join(trainable_family_names()) or "sdxl"
+    names = ", ".join(_all_trainable_family_names()) or "sdxl"
     return (
         f"Trainable families right now: {names} "
         f"(for example the SDXL base stabilityai/stable-diffusion-xl-base-1.0). "
         f"Other families can load LoRAs but not train them yet."
     )
+
+
+def _assert_family_pipeline_available(fam: Any) -> None:
+    """Refuse a family whose pipeline class the installed diffusers does not carry.
+
+    ``pyproject`` deliberately leaves the diffusers floor conditional -- diffusers dropped Python
+    3.9 in 0.37 and this project still supports 3.9 (``requires-python >= 3.9``), so the pin reads
+    ``diffusers>=0.39.0 ; python_version >= '3.10'`` and an unconstrained ``diffusers`` below that.
+    A supported install can therefore legitimately predate a family's pipeline class:
+    ``Krea2Pipeline`` arrived in 0.39.0 and ``Flux2KleinPipeline`` in 0.37.0, while the newest
+    diffusers a 3.9 host can resolve is 0.36.0, and an already-present older one satisfies the
+    unconstrained pin outright (``ZImagePipeline`` and ``Flux2Pipeline`` only arrived in 0.36.0).
+
+    The inference paths already assert this before a load (``diffusion.py`` and ``video.py``); the
+    training preflight did not, so the family resolved as trainable, ``/diffusion/start`` reserved
+    the training slot and freed the resident GPU workloads, and only the spawned child discovered
+    the pipeline was missing when it ran its own ``from diffusers import <Pipeline>``. Losing a
+    loaded model and THEN failing is the worst ordering available, so assert here, while
+    ``resolve_trainable_family`` still runs ahead of every teardown.
+
+    Not strict: an unimportable diffusers is left to ``training_pipeline_import_error`` below.
+    ``resolve_trainable_family`` runs from ``normalized()``, which is pure config validation and is
+    called in plenty of places that never train, so making it depend on a working diffusers import
+    would refuse configs over an unrelated environment problem.
+
+    Family-agnostic on purpose: it reads ``fam.pipeline_class`` off whatever spec it is handed, so
+    the image registry and the separate video registry share one gate rather than one each."""
+    from core.inference.diffusion_families import assert_pipeline_class_available
+    assert_pipeline_class_available(fam.pipeline_class, fam.name)
+
+
+def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
+    """The reason this host cannot import ``resolved_family``'s pipeline class, or None.
+
+    The strict half of the gate above, and it belongs to the ROUTE rather than to config
+    validation. ``assert_pipeline_class_available`` deliberately absorbs an unimportable diffusers
+    for inference -- the native sd.cpp engine serves GGUF picks on a CPU or Apple host that has
+    none. Training has no such fallback: its child is an ``mp.get_context("spawn")`` process in the
+    SAME interpreter, so a diffusers that cannot be imported here cannot be imported there either.
+    Staying silent bought nothing but the ordering this whole preflight exists to prevent: the slot
+    reserved, the resident GPU models freed, and only then the child failing on its own
+    ``from diffusers import <Pipeline>``.
+
+    Returns the message instead of raising, matching ``training_precision_preflight_error``, so the
+    route maps it to its own 400."""
+    from core.inference.diffusion_families import assert_pipeline_class_available
+
+    # Either registry: a video family is invisible to detect_family, and returning None for one
+    # would hand the strict half of the gate back to the spawned child, after the teardown.
+    fam = _trainable_family_spec(resolved_family)
+    if fam is None:
+        return None
+    try:
+        assert_pipeline_class_available(fam.pipeline_class, fam.name, strict = True)
+    except ValueError as e:
+        return str(e)
+    return None
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
@@ -98,8 +274,13 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
       family (e.g. a DiT family before its trainer ships) is rejected;
     - a name that resolves to no registry family but matches a known non-trainable
       architecture (SD3 / PixArt / ...) is rejected;
+    - a resolved family whose pipeline class the installed diffusers lacks is rejected
+      (``_assert_family_pipeline_available``), so an environment too old for the pick fails
+      here rather than in the child, after the GPU residents are gone;
     - an unclassifiable custom name/path falls through to the SDXL trainer (backwards
       compatible: a genuinely wrong pick still fails cleanly later in from_pretrained).
+      No pipeline assert on that path: there is no family spec to read a class off, and the
+      family it lands on is SDXL, whose pipeline predates every diffusers in play.
     """
     name = str(base_model or "").strip().lower()
     # GGUF weights (a ``.gguf`` file or ``*-GGUF`` repo) are inference-only: training needs the full diffusers pipeline.
@@ -111,14 +292,30 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
             f"'{base_model}' is a GGUF checkpoint/repo, which can't be a training base "
             f"(training needs the full diffusers model). {_trainable_hint()}"
         )
+    # A component checkpoint is not a base whatever family the name matches, so this precedes
+    # every family branch below (including an explicit model_family override, which names the
+    # family but says nothing about what the repo holds).
+    _refuse_component_only_repo(base_model)
+    # Same shape as the component-only refusal: the name resolves to a real, trainable family, but
+    # the repo is not something the training loader can open.
+    _refuse_ltx23_training_base(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
         if fam is None:
-            known = ", ".join(supported_family_names())
+            # Not an image family: it may still name a VIDEO family, which lives in its own
+            # registry. Resolve there before declaring the name unknown.
+            vid = detect_video_family("", override = key)
+            if vid is not None:
+                if vid.name not in TRAINABLE_VIDEO_FAMILIES:
+                    _refuse_untrainable_video_family(vid.name)
+                _assert_family_pipeline_available(vid)
+                return vid.name
+            known = ", ".join(supported_family_names() + supported_video_family_names())
             raise ValueError(f"Unknown model_family {model_family!r}. Known families: {known}.")
         if not fam.trainable:
             raise ValueError(f"'{fam.name}' models can't be trained yet. {_trainable_hint()}")
+        _assert_family_pipeline_available(fam)
         return fam.name
 
     fam = detect_family_for_pick(base_model)
@@ -128,7 +325,17 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
                 f"'{base_model}' looks like a {fam.name} model, which isn't trainable yet. "
                 f"{_trainable_hint()}"
             )
+        _assert_family_pipeline_available(fam)
         return fam.name
+
+    # Only once the image registry has declined the name: a video checkpoint. Checked here
+    # rather than first so an image repo the picker already claims keeps its existing route.
+    vid = detect_video_family(base_model)
+    if vid is not None:
+        if vid.name not in TRAINABLE_VIDEO_FAMILIES:
+            _refuse_untrainable_video_family(vid.name)
+        _assert_family_pipeline_available(vid)
+        return vid.name
 
     condensed = re.sub(r"[^a-z0-9]+", "-", name)
     hit = next(
@@ -232,7 +439,7 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
-    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"):
+    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"):
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
     raise ValueError(f"No trainer is registered for family {family!r}.")
@@ -265,6 +472,15 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "resolution": 512,
         "lr_warmup_steps": 20,
     },
+    # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
+    # resolution must be a multiple of 32 (its VAE's spatial compression), and 512 keeps a
+    # still at 16x16x1 latents / 256 video tokens, which trains comfortably at batch 1.
+    "ltx-2": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 512,
+        "lr_warmup_steps": 20,
+    },
 }
 
 
@@ -282,6 +498,7 @@ _FAMILY_LABELS = {
     "krea-2": "Krea 2",
     "flux.2-klein": "FLUX.2 Klein",
     "flux.2-dev": "FLUX.2-dev",
+    "ltx-2": "LTX-2",
 }
 # Per-family training facts as fields, so the UI can chip them instead of parsing prose.
 # ``params`` is the transformer size (SDXL is not quoted that way), ``note`` is the rest.
@@ -303,6 +520,18 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     },
     "flux.2-klein": {"params": "4B", "qlora_vram_gb": 10, "gated": False, "note": ""},
     "flux.2-dev": {"params": "32B", "qlora_vram_gb": 28, "gated": True, "note": ""},
+    # Video. Measured on a B200: the training LOOP peaks at 11.2 GB (nf4, rank 32, 512px
+    # stills, batch 1, gradient checkpointing), but the RUN peaks at 34.8 GB earlier, while
+    # the Gemma3-12B conditioning stack is resident and captions are encoded -- before it is
+    # freed and the transformer loads. The quoted figure covers the whole run, since that is
+    # what a card has to hold. Lightricks quote 80 GB recommended / 32 GB with their int8
+    # low-VRAM config for their own trainer.
+    "ltx-2": {
+        "params": "19B",
+        "qlora_vram_gb": 36,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images.",
+    },
 }
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
@@ -320,8 +549,33 @@ def _family_vram_note(name: str) -> str:
 
 # The flow-matching DiT families (run by diffusion_dit_trainer): they expose base_precision / compile and need bf16 on CUDA. SDXL is absent (own mixed_precision path).
 _DIT_TRAIN_FAMILIES = frozenset(
-    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev"}
+    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
 )
+
+
+def effective_mixed_precision(cfg: Any) -> str:
+    """The precision the SDXL trainer will actually run in, resolved the same way it resolves it.
+
+    A pre-Ampere card has no native bf16, so a bf16 request silently becomes fp16 there. Recording
+    the REQUEST in a checkpoint's identity let a bundle written in fp16 resume in bf16 on a newer
+    card (and the reverse), continuing restored optimizer moments under different frozen-base
+    numerics while reporting a clean resume. Shared so the start route and the trainer cannot
+    disagree about what a checkpoint was trained as.
+    """
+    import torch  # noqa: PLC0415 -- keep the import list light for the training subprocess
+
+    requested = str(getattr(cfg, "mixed_precision", "") or "")
+    if str(getattr(cfg, "resolved_family", "") or "").strip().lower() in _DIT_TRAIN_FAMILIES:
+        # The DiT trainer does not read mixed_precision at all: weight_dtype is bf16 on CUDA and
+        # fp32 otherwise. Recording the REQUEST for those families put "fp16" or "no" in the
+        # identity of a run that executed in bf16, and a later bf16 resume of it was then
+        # rejected as a precision mismatch between two runs that ran identically.
+        return "bf16" if torch.cuda.is_available() else "no"
+    if not torch.cuda.is_available():
+        return "no"
+    if requested == "bf16" and not native_bf16_supported():
+        return "fp16"
+    return requested
 
 
 def native_bf16_supported() -> bool:
@@ -462,21 +716,30 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
 def family_train_infos() -> list[dict[str, Any]]:
     """Describe every trainable family for the Train UI: name, label, the default + allowed
     base repos, the recommended starting hyperparameters, and a VRAM/access note. Built from
-    the family registry so it stays in sync with what the trainers actually support."""
-    from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_transformer_quant import _family_denied
+    the family registry so it stays in sync with what the trainers actually support.
+
+    Both registries: a video family with a trainer is as trainable as an image one, and reading
+    only the image registry is what kept ``ltx-2`` out of the Train tab entirely -- the trainer,
+    the preflight and the start route all accepted it, but nothing ever offered it. A family whose
+    pipeline class the installed diffusers lacks is dropped rather than advertised, since the start
+    route refuses it (``training_pipeline_import_error``) and no choice in the UI can fix that."""
+    from core.inference.diffusion_families import family_pipeline_available
+    from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
     infos: list[dict[str, Any]] = []
-    for name in trainable_family_names():
-        fam = detect_family("", override = name)
-        if fam is None:
+    for name in _all_trainable_family_names():
+        fam = _trainable_family_spec(name)
+        if fam is None or not family_pipeline_available(fam):
             continue
-        repos = list(fam.train_base_repos) or [fam.base_repo]
+        # A video family carries no train_base_repos/deploy_base_repo: its own base repo is the
+        # one training base, and a video LoRA has no image catalog to deploy into.
+        repos = list(getattr(fam, "train_base_repos", ()) or ()) or [fam.base_repo]
         # base_precision applies to the DiT trainer only; SDXL keeps its mixed_precision lever. compile applies everywhere.
         is_dit = name in _DIT_TRAIN_FAMILIES
         # On a non-bf16 CUDA GPU the start preflight rejects EVERY DiT family, so advertise no precision, else /info offers an
-        # nf4 DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts (fp8 on Qwen-Image).
+        # nf4 DiT option that always 400s. Otherwise drop any scheme this family's DiT corrupts, plus any the TRAINING bar
+        # holds back even though inference passes (fp8 on Qwen-Image: rendering is validated, a training run is not).
         dit_block = (
             bf16_unsupported_reason(name) or dit_accelerator_missing_reason(name)
             if is_dit
@@ -485,7 +748,7 @@ def family_train_infos() -> list[dict[str, Any]]:
         if not is_dit or dit_block:
             fam_modes: list[str] = []
         else:
-            fam_modes = [m for m in dit_modes if not _family_denied(name, m)]
+            fam_modes = [m for m in dit_modes if not _family_train_denied(name, m)]
         spec = _FAMILY_TRAIN_SPECS.get(name, {})
         infos.append(
             {
@@ -504,8 +767,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "recommended_precision": "nf4" if (not is_dit or dit_block) else dit_recommended,
                 # compile is offered everywhere (SDXL regional U-Net + DiT), except a DiT family the GPU cannot train in bf16.
                 "supports_compile": bool(not dit_block),
-                # Krea trains on Raw but previews adapters on Turbo; None elsewhere.
-                "deploy_base": fam.deploy_base_repo,
+                # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
+                "deploy_base": getattr(fam, "deploy_base_repo", None),
             }
         )
     return infos
@@ -568,6 +831,14 @@ class DiffusionLoraConfig:
     weighting_scheme: str = "none"
     # How often to emit a progress event (in optimizer steps).
     log_every: int = 1
+    # Periodic resume-checkpoint interval, in optimizer steps. 0 (the default) writes no periodic
+    # checkpoints; a stop-and-save always writes one regardless, so the Resume action stays available.
+    save_steps: int = 0
+    # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
+    save_total_limit: int = 2
+    # Continue a previous run: the run's output_dir, or one of its checkpoint-<N> directories.
+    # The start route resolves and validates it before the trainer spawns.
+    resume_from_checkpoint: Optional[str] = None
     # Optional explicit family override; None = detect from base_model. ``resolved_family`` is filled by normalized() with the trainer family that will run.
     model_family: Optional[str] = None
     resolved_family: str = "sdxl"
@@ -595,6 +866,17 @@ class DiffusionLoraConfig:
             )
         if self.resolution < 64 or self.resolution % 8 != 0:
             raise ValueError("resolution must be a multiple of 8 and >= 64")
+        # A video family's VAE compresses space by 32, so an off-grid resolution changes the
+        # latent geometry silently. Refuse it here, before the GPU models are evicted.
+        if (
+            resolved_family in TRAINABLE_VIDEO_FAMILIES
+            and self.resolution % _VIDEO_RESOLUTION_MULTIPLE != 0
+        ):
+            raise ValueError(
+                f"'{resolved_family}' trains at a resolution that is a multiple of "
+                f"{_VIDEO_RESOLUTION_MULTIPLE} (its VAE compresses space by that factor); "
+                f"got {self.resolution}."
+            )
         if self.mixed_precision not in ("bf16", "fp16", "no"):
             raise ValueError("mixed_precision must be one of bf16 / fp16 / no")
         # torch.manual_seed unpacks int64/uint64, so anything wider raises inside the trainer, after eviction. Catch it here.
@@ -613,6 +895,25 @@ class DiffusionLoraConfig:
             )
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
+        # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
+        try:
+            save_steps = int(self.save_steps or 0)
+            save_total_limit = int(self.save_total_limit or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"save_steps / save_total_limit must be whole numbers, got "
+                f"{self.save_steps!r} / {self.save_total_limit!r}"
+            ) from exc
+        if save_steps < 0:
+            raise ValueError("save_steps must be >= 0 (0 disables periodic checkpoints)")
+        if save_total_limit < 0:
+            raise ValueError("save_total_limit must be >= 0 (0 keeps every checkpoint)")
+        # A blank resume path (the Studio default when the field is present but unset) means "fresh run", not the outputs root.
+        resume_from_checkpoint = (
+            str(self.resume_from_checkpoint).strip()
+            if self.resume_from_checkpoint is not None
+            else ""
+        ) or None
         try:
             ema_decay = float(self.ema_decay or 0.0)
         except (TypeError, ValueError) as exc:
@@ -643,20 +944,20 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} trains in bf16 compute; set "
                     f"mixed_precision to bf16."
                 )
-            # Some DiT families are corrupted by fp8 activation range: outliers exceed even per-row fp8, so the frozen linears
-            # learn against a garbage forward. The inference path denies these too; mirror it so the run fails fast. int8 is unaffected.
-            from core.inference.diffusion_transformer_quant import _family_denied
+            # Refuse a scheme this family's DiT is known to corrupt, and also one the training bar holds back while
+            # inference allows it: qwen-image fp8 now renders inside the accuracy gate, but no one has measured whether a
+            # LoRA converges against fp8-frozen linears, so it fails fast here rather than silently training on faith.
+            from core.inference.diffusion_transformer_quant import _family_train_denied
 
-            if _family_denied(resolved_family, base_precision):
+            if _family_train_denied(resolved_family, base_precision):
                 raise ValueError(
-                    f"base_precision={base_precision!r} is not supported for "
-                    f"{resolved_family}: its activations exceed fp8's range and corrupt the "
-                    f"trained result. Use 'nf4', 'int8', 'bf16', or 'auto'."
+                    f"base_precision={base_precision!r} is not validated for training "
+                    f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
         # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its static shift under use_dynamic_shifting); an explicit value is validated and kept.
         flow_shift = self.flow_shift
         if flow_shift is None:
-            flow_shift = "auto" if resolved_family == "qwen-image" else 1.0
+            flow_shift = "auto" if resolved_family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
         if isinstance(flow_shift, str):
             flow_shift = flow_shift.strip().lower()
             if flow_shift != "auto":
@@ -696,6 +997,11 @@ class DiffusionLoraConfig:
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
+        # A blank caption_column means the default, as the start route's own preflight already
+        # assumes ("or 'text'"). Without this the route and the trainer resolve different captions
+        # from a metadata.jsonl, so their dataset fingerprints disagree and a resume that the
+        # route accepted is then refused in the child -- after the GPU residents are freed.
+        caption_column = str(self.caption_column or "").strip() or "text"
         return replace(
             self,
             learning_rate = learning_rate,
@@ -703,8 +1009,12 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
+            save_steps = save_steps,
+            save_total_limit = save_total_limit,
+            resume_from_checkpoint = resume_from_checkpoint,
             cond_cache_dir = cond_cache_dir,
             ema_decay = ema_decay,
             compile_transformer = compile_transformer,
@@ -765,6 +1075,53 @@ class PermutationBatchSampler:
             out.extend(self._order[self._pos : self._pos + take])
             self._pos += take
         return out
+
+    def state_dict(self) -> dict[str, Any]:
+        """The position inside the current permutation cycle, for a resume checkpoint. The
+        order itself is stored (not just the position): it was drawn from the run's rng, and
+        restoring the rng alone would not reproduce a cycle that was already in progress."""
+        return {"n": self._n, "order": list(self._order), "pos": int(self._pos)}
+
+    def load_state_dict(self, state: Optional[dict[str, Any]]) -> bool:
+        """Restore a cycle saved by ``state_dict``. True when it was restored.
+
+        Refuses a state for a different dataset size (the resume preflight already rejects a
+        changed dataset; this keeps a manually edited checkpoint from indexing out of range)
+        and clamps a bad position. The BOOLEAN matters: silently leaving a fresh sampler in
+        place looks like a clean resume while the RNG -- already restored to a point after this
+        permutation was drawn -- generates a different order, so the run quietly reorders and
+        skips images.
+        """
+        if not isinstance(state, dict) or int(state.get("n") or 0) != self._n:
+            return False
+        order = state.get("order")
+        if not isinstance(order, (list, tuple)):
+            return False
+        try:
+            restored = [int(i) for i in order]
+        except (TypeError, ValueError):
+            return False
+        # A FULL permutation, or the initial empty state. A shortened or duplicate-carrying
+        # order is in range and the same length as nothing in particular: the cycle then
+        # reshuffles early or serves the same image twice, while the RNG has already been
+        # restored to a point after the original draw. That is the silent reorder this
+        # boolean exists to prevent, arriving through a truncated or hand-edited manifest
+        # instead of a missing one.
+        if restored and sorted(restored) != list(range(self._n)):
+            return False
+        self._order = restored
+        try:
+            pos = int(state.get("pos") or 0)
+        except (TypeError, ValueError):
+            return False
+        # A position outside 0..len(order) is not a rounding error, it is a damaged manifest,
+        # and clamping it re-serves the permutation from the top or ends the cycle early --
+        # behind an RNG already restored past the draw. The same silent repeat-or-skip the
+        # order check above refuses, so refuse it rather than quietly correcting it.
+        if not 0 <= pos <= len(self._order):
+            return False
+        self._pos = pos
+        return True
 
 
 def discover_image_caption_pairs(
@@ -1012,8 +1369,31 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",
         "black-forest-labs/flux.2-klein-4b",
+        # LTX-2's official base. It is a video family, so the image-side inference allowlist
+        # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
+        "lightricks/ltx-2",
     }
 )
+
+# LTX-2.3 repos hold SINGLE-FILE checkpoints (ltx-2.3-22b-*.safetensors) and no diffusers layout:
+# no model_index.json, no transformer/ or scheduler/ subfolder. Inference assembles them with
+# from_single_file plus 2.3 config overrides and components borrowed from the 2.0 base (see
+# core/inference/video_ltx2.py); the trainer only knows LTX2Pipeline.from_pretrained, which cannot
+# read that layout. The name still resolves to the ``ltx-2`` family, so without an explicit refusal
+# the run passes preflight, evicts the user's resident models, and only then fails in the child.
+_LTX23_TRAIN_UNSUPPORTED = ("lightricks/ltx-2.3", "lightricks/ltx-2.3-fp8")
+
+
+def _refuse_ltx23_training_base(base_model: str) -> None:
+    """Raise for an LTX-2.3 base: the family routing accepts it, the training loader cannot."""
+    if str(base_model or "").strip().lower() not in _LTX23_TRAIN_UNSUPPORTED:
+        return
+    raise ValueError(
+        f"'{base_model}' ships LTX-2.3 as single-file checkpoints with no diffusers layout, so it "
+        f"cannot be a training base yet: the trainer loads a base with from_pretrained, while 2.3 "
+        f"has to be assembled with from_single_file plus components from the 2.0 base. Train from "
+        f"'Lightricks/LTX-2' instead."
+    )
 
 
 def _assert_trusted_base_model(base_model: str) -> None:
@@ -1036,12 +1416,347 @@ def _assert_trusted_base_model(base_model: str) -> None:
     _assert_local_base_is_pipeline(base_model)
 
 
-def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Optional[str]:
+# ── resume checkpoints ────────────────────────────────────────────────────────
+# One writer and one reader for BOTH trainers, so an SDXL and a DiT run resume from the same
+# bundle shape. The family-specific part (the deployable adapter export) stays in the trainers.
+def trainable_state_dict(model: Any) -> dict[str, Any]:
+    """The trainable (LoRA) parameters of ``model``, keyed by parameter name.
+
+    Deliberately NOT the peft/diffusers export format: this is the checkpoint's private
+    copy of exactly the tensors the optimizer holds moments for, so restoring it and the
+    optimizer state together reproduces the run bit-for-bit. Parameter names are stable
+    across a re-attach and across regional torch.compile (which compiles submodules in
+    place without renaming), which is the same assumption ``LoRAEMA`` already makes."""
+    return {name: p.detach() for name, p in model.named_parameters() if p.requires_grad}
+
+
+def load_trainable_state_dict(model: Any, state: Optional[dict[str, Any]]) -> int:
+    """Copy a ``trainable_state_dict`` back into ``model`` in place, returning how many
+    parameters were restored. Copies rather than reassigns, so the optimizer's parameter
+    references (and their loaded moments) stay valid.
+
+    Every saved tensor must land. A partial match means the parameter NAMES moved (a different
+    adapter name, a wrapper that re-prefixes them), and because the optimizer state is keyed by
+    parameter INDEX it would still load cleanly -- leaving restored Adam moments and a restored
+    LR position driving freshly initialised LoRA weights, while the run reports a normal resume.
+    Raise instead."""
+    if not state:
+        return 0
+    import torch
+
+    restored = 0
+    trainable: set[str] = set()
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            trainable.add(name)
+            saved = state.get(name)
+            if saved is None:
+                continue
+            if tuple(saved.shape) != tuple(p.shape):
+                raise ValueError(
+                    f"Checkpoint tensor '{name}' has shape {tuple(saved.shape)} but this run "
+                    f"expects {tuple(p.shape)}; the LoRA configuration does not match."
+                )
+            p.copy_(saved.to(device = p.device, dtype = p.dtype))
+            restored += 1
+    # BOTH directions. Counting only the checkpoint's own tensors proves every saved tensor
+    # landed somewhere; it says nothing about a live trainable parameter the checkpoint never
+    # had. A truncated or hand-edited adapter file holding a strict SUBSET therefore passed,
+    # and the full optimizer state was then loaded on top: restored Adam moments driving
+    # freshly initialised weights, while the run reported a clean resume.
+    unsaved = sorted(trainable - set(state))
+    unknown = sorted(set(state) - trainable)
+    if unsaved or unknown:
+        detail = []
+        if unsaved:
+            detail.append(f"{len(unsaved)} not in the checkpoint (e.g. {', '.join(unsaved[:3])})")
+        if unknown:
+            detail.append(f"{len(unknown)} not in this run (e.g. {', '.join(unknown[:3])})")
+        raise ValueError(
+            f"This run has {len(trainable)} trainable tensors and the checkpoint has "
+            f"{len(state)}: {'; '.join(detail)}. The LoRA configuration does not match the one "
+            "it was saved from."
+        )
+    return restored
+
+
+def _json_safe_progress(progress: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Drop non-finite floats from the manifest's progress block. A diverged run pushes
+    ``running_loss`` to NaN/inf, which json.dumps writes as the JS-only NaN/Infinity tokens --
+    invalid strict JSON that a stricter reader (or a future consumer of these files) rejects."""
+    out: dict[str, Any] = {}
+    for key, value in (progress or {}).items():
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        out[key] = value
+    return out
+
+
+def write_resume_checkpoint(
+    cfg: DiffusionLoraConfig,
+    *,
+    step: int,
+    model: Any,
+    optimizer: Any,
+    lr_scheduler: Any,
+    identity: Any,
+    on_event: Optional[EventCb] = None,
+    ema: Any = None,
+    sampler: Any = None,
+    rng_streams: Optional[dict[str, Any]] = None,
+    progress: Optional[dict[str, Any]] = None,
+    discard_existing: bool = False,
+    preexisting: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Write one resume bundle for the run, returning ``(checkpoint_path, error)``.
+
+    Never raises: a checkpoint failure must not lose a training run that is otherwise fine,
+    so the error is returned (and emitted as a warning) for the caller to report as
+    ``resume_blocked_reason``. Used for BOTH the periodic ``save_steps`` saves and the
+    stop-and-save, so the two produce identical state.
+
+    ``discard_existing`` is set on the FIRST write of a run that did not resume, so bundles
+    left in the output dir by an earlier run of the same adapter name cannot outrank it."""
+    from core.training.diffusion_checkpoint import capture_rng_state, save_checkpoint
+    try:
+        path = save_checkpoint(
+            output_dir = cfg.output_dir,
+            step = step,
+            adapter_state = trainable_state_dict(model),
+            identity = identity,
+            target_steps = cfg.train_steps,
+            optimizer = optimizer,
+            lr_scheduler = lr_scheduler,
+            ema_state = ema.state_dict() if ema is not None else None,
+            ema_updates = int(getattr(ema, "updates", 0) or 0) if ema is not None else 0,
+            rng = capture_rng_state(rng_streams),
+            sampler_state = sampler.state_dict() if sampler is not None else None,
+            progress = _json_safe_progress(progress),
+            save_total_limit = int(cfg.save_total_limit or 0),
+            discard_existing = discard_existing,
+            # What this run resumed from, so the "step already written" shortcut can tell
+            # "we are re-saving the bundle we started from" apart from "another run left a
+            # bundle at this number".
+            source_checkpoint = getattr(cfg, "resume_from_checkpoint", None),
+            # Bundles that predated this run are never pruned to make room for its own: a
+            # branched resume beside higher-numbered checkpoints used to delete them on the
+            # first save, irreversibly.
+            preexisting = preexisting,
+        )
+        # Reported per save, not only at the end: a run that later CRASHES must still be known to
+        # have resumable state (and a run whose write failed must still be known to be blocked).
+        _emit(on_event, "checkpoint_saved", checkpoint_path = path, step = step)
+        return path, None
+    except Exception as exc:  # noqa: BLE001 -- reported, never fatal to the run
+        message = f"Could not write a resume checkpoint at step {step}: {exc}"
+        _emit(on_event, "checkpoint_failed", step = step, message = message)
+        return None, message
+
+
+def _reapply_lr_schedule(optimizer: Any, lr_scheduler: Any) -> None:
+    """Recompute the learning rate for the NEXT step from the LIVE schedule.
+
+    ``optimizer.load_state_dict`` restores the rate the checkpoint was written with and
+    ``LRScheduler.load_state_dict`` restores only the position, never re-evaluating the lambda,
+    so the first step after a resume runs at the OLD schedule's value. That is invisible while
+    ``train_steps`` is unchanged (the UI always replays it) but wrong the moment the target
+    moves -- continuing a finished cosine run by raising the step count would take its first
+    step at lr 0.0, leaving every parameter untouched.
+
+    Only for the closed-form ``LambdaLR`` diffusers' ``get_scheduler`` returns, and evaluated
+    from its own public ``lr_lambdas`` / ``base_lrs`` / ``last_epoch`` rather than ``get_lr()``
+    (which warns when called outside a step). A chainable scheduler derives its next rate from
+    the current one, so re-applying it there would double-step. Best-effort: a schedule we
+    cannot re-evaluate keeps the restored value."""
+    try:
+        import torch
+
+        if not isinstance(lr_scheduler, torch.optim.lr_scheduler.LambdaLR):
+            return
+        values = [
+            float(base * lmbda(lr_scheduler.last_epoch))
+            for lmbda, base in zip(lr_scheduler.lr_lambdas, lr_scheduler.base_lrs)
+        ]
+        for group, value in zip(optimizer.param_groups, values):
+            group["lr"] = value
+        lr_scheduler._last_lr = values
+    except Exception:  # noqa: BLE001 -- keeping the restored rate is a safe fallback
+        pass
+
+
+def restore_resume_state(
+    cfg: DiffusionLoraConfig,
+    *,
+    model: Any,
+    optimizer: Any,
+    lr_scheduler: Any,
+    identity: Any,
+    on_event: Optional[EventCb] = None,
+    ema: Any = None,
+    sampler: Any = None,
+    rng_streams: Optional[dict[str, Any]] = None,
+) -> Any:
+    """Load ``cfg.resume_from_checkpoint`` into a freshly built run.
+
+    Returns the ``LoadedCheckpoint`` (whose ``.step`` is the last COMPLETED optimizer step,
+    so the loop restarts at ``.step``), or None when no resume was requested.
+
+    Re-runs the full preflight in the child: the start route already validated the request
+    before evicting the GPU, but the trainer must not trust a config it did not check
+    itself. Raises ResumeError (a ValueError) on a mismatch, which the process adapter
+    surfaces as the run's error message."""
+    if not cfg.resume_from_checkpoint:
+        return None
+    from core.training.diffusion_checkpoint import (
+        ResumeError,
+        load_checkpoint,
+        optimizer_key,
+        preflight_resume,
+        restore_rng_state,
+    )
+
+    path, step = preflight_resume(
+        cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+    )
+    ckpt = load_checkpoint(path)
+    load_trainable_state_dict(model, ckpt.tensors("adapter"))
+    optimizer_state = ckpt.torch_state("optimizer")
+    if optimizer_state is not None:
+        # The trainers pick their optimizer from the HOST (bitsandbytes present, a fused kernel
+        # available, UNSLOTH_DIFFUSION_FP32_OPTIM), not from the config, so a checkpoint can
+        # legitimately arrive with foreign moments: AdamW8bit stores "state1"/"state2", torch
+        # AdamW stores "exp_avg"/"exp_avg_sq". Shapes and counts match, so load_state_dict
+        # accepts them and the first step dies on a bare KeyError. Refuse with a real reason.
+        saved_optimizer = ckpt.optimizer_class
+        live_optimizer = optimizer_key(optimizer)
+        if not saved_optimizer:
+            # This writer records the class whenever it writes moments, so an optimizer file
+            # with no class beside it is a hand-edited or half-written bundle -- and letting it
+            # through is the same failure the check below exists for: foreign moments load
+            # cleanly (shapes and counts match) and die on the first step, in the child, after
+            # the route preflight has already evicted the resident models.
+            raise ResumeError(
+                "This checkpoint does not record which optimizer wrote its state, so its "
+                "moments cannot be safely restored. Resume from an earlier checkpoint, or "
+                "start a new run."
+            )
+        if saved_optimizer != live_optimizer:
+            raise ResumeError(
+                f"This checkpoint's optimizer state was written by {saved_optimizer}, but this "
+                f"machine builds {live_optimizer}. Install the same optimizer backend (or unset "
+                f"UNSLOTH_DIFFUSION_FP32_OPTIM) to continue this run."
+            )
+        # Optimizer state is keyed by parameter POSITION, so load_state_dict rebinds the saved
+        # moments onto whatever order this process built. The adapter tensors above were restored
+        # by NAME, so a PEFT/diffusers upgrade that changes traversal order while keeping the same
+        # names leaves the two disagreeing: many LoRA projections share a shape, so every moment
+        # loads cleanly onto the wrong tensor and the continued trajectory is silently corrupt.
+        saved_names = ckpt.optimizer_param_names
+        live_names = list(trainable_state_dict(model))
+        if saved_names is not None and saved_names != live_names:
+            raise ResumeError(
+                "This checkpoint's optimizer state was written for a different parameter order "
+                "than this build produces, so its moments cannot be matched to this run's "
+                "tensors. Start a new run, or resume on the version that wrote it."
+            )
+        # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins
+        # over a changed cfg.learning_rate -- the same semantics as HF Trainer's resume, and the
+        # UI only ever replays the original run's config anyway.
+        optimizer.load_state_dict(optimizer_state)
+    elif optimizer is not None:
+        # The bundle lists no optimizer at all. Every bundle this writer produces for a real run
+        # has one, so this is a hand-edited or half-written directory -- and continuing would
+        # restart Adam's moments from zero at step N while reporting a clean resume, which looks
+        # like a resume and trains like a fresh run with a warm LR.
+        raise ResumeError(
+            "This checkpoint carries no optimizer state, so the run cannot be continued from "
+            "it: the moments would restart from zero at the resumed step. Start a new run."
+        )
+    scheduler_state = ckpt.torch_state("scheduler")
+    if scheduler_state is not None:
+        lr_scheduler.load_state_dict(scheduler_state)
+        _reapply_lr_schedule(optimizer, lr_scheduler)
+    elif lr_scheduler is not None:
+        # Same for the schedule: a fresh LambdaLR at step 0 would re-warm the learning rate the
+        # restored optimizer already moved past.
+        raise ResumeError(
+            "This checkpoint carries no learning-rate scheduler state, so the schedule would "
+            "restart from step 0. Start a new run."
+        )
+    if sampler is not None and not sampler.load_state_dict(ckpt.sampler_state):
+        # Every image checkpoint this format writes carries sampler state, so a bundle whose
+        # state is missing or malformed is not one this code wrote. Continuing would leave a
+        # fresh sampler behind an RNG restored to a point AFTER the saved permutation was
+        # drawn, so the next batch is a different order: images silently skipped or repeated,
+        # under a resume that reported success.
+        raise ResumeError(
+            "This checkpoint's dataset sampler state is missing or unreadable, so the image "
+            "order cannot be continued. Start a new run."
+        )
+    if ema is not None:
+        ema_state = ckpt.tensors("ema")
+        if ema_state:
+            missing = ema.missing_from(ema_state)
+            if missing:
+                # A readable but INCOMPLETE shadow set. load_state_dict keeps the freshly
+                # initialised shadow for anything it cannot match, so continuing here would
+                # blend restored EMA weights with initialisation noise for the rest -- and
+                # report a clean resume while doing it. There is no honest way to continue
+                # this run's EMA, so say so instead.
+                named = ", ".join(missing[:3]) + ("..." if len(missing) > 3 else "")
+                raise ResumeError(
+                    f"This checkpoint's EMA state is missing or mis-shaped for {len(missing)} "
+                    f"of this run's adapter tensors ({named}), so the averaged weights cannot "
+                    f"be continued. Resume with EMA disabled, or start a new run."
+                )
+            ema.load_state_dict(ema_state, updates = ckpt.ema_updates)
+        else:
+            # EMA is not part of the validated identity, so a resume may turn it on for a run
+            # that had it off. The EMA object is built BEFORE the adapter is restored, so its
+            # shadow holds freshly initialised LoRA weights and there is nothing saved to
+            # replace them with -- every later update, and the exported EMA adapter, would
+            # blend the restored weights with that initialisation. Start from what was restored.
+            ema.reseed_from(model)
+    restore_rng_state(ckpt.rng_json, ckpt.torch_state("rng"), rng_streams)
+    _emit(
+        on_event,
+        "resumed",
+        checkpoint_path = str(path),
+        step = step,
+        total_steps = cfg.train_steps,
+        # Which bundle THIS is, not just where it sat. Another run can write its own
+        # checkpoint-<N> over the same slot, and the pathname alone would then offer that
+        # replacement back as this run's lineage.
+        source_created_at = ckpt.manifest.get("created_at"),
+    )
+    return ckpt
+
+
+def _publish_to_lora_catalog(
+    lora_path: str,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
+) -> Optional[str]:
     """Best-effort copy of the trained adapter into the Studio diffusion LoRA directory so
     the Images LoRA picker (which scans only files directly under ``loras/diffusion``) finds
     it without the user moving files. Also writes a ``<alias>.json`` metadata sidecar so the
     picker can family-gate the adapter (family, base model, trigger prompt, ...). Returns the
-    published path, or None on any failure."""
+    published path, or None on any failure.
+
+    ``steps`` is the step count the run actually REACHED, which is what the sidecar must
+    record: a run stopped at step 11 of 500 published an adapter claiming 500 steps. None
+    keeps the old behaviour for callers that do not know the reached step.
+
+    A VIDEO family publishes nothing. ``loras/diffusion`` is read by the Images LoRA picker
+    alone, and ``core/inference/video.py`` has no LoRA surface at all, so mirroring a video
+    adapter there would copy a large file into a catalog nothing can load and hand the UI a
+    deployment path Studio cannot honour. The run still reports ``lora_path`` (and ``ema_path``),
+    which is the adapter a caller loads directly. Giving video its own catalog and a load path
+    on the Video tab is a separate, larger piece of work."""
+    if detect_video_family("", override = cfg.resolved_family) is not None:
+        return None
     try:
         import shutil
 
@@ -1066,22 +1781,29 @@ def _publish_to_lora_catalog(lora_path: str, cfg: DiffusionLoraConfig) -> Option
                 n += 1
         if src_resolved != dest.resolve():
             shutil.copy2(lora_path, dest)
-        _write_lora_sidecar(dest.with_suffix(".json"), cfg)
+        _write_lora_sidecar(dest.with_suffix(".json"), cfg, steps)
         return str(dest)
     except Exception:  # noqa: BLE001 -- the catalog mirror is best-effort, never fatal
         return None
 
 
-def _write_lora_sidecar(sidecar_path: Path, cfg: DiffusionLoraConfig) -> None:
+def _write_lora_sidecar(
+    sidecar_path: Path,
+    cfg: DiffusionLoraConfig,
+    steps: Optional[int] = None,
+) -> None:
     """Write the adapter metadata sidecar read back by diffusion_lora._scan_local. Best
-    effort: a failure here must not fail publishing, so callers wrap it."""
+    effort: a failure here must not fail publishing, so callers wrap it.
+
+    ``steps`` records the step the run REACHED. It used to record ``cfg.train_steps``, the
+    CONFIGURED length, so an adapter saved by stopping at step 11 of 500 advertised 500."""
     meta = {
         "family": cfg.resolved_family,
         "families": [cfg.resolved_family],
         "base_model": cfg.base_model,
         "lora_rank": cfg.lora_rank,
         "lora_alpha": cfg.lora_alpha,
-        "steps": cfg.train_steps,
+        "steps": int(steps) if steps is not None else cfg.train_steps,
         "resolution": cfg.resolution,
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),

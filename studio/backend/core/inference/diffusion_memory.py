@@ -17,7 +17,7 @@ imported lazily.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
@@ -36,10 +36,12 @@ MEMORY_MODES = (
 # none   -- all weights resident (fastest; fits only with room).
 # model  -- enable_model_cpu_offload(): one top-level module on the GPU at a time.
 # group  -- apply_group_offloading() on the transformer: stream a few blocks at a time with a prefetch stream.
-# sequential -- enable_sequential_cpu_offload(): submodule-level (broken for GGUF on diffusers 0.38, kept as an escape hatch).
+# streaming -- group-offload the transformer and leaf-offload text encoders that cannot fit whole.
+# sequential -- enable_sequential_cpu_offload(): submodule-level (broken for GGUF through diffusers 0.39, kept as an escape hatch).
 OFFLOAD_NONE = "none"
 OFFLOAD_MODEL = "model"
 OFFLOAD_GROUP = "group"
+OFFLOAD_STREAMING = "streaming"
 OFFLOAD_SEQUENTIAL = "sequential"
 
 # Transformer blocks resident per group under group offloading: fewer = lower VRAM, more host-to-device traffic.
@@ -103,10 +105,14 @@ class MemoryPlan:
     device_memory: DeviceMemory
     estimates: dict[str, Optional[int]]
     reasons: tuple[str, ...] = ()
+    # Under group offload, stream the TEXT ENCODERS alongside the transformer instead of keeping
+    # them resident. Defaulted so every existing construction is unchanged; set only where that
+    # is what makes group offload fit at all (see plan_diffusion_memory).
+    stream_text_encoders: bool = False
 
     @property
     def engages_offload(self) -> bool:
-        return self.offload_policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL)
+        return self.offload_policy != OFFLOAD_NONE
 
     def as_public_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +123,7 @@ class MemoryPlan:
             "device_memory": self.device_memory.as_public_dict(),
             "estimates": dict(self.estimates),
             "reasons": list(self.reasons),
+            "stream_text_encoders": self.stream_text_encoders,
         }
 
 
@@ -142,6 +149,49 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
 
     total, free = _system_memory_mib()
     return DeviceMemory(backend, device, "system_memory", free, total)
+
+
+def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
+    """``snapshot_device_memory`` with the caching allocator's RECLAIMABLE bytes credited back
+    as free, without flushing it.
+
+    ``torch.cuda.mem_get_info`` reports driver-level free memory, so every block the caching
+    allocator is holding for reuse counts as used even though the next allocation would take it
+    straight back. A generation that has already run therefore looks like it is on a much smaller
+    card than it is. ``settled_snapshot_device_memory`` fixes that with ``empty_cache()``, which is
+    right when it runs ONCE per load, but wrong on a per-generation path: releasing every cached
+    block forces the next forward to go back to ``cudaMalloc`` for all of its activations, which is
+    the exact cost the caching allocator exists to avoid.
+
+    ``memory_reserved() - memory_allocated()`` is that same figure without the flush: bytes this
+    process holds and is not using. Adding it back is the honest reading of "how much could this
+    generation get". Deliberately an over-estimate at the margin -- fragmentation can stop some of
+    it being handed to one large tensor -- because this feeds a REFUSAL, and over-estimating free
+    memory can only make the guard quieter, never more trigger-happy.
+
+    Only the process's own allocator is credited. Host memory pinned by ``enable_model_cpu_offload``
+    lives outside it and is not counted here, which is correct: it is not device memory this
+    generation can allocate into.
+
+    Falls back to the plain snapshot on any failure or non-cuda device."""
+    if getattr(target, "device", "cpu") != "cuda":
+        return snapshot_device_memory(target)
+    snapshot = snapshot_device_memory(target)
+    if snapshot.free_mib is None:
+        return snapshot
+    try:
+        import torch
+        reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+    except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
+        return snapshot
+    if reclaimable <= 0:
+        return snapshot
+    free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
+    if snapshot.total_mib is not None:
+        free = min(free, int(snapshot.total_mib))  # never claim more than the card has
+    return DeviceMemory(
+        snapshot.backend, snapshot.device, snapshot.memory_kind, free, snapshot.total_mib
+    )
 
 
 def settled_snapshot_device_memory(
@@ -364,6 +414,7 @@ def plan_diffusion_memory(
     model_dense_mib: Optional[int],
     runtime_headroom_mib: int,
     companion_dense_mib: Optional[int] = None,
+    text_encoder_dense_mib: Optional[int] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
@@ -372,13 +423,19 @@ def plan_diffusion_memory(
 
     ``model_dense_mib`` is the resident size of all weights; ``companion_dense_mib`` is just the
     companions, which stay resident under group offload while the transformer streams block by
-    block. ``explicit_offload`` is the back-compat ``cpu_offload=True`` request (forces model
-    offload).
+    block. ``text_encoder_dense_mib`` is the TEXT-ENCODER share of that companion total, which
+    unlocks a second group tier (below); None means "no split available" and reproduces the
+    pre-split decision exactly. ``explicit_offload`` is the back-compat ``cpu_offload=True``
+    request (forces model offload).
 
     Policies by speed/VRAM tradeoff:
       none  - everything resident: fastest, highest VRAM.
       group - stream the transformer, companions resident: near-resident speed, moderate cut.
+      group + streamed text encoders - as above, but the encoders stream too: they run ONCE,
+              before step 0, so this costs one extra host-to-device pass per call rather than a
+              per-step one, and it frees their bytes for every denoising step.
       model - offload every component: lowest VRAM, slow.
+      streaming - stream transformer blocks and text-encoder leaves when one component cannot fit.
     """
     mode = normalize_memory_mode(requested_mode) or MEMORY_MODE_AUTO
     can_offload = bool(getattr(target, "supports_model_cpu_offload", False))
@@ -386,20 +443,61 @@ def plan_diffusion_memory(
     required = _sum_required(model_dense_mib, runtime_headroom_mib, base_overhead_mib)
     # The resident floor under group offload: companions stay, the transformer streams.
     group_floor = _sum_required(companion_dense_mib, runtime_headroom_mib, base_overhead_mib)
+    # A SECOND floor, for the same tier with the text encoders streamed as well. The encoders are
+    # the largest companion on most families (Z-Image: 8.0 of 8.2 GB) and they are used exactly
+    # once, before step 0, so holding them resident for the whole denoise reserves their bytes for
+    # nothing. Streaming them leaves the VAE as the only resident companion. Computed only when
+    # BOTH terms are known: an unknown split must reproduce the previous decision, never guess a
+    # smaller floor. Clamped at 0 because the two terms can come from different sources.
+    group_floor_streamed_te = (
+        _sum_required(
+            max(0, int(companion_dense_mib) - int(text_encoder_dense_mib)),
+            runtime_headroom_mib,
+            base_overhead_mib,
+        )
+        if companion_dense_mib is not None and text_encoder_dense_mib is not None
+        else None
+    )
     reasons: list[str] = []
+    stream_text_encoders = False
     estimates: dict[str, Optional[int]] = {
         "safe_device_budget_mib": budget,
         "model_dense_mib": model_dense_mib,
         "companion_dense_mib": companion_dense_mib,
+        "text_encoder_dense_mib": text_encoder_dense_mib,
         "runtime_headroom_mib": runtime_headroom_mib,
         "base_overhead_mib": base_overhead_mib,
         "resident_required_mib": required,
         "group_floor_mib": group_floor,
+        "group_floor_streamed_te_mib": group_floor_streamed_te,
     }
 
     def _group_fits() -> bool:
         # Group offload only helps if the resident companions fit; a too-big text encoder needs whole-module offload.
         return group_floor is not None and budget is not None and group_floor <= budget
+
+    def _group_fits_streamed_te() -> bool:
+        # The same tier once the text encoders stream too; only reachable with a known split.
+        return (
+            group_floor_streamed_te is not None
+            and budget is not None
+            and group_floor_streamed_te <= budget
+        )
+
+    # The best tier available when the weights do not fit resident, in speed order: plain group
+    # (companions resident) beats group with streamed encoders (one extra host-to-device pass per
+    # CALL) beats whole-module offload (every component paged per STEP -- the 48-minute case).
+    def _offload_tier() -> tuple[str, bool]:
+        if _group_fits():
+            return OFFLOAD_GROUP, False
+        if _group_fits_streamed_te():
+            return OFFLOAD_GROUP, True
+        return OFFLOAD_MODEL, False
+
+    _STREAMED_TE_REASON = (
+        "companions exceed budget, but they fit with the text encoders streamed too "
+        "(they run once, before step 0); streaming them beats paging every component per step"
+    )
 
     if not can_offload or device_memory.is_unified:
         # MPS / CPU cannot stream to a separate device; on unified memory offload just shuffles bytes within the same pool.
@@ -412,8 +510,10 @@ def plan_diffusion_memory(
         policy = OFFLOAD_NONE
         if budget is not None and required is not None and required > budget:
             # Doesn't fit resident: streamed transformer is the fastest offload.
-            policy = OFFLOAD_GROUP if _group_fits() else OFFLOAD_MODEL
+            policy, stream_text_encoders = _offload_tier()
             reasons.append("fast requested but weights do not fit resident; offloading")
+            if stream_text_encoders:
+                reasons.append(_STREAMED_TE_REASON)
         else:
             reasons.append("fast requested; weights resident on device")
     elif mode == MEMORY_MODE_BALANCED:
@@ -431,6 +531,10 @@ def plan_diffusion_memory(
     elif _group_fits():
         policy = OFFLOAD_GROUP
         reasons.append("tight fit; stream the transformer, companions resident")
+    elif _group_fits_streamed_te():
+        policy = OFFLOAD_GROUP
+        stream_text_encoders = True
+        reasons.append(_STREAMED_TE_REASON)
     else:
         policy = OFFLOAD_MODEL
         reasons.append("companions exceed budget; whole-module offload of every component")
@@ -458,10 +562,102 @@ def plan_diffusion_memory(
         device_memory = device_memory,
         estimates = estimates,
         reasons = tuple(reasons),
+        # Only ever meaningful under group offload; every other tier already places the encoders.
+        stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
     )
 
 
 # ── apply to a built pipeline ─────────────────────────────────────────────────
+
+
+def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
+    """Component name -> (module, group-offload type) for what streaming keeps off the device.
+
+    Every denoiser streams block by block; every text encoder streams leaf by leaf. Anything else
+    (the VAE, an image encoder) has no granular hook here and stays resident, so this is also the
+    set ``refine_memory_plan_for_components`` is allowed to size the policy against."""
+    streamed: dict[str, tuple[Any, str]] = {}
+    for name in ("transformer", "transformer_2", "unconditional_transformer"):
+        module = getattr(pipe, name, None)
+        if isinstance(module, torch.nn.Module):
+            streamed[name] = (module, "block_level")
+    for name, module in getattr(pipe, "components", {}).items():
+        if str(name).startswith("text_encoder") and isinstance(module, torch.nn.Module):
+            streamed[str(name)] = (module, "leaf_level")
+    return streamed
+
+
+def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
+    """Replace whole-module offload when a loaded component cannot fit on the device.
+
+    The coarse planner runs before the pipeline exists. At this point the weights are still on
+    CPU, so their actual packed storage is a better signal than family or cache estimates. Keep
+    whole-module offload when every component can fit, preserving its faster execution. When one
+    cannot, use granular streaming so no forward needs to materialise that component in full.
+
+    Only a STREAMABLE component justifies the switch, and only if the components streaming cannot
+    hook still fit resident TOGETHER: whole-module offload onloads one at a time, streaming holds
+    all of them at once, so refining past either bound would trade one OOM for another.
+    """
+    if plan.offload_policy != OFFLOAD_MODEL:
+        return plan
+    budget = plan.estimates.get("safe_device_budget_mib")
+    if budget is None or int(budget) <= 0:
+        return plan
+
+    try:
+        import torch
+
+        components = getattr(pipe, "components", {})
+        transformer = getattr(pipe, "transformer", None)
+        if not isinstance(components, dict) or not isinstance(transformer, torch.nn.Module):
+            return plan
+        streamable = _streamable_components(pipe, torch)
+
+        sizes: dict[str, int] = {}
+        mib = 1024 * 1024
+        for name, component in components.items():
+            if not isinstance(component, torch.nn.Module):
+                continue
+            seen: set[int] = set()
+            storage_bytes = 0
+            tensors = list(component.parameters(recurse = True)) + list(
+                component.buffers(recurse = True)
+            )
+            for tensor in tensors:
+                marker = id(tensor)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+                storage_bytes += int(tensor.numel()) * int(tensor.element_size())
+            sizes[str(name)] = (storage_bytes + mib - 1) // mib
+    except Exception:  # noqa: BLE001 - runtime measurement is an optional refinement
+        return plan
+
+    streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
+    if not streamed_sizes:
+        return plan
+    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
+    if largest_mib <= int(budget):
+        return plan
+    # What streaming leaves resident, all at once. Over budget here means streaming OOMs too.
+    resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
+    if resident_mib > int(budget):
+        return plan
+
+    estimates = dict(plan.estimates)
+    estimates["largest_component_mib"] = largest_mib
+    estimates["streaming_resident_mib"] = resident_mib
+    return replace(
+        plan,
+        offload_policy = OFFLOAD_STREAMING,
+        estimates = estimates,
+        reasons = plan.reasons
+        + (
+            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
+            "device budget; streaming transformer blocks and text-encoder layers",
+        ),
+    )
 
 
 def apply_memory_plan(
@@ -476,7 +672,7 @@ def apply_memory_plan(
 
     Returns the ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from the plan:
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
-    whole-module offload if unsupported (e.g. sequential is broken for GGUF on diffusers 0.38)."""
+    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39)."""
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -494,9 +690,17 @@ def apply_memory_plan(
     if policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = device)
     elif policy == OFFLOAD_GROUP:
-        if not _apply_group_offload(pipe, device, logger):
+        # getattr, not attribute access: manually built / duck-typed plans predate this field.
+        if not _apply_group_offload(
+            pipe,
+            device,
+            logger,
+            stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
+        ):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
+    elif policy == OFFLOAD_STREAMING:
+        _apply_streaming_offload(pipe, device, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
             pipe.enable_sequential_cpu_offload(device = device)
@@ -530,9 +734,19 @@ def _enable_vae_saver(pipe: Any, pipe_method: str, vae_method: str, logger: Any)
     return False
 
 
-def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
+def _apply_group_offload(
+    pipe: Any,
+    device: str,
+    logger: Any,
+    *,
+    stream_text_encoders: bool = False,
+) -> bool:
     """Stream the transformer a few blocks at a time via diffusers group offloading, keeping the
-    smaller components resident. Returns False (caller falls back to whole-module) on any failure."""
+    smaller components resident. Returns False (caller falls back to whole-module) on any failure.
+
+    ``stream_text_encoders`` extends the streamed set to every ``text_encoder*`` module. Off by
+    default: keeping them resident is faster when there is room. The planner turns it on only
+    where it is the difference between group offload and whole-module offload."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return False
@@ -549,6 +763,18 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
             module = getattr(pipe, extra, None)
             if isinstance(module, torch.nn.Module):
                 streamed[extra] = module
+        # The text encoders are streamed SEPARATELY from the DiTs, and tolerantly (see the apply
+        # loop below). Kept in their own dict so the resident placement loop still skips them.
+        streamed_encoders: dict[str, Any] = {}
+        if stream_text_encoders:
+            # A text encoder runs ONCE, before step 0, so residency buys it nothing while it costs
+            # its bytes for every step of the denoise. Streaming it does two things: the resident
+            # loop below skips it (it is no longer placed with comp.to(onload)), and group hooks
+            # page it in for that single encode. Component names, not attributes, so a family with
+            # text_encoder / text_encoder_2 / text_encoder_3 is covered without a per-family list.
+            for name, comp in getattr(pipe, "components", {}).items():
+                if name.startswith("text_encoder") and isinstance(comp, torch.nn.Module):
+                    streamed_encoders[name] = comp
 
         onload = torch.device(device)
         use_stream = onload.type == "cuda"  # overlap H2D copies with compute
@@ -560,21 +786,61 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
             "use_stream": use_stream,
         }
         # On the CUDA stream path, overlap each block's H2D copy with compute. Lossless, and gated on the signature so older diffusers still works.
+        _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:
-            _params = inspect.signature(apply_group_offloading).parameters
             if "non_blocking" in _params:
                 gkwargs["non_blocking"] = True
             if "record_stream" in _params:
                 gkwargs["record_stream"] = True
+        if stream_text_encoders and "low_cpu_mem_usage" in _params:
+            # The streamed path PINS every offloaded parameter in host RAM when a copy stream is
+            # in use (diffusers group_offloading `_init_cpu_param_dict`), which is a fine trade
+            # when group offload was already the plan. It is not a fine trade here: this tier is
+            # only ever reached as a rescue from whole-module offload, which pins nothing, on a
+            # card small enough that the companions did not fit. Those hosts are not reliably
+            # RAM-rich either, and silently converting a device-memory shortfall into ten-plus GB
+            # of unswappable host RAM is how #8188's machine got into trouble in the first place.
+            # low_cpu_mem_usage trades a slower host-to-device copy for not pinning; the encoders
+            # this tier streams run ONCE per call, so that copy is paid once, not per step.
+            gkwargs["low_cpu_mem_usage"] = True
         # Place the smaller components resident BEFORE attaching the transformer group-offload hooks: a companion .to() OOM then returns False with no hooks installed, and diffusers rejects enable_model_cpu_offload once group hooks exist.
         for name, comp in getattr(pipe, "components", {}).items():
-            if name in streamed:
+            if name in streamed or name in streamed_encoders:
                 continue
             if isinstance(comp, torch.nn.Module):
                 comp.to(onload)
         for module in streamed.values():
             apply_group_offloading(module, **gkwargs)
             installed += 1
+        # The encoders come AFTER the DiTs and are applied one by one, each failure absorbed. A
+        # text encoder is a far less well-trodden target for block-level group offloading than a
+        # DiT (a family whose encoder exposes no recognisable block list can simply refuse), and
+        # this tier is a rescue: the alternative to streaming an encoder is keeping it resident,
+        # which is what happened before this tier existed. Letting one refusal join the all-or-
+        # nothing DiT loop would turn a slow-but-working load into a hard failure, because by then
+        # hooks are installed and whole-module offload can no longer be used as a fallback. So a
+        # refusal places that encoder resident instead: the plan's floor becomes optimistic by
+        # that encoder's bytes, and the load still runs.
+        # Leaf level, not the DiTs' block level: an encoder is not a stack of uniform blocks, so
+        # _streamable_components and _apply_streaming_offload already classify every text_encoder*
+        # that way. Reusing the transformer's kwargs here grouped the whole encoder as one unit,
+        # which is the residency the planner's floor was chosen to avoid -- the plan said leaf and
+        # the application said block. num_blocks_per_group goes with it: leaf level has no blocks.
+        ekwargs = {k: v for k, v in gkwargs.items() if k != "num_blocks_per_group"}
+        ekwargs["offload_type"] = "leaf_level"
+        for name, module in streamed_encoders.items():
+            try:
+                apply_group_offloading(module, **ekwargs)
+                installed += 1
+            except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
+                if logger is not None:
+                    logger.warning(
+                        "diffusion.memory: group offload unavailable for %s (%s); "
+                        "keeping it resident",
+                        name,
+                        exc,
+                    )
+                module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 — fall back to whole-module offload
         if installed:
@@ -594,3 +860,237 @@ def _apply_group_offload(pipe: Any, device: str, logger: Any) -> bool:
                 exc,
             )
         return False
+
+
+# ── generate-time activation guard ────────────────────────────────────────────
+# The load-time plan cannot know the output resolution: a model is loaded once and then generates
+# at whatever size the sliders say, so ``_plan_memory`` budgets the 1024x1024 default. That is the
+# right call for PLACEMENT, but it means a request for a much larger frame is never checked against
+# anything. This is the second half: a per-generation re-check, with the real dimensions.
+
+# Opt-in escape hatch, mirroring the load-time one: the activation estimate is coarse, so an
+# operator who believes it is wrong keeps a way through.
+OVERSIZED_GENERATE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE"
+
+
+class ImageActivationShortfallError(ValueError):
+    """This generation's activations cannot fit the free device budget.
+
+    A ValueError subclass so ``/images/generate``'s existing mapping still turns it into a 400
+    with the reason. The distinct type is what lets the OpenAI-compatible route, whose boundary
+    sanitises every other exception into a bare 500, recognise the one message here that is
+    written FOR the caller and hand it back instead of "Image generation failed."
+    """
+
+
+def _oversized_generate_override() -> bool:
+    return os.environ.get(OVERSIZED_GENERATE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def image_activation_shortfall_message(
+    *,
+    device_memory: DeviceMemory,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    family: Optional[str] = None,
+    base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+) -> Optional[str]:
+    """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
+    cannot fit the free device budget, else None.
+
+    Why this is a refusal and not another tuning knob: weights can be offloaded, activations
+    cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention
+    buffers and VAE intermediates a forward pass allocates have to be on the device while it
+    runs. So an activation estimate above the free budget is an overrun at every tier, including
+    the lowest one, rather than a hint that a different placement would help. There is nothing
+    left to degrade to, which is exactly the situation where refusing beats trying.
+
+    Refusing also has to happen HERE rather than being left to torch. On Linux the overrun raises
+    ``torch.OutOfMemoryError`` and the job dies cleanly. On Windows WDDM (including ROCm) it does
+    not raise at all: the driver satisfies the overflow from system RAM as "non-local" GPU memory,
+    so the process quietly grows past the card into tens of GB of host RAM and pagefile, and the
+    desktop stops responding with no error anywhere. A ValueError here is a 400 with the reason,
+    which is the clean refusal that failure mode never produces on its own.
+
+    What it does NOT do is second-guess the load. The flat headroom this estimate is built on is a
+    deliberately generous PLANNING figure whose job is to pick an offload tier, and the tier it
+    picks already runs the 1024x1024 default on cards whose whole budget is under 8 GB (measured:
+    a 8 GB card's safe budget is 5898 MiB against a 6963 MiB default-resolution estimate, and
+    those generations complete). Treating that figure as a hard limit at or below the default
+    would refuse work that succeeds today. So the refusal needs BOTH conditions: over the free
+    budget, and over what the load already budgeted. That confines it to the resolution-driven
+    overrun it is for -- the load reserved a 1 MP frame and the request is several times that --
+    and leaves every generation at or below the default resolution exactly as it is.
+
+    Fail-open on anything unknown (no free reading, no budget) and on any device class where the
+    estimate or the offload story means something different, so a broken probe can never block a
+    generation that would have worked."""
+    if _oversized_generate_override():
+        return None
+    try:
+        # Unified / system memory: offload moves bytes within one pool, "free" is a moving target
+        # shared with the OS, and the load-time unified refusal already owns that device class.
+        if getattr(device_memory, "is_unified", False):
+            return None
+        # CUDA / ROCm only. ROCm's torch reports device "cuda", so this covers both. XPU / MPS /
+        # CPU keep today's behaviour exactly: their allocators and offload semantics differ and
+        # this estimate was measured against a discrete VRAM pool.
+        if getattr(device_memory, "device", None) != "cuda":
+            return None
+        free = getattr(device_memory, "free_mib", None)
+        if free is None:
+            return None  # no reading -> no verdict
+        budget = _safe_device_budget_mib(device_memory)
+        if budget is None:
+            return None
+        needed = estimate_image_runtime_mib(
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            family = family,
+        )
+        # What the LOAD budgeted: the same estimator at the default resolution, i.e. the exact
+        # call _plan_memory makes. Same function and same family hint, so the comparison is
+        # between two points on one curve rather than between two different guesses.
+        planned = estimate_image_runtime_mib(
+            width = None,
+            height = None,
+            batch_size = 1,
+            family = family,
+        )
+    except Exception:  # noqa: BLE001 -- a broken probe must never block a generation
+        return None
+    # The flat base overhead rides along with the activations: the CUDA context, the scheduler
+    # state and the fragmentation allowance all have to coexist with this pass's tensors, and the
+    # load-time plan already sums them additively for exactly that reason. Leaving it out made the
+    # guard silent by a few hundred MiB on the very card #8188 was reported from (15.92 GiB:
+    # 13,872 MiB of activations against a 14,254 MiB budget). It cannot cause a false refusal at
+    # or below the default resolution, because the `needed <= planned` arm already exempts every
+    # request the load itself budgeted for.
+    if int(needed) + max(0, int(base_overhead_mib)) <= int(budget) or needed <= planned:
+        return None
+    w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+    h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+    batch = max(1, int(batch_size or 1))
+    batch_note = f" at a batch of {batch}" if batch > 1 else ""
+    # Two decimals, not one: the refusal is often decided by tens of MiB (the 1088x1920 report
+    # needed 13,872 MiB against a 13,822 MiB budget), and one decimal prints both as "13.5 GB".
+    # The overhead is part of the comparison above, so it has to be part of the number reported.
+    # Quoting the activations alone printed a refusal that contradicted itself: 13.55 GB needed
+    # against 13.92 GB usable, refused.
+    total = int(needed) + max(0, int(base_overhead_mib))
+    return (
+        f"Generating at {w}x{h}{batch_note} needs about {total / 1024:.2f} GB of working memory "
+        f"(including about {max(0, int(base_overhead_mib)) / 1024:.2f} GB of fixed overhead), "
+        f"but only about {int(budget) / 1024:.2f} GB is usable on this device (of the "
+        f"{int(free) / 1024:.2f} GB currently free, after reserving room for fragmentation and "
+        "other processes). Working memory holds this pass's latents and attention buffers, which "
+        "cannot be offloaded to the CPU the way weights can, so no memory mode recovers this. "
+        # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be
+        # answered by asking for fewer, and pointing there sends the caller at the one change
+        # that provably will not help.
+        f"Generate at a smaller resolution{' or a smaller batch size' if batch > 1 else ''}, "
+        "free device memory by closing other applications, or set "
+        f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
+    )
+
+
+def raise_on_image_activation_shortfall(
+    *,
+    device_memory: DeviceMemory,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    family: Optional[str] = None,
+    base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    logger: Any = None,
+) -> None:
+    """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
+    ``image_activation_shortfall_message`` declines to produce a verdict.
+
+    ``ValueError`` on purpose: ``/images/generate`` maps ValueError to HTTP 400 with the message
+    as the reason, so this surfaces as an actionable refusal in the UI. RuntimeError there is
+    reserved for the two client-state sentinels (not loaded / cancelled) and otherwise becomes an
+    opaque 500."""
+    message = image_activation_shortfall_message(
+        device_memory = device_memory,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        family = family,
+        base_overhead_mib = base_overhead_mib,
+    )
+    if message is None:
+        return
+    if logger is not None:
+        logger.error("diffusion.memory: refusing oversized generation: %s", message)
+    raise ImageActivationShortfallError(message)
+
+
+def _apply_streaming_offload(pipe: Any, device: str, logger: Any) -> None:
+    """Stream transformer blocks and text-encoder leaves without whole-component onloads.
+
+    This is selected only after measuring a component larger than the safe device budget, so a
+    model-offload fallback would deterministically OOM. Any setup failure is therefore fatal and
+    reports the granular-offload failure directly.
+    """
+    installed = 0
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        components = getattr(pipe, "components", {})
+        if not isinstance(components, dict):
+            raise RuntimeError("pipeline does not expose its components")
+
+        # Same selection the planner sized against, so what it promised to stream is what streams.
+        streamed = _streamable_components(pipe, torch)
+        if "transformer" not in streamed:
+            raise RuntimeError("pipeline has no transformer to stream")
+
+        onload = torch.device(device)
+        offload = torch.device("cpu")
+        params = inspect.signature(apply_group_offloading).parameters
+        use_stream = onload.type == "cuda" and "low_cpu_mem_usage" in params
+
+        # Keep small companions such as the tiled VAE resident. Every transformer and text
+        # encoder remains on CPU behind a granular hook.
+        for name, component in components.items():
+            if str(name) in streamed:
+                continue
+            if isinstance(component, torch.nn.Module):
+                component.to(onload)
+
+        for module, offload_type in streamed.values():
+            kwargs: dict[str, Any] = {
+                "onload_device": onload,
+                "offload_device": offload,
+                "offload_type": offload_type,
+            }
+            if offload_type == "block_level":
+                kwargs["num_blocks_per_group"] = DEFAULT_GROUP_BLOCKS
+            if "use_stream" in params:
+                kwargs["use_stream"] = use_stream
+            if use_stream and "non_blocking" in params:
+                kwargs["non_blocking"] = True
+            if use_stream and "record_stream" in params:
+                kwargs["record_stream"] = False
+            if use_stream and "low_cpu_mem_usage" in params:
+                kwargs["low_cpu_mem_usage"] = True
+            apply_group_offloading(module, **kwargs)
+            installed += 1
+    except Exception as exc:
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: granular streaming offload failed after installing hooks "
+                "on %d module(s): %s",
+                installed,
+                exc,
+            )
+        raise RuntimeError(
+            "A diffusion component is larger than the available GPU memory, and granular "
+            f"streaming offload could not be enabled: {exc}"
+        ) from exc
