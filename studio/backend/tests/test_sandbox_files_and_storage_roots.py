@@ -5790,7 +5790,8 @@ def test_a_finely_timestamped_volume_is_not_read_twice_per_call(tmp_path, monkey
     read = []
     real_key = tools._content_key
     monkeypatch.setattr(
-        tools, "_content_key",
+        tools,
+        "_content_key",
         lambda path, size: (read.append(path), real_key(path, size))[1],
     )
     snapshot = tools._snapshot_workdir_files(str(workdir))
@@ -5813,9 +5814,11 @@ def test_one_whole_second_stamp_is_not_taken_for_a_coarse_volume(tmp_path, monke
     tools._fine_mtime_devices.clear()
     real_stat = os.stat
     monkeypatch.setattr(
-        os, "stat",
+        os,
+        "stat",
         lambda p, *a, **k: (
-            _WholeSecondMtime(real_stat(p, *a, **k)) if str(p) == str(workdir)
+            _WholeSecondMtime(real_stat(p, *a, **k))
+            if str(p) == str(workdir)
             else real_stat(p, *a, **k)
         ),
     )
