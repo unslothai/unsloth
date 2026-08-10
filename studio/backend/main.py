@@ -1324,8 +1324,8 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
-    """``(chat_only, chat_only_reason)`` if detection is settled, else ``None``.
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
+    """``(chat_only, chat_only_reason, chat_only_detail)`` if detection is settled, else ``None``.
 
     A seqlock read rather than ``_DETECT_LOCK``: that lock would park the endpoint for the
     whole torch import, the stall this startup path removes. A forced re-detect clears the
@@ -1344,12 +1344,16 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str]]]:
         device = _hw_module.DEVICE
         chat_only = bool(_hw_module.CHAT_ONLY)
         reason = getattr(_hw_module, "CHAT_ONLY_REASON", None)
+        # Inside the guarded read, with the reason it belongs to. Read after it, a forced
+        # re-detect starting in between would pair this reply's reason with a detail from
+        # a different pass, or with none at all.
+        detail = getattr(_hw_module, "CHAT_ONLY_DETAIL", None)
         if (
             device is not None
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason
+            return chat_only, reason, detail
     return None
 
 
@@ -1593,6 +1597,12 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # What specifically blocked that reason, when detection recorded one. Only the MLX
+        # gate does today, and only because it is all-or-nothing: without it the greyed-out
+        # Train row can only say "run `unsloth studio update`", which is no help to someone
+        # whose update has already run and left one package behind. From the snapshot, so it
+        # cannot come from a different detection pass than the reason beside it.
+        authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)

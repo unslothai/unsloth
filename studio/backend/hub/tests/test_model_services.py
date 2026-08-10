@@ -153,6 +153,28 @@ def test_the_h3_native_repo_is_a_recognised_bundle_repo():
     assert gguf.is_h3_bundle_repo(H3_GGUF_REPO)
 
 
+def test_minimax_h3_variant_labels_name_the_partition_and_build():
+    variants = [
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_fl2va_pruned-Q4_K_M.gguf",
+            quant = "minimax_h3_fl2va_pruned-Q4_K_M",
+            size_bytes = 1,
+        ),
+        gguf.GgufVariantInfo(
+            filename = "minimax_h3_ref2va-Q4_K_M.gguf",
+            quant = "minimax_h3_ref2va-Q4_K_M",
+            size_bytes = 1,
+        ),
+    ]
+
+    gguf._apply_gguf_display_labels(variants)
+
+    assert [variant.display_label for variant in variants] == [
+        "Text & frames · Q4_K_M · Pruned",
+        "References · Q4_K_M · Full",
+    ]
+
+
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")
@@ -6479,6 +6501,27 @@ def test_the_pipeline_test_is_safe_on_a_path_that_is_not_a_readable_directory(tm
     odd = tmp_path / "odd"
     (odd / "model_index.json").mkdir(parents = True)
     assert local_inventory._is_diffusers_pipeline_dir(odd) is False
+
+
+def test_a_modular_pipeline_root_is_recognised(tmp_path):
+    """A Modular Diffusers pipeline carries ``modular_model_index.json`` and NO
+    ``model_index.json``, which is exactly the pair the video loader accepts. Recognising only
+    the conventional index hid such a root from the Images/Video picker and let the publisher
+    walk descend into it and offer ``transformer`` / ``vae`` as separate, unusable models."""
+    root = tmp_path / "modular"
+    root.mkdir()
+    (root / "modular_model_index.json").write_text("{}")
+    (root / "transformer").mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(root) is True
+
+    conventional = tmp_path / "conventional"
+    conventional.mkdir()
+    (conventional / "model_index.json").write_text("{}")
+    assert local_inventory._is_diffusers_pipeline_dir(conventional) is True
+
+    neither = tmp_path / "neither"
+    neither.mkdir()
+    assert local_inventory._is_diffusers_pipeline_dir(neither) is False
 
 
 def test_gguf_progress_unknown_hashes_calls_a_sibling_only_dir_absent(monkeypatch, tmp_path):
