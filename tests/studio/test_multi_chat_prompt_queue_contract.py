@@ -752,7 +752,9 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert "capture(): number" in CHAT_CLEAR_BOUNDARY
     assert "advance(): number" in CHAT_CLEAR_BOUNDARY
     assert "const reopenAdmission = threadRecordWrites.closeAdmission();" in CHAT_HISTORY_STORAGE
-    assert "const pendingThreadIds = threadRecordWrites.idsRequiringFence();" in CHAT_HISTORY_STORAGE
+    assert (
+        "const pendingThreadIds = threadRecordWrites.idsRequiringFence();" in CHAT_HISTORY_STORAGE
+    )
     assert "tombstoneThreadIds: idsToFence" in CHAT_HISTORY_STORAGE
     assert "threadRecordWrites.confirmFinalState(idsToFence);" in CHAT_HISTORY_STORAGE
 
