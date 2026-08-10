@@ -1669,9 +1669,7 @@ class VideoBackend:
                 repo, files, shas.get(repo)
             ).issuperset(files):
                 continue
-            missing = DiffusionBackend._files_missing_from_live_root(
-                repo, files, shas.get(repo)
-            )
+            missing = DiffusionBackend._files_missing_from_live_root(repo, files, shas.get(repo))
             if sizes and missing != set(files):
                 entry["bytes"] = int(sum(sizes.get(name, 0) for name in missing))
                 if entry["gguf_filename"] not in missing:

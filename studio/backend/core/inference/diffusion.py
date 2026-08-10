@@ -2074,7 +2074,9 @@ class DiffusionBackend:
 
     @staticmethod
     def _files_missing_from_live_root(
-        repo_id: str, files: list[str], revision: Optional[str] = None
+        repo_id: str,
+        files: list[str],
+        revision: Optional[str] = None,
     ) -> set[str]:
         """Of ``files``, the ones the LIVE cache root does not already hold at ``revision``.
 
@@ -2090,7 +2092,6 @@ class DiffusionBackend:
             return wanted
         try:
             from huggingface_hub import try_to_load_from_cache
-
             root = hub_cache_dir()
         except Exception:  # noqa: BLE001 — no hub package / unreadable settings: charge for it all
             return wanted

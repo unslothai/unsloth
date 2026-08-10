@@ -3053,7 +3053,12 @@ def test_a_second_ltx23_quant_is_not_charged_for_the_extras_it_shares(monkeypatc
     from models.inference import DiffusionDownloadPlanResponse
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _PlanInfo(
                 {
                     "unsloth/LTX-2.3-GGUF": _LTX23_REPO_SIBLINGS,
