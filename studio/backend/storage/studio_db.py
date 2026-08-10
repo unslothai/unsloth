@@ -919,9 +919,7 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
 
 
-def get_connection(
-    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS,
-) -> sqlite3.Connection:
+def get_connection(busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS) -> sqlite3.Connection:
     """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
     global _schema_ready
     db_path = studio_db_path()
