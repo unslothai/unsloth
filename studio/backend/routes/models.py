@@ -2541,7 +2541,9 @@ async def discard_remote_code_download(
 
 
 def _audio_type_of_checkpoint(
-    model_path: str, base_model: Optional[str], hf_token: Optional[str] = None
+    model_path: str,
+    base_model: Optional[str],
+    hf_token: Optional[str] = None,
 ) -> Optional[str]:
     """Codec a trained checkpoint speaks, or None for a text one.
 
@@ -2563,9 +2565,7 @@ def _audio_type_of_checkpoint(
             # hf_token even under local_files_only: a gated base resolves through the same
             # hub helpers, and the capability caches are keyed by token fingerprint, so a
             # token-less probe would both misclassify and poison the cache for the rest.
-            audio_type = detect_audio_type(
-                candidate, hf_token = hf_token, local_files_only = True
-            )
+            audio_type = detect_audio_type(candidate, hf_token = hf_token, local_files_only = True)
         except Exception as exc:  # never let a scan row fail the whole listing
             logger.debug("audio detection failed for %r: %s", candidate, exc)
             continue
