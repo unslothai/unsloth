@@ -159,6 +159,24 @@ class PipeCapture:
             return "\n".join(list(self.buf)[-n:])
 
 
+def _deadline(timeout):
+    """The monotonic instant `timeout` seconds from now, or `None` for never.
+
+    `SyntheticDataKit` takes `timeout` straight from the caller and puts no
+    type assert on it, and the wait it used to feed was `Event.wait`, where
+    `None` is the documented way to say "wait as long as it takes". A first
+    load of a large model over a slow link is exactly that case, so `None`
+    has to stay a wait rather than become a `TypeError` thrown seconds after
+    vLLM was spawned.
+    """
+    return None if timeout is None else time.monotonic() + timeout
+
+
+def _remaining(deadline):
+    """Seconds left, or `None` when there is no deadline to run out of."""
+    return None if deadline is None else deadline - time.monotonic()
+
+
 class SyntheticDataKit:
     def __init__(
         self,
@@ -307,9 +325,9 @@ class SyntheticDataKit:
         message promises, and this is the path meant to surface a bad startup
         promptly.
         """
-        deadline = time.monotonic() + timeout
+        deadline = _deadline(timeout)
         while not self.check_vllm_status():
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 self._fail_vllm_server(
                     "printed its readiness line but never answered "
                     f"http://localhost:8000/metrics (waited {timeout:g} seconds)"
@@ -328,17 +346,21 @@ class SyntheticDataKit:
         `timeout`. Poll the readiness event, the exit status and the closed
         pipe together, and stop at whichever happens first.
         """
-        deadline = time.monotonic() + timeout
+        deadline = _deadline(timeout)
         while True:
             # Cap the wait at whatever is left, so `timeout` keeps the exact
             # meaning it had when it was passed straight to `wait_for_ready`.
             # A flat `poll_interval` overshoots any timeout shorter than it, and
             # readiness arriving inside that overshoot would return success from
-            # a deadline that had already expired.
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # a deadline that had already expired. `None` has no deadline to
+            # run out of, so every lap is a full `poll_interval` -- which still
+            # notices a dead child, where the old bare `Event.wait(None)` would
+            # have hung on one forever.
+            remaining = _remaining(deadline)
+            if remaining is not None and remaining <= 0:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
-            if self.stdout_capture.wait_for_ready(timeout = min(poll_interval, remaining)):
+            wait = poll_interval if remaining is None else min(poll_interval, remaining)
+            if self.stdout_capture.wait_for_ready(timeout = wait):
                 return
             returncode = self.vllm_process.poll()
             if returncode is not None:

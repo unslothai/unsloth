@@ -357,3 +357,69 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
     assert spent <= 110, (
         f"spent {spent:.0f}s of simulated time on a wait the message calls " f"100 seconds"
     )
+
+
+def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
+    """`SyntheticDataKit(..., timeout = None)` is a legal call.
+
+    Nothing asserts a type on `timeout`, and the wait it used to reach was
+    `Event.wait`, where `None` means wait as long as it takes -- the case of a
+    first, slow download of a large model. Deadline arithmetic on `None` raised
+    `TypeError` seconds after vLLM had already been spawned, so the caller lost
+    both the wait they asked for and the child they started.
+    """
+    kit = _kit(
+        _FakeCapture(ready = False, ready_after = 0.05),
+        _FakeCapture(),
+        _FakeProcess(),
+    )
+    kit._await_vllm_server(timeout = None, poll_interval = 0.01)
+
+
+def test_an_unbounded_wait_still_notices_a_dead_child():
+    """`None` removes the deadline, not the other three exit conditions.
+
+    The bare `Event.wait(None)` this replaces would have blocked forever on a
+    server that had already exited.
+    """
+    kit = _kit(_FakeCapture(ready = False), _FakeCapture(), _FakeProcess(returncode = 1))
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match = "exited with code 1"):
+        kit._await_vllm_server(timeout = None, poll_interval = 0.01)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"took {elapsed:.2f}s to notice a process that had already exited"
+
+
+def test_an_unbounded_wait_never_expires(monkeypatch):
+    """No deadline means no deadline, however long the clock runs."""
+    clock = {"now": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    capture = _RecordingCapture(ready = False)
+    laps = {"n": 0}
+
+    def slow_wait(timeout = None):
+        laps["n"] += 1
+        clock["now"] += 10_000.0
+        if laps["n"] >= 3:
+            capture._ready.set()
+        return capture._ready.is_set()
+
+    monkeypatch.setattr(capture, "wait_for_ready", slow_wait)
+    kit = _kit(capture, _FakeCapture(), _FakeProcess())
+    kit._await_vllm_server(timeout = None, poll_interval = 1.0)
+    assert laps["n"] == 3
+
+
+def test_the_metrics_wait_accepts_an_unbounded_timeout():
+    """Same arithmetic, same fix, so pin it here too rather than leave the
+    private helper the next caller reaches for half-converted."""
+    calls = {"n": 0}
+
+    def check():
+        calls["n"] += 1
+        return calls["n"] >= 3
+
+    kit = _kit(_FakeCapture(ready = True), _FakeCapture(), _FakeProcess())
+    kit.check_vllm_status = check
+    kit._await_metrics_endpoint(timeout = None, poll_interval = 0.0)
+    assert calls["n"] == 3
