@@ -908,6 +908,9 @@ export const ru = {
         allowNetworkAccess: "Разрешить сетевой доступ Canvas",
         allowNetworkAccessDescription:
           "Позволяет предпросмотрам Canvas загружать скрипты, стили, шрифты, медиа и сетевые ресурсы из CDN. Оставьте выключенным для полностью офлайн-предпросмотров.",
+        blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
+        blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
+        blockedBannerAction: "Разрешить для этого Canvas",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",

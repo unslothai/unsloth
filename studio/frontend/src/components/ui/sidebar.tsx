@@ -277,7 +277,17 @@ function Sidebar({
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
       data-state={state}
-      data-collapsible={state === "collapsed" ? collapsible : ""}
+      // "zero" when the panel collapses to nothing: the icon-rail rules keyed on
+      // "icon" centre every button, hide every label and repaint the panel white,
+      // which a w-0 sidebar wore for a frame on its way out. That was the ghost.
+      // No selector matches "zero", so the intermediate state no longer exists.
+      data-collapsible={
+        state === "collapsed"
+          ? hasPinMode && collapseToZero
+            ? "zero"
+            : collapsible
+          : ""
+      }
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"

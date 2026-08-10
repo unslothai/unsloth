@@ -928,6 +928,9 @@ export const fr = {
         allowNetworkAccess: "Autoriser l'accès réseau du canvas",
         allowNetworkAccessDescription:
           "Permettre aux aperçus Canvas de charger des scripts, des styles, des polices, des médias et d'autres ressources depuis des CDN. Laissez cette option désactivée pour des aperçus entièrement hors ligne.",
+        blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
+        blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
+        blockedBannerAction: "Autoriser pour ce Canvas",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",

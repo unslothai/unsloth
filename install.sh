@@ -1568,6 +1568,11 @@ DESKTOP_EOF
             echo "[ERROR] $_css_app exists but is not a directory; remove manually and re-run install" >&2
             return 1
         fi
+        # Older installs linked the Desktop shortcut with `ln -sf`, which followed the
+        # existing link and planted a self-referential copy one level inside the bundle.
+        if [ -L "$_css_app/Unsloth Studio.app" ]; then
+            rm -f "$_css_app/Unsloth Studio.app" 2>/dev/null || true
+        fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
         # Info.plist
@@ -1646,9 +1651,10 @@ STUB_EOF
         # Touch so Finder indexes it
         touch "$_css_app"
 
-        # Symlink on Desktop
+        # Symlink on Desktop. -n is required: without it a re-run follows the existing
+        # link into the bundle and creates the new one inside it, as the CLI shim guards.
         if [ -d "$HOME/Desktop" ]; then
-            ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
+            ln -sfn "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
         _css_created=1
 
