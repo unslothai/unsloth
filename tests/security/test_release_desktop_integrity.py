@@ -335,7 +335,9 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     assert "Desktop app for Unsloth." in notes
 
     # The maintainer's changelog is appended to, never replaced.
-    provenance = _step(workflow, "publish-release", "Record desktop build provenance on the release")
+    provenance = _step(
+        workflow, "publish-release", "Record desktop build provenance on the release"
+    )
     assert "gh release edit" in provenance["run"]
     assert "--json body" in provenance["run"]
 
