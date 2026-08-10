@@ -641,8 +641,25 @@ export interface DiffusionTrainableFamily {
   recommended_precision?: string;
   // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
   supports_compile?: boolean;
+  // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
+  // Undefined on an older backend, which has no checkpointless family, so it reads as true.
+  supports_checkpoints?: boolean;
+  /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
+  max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the checkpoint it trained on (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
+  // Variant-specific training-base to inference-base pairs, including public mirror ids.
+  deploy_bases?: Record<string, string>;
+  // Per-checkpoint facts that overlay the family-level chips for multi-size families.
+  base_specs?: Record<
+    string,
+    {
+      params?: string | null;
+      qlora_vram_gb?: number | null;
+      gated?: boolean | null;
+      note?: string | null;
+    }
+  >;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.

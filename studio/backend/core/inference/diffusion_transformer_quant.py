@@ -248,6 +248,11 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
 _FAMILY_TRAIN_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_FP8}),
     "qwen-image-edit": frozenset({TQ_FP8}),
+    # MiniMax-H3's packed sequence runs three modalities through one set of linears, so its
+    # activation range is not the per-family range the fp8 filter was measured against. The
+    # trainer refuses both outright; declaring it here is what keeps /diffusion/info from
+    # advertising a start that is guaranteed to 400.
+    "minimax-h3": frozenset({TQ_FP8, TQ_MXFP8}),
 }
 
 
