@@ -169,6 +169,9 @@ def _guard_model_security(name: str, local_only: bool = False) -> None:
         )
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 class _CaptureLoadReport(logging.Filter):
     """Swallow transformers' multi-line "<Model> LOAD REPORT" table, keeping the text.
 
@@ -186,8 +189,9 @@ class _CaptureLoadReport(logging.Filter):
     _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
     # The only UNEXPECTED key worth downgrading is the legacy buffer every BERT-era
     # sentence-transformer ships. Any other discarded weight can genuinely change
-    # retrieval quality, so it stays a warning.
-    _KNOWN_BENIGN_UNEXPECTED = "position_ids"
+    # retrieval quality, so it stays a warning. Matched on the whole key, not as a
+    # substring: "encoder.position_ids_projection.weight" is a real discarded weight.
+    _KNOWN_BENIGN_UNEXPECTED = "embeddings.position_ids"
 
     def __init__(self) -> None:
         super().__init__()
@@ -219,7 +223,12 @@ class _CaptureLoadReport(logging.Filter):
             # every unexpected report serious, including the benign one.
             table = report.split("Notes:", 1)[0]
             for row in table.splitlines():
-                if "UNEXPECTED" in row and self._KNOWN_BENIGN_UNEXPECTED not in row:
+                if "UNEXPECTED" not in row:
+                    continue
+                key = _ANSI_RE.sub("", row).split("|", 1)[0].strip()
+                if key != self._KNOWN_BENIGN_UNEXPECTED and not key.endswith(
+                    "." + self._KNOWN_BENIGN_UNEXPECTED
+                ):
                     return True
         return False
 
@@ -296,9 +305,6 @@ def _quiet_transformers_load():
                     disable_progress_bars()
                 except Exception:  # noqa: BLE001
                     pass
-
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _one_line(text: str) -> str:

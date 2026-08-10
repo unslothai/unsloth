@@ -317,3 +317,23 @@ def test_a_serious_report_is_flattened_to_one_plain_line():
     assert "\x1b" not in emitted[0]
     assert "\n" not in emitted[0]
     assert "MISSING" in emitted[0]
+
+
+def test_a_key_merely_containing_position_ids_is_serious():
+    # "encoder.position_ids_projection.weight" is a real discarded weight, not the
+    # legacy buffer, so a substring match would have hidden it.
+    log, sink = _attach_sink()
+    with _quiet_transformers_load() as report:
+        log.warning(
+            "BertModel LOAD REPORT from: x\nencoder.position_ids_projection.weight | UNEXPECTED"
+        )
+    assert report.is_serious() is True
+
+
+def test_a_prefixed_legacy_buffer_is_still_benign():
+    log, sink = _attach_sink()
+    with _quiet_transformers_load() as report:
+        log.warning(
+            "BertModel LOAD REPORT from: x\n0_Transformer.embeddings.position_ids | UNEXPECTED"
+        )
+    assert report.is_serious() is False
