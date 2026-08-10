@@ -1343,6 +1343,48 @@ def test_server_start_failure_keeps_the_engine_the_fallback_resolved(monkeypatch
     assert len(out["images"]) == 1 and len(fake.calls) == 1
 
 
+def test_a_oneshot_load_refuses_a_cli_swapped_during_the_asset_download(monkeypatch):
+    # The one-shot accelerator was sampled at state construction, AFTER the multi-minute asset
+    # download, so an install landing in that window was recorded as this load's own answer. The
+    # per-image check then re-read the same replacement and agreed with it forever, which is the
+    # one swap it exists to catch. Pinned where the engine is vetted instead, and refused here.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "_install_allowed", lambda: False)
+    fake = _FakeEngine()
+    fake.binary = "/x/sd-cli"
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    # cuda when the engine is chosen, cpu by the time the download finishes: an H3 load putting
+    # the CPU fallback in is the documented way this happens.
+    installed = ["cuda"]
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed[0] if binary else None)
+
+    def _fetch(*a, **k):
+        installed[0] = "cpu"
+        return {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"}
+
+    monkeypatch.setattr(b, "_fetch_assets", _fetch)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+
+    assert b._state is None
+    assert "different accelerator" in (b.load_progress()["error"] or "")
+
+
 def test_run_load_redacts_paths_in_progress_error(monkeypatch):
     # A load failure surfaced via load_progress() must run through redact_native_paths, the same scrub the diffusers path applies.
     from utils import native_path_leases as npl

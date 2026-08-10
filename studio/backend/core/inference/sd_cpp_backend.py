@@ -1043,6 +1043,12 @@ class SdCppDiffusionBackend:
             # runs" is therefore not evidence that it is the build this load resolved its device
             # and offload policy for, so the answer is re-asked under the reader claim.
             server_accelerator = _installed_accelerator_of(server_binary)
+            # The same pin for the one-shot CLI, and for the same reason. Sampling it only at
+            # state construction, after the download, would record whatever an install left in
+            # the tree in that window and the first generation -- which re-reads the tree and
+            # compares -- would then agree with the replacement, so the check that exists to
+            # notice a swap could never fire for one that landed during the download.
+            engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
             if mode == "oneshot":
                 # version() is None when a present binary can't run; fail now, not on the first generation.
                 assert engine is not None
@@ -1119,8 +1125,10 @@ class SdCppDiffusionBackend:
                         server_binary = upgraded
                     # This load's own install just rewrote the tree, under the install claim, so
                     # what it left behind IS the decision here -- comparing against the answer
-                    # from before it would fail the load on the upgrade it asked for.
+                    # from before it would fail the load on the upgrade it asked for. Both pins
+                    # move: a serverless upgrade lands the sd-cli out of the same archive.
                     server_accelerator = _installed_accelerator_of(server_binary)
+                    engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
@@ -1250,12 +1258,30 @@ class SdCppDiffusionBackend:
                         if not usable or fallback is None:
                             raise start_exc
                         engine = fallback
+                        # Vetted here, so pinned here: this engine was resolved after the
+                        # download, inside the claim, and holding it to the pre-download answer
+                        # would refuse the fallback on an install this load already lived through.
+                        engine_accelerator = _installed_accelerator_of(
+                            getattr(fallback, "binary", None)
+                        )
                         mode = "oneshot"
                     finally:
                         if not started_ok:
                             with self._lock:
                                 if self._pending_server is started:
                                     self._pending_server = None
+                if mode == "oneshot" and (
+                    _installed_accelerator_of(getattr(engine, "binary", None))
+                    != engine_accelerator
+                ):
+                    # Runnable, at the same path, and still not the build this load vetted -- the
+                    # one-shot half of the check the server path makes just above. Refused at load
+                    # rather than recorded, because recording the replacement is what makes the
+                    # per-generation comparison agree with it forever after.
+                    raise RuntimeError(
+                        "The stable-diffusion.cpp binary was replaced by an install for a "
+                        "different accelerator while this model was loading. Try the load again."
+                    )
                 state = _SdState(
                     repo_id = repo_id,
                     base_repo = base,
@@ -1276,11 +1302,7 @@ class SdCppDiffusionBackend:
                     flux2_inner_dim = inner_dim,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image,
                     # long after this decision, and has nothing else to check the answer against.
-                    sd_accelerator = (
-                        _installed_accelerator_of(getattr(engine, "binary", None))
-                        if mode == "oneshot"
-                        else None
-                    ),
+                    sd_accelerator = engine_accelerator if mode == "oneshot" else None,
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
