@@ -1017,11 +1017,26 @@ export function isSandboxToolResult(
  * fine-tuning datasets, so a wrapper serialized whole would train on the card's
  * sessionId/images/files instead of the tool's output.
  */
-export function toolResultModelText(result: unknown): unknown {
-  if (isMcpImageToolResult(result) || isSandboxToolResult(result)) {
+export function toolResultModelText(
+  result: unknown,
+  toolName?: string,
+): unknown {
+  if (isMcpImageToolResult(result) || isSandboxWrapper(result, toolName)) {
     return result.text;
   }
   return result;
+}
+
+/**
+ * A wrapper this app put around a result, rather than a result shaped like one.
+ *
+ * The shape is only that: an MCP or custom tool answering with text, sessionId
+ * and images is someone else's, and unwrapping it drops every other field it
+ * returned. The backend gates the same strip on the tool name.
+ */
+function isSandboxWrapper(result: unknown, toolName?: string): boolean {
+  if (toolName !== undefined && !SANDBOX_FILE_TOOLS.has(toolName)) return false;
+  return isSandboxToolResult(result);
 }
 
 export function isMcpImageToolResult(
@@ -1065,7 +1080,10 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
-  } else if (isMcpImageToolResult(result) || isSandboxToolResult(result)) {
+  } else if (
+    isMcpImageToolResult(result) ||
+    isSandboxWrapper(result, tc.toolName ?? "")
+  ) {
     // Replay the stdout the model saw, not the card's sessionId/images/files:
     // stringifying the wrapper feeds it internal metadata instead of the output.
     content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });

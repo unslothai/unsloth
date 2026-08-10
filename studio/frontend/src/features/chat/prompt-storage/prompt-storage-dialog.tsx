@@ -168,7 +168,7 @@ function contentBlocksToText(content: unknown): string {
       } else if (p.type === "tool-call") {
         // Keep base64 image payloads and sandbox card metadata out of every
         // export format: use the model-visible text (matches chat replay).
-        const result = toolResultModelText(p.result);
+        const result = toolResultModelText(p.result, p.toolName);
         parts.push(
           JSON.stringify({
             tool_call: p.toolName,
@@ -331,7 +331,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           // Keep base64 image payloads out of exports: MCP image results carry
           // their model-visible text alongside the data, so serialize the text
           // (matching chat replay) instead of the full object.
-          const modelText = toolResultModelText(p.result);
+          const modelText = toolResultModelText(p.result, name);
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });

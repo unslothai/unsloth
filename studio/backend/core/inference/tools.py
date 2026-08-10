@@ -7164,7 +7164,7 @@ def _session_in_flight(session_id: "str | None"):
         # stays closed, so nothing starts in the directory being removed.
         try:
             for pending_id, pending_files in pending.items():
-                if _thread_exists(pending_id):
+                if _thread_exists(pending_id, unknown = True):
                     # Recreated while that call ran: this delete belongs to the
                     # chat that went, and the folder is the new one's now.
                     continue
@@ -7409,7 +7409,7 @@ def collect_orphaned_project_workspaces() -> None:
             # This runs minutes after the row went, and the id is the client's
             # to reuse: a chat or a project created since owns that folder, and
             # a card of its own may not be stored yet.
-            if _thread_exists(record_id) if is_chat else _project_exists(record_id):
+            if _thread_exists(record_id, unknown = True) if is_chat else _project_exists(record_id):
                 logger.info("Kept %s: it was created again", record_id)
                 continue
             if not wait_for_sessions_idle([session], timeout = 0.0):
@@ -7468,10 +7468,17 @@ def _recorded_project_workdir(project_id: str) -> "str | None":
 
 
 def _orphaned_project_workdir(project_id: str) -> "str | None":
-    """A deleted project's workspace, when its files were kept."""
+    """A deleted project's workspace, when its files were kept.
+
+    The record answers for any id, since it is keyed by a digest. Only the
+    guess below builds a directory name, so only that needs an id a filename
+    can hold.
+    """
     recorded = _recorded_project_workdir(project_id)
     if recorded:
         return recorded
+    if not _usable_session_id(project_id):
+        return None
     suffix = re.sub(r"[^A-Za-z0-9_-]+", "-", project_id)[:8].strip("-_") or "project"
     try:
         from utils.paths import project_workspaces_root
@@ -7488,13 +7495,18 @@ def _orphaned_project_workdir(project_id: str) -> "str | None":
     return None
 
 
-def _thread_exists(thread_id: str) -> bool:
-    """Whether a chat of the user's is stored under this exact id."""
+def _thread_exists(thread_id: str, unknown: bool = False) -> bool:
+    """Whether a chat of the user's is stored under this exact id.
+
+    ``unknown`` is what a check that could not be made returns: a caller about
+    to delete files passes True, so a database hiccup keeps them, while one
+    merely routing a call passes False and treats the id as a project's.
+    """
     try:
         from storage.studio_db import get_chat_thread
         return get_chat_thread(thread_id) is not None
-    except Exception:  # noqa: BLE001 - a storage hiccup must not reroute a call
-        return False
+    except Exception:  # noqa: BLE001 - see `unknown`
+        return unknown
 
 
 def _project_exists(project_id: str) -> bool:
@@ -7542,7 +7554,7 @@ def _get_project_workdir(session_id: str) -> str | None:
         # this sandbox, and the workspace was kept for exactly that. The folder
         # name carries the project id, so it is found without the row, which
         # needs an id a filename can hold.
-        return _orphaned_project_workdir(project_id) if _usable_session_id(project_id) else None
+        return _orphaned_project_workdir(project_id)
     root_path = project.get("rootPath")
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
@@ -7779,24 +7791,22 @@ def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
     # adopt on: tool code can write any owner into that file, so a scan for
     # "whoever claims to be me" would hand one chat another's files.
     candidates = [os.path.join(root, name), *_fallback_candidates(root, session_id)]
+    # Listed once: there are 33 candidate names, and a scan each would be 33
+    # walks of a root that can hold a folder per chat, on a first call.
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        entries = []
     for candidate in candidates:
-        for path in [candidate, *_staging_variants(candidate)]:
+        base = os.path.basename(candidate)
+        prefix = f"{base}{_STAGING_SUFFIX}"
+        staged = [os.path.join(root, e) for e in entries if e.startswith(prefix)]
+        for path in [candidate, *staged]:
             if os.path.islink(path) or not os.path.isdir(path):
                 continue
             if _marker_owner(path) == name:
                 return path
     return None
-
-
-def _staging_variants(candidate: str) -> "list[str]":
-    """Staging names a move onto *candidate* could have left behind."""
-    root, base = os.path.split(candidate)
-    try:
-        entries = os.listdir(root)
-    except OSError:
-        return []
-    prefix = f"{base}{_STAGING_SUFFIX}"
-    return [os.path.join(root, e) for e in sorted(entries) if e.startswith(prefix)]
 
 
 def _free_fallback_dir(root: str, session_id: str) -> "str | None":
@@ -8346,6 +8356,12 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         return cached
     if not session_id:
         return _sandbox_fallback(root, "_default")
+    # A directory this process made for this chat is this chat's, whatever a
+    # tool wrote into the marker since: the check above trusts that file, and
+    # without this the files it holds are served from nowhere.
+    claimed = _claimed_by_this_run(session_id, os.path.realpath(root))
+    if claimed:
+        return claimed
     workdir = _session_dir(root, session_id)
     # Same containment _get_workdir applies: a session entry symlinked out of
     # the root would otherwise serve whatever it points at.
@@ -8610,22 +8626,24 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
 
 
 def _claimed_by_this_run(session_id: str, root: str) -> "str | None":
-    """The directory this process made for this chat, marker or no marker.
+    """The directory this process made for this chat, whatever the marker says.
 
-    Tool code runs in there and can remove the marker, and after that neither
-    name resolves to it: the delete would then leave the folder behind without
-    even reporting that it kept anything.
+    Tool code runs in there and can empty that file or write another id into
+    it, and neither makes the directory somebody else's: this process wrote the
+    marker with O_EXCL and remembers doing it. Put back here, so the ordinary
+    routes find it too rather than leaving the files stranded until some later
+    call happens to repair it.
     """
     cached = _workdirs.get(session_id)
     if not cached or cached not in _claimed_here:
         return None
     if os.path.islink(cached) or not os.path.isdir(cached):
         return None
-    if not _contained_in_root(cached, root) or _marker_owner(cached) not in (
-        None,
-        _sandbox_name(session_id),
-    ):
+    if not _contained_in_root(cached, root):
         return None
+    if _marker_owner(cached) != _sandbox_name(session_id):
+        _preserve_foreign_marker(cached, session_id)
+        _mark_sandbox(cached, session_id)
     return cached
 
 

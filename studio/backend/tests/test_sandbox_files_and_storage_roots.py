@@ -4879,9 +4879,12 @@ def test_a_marker_a_tool_wrote_over_counts_as_the_user_s_file(tmp_path, monkeypa
     (workdir / tools._SANDBOX_MARKER).write_text("my notes", encoding = "utf-8")
     assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is False
 
-    # And a delete that was not asked to remove files keeps them.
+    # And a delete that was not asked to remove files keeps them. The delete
+    # repairs the marker on the way, so what the tool wrote is beside it.
     assert tools.remove_session_sandbox(session, delete_files = False) is False
-    assert (workdir / tools._SANDBOX_MARKER).read_text(encoding = "utf-8") == "my notes"
+    saved = list(workdir.glob(".unsloth_sandbox.saved*"))
+    assert saved and saved[0].read_text(encoding = "utf-8") == "my notes"
+    assert tools._holds_no_user_files(str(workdir), tools._sandbox_name(session)) is False
 
 
 def test_clearing_every_chat_builds_the_listed_set_once():
@@ -5503,6 +5506,106 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
 
     assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
     assert tools.list_orphaned_projects() == [], "a live project was left recorded"
+
+
+def test_a_kept_workspace_resolves_for_any_project_id(tmp_path, monkeypatch):
+    """The record is keyed by a digest, so the id it holds needs to be nothing
+    in particular; only the guessed directory name does."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "Ünsloth/Notes " + "y" * 80
+    workspace = tmp_path / "Notes-kept"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    tools.record_orphaned_project(project_id, str(workspace / "sandbox"), False, str(workspace))
+
+    monkeypatch.setattr(studio_db, "ensure_chat_project_workspace", lambda pid: None)
+    served = Path(tools.resolve_sandbox_workdir(tools.project_session_id(project_id)))
+    assert served == (workspace / "sandbox").resolve(), served
+    assert (served / "report.csv").is_file()
+
+
+def test_a_marker_rewritten_with_another_name_keeps_the_chat_s_files(tmp_path, monkeypatch):
+    """That file is tool-writable, and a valid-looking name in it made the
+    directory unreachable: no download, and a delete that reported nothing."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    session = "chat-marker-2"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    # A tool call writes a perfectly good session name over the marker.
+    (workdir / tools._SANDBOX_MARKER).write_text("someone-else", encoding = "utf-8")
+
+    assert Path(tools.resolve_sandbox_workdir(session)) == workdir, "the files were stranded"
+    assert tools.session_sandbox_has_files(session) is True
+    assert tools.remove_session_sandbox(session, delete_files = True) is True
+    assert not workdir.exists()
+
+
+def test_a_sandbox_lookup_lists_the_root_once(tmp_path, monkeypatch):
+    """There are 33 candidate names, and a scan each turned one first call into
+    33 walks of a root that holds a folder per chat."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    scans = []
+    real_listdir = os.listdir
+
+    def counting_listdir(path):
+        scans.append(str(path))
+        return real_listdir(path)
+
+    monkeypatch.setattr(tools.os, "listdir", counting_listdir)
+    assert tools._marked_sandbox_in(str(root), "chat-scan-1") is None
+    assert len([s for s in scans if s == str(root)]) == 1, scans
+
+
+def test_a_deferred_delete_keeps_the_files_when_the_check_cannot_be_made(tmp_path, monkeypatch):
+    """The queued delete fires with no request around it, and the row check is
+    the only thing standing between it and a recreated chat's files."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    session = "chat-unknown-1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    def broken(thread_id):
+        raise RuntimeError("database is away")
+
+    monkeypatch.setattr(studio_db, "get_chat_thread", broken)
+    with tools._session_in_flight(session):
+        assert tools.remove_session_sandbox(session, delete_files = True) is False
+
+    assert (workdir / "report.csv").is_file(), "files went on an unanswerable check"
+
+
+def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
+    """A custom tool answering with text, sessionId and images is someone
+    else's result, and replaying only its text drops the rest."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+    adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
+    assert "function isSandboxWrapper(result: unknown, toolName?: string)" in adapter
+    assert "SANDBOX_FILE_TOOLS.has(toolName)" in adapter
+    assert "isSandboxWrapper(result, tc.toolName ?? \"\")" in adapter
+    # The export paths pass the name too, so a wrapper is stripped in one place.
+    dialog = (
+        src / "features/chat/prompt-storage/prompt-storage-dialog.tsx"
+    ).read_text(encoding = "utf-8")
+    assert "toolResultModelText(p.result, p.toolName)" in dialog
+    assert "toolResultModelText(p.result, name)" in dialog
 
 
 if __name__ == "__main__":
