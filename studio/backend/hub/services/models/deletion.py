@@ -852,9 +852,7 @@ def _delete_cached_model_blocking(
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(
                 status_code = 503,
-                detail = (
-                    "Couldn't confirm these assets are still unused. Try again in a moment."
-                ),
+                detail = ("Couldn't confirm these assets are still unused. Try again in a moment."),
             )
         if not still_orphan:
             raise HTTPException(
