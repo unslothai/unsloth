@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export type LegacyCredentialOwnerAction = "claim" | "keep" | "discard";
+export type LegacyCredentialOwnerAction = "claim" | "keep" | "ignore";
 
 export function legacyCredentialOwnerAction(
   storedOwner: string | null,
   currentOwner: string,
 ): LegacyCredentialOwnerAction {
   if (!storedOwner) return "claim";
-  return storedOwner === currentOwner ? "keep" : "discard";
+  return storedOwner === currentOwner ? "keep" : "ignore";
 }
 
 /** Read the authenticated subject only as a local ownership label; the backend validates it. */

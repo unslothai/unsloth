@@ -734,6 +734,13 @@ export function ChatProvidersSettings({
             ? { clearApiKey: true }
             : {}),
       });
+
+      if (
+        credentialEdit.action === "replace" ||
+        credentialEdit.action === "clear"
+      ) {
+        removeExternalProviderApiKey(editingProviderId);
+      }
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();

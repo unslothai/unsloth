@@ -244,9 +244,19 @@ test("provider migration does not consume local input after a session change", a
 test("legacy migration input is bound to one authenticated subject", () => {
   assert.equal(legacyCredentialOwnerAction(null, "alice"), "claim");
   assert.equal(legacyCredentialOwnerAction("alice", "alice"), "keep");
-  assert.equal(legacyCredentialOwnerAction("alice", "bob"), "discard");
+  assert.equal(legacyCredentialOwnerAction("alice", "bob"), "ignore");
   assert.equal(authSubjectFromJwt("x.eyJzdWIiOiJhbGljZSJ9.y"), "alice");
   assert.equal(authSubjectFromJwt("not-a-jwt"), null);
+});
+
+
+test("account switches preserve but do not expose another owner's migration input", () => {
+  const bootstrapSource = readFileSync(
+    new URL("../src/features/credentials/bootstrap.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(bootstrapSource, /return action !== "ignore"/);
+  assert.doesNotMatch(bootstrapSource, /discardAllLegacy|removeLegacyToken/);
 });
 
 
@@ -282,6 +292,8 @@ test("provider edit state keeps, replaces, and explicitly clears saved keys", ()
   );
   assert.match(source, /Saved securely\. Leave blank to keep it\./);
   assert.match(source, /Remove saved key/);
+
+  assert.match(source, /removeExternalProviderApiKey\(editingProviderId\)/);
 });
 
 test("credential gate follows authentication session transitions", () => {

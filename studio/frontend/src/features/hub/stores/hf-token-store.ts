@@ -18,6 +18,8 @@ const HF_TOKEN_SYNC_KEY = "unsloth_hf_token_backend_revision";
 
 let stagedLegacyToken = "";
 
+let legacyHfCredentialAccessAllowed = false;
+
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
@@ -27,6 +29,8 @@ export function normalizeHfToken(raw: string): string {
 }
 
 function loadLegacyToken(): string {
+
+  if (!legacyHfCredentialAccessAllowed) return "";
   if (!canUseStorage()) return stagedLegacyToken;
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
@@ -162,16 +166,19 @@ export function stageLegacyHfTokenForMigration(value: string): void {
   const token = normalizeHfToken(value);
   if (!token) return;
   stagedLegacyToken ||= token;
-  if (!useHfTokenStore.getState().token) {
+  if (
+    legacyHfCredentialAccessAllowed &&
+    !useHfTokenStore.getState().token
+  ) {
     useHfTokenStore.setState({ token });
   }
 }
 
 
-/** Discard browser-wide migration input before hydrating a different account. */
-export function discardLegacyHfTokenForMigration(): void {
-  removeLegacyToken();
-  if (!serverCredentialHydrated) {
+/** Allow browser-wide legacy input only for the account that claimed it. */
+export function setLegacyHfCredentialAccess(allowed: boolean): void {
+  legacyHfCredentialAccessAllowed = allowed;
+  if (!allowed && !serverCredentialHydrated) {
     useHfTokenStore.setState({ token: "", persistenceError: null });
   }
 }
@@ -231,6 +238,8 @@ function resetHfCredentialSession(): void {
   persistenceRevision += 1;
   hydrationPromise = null;
   serverCredentialHydrated = false;
+
+  legacyHfCredentialAccessAllowed = false;
   stagedLegacyToken = "";
   lastPersistedToken = "";
   useHfTokenStore.setState({

@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 
+import { AUTH_SESSION_CLEARED_EVENT } from "../auth/session-events.ts";
+
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -424,6 +426,21 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
   }
 }
 
+let legacyProviderCredentialAccessAllowed = false;
+
+/** Allow browser-wide legacy keys only for the account that claimed them. */
+export function setLegacyProviderCredentialAccess(allowed: boolean): void {
+  legacyProviderCredentialAccessAllowed = allowed;
+}
+
+
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    legacyProviderCredentialAccessAllowed = false;
+  });
+}
+
+
 /** Load legacy browser keys for retry-safe backend migration. */
 function loadRawKeyMap(): Record<string, string> {
   if (!canUseStorage()) return {};
@@ -470,20 +487,12 @@ export function saveExternalProviders(
 export function getExternalProviderApiKey(
   providerId: string,
 ): string {
+
+  if (!legacyProviderCredentialAccessAllowed) return "";
   const keys = loadRawKeyMap();
   return keys[providerId] ?? "";
 }
 
-/** Store a provider API key in localStorage. */
-export function setExternalProviderApiKey(
-  providerId: string,
-  apiKey: string,
-): void {
-  if (!canUseStorage()) return;
-  const keys = loadRawKeyMap();
-  keys[providerId] = apiKey;
-  saveRawKeyMap(keys);
-}
 
 export function removeExternalProviderApiKey(providerId: string): void {
   if (!canUseStorage()) return;
@@ -493,16 +502,5 @@ export function removeExternalProviderApiKey(providerId: string): void {
     saveRawKeyMap(keys);
   } catch {
     // ignore
-  }
-}
-
-
-/** Discard browser-wide migration input before hydrating a different account. */
-export function discardAllLegacyExternalProviderApiKeys(): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.removeItem(EXTERNAL_PROVIDER_KEYS_KEY);
-  } catch {
-    // ignore unavailable storage
   }
 }
