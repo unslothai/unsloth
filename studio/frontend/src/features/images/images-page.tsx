@@ -1123,7 +1123,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const { isMobile, pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
+    "A hyper-realistic cinematic photograph of an enchanting Victorian tea party deep inside a magical Wonderland garden, inspired by Alice in Wonderland aesthetics. A mysterious Cheshire Cat with glowing emerald eyes and a subtle mischievous smile sits beside an ornate antique tea table, surrounded by porcelain teacups, roses, playing cards, mushrooms, and floating candles. Elegant Victorian dresses, intricate lace details, golden afternoon sunlight filtering through twisted trees, whimsical fantasy atmosphere, realistic fur texture, natural lighting, shallow depth of field, shot on an 85mm lens, ultra detailed, photorealistic, cinematic composition, masterpiece photography",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
