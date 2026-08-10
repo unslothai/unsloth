@@ -189,6 +189,10 @@ let hydrationPromise: Promise<void> | null = null;
 export function hydrateHfTokenFromBackend(): Promise<void> {
   if (hydrationPromise) return hydrationPromise;
   const sessionRevision = authSessionRevision;
+  const persistenceRevisionAtStart = persistenceRevision;
+  const persistenceWasPending = useHfTokenStore.getState().isPersisting;
+  const canApplyHydratedToken = () =>
+    !persistenceWasPending && persistenceRevisionAtStart === persistenceRevision;
   const assertCurrentSession = () => {
     if (sessionRevision !== authSessionRevision) {
       throw new Error("Authentication session changed during credential hydration.");
@@ -215,6 +219,7 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
       },
       applyToken: (token) => {
         assertCurrentSession();
+        if (!canApplyHydratedToken()) return;
         lastPersistedToken = normalizeHfToken(token);
         useHfTokenStore.setState({
           token: lastPersistedToken,

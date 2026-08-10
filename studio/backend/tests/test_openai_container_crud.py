@@ -277,7 +277,8 @@ def test_list_route_filters_expired_containers(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    def fake_resolve(_body, _subject):
+    def fake_resolve(_body, *, allow_saved_key):
+        assert allow_saved_key is True
         return _make_client()
 
     monkeypatch.setattr(inf_mod, "_resolve_openai_cloud_client", fake_resolve)
@@ -286,7 +287,8 @@ def test_list_route_filters_expired_containers(monkeypatch):
         encrypted_api_key = "enc",
         provider_base_url = "https://api.openai.com/v1",
     )
-    response = _drive(inf_mod.list_openai_containers(body, current_subject = "u"))
+    request = httpx.Request("POST", "http://test/api/external/openai/containers/list")
+    response = _drive(inf_mod.list_openai_containers(body, request, current_subject = "u"))
     ids = [c.id for c in response.containers]
     assert "cntr_active" in ids
     assert "cntr_unknown" in ids  # missing status is treated as usable

@@ -293,6 +293,29 @@ test("legacy migration remains installation-wide and retry-safe", () => {
 });
 
 
+test("HF credential API rejects a successful non-JSON response", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("not json", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    })) as typeof fetch;
+
+  try {
+    const { loadSavedHfToken } = await import(
+      "../src/features/hub/api/hf-token-api.ts"
+    );
+    await assert.rejects(loadSavedHfToken(), /returned an invalid response/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
 test("HF store hydrates from the API without recreating plaintext storage", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
@@ -315,6 +338,59 @@ test("HF store hydrates from the API without recreating plaintext storage", asyn
     assert.equal(hfStore.getHfToken(), "hf_server");
     assert.deepEqual(requests, ["/api/settings/hugging-face-token"]);
     assert.equal(store.has("unsloth_hf_token"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+test("HF hydration does not overwrite an in-flight user edit", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let resolveLoad!: (response: Response) => void;
+  let resolveSave!: (response: Response) => void;
+  const loadResponse = new Promise<Response>((resolve) => {
+    resolveLoad = resolve;
+  });
+  const saveResponse = new Promise<Response>((resolve) => {
+    resolveSave = resolve;
+  });
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === "PUT" ? saveResponse : loadResponse) as typeof fetch;
+
+  try {
+    const hfStore = await import(
+      "../src/features/hub/stores/hf-token-store.ts"
+    );
+    const hydration = hfStore.hydrateHfTokenFromBackend();
+    hfStore.useHfTokenStore.getState().setToken("hf_user_edit");
+
+    resolveLoad(
+      new Response(JSON.stringify({ token: "hf_server", has_token: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await hydration;
+    assert.equal(hfStore.getHfToken(), "hf_user_edit");
+    assert.equal(hfStore.useHfTokenStore.getState().isPersisting, true);
+
+    resolveSave(
+      new Response(JSON.stringify({ token: "hf_user_edit", has_token: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(hfStore.getHfToken(), "hf_user_edit");
+    assert.equal(hfStore.useHfTokenStore.getState().isPersisting, false);
   } finally {
     globalThis.fetch = originalFetch;
     Reflect.deleteProperty(globalThis, "window");

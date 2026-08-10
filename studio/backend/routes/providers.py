@@ -175,8 +175,15 @@ async def update_provider_config(
 
     metadata_fields = {"display_name", "base_url", "is_enabled", "models", "available_models"}
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
+
+    replacement_api_key = None
     if payload.encrypted_api_key:
         credential_secrets.get_or_create_credential_encryption_key()
+        replacement_api_key = resolve_provider_api_key_or_400(
+            provider_id, payload.encrypted_api_key
+        )
+        if not replacement_api_key:
+            raise HTTPException(status_code = 400, detail = "API key cannot be empty")
 
     if metadata_requested:
         providers_db.update_provider(
@@ -187,13 +194,27 @@ async def update_provider_config(
             models = payload.models,
             available_models = payload.available_models,
         )
-    if payload.encrypted_api_key:
-        api_key = resolve_provider_api_key_or_400(provider_id, payload.encrypted_api_key)
-        if not api_key:
-            raise HTTPException(status_code = 400, detail = "API key cannot be empty")
-        credential_secrets.save_provider_api_key(provider_id, api_key)
-    elif payload.clear_api_key:
-        credential_secrets.delete_provider_api_key(provider_id)
+    try:
+        if replacement_api_key is not None:
+            credential_secrets.save_provider_api_key(provider_id, replacement_api_key)
+        elif payload.clear_api_key:
+            credential_secrets.delete_provider_api_key(provider_id)
+    except Exception:
+        if metadata_requested:
+            try:
+                providers_db.update_provider(
+                    id = provider_id,
+                    display_name = existing["display_name"],
+                    base_url = existing["base_url"],
+                    is_enabled = bool(existing["is_enabled"]),
+                    models = existing.get("models") or [],
+                    available_models = existing.get("available_models") or [],
+                )
+            except Exception:
+                logger.exception(
+                    "provider.update_metadata_rollback_failed", provider_id = provider_id
+                )
+        raise
     if not metadata_requested and not payload.encrypted_api_key and not payload.clear_api_key:
         raise HTTPException(status_code = 400, detail = "No fields to update")
 
@@ -209,8 +230,19 @@ async def delete_provider_config(
 ):
     """Idempotently delete a saved provider and its installation credential."""
     require_ui_session(via_api_key)
+    existing_api_key = credential_secrets.get_provider_api_key(provider_id)
     credential_secrets.delete_provider_api_key(provider_id)
-    providers_db.delete_provider(provider_id)
+    try:
+        providers_db.delete_provider(provider_id)
+    except Exception:
+        if existing_api_key:
+            try:
+                credential_secrets.save_provider_api_key(provider_id, existing_api_key)
+            except Exception:
+                logger.exception(
+                    "provider.delete_credential_rollback_failed", provider_id = provider_id
+                )
+        raise
 
 
 def _bind_saved_provider_target(payload):

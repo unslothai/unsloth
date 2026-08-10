@@ -209,10 +209,12 @@ assert seen["api_key"] == "sk_restart"
         cwd = backend_dir,
         env = env,
         check = True,
+        timeout = 30,
     )
     subprocess.run(
         [sys.executable, "-c", use_credentials_after_restart],
         cwd = backend_dir,
         env = env,
         check = True,
+        timeout = 30,
     )

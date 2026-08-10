@@ -145,6 +145,81 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
     assert providers_db.get_provider(created.id) is None
 
 
+def test_provider_update_validates_before_writes_and_rolls_back_metadata(monkeypatch):
+    providers_db.create_provider(
+        id = "provider-1",
+        provider_type = "openai",
+        display_name = "Original",
+        base_url = "https://api.openai.com/v1",
+    )
+    credential_secrets.save_provider_api_key("provider-1", "sk-original")
+
+    def invalid_envelope(_provider_id, _envelope, **_kwargs):
+        raise HTTPException(status_code = 400, detail = "invalid envelope")
+
+    monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", invalid_envelope)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            providers_route.update_provider_config(
+                "provider-1",
+                ProviderUpdate(display_name = "Must not persist", encrypted_api_key = "invalid"),
+                _current_subject = "alice",
+                via_api_key = False,
+            )
+        )
+    assert providers_db.get_provider("provider-1")["display_name"] == "Original"
+
+    monkeypatch.setattr(
+        providers_route,
+        "resolve_provider_api_key_or_400",
+        lambda _provider_id, _envelope, **_kwargs: "sk-replacement",
+    )
+    original_save = credential_secrets.save_provider_api_key
+
+    def fail_replacement(provider_id: str, api_key: str):
+        if api_key == "sk-replacement":
+            raise RuntimeError("simulated credential write failure")
+        original_save(provider_id, api_key)
+
+    monkeypatch.setattr(credential_secrets, "save_provider_api_key", fail_replacement)
+    with pytest.raises(RuntimeError, match = "credential write failure"):
+        asyncio.run(
+            providers_route.update_provider_config(
+                "provider-1",
+                ProviderUpdate(display_name = "Also rolled back", encrypted_api_key = "valid"),
+                _current_subject = "alice",
+                via_api_key = False,
+            )
+        )
+
+    assert providers_db.get_provider("provider-1")["display_name"] == "Original"
+    assert credential_secrets.get_provider_api_key("provider-1") == "sk-original"
+
+
+def test_provider_delete_restores_key_when_provider_delete_fails(monkeypatch):
+    providers_db.create_provider(
+        id = "provider-1",
+        provider_type = "openai",
+        display_name = "OpenAI",
+        base_url = "https://api.openai.com/v1",
+    )
+    credential_secrets.save_provider_api_key("provider-1", "sk-original")
+
+    def fail_delete(_provider_id: str):
+        raise RuntimeError("simulated provider delete failure")
+
+    monkeypatch.setattr(providers_db, "delete_provider", fail_delete)
+    with pytest.raises(RuntimeError, match = "provider delete failure"):
+        asyncio.run(
+            providers_route.delete_provider_config(
+                "provider-1", _current_subject = "alice", via_api_key = False
+            )
+        )
+
+    assert providers_db.get_provider("provider-1") is not None
+    assert credential_secrets.get_provider_api_key("provider-1") == "sk-original"
+
+
 def test_provider_mutations_reject_api_key_authentication():
     with pytest.raises(HTTPException) as error:
         asyncio.run(

@@ -9,6 +9,16 @@ export interface SavedHfTokenResponse {
   has_token: boolean;
 }
 
+function isSavedHfTokenResponse(value: unknown): value is SavedHfTokenResponse {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<SavedHfTokenResponse>;
+  return (
+    typeof candidate.has_token === "boolean" &&
+    (typeof candidate.token === "string" || candidate.token === null)
+  );
+}
+
+
 async function parse(response: Response): Promise<SavedHfTokenResponse> {
   const body = (await response.json().catch(() => null)) as
     | SavedHfTokenResponse
@@ -21,7 +31,10 @@ async function parse(response: Response): Promise<SavedHfTokenResponse> {
       detail || `Hugging Face credential request failed (${response.status})`,
     );
   }
-  return body as SavedHfTokenResponse;
+  if (!isSavedHfTokenResponse(body)) {
+    throw new Error("Hugging Face credential request returned an invalid response");
+  }
+  return body;
 }
 
 export async function loadSavedHfToken(): Promise<SavedHfTokenResponse> {
