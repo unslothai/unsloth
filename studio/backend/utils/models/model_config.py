@@ -3670,7 +3670,17 @@ class ModelConfig:
                             f"Available variants: {available}"
                         )
                 if not variant:  # auto-select best quant
-                    variant_filenames = [v.filename for v in variants]
+                    # ROOT rows when there are any. _pick_best_gguf keeps whichever filename it
+                    # met first among equals, so an LTX-style listing that puts distilled/...-Q6_K
+                    # before the root ...-Q6_K made a bare repo id load the distilled checkpoint --
+                    # while local_model_resolver, the auto-download map and /gguf-variants all
+                    # define a bare id as the root. This is the LOAD path, so it has to agree.
+                    root_rows = [
+                        v.filename
+                        for v in variants
+                        if "/" not in _qualified_variant_name(v.filename, v.quant)
+                    ]
+                    variant_filenames = root_rows or [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
                     if best:
                         # The SAME identity the lister advertised for that file. Converting the

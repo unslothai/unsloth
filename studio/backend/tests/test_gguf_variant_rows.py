@@ -982,3 +982,43 @@ def test_every_branch_derives_the_default_from_the_root_rows():
     source = inspect.getsource(service)
     assert source.count("pick_best_gguf(_default_variant_candidates(") == 3
     assert "pick_best_gguf(filenames)" not in source
+
+
+def test_the_kv_cache_estimate_sizes_one_shard_family():
+    """A snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets) would report double
+    the weights the loader opens, which /kv-cache-estimate turns into a false exceeds-memory
+    warning -- and which can make a snapshot look "more complete" purely for holding a redundant
+    copy. Same rule group_gguf_variant_files applies."""
+    from routes.models import _one_shard_family_of
+
+    duplicated = [
+        ("QwQ-32B-BF16-00001-of-00002.gguf", None, 10),
+        ("QwQ-32B-BF16-00002-of-00002.gguf", None, 10),
+        ("QwQ-32B.BF16-00001-of-00002.gguf", None, 10),
+        ("QwQ-32B.BF16-00002-of-00002.gguf", None, 10),
+    ]
+    kept = _one_shard_family_of(duplicated)
+    assert [e[0] for e in kept] == [
+        "QwQ-32B-BF16-00001-of-00002.gguf",
+        "QwQ-32B-BF16-00002-of-00002.gguf",
+    ]
+    assert sum(e[2] for e in kept) == 20
+    # A genuinely split GGUF is ONE family and survives whole.
+    split = [(f"m-0000{i}-of-00003.gguf", None, 5) for i in (1, 2, 3)]
+    assert _one_shard_family_of(split) == split
+
+
+def test_the_remote_load_path_auto_selects_the_root_checkpoint():
+    """ModelConfig.from_identifier is the LOAD path, so it has to define a bare repo id the way
+    local_model_resolver, the auto-download map and /gguf-variants do -- the ROOT checkpoint.
+    _pick_best_gguf keeps whichever filename it met first among equals, and an LTX-style listing
+    puts distilled/... before the root file."""
+    import inspect
+
+    from utils.models import model_config as mc
+
+    source = inspect.getsource(mc.ModelConfig.from_identifier)
+    assert "root_rows = [" in source
+    assert "variant_filenames = root_rows or [v.filename for v in variants]" in source
+    # The filter reads the ADVERTISED identity, the same one the lister assigns each row.
+    assert '"/" not in _qualified_variant_name(v.filename, v.quant)' in source

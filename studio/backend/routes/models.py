@@ -3372,7 +3372,12 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 ranked[rank].append((rel, f, size))
             # Exact keys alone when any exist: summing them with the label matches counts other
             # checkpoints' bytes into this row's estimate and can reveal one of their files.
-            chosen = ranked[0] or ranked[1]
+            # ... and within those, ONE shard family, the same rule group_gguf_variant_files
+            # applies: a snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets)
+            # would otherwise report double the weights the loader opens, which /kv-cache-estimate
+            # turns into a false exceeds-memory warning and which can make a snapshot look
+            # "more complete" purely for holding a redundant copy.
+            chosen = _one_shard_family_of(ranked[0] or ranked[1])
             matches = [(rel, f) for rel, f, _size in chosen]
             total = sum(size for _rel, _f, size in chosen)
             # Prefer the most complete snapshot so a partial older revision can't underestimate bytes.
@@ -3678,6 +3683,26 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     if _is_big_endian_gguf_path(rel_path, label):
         return None
     return label
+
+
+def _one_shard_family_of(entries: list) -> list:
+    """*entries* narrowed to the single shard family the loader would open.
+
+    ``(rel, path, size)`` triples. Same rule as ``hub.utils.gguf.group_gguf_variant_files``:
+    every shard of one split GGUF shares a family, two files that do not are two checkpoints, and
+    the family kept is the one holding the lexicographically first file. A genuinely split GGUF is
+    one family and survives whole.
+    """
+    if len(entries) < 2:
+        return list(entries)
+    from hub.utils.gguf import gguf_variant_family
+
+    families: dict[str, list] = {}
+    for entry in entries:
+        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+    if len(families) < 2:
+        return list(entries)
+    return min(families.values(), key = lambda group: min(e[0] for e in group))
 
 
 def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
