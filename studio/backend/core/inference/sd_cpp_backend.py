@@ -813,6 +813,24 @@ class SdCppDiffusionBackend:
         inner_dim = self._flux2_inner_dim(
             repo_id, gguf_filename, fam, hf_token, allow_network = False
         )
+        # Same link the diffusers resolver records, so the delete guard protects a native pick's
+        # companions too -- and here that means the repos _asset_specs actually FETCHES. The
+        # native engine does not read the diffusers base: FLUX.2 takes its VAE from
+        # unsloth/FLUX.2-VAE and its encoders from another repo again, so recording only the base
+        # left every repo the pick really depends on outside the guard, and an unloaded model's
+        # encoder could be deleted while its GGUF stayed installed. Best-effort bookkeeping;
+        # never fails a load.
+        try:
+            from hub.utils.companion_assets import record_companion_link
+            for asset_repo in dict.fromkeys(
+                r
+                for r, _f, kind in self._asset_specs(repo_id, gguf_filename, fam, inner_dim)
+                if kind != "diffusion_model"
+            ):
+                record_companion_link(repo_id, asset_repo)
+            record_companion_link(repo_id, base)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -910,6 +928,23 @@ class SdCppDiffusionBackend:
                     self._loading.asset_repos = tuple(
                         dict.fromkeys(r for r, _f, kind in specs if kind != "diffusion_model")
                     )
+            # And record them, from the SAME post-probe specs. begin_load records what it can, but
+            # it resolves the header offline, so a remote or renamed FLUX.2-klein 9B checkpoint
+            # with no cached probe records the default 4B encoder while this load fetches the 9B
+            # one. Whatever that leaves unrecorded is a companion the delete guard would let go
+            # while its GGUF is still installed. Recorded on the FETCH ids too, since a gated
+            # mirror or a cached community repack is where the bytes actually land.
+            try:
+                from hub.utils.companion_assets import record_companion_link
+                for asset_repo in dict.fromkeys(
+                    rid
+                    for repo, _f, kind in specs
+                    if kind != "diffusion_model"
+                    for rid in (repo, fetch_repo.get(repo, repo))
+                ):
+                    record_companion_link(repo_id, asset_repo)
+            except Exception as exc:  # noqa: BLE001 -- bookkeeping never fails a load
+                logger.debug("sd_cpp.companion_link_record_failed: %s", exc)
             # Same preflight the plan runs, on POST-swap repos: catch a gated companion here, not
             # 15 GiB into the prefetch, without refusing one an ungated mirror stands in for. The
             # plan alone is not enough: the images page falls back to this load when it fails.

@@ -67,6 +67,7 @@ import {
   type DiffusionTrainingRunDetail,
   type DiffusionTrainingRunSummary,
   type DiffusionTrainingStatus,
+  datasetItemCount,
   getDiffusionTrainingInfo,
   getDiffusionTrainingRun,
   getDiffusionTrainingStatus,
@@ -79,6 +80,7 @@ import {
 } from "../api";
 import { DatasetLabelingGrid, LabelingGridToggle } from "./dataset-labeling-grid";
 import {
+  DATASET_CLIP_EXTS,
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
   chunkDatasetUpload,
@@ -172,6 +174,15 @@ function repoIsPrequantized(baseModel: string): boolean {
 }
 // Dataset-select option value prefix for a not-yet-imported example; picking it imports.
 const EXAMPLE_PREFIX = "example:";
+
+/** "12 images", "12 clips", or "12 items" for a mixed folder. The picker has one line per
+ *  dataset, and a clip folder reading "0 images" is exactly the bug this labels away. */
+function datasetItemLabel(d: { image_count: number; clip_count?: number }): string {
+  const clips = d.clip_count ?? 0;
+  const total = d.image_count + clips;
+  const noun = clips === 0 ? "image" : d.image_count === 0 ? "clip" : "item";
+  return `${total} ${noun}${total === 1 ? "" : "s"}`;
+}
 // min-w-0 + a truncating value: a long option would otherwise set the grid column min width and push into its neighbour.
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
@@ -687,11 +698,14 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
-  // A dataset where every image already ships a caption needs no trigger prompt; hide the field and explain why.
+  // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
+  // total over both kinds, so every ratio below has to be against this and not image_count.
+  const selectedItemCount = selectedDataset ? datasetItemCount(selectedDataset) : 0;
+  // A dataset where every item already ships a caption needs no trigger prompt; hide the field and explain why.
   const fullyCaptioned = Boolean(
     selectedDataset &&
-      selectedDataset.image_count > 0 &&
-      selectedDataset.caption_count >= selectedDataset.image_count,
+      selectedItemCount > 0 &&
+      selectedDataset.caption_count >= selectedItemCount,
   );
 
   // Map the backend's paired history arrays into the chart component's {step,value} series.
@@ -764,7 +778,7 @@ export function DiffusionTrainPanel({
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
       }
-      const { files, imageCount, skipped, collisions } = selectDatasetFiles(picked);
+      const { files, imageCount, clipCount, skipped, collisions } = selectDatasetFiles(picked);
       if (collisions.length > 0) {
         const { kind, first, second } = collisions[0];
         const more =
@@ -782,15 +796,16 @@ export function DiffusionTrainPanel({
       }
       if (files.length === 0) {
         toast.error(
-          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) and, ` +
+          `Nothing to upload. Pick images (${DATASET_IMAGE_EXTS.join(", ")}) or ` +
+            `clips (${DATASET_CLIP_EXTS.join(", ")}) and, ` +
             "optionally, a caption file beside each one.",
         );
         return;
       }
-      // /diffusion/info only lists folders holding an image, so say why the set will not
-      // appear yet rather than refusing a captions-first upload.
+      // /diffusion/info only lists folders holding a trainable item, so say why the set will
+      // not appear yet rather than refusing a captions-first upload.
       const newCaptionsOnly =
-        imageCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
+        imageCount === 0 && clipCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
       if (uploadInFlight.current) {
         toast.error("An upload is already running. Wait for it to finish, then try again.");
         return;
@@ -888,26 +903,26 @@ export function DiffusionTrainPanel({
         } else {
           toast.success(
             `Uploaded ${sent} file${sent === 1 ? "" : "s"} - ` +
-              `"${res.name}" now has ${res.image_count} images, ` +
+              `"${res.name}" now has ${datasetItemLabel(res)}, ` +
               `${res.caption_count} captioned`,
           );
         }
         if (skipped > 0) {
           toast.info(
             `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ` +
-              `${skipped === 1 ? "was" : "were"} neither an image nor a caption.`,
+              `${skipped === 1 ? "was" : "were"} neither an image, a clip, nor a caption.`,
           );
         }
         if (newCaptionsOnly) {
           toast.info(
-            `"${res.name}" holds captions but no images yet, so it stays out of the dataset ` +
-              "picker until you add some.",
+            `"${res.name}" holds captions but no images or clips yet, so it stays out of the ` +
+              "dataset picker until you add some.",
           );
         }
         if (misKeyed) {
           toast.info(
             `${misKeyed} keys its captions on subfolder paths, and a dataset folder is flat, ` +
-              "so those rows will not match. A .txt beside each image always will.",
+              "so those rows will not match. A .txt beside each file always will.",
           );
         }
         await refreshInfo();
@@ -984,16 +999,16 @@ export function DiffusionTrainPanel({
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the backend silently skips every uncaptioned image.
     if (
       selectedDataset &&
-      selectedDataset.caption_count < selectedDataset.image_count &&
+      selectedDataset.caption_count < selectedItemCount &&
       !instancePrompt.trim()
     ) {
       toast.error(
         selectedDataset.caption_count === 0
-          ? "These images have no captions - add a trigger prompt so the trainer knows " +
-              "what to learn (it becomes the caption for every image)."
-          : `Only ${selectedDataset.caption_count} of ${selectedDataset.image_count} images ` +
+          ? "This dataset has no captions - add a trigger prompt so the trainer knows " +
+              "what to learn (it becomes the caption for every item)."
+          : `Only ${selectedDataset.caption_count} of ${selectedItemCount} items ` +
               "have captions - the rest would be silently skipped. Add a trigger prompt " +
-              "(it becomes their caption) or caption every image.",
+              "(it becomes their caption) or caption every one.",
       );
       return;
     }
@@ -1056,6 +1071,7 @@ export function DiffusionTrainPanel({
     family,
     dataset,
     selectedDataset,
+    selectedItemCount,
     outputDir,
     instancePrompt,
     resolution,
@@ -1552,10 +1568,10 @@ export function DiffusionTrainPanel({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* Name plus image count only; captions and license show elsewhere. */}
+                  {/* Name plus item count only; captions and license show elsewhere. */}
                   {(info?.datasets ?? []).map((d) => (
                     <SelectItem key={d.name} value={d.name}>
-                      {d.name} - {d.image_count} image{d.image_count === 1 ? "" : "s"}
+                      {d.name} - {datasetItemLabel(d)}
                     </SelectItem>
                   ))}
                   {pendingExamples.length > 0 && (
@@ -1681,8 +1697,8 @@ export function DiffusionTrainPanel({
                 </div>
                 <p className="text-ui-11 leading-snug text-muted-foreground">
                   {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
-                  A caption file beside an image (cat.png and cat.txt) is read as that image's
-                  caption.
+                  Images, or clips for the video families. A caption file beside one (cat.png and
+                  cat.txt, or cat.mp4 and cat.txt) is read as that item's caption.
                 </p>
               </div>
             ) : (
@@ -1697,21 +1713,29 @@ export function DiffusionTrainPanel({
                       onChanged={() => void refreshInfo()}
                     />
                   )}
-                  <LabelingGridToggle
-                    count={selectedDataset.image_count}
-                    open={gridOpen}
-                    onToggle={() => setGridOpen((o) => !o)}
-                  />
-                  {gridOpen && (
-                    <DatasetLabelingGrid
-                      dataset={dataset}
-                      refreshKey={gridRefresh}
-                      onCountsChanged={() => void refreshInfo()}
-                    />
+                  {/* The grid renders thumbnails, so it is offered only where there are images.
+                      One guard over the toggle AND the grid: gating only the toggle would leave
+                      an open grid with nothing to close it once a mixed folder's last image is
+                      deleted, since the clips keep the folder listed. */}
+                  {selectedDataset.image_count > 0 && (
+                    <>
+                      <LabelingGridToggle
+                        count={selectedDataset.image_count}
+                        open={gridOpen}
+                        onToggle={() => setGridOpen((o) => !o)}
+                      />
+                      {gridOpen && (
+                        <DatasetLabelingGrid
+                          dataset={dataset}
+                          refreshKey={gridRefresh}
+                          onCountsChanged={() => void refreshInfo()}
+                        />
+                      )}
+                    </>
                   )}
                   {selectedDataset.caption_count === 0 && !gridOpen && (
                     <p className="text-ui-11 leading-snug text-muted-foreground">
-                      No captions yet, so the trigger prompt describes every image.
+                      No captions yet, so the trigger prompt describes every item.
                     </p>
                   )}
                 </>
@@ -1730,7 +1754,7 @@ export function DiffusionTrainPanel({
           {/* Trigger + adapter name (trigger first: it describes the dataset, the name just labels the output) */}
           {fullyCaptioned ? (
             <p className="text-ui-11 leading-snug text-muted-foreground">
-              All {selectedDataset?.image_count} images have captions, so no trigger prompt
+              Every item in {selectedDataset?.name} has a caption, so no trigger prompt
               is needed.
             </p>
           ) : (
