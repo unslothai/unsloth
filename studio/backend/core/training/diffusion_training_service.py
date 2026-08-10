@@ -60,6 +60,15 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
 
+    # This child never runs LogConfig.setup_logging, so it installs the Hub default
+    # here; the diffusers half is done inside the two trainer entrypoints, which are
+    # the first points where diffusers is actually imported.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        pass
+
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 

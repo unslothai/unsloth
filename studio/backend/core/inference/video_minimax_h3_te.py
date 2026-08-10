@@ -71,6 +71,16 @@ H3_TE_QUANT_FILES: dict[str, str] = {
     "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
+# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it.
+#
+# The released conditioner is a 66.7 GB dense bfloat16 Qwen3-VL of 64 decoder layers and H3 reads
+# ``hidden_states[50]``; transformers has no early exit, so the default runs all 64 layers and
+# streams 66.7 GB across the CPU-offload boundary every generation. The hosted artifact is 27.1 GB
+# over 50 layers with the same read, which is why it is the default rather than an opt-in. NOT an
+# INT8 GEMM: the ConvRot forward dequantizes to the compute dtype and runs an ordinary
+# ``F.linear``, so the win is bytes moved and layers executed, not faster math.
+H3_TE_QUANT_DEFAULT = "int8"
+
 # Resident bytes of each conditioner, decimal GB, measured from the safetensors headers on the Hub
 # (2026-08-09) as the end of the last tensor's data. The quantized load is storage-faithful -- INT8
 # stays INT8, the per-output-channel scales stay float32, the vision tower and the embedding table

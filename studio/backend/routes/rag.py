@@ -406,6 +406,20 @@ def list_thread_documents(thread_id: str, subject: str = Depends(get_current_sub
         conn.close()
 
 
+def _discard_document(document_id: str) -> None:
+    """Drop a document and its upload after the scope it was ingested for disappeared."""
+    conn = _rag_connection()
+    try:
+        document = store.get_document(conn, document_id) or {}
+        store.delete_document(conn, document_id)
+    finally:
+        conn.close()
+    # Same uploads-root confinement as every other cleanup path, and best-effort for the same
+    # reason: on Windows commonpath raises across drives and os.remove raises while the ingestion
+    # worker still holds the file, neither of which should turn this into a 500.
+    _remove_stored_upload(document.get("stored_path"))
+
+
 @router.post("/projects/{project_id}/documents")
 async def upload_project_document(
     project_id: str,
@@ -432,6 +446,11 @@ async def upload_project_document(
             ocr = ocr,
             caption = caption,
         )
+    # the project delete runs in the threadpool and can commit after the check above, once its own
+    # RAG cleanup has already listed the project's documents
+    if get_chat_project(project_id) is None:
+        _discard_document(document_id)
+        raise HTTPException(status_code = 404, detail = "Project not found")
     return {"documentId": document_id, "jobId": job_id, "filename": filename}
 
 

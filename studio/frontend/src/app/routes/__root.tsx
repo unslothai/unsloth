@@ -96,8 +96,8 @@ const CHAT_ONLY_ALLOWED = new Set([
 // Paths that render their own "still checking" state and self-gate once the verdict lands.
 // The redirect below is one-way, so acting on the pre-measurement guess strands a healthy host
 // on /chat; these two wait it out instead. Everything else keeps the old behaviour.
-// /video is allowed outright below, so in practice this is what keeps /studio off the guess;
-// it stays listed because that is the property the page's own loading panel relies on.
+// /video is allowed outright below, so this is in practice what keeps /studio off the guess. It
+// stays listed so that admission is the only thing /video depends on, not both.
 const SELF_GATED_WHILE_UNKNOWN = ["/studio", "/video"];
 
 function waitsOutUnknownVerdict(pathname: string): boolean {
@@ -112,10 +112,9 @@ function isChatOnlyAllowed(pathname: string): boolean {
     return true;
   // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
-  // Video follows /export: the page explains an unsupported host itself, using the backend's
-  // own video verdict (no GPU, no PyTorch, no Apple path). A measured chat-only host is exactly
-  // where that explanation belongs, so a direct link or a reload has to reach VideoPage's gate
-  // instead of bouncing to /chat. It self-gates on videoSupported, so nothing loads.
+  // Video follows /export: the page explains an unsupported host itself from the backend's video
+  // verdict, and on Apple Silicon a chat-only host is where video works anyway. So a direct link
+  // or a reload must reach VideoPage's gate, which self-gates on videoSupported.
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
   return false;
 }

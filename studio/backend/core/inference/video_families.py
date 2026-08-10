@@ -104,7 +104,16 @@ class VideoFamily:
     # that asks for it by name and the old one to every build that does not. That is what lets a
     # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
     # otherwise refuse the v2 tag and fall all the way back to the dense download.
-    prequant_filenames: tuple[tuple[str, str], ...] = field(default_factory = tuple)
+    # A row may also be (scheme, task, filename), naming the artifact for ONE task; it beats the
+    # task-agnostic row and, unlike it, gets no filename fallback (see resolve_prequant_source).
+    prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
+    # Tasks whose denoiser is a DIFFERENT checkpoint partition from the one the task-agnostic
+    # ``prequant_filenames`` / ``prequant_repos`` rows describe. Such a task is served ONLY by its
+    # own (scheme, task, filename) row: the partitions share a base, a class, a config and a key
+    # set, so nothing downstream can tell them apart and an unnamed artifact would load cleanly
+    # and generate from the wrong partition. Empty for every family with a single denoiser, which
+    # is what makes this field free to ignore.
+    prequant_partition_tasks: tuple[str, ...] = field(default_factory = tuple)
     # Modular Diffusers workflow to load instead of a conventional DiffusionPipeline. Its
     # components are loaded without pruning the workflow's routing blocks.
     modular_workflow: Optional[str] = None
@@ -153,7 +162,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
-        supports_torch_compile = False,
+        # Regionally compilable. The DiT declares _repeated_blocks (MiniMaxH3TransformerBlock +
+        # MiniMaxH3TokenRefinerBlock); every block sees (1, S, 5376) plus an (S,) index tensor,
+        # where S is the PACKED length (18,870 video + 207 audio rows + the caption's text rows at
+        # 960x544x124). The caption moves S by ~2% (19,096 at 19 tokens vs 19,479 at 402) and S
+        # cannot change mid-denoise, so dynamic=True traces once and holds: measured 1.298-1.342
+        # s/step eager vs 1.000-1.040 compiled (1.30x), first forward 10.2 s, zero recompiles
+        # across captions of 19/19/37/128/402 tokens. The loader engages this only when the
+        # denoiser is RESIDENT; compiling inside a full CPU-offload rotation measured slower than
+        # eager, so that case stays on the no-compile tier.
+        supports_torch_compile = True,
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through
         # its own from_pretrained, so there is no dense module to quantise in place: these are the
@@ -168,7 +186,22 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # its own name rather than over MiniMax-H3-INT8.pt keeps both true at once: this build
         # gets the rotated artifact, and an older install still resolves the plain one instead of
         # refusing the v2 tag and falling back to the 66.3 GB dense download.
-        prequant_filenames = (("int8", "MiniMax-H3-INT8-ConvRot.pt"),),
+        # The reference (ref2va) denoiser is a SECOND partition in the same base repo, so it gets
+        # its own artifact under its own name for both schemes. The two partitions are otherwise
+        # indistinguishable to the loader -- same class, same config, same 635 keys, same
+        # base_model_id -- so the task, not any later check, is the only thing that keeps a
+        # reference load off the keyframe weights. Keyframe (fl2va, which also covers text-only)
+        # keeps resolving exactly what it resolved before: the rotated INT8 by name, FP8 by the
+        # derived MiniMax-H3-FP8.pt.
+        prequant_filenames = (
+            ("int8", "MiniMax-H3-INT8-ConvRot.pt"),
+            ("int8", "ref2va", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
+            ("fp8", "ref2va", "MiniMax-H3-Ref2VA-FP8.pt"),
+        ),
+        # Keeps the two partitions honest: without a ref2va row above, a ref2va prequant pick is
+        # refused rather than served the keyframe checkpoint. Equal to H3_TASK_REFERENCES; the
+        # literal avoids importing the H3 helper module into the registry.
+        prequant_partition_tasks = ("ref2va",),
         # Both schemes are ~20.3 GB resident against the 66.3 GB dense denoiser; see the field.
         prequant_resident_gb = 20.3,
         modular_workflow = "fl2va",
@@ -395,11 +428,57 @@ def video_family_prequant_repo(
     return None
 
 
-def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
+def video_family_prequant_task_specific(fam: VideoFamily, scheme: str, task: str) -> bool:
+    """True when the family names an artifact for exactly this ``(scheme, task)`` pair.
+
+    Reads the same ``prequant_filenames`` table ``resolve_prequant_source`` reads, through the
+    shared resolver, so the answer here and the file the load asks for cannot drift."""
+    wanted = (task or "").strip().lower()
+    if not wanted:
+        return False
+    try:
+        from .diffusion_families import family_prequant_filename
+        specific = family_prequant_filename(fam, scheme, task = wanted)
+    except Exception:  # noqa: BLE001 -- a bad table is "no artifact", never a 500
+        return False
+    return specific is not None and specific != family_prequant_filename(fam, scheme)
+
+
+def video_family_prequant_available(
+    fam: VideoFamily,
+    scheme: str,
+    *,
+    task: Optional[str] = None,
+    base_repo: Optional[str] = None,
+) -> bool:
+    """True when a hosted pre-quantized denoiser really covers ``(scheme, task)``.
+
+    ``video_family_prequant_repo`` answers "is there a checkpoint for this scheme"; this answers
+    the question a load actually has, which also names the PARTITION. A task listed in
+    ``prequant_partition_tasks`` is served only by its own ``(scheme, task, filename)`` row, so a
+    scheme that has the repo but not that row is unavailable for it -- the alternative is loading
+    another partition's denoiser, which passes every check and generates the wrong thing.
+
+    Every other task, and every family that declares no partition tasks, gets exactly the old
+    answer. Pure, and never raises: this runs on the refusal and download-planning paths."""
+    if video_family_prequant_repo(fam, scheme, base_repo) is None:
+        return False
+    wanted = (task or "").strip().lower()
+    partition_tasks = {
+        (t or "").strip().lower() for t in (getattr(fam, "prequant_partition_tasks", ()) or ())
+    }
+    if wanted and wanted in partition_tasks:
+        return video_family_prequant_task_specific(fam, scheme, wanted)
+    return True
+
+
+def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) -> tuple[str, ...]:
     """Every scheme this family has a hosted denoiser checkpoint for, in table order.
 
     Used to name the workable schemes in a refusal message, so a rejected request tells the caller
-    what to pick instead of only what failed. Malformed rows are skipped, as above."""
+    what to pick instead of only what failed. With ``task``, the list is narrowed to the schemes
+    that cover THAT task, so a reference-video refusal cannot advertise a keyframe-only scheme.
+    Malformed rows are skipped, as above."""
     schemes: list[str] = []
     for entry in getattr(fam, "prequant_repos", ()) or ():
         if isinstance(entry, (tuple, list)) and len(entry) == 2 and entry[0] not in schemes:
@@ -407,6 +486,8 @@ def video_family_prequant_schemes(fam: VideoFamily) -> tuple[str, ...]:
     for entry in getattr(fam, "prequant_variant_repos", ()) or ():
         if isinstance(entry, (tuple, list)) and len(entry) == 3 and entry[1] not in schemes:
             schemes.append(entry[1])
+    if task:
+        schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
     return tuple(schemes)
 
 

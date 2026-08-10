@@ -707,3 +707,67 @@ def test_regional_compile_arms_cache_hook_inners(monkeypatch):
     )
     assert applied["compiled"] is True
     assert armed == [pipe.transformer]
+
+
+# ── the inductor runtime gate ────────────────────────────────────────────────
+# The Studio workers already refuse torch.compile when Triton is missing on Windows; the diffusion
+# and video backends run in the SERVER process, which those gates never reach.
+
+
+def _clear_runtime_cache():
+    from core.inference.diffusion_speed import torch_compile_runtime_available
+    torch_compile_runtime_available.cache_clear()
+
+
+def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch):
+    from core.inference import diffusion_speed as ds_mod
+
+    # compile_eligible reads torch to test the dtype, and without the stub it returns False for
+    # every input -- which would make the assertions below pass whatever the gate did.
+    _stub_torch(monkeypatch)
+    _clear_runtime_cache()
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    # The positive control. Without it the two `is False` lines below prove nothing.
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
+
+    _clear_runtime_cache()
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "1")
+    assert ds_mod.torch_compile_runtime_available() is False
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+    _clear_runtime_cache()
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "0")
+    assert ds_mod.torch_compile_runtime_available() is True
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
+    _clear_runtime_cache()
+
+
+def test_windows_without_triton_falls_back_to_eager(monkeypatch):
+    """A compile call on a Windows install with no Triton wheel is not an error at compile time --
+    it fails at the first forward, mid-generation. Decide it here instead."""
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setattr(ds_mod.sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "triton", None)  # `import triton` -> ImportError
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is False
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is False
+
+    # A Windows install that DOES have the wheel is not held back.
+    monkeypatch.setitem(sys.modules, "triton", types.ModuleType("triton"))
+    _clear_runtime_cache()
+    assert ds_mod.torch_compile_runtime_available() is True
+    _clear_runtime_cache()
+
+
+def test_linux_and_mac_are_not_asked_about_triton(monkeypatch):
+    """Only Windows ships without it, and a probe import on a healthy Linux box is pure cost."""
+    from core.inference import diffusion_speed as ds_mod
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.setitem(sys.modules, "triton", None)
+    for platform_name in ("linux", "darwin"):
+        monkeypatch.setattr(ds_mod.sys, "platform", platform_name)
+        _clear_runtime_cache()
+        assert ds_mod.torch_compile_runtime_available() is True
+    _clear_runtime_cache()
