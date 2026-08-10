@@ -13662,12 +13662,16 @@ async def list_sandbox_files(
 
     from starlette.concurrency import run_in_threadpool
 
-    # The query form carries an id a path segment cannot: an API client can
-    # use one with a slash in it, and ASGI decodes %2F before route matching.
-    sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
-    # In a worker: this walks up to a couple of thousand entries and stats each
-    # one, which on a slow or network filesystem would hold the event loop.
-    files = await run_in_threadpool(_sandbox_listing, sandbox_dir)
+    def _resolve_and_list() -> "tuple[str, list[dict]]":
+        # The query form carries an id a path segment cannot: an API client can
+        # use one with a slash in it, and ASGI decodes %2F before route matching.
+        sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        return sandbox_dir, _sandbox_listing(sandbox_dir)
+
+    # Resolving scans the root for a marked directory and may read the legacy
+    # root too, so it belongs in the worker with the walk: on a slow or network
+    # filesystem either one would hold the event loop for every other request.
+    sandbox_dir, files = await run_in_threadpool(_resolve_and_list)
     return {"path": sandbox_dir, "files": files}
 
 
@@ -13696,10 +13700,17 @@ async def serve_sandbox_file(
     await _authenticate_header_or_query(request, token)
 
     # ── Filename sanitization + path containment ────────────────
-    safe_filename = os.path.basename(filename)
-    _sandbox_dir, file_path = _contained_sandbox_path(session or session_id, filename)
+    from starlette.concurrency import run_in_threadpool
 
-    if not os.path.isfile(file_path):
+    safe_filename = os.path.basename(filename)
+    # In a worker like the listing: resolving the sandbox touches the
+    # filesystem, and the stat below is on the same path.
+    def _resolve() -> "tuple[str, bool]":
+        _dir, path = _contained_sandbox_path(session or session_id, filename)
+        return path, os.path.isfile(path)
+
+    file_path, is_file = await run_in_threadpool(_resolve)
+    if not is_file:
         raise HTTPException(status_code = 404, detail = "Not found")
 
     ext = os.path.splitext(safe_filename)[1].lower()

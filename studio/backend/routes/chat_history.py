@@ -686,7 +686,7 @@ async def delete_project(
 
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
-            forget_orphaned_project,
+            forget_orphaned_project_if_gone,
             project_session_id,
             record_orphaned_project,
             wait_for_sessions_idle,
@@ -735,8 +735,23 @@ async def delete_project(
                 project_id,
             )
         if delete_files and idle and not referenced:
+            # Written down first: the delete can decline an unexpected path or
+            # stop at a locked file, and the row that knew where this workspace
+            # lives has already gone. The record is the only way back to it.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                True,
+                project.get("rootPath"),
+            )
             await run_in_threadpool(delete_project_workspace, project)
-            await run_in_threadpool(forget_orphaned_project, project_id)
+            await run_in_threadpool(
+                forget_orphaned_project_if_gone,
+                project_id,
+                project["sandboxPath"],
+                project.get("rootPath"),
+            )
         elif delete_files:
             # Written down so it can be resolved and, once nothing is using it,
             # collected: the row that knew where it lives is gone.

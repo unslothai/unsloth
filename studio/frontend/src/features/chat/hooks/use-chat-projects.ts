@@ -145,8 +145,9 @@ export async function deleteChatProject(
 ): Promise<void> {
   const kept = await deleteStoredChatProject(projectId, args);
   // The member chats went with the project, so their own sandboxes are
-  // reachable from nothing: the same offer an ordinary chat delete makes.
-  if (!args.deleteFiles) offerToDeleteKeptSandboxes(kept);
+  // reachable from nothing: the same offer an ordinary chat delete makes, and
+  // a sandbox the backend could not remove is kept even when asked to go.
+  offerToDeleteKeptSandboxes(kept);
 }
 
 export async function moveChatItemToProject(

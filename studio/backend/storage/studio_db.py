@@ -154,7 +154,11 @@ def sandbox_is_referenced_elsewhere(
                 return True
         return False
     except sqlite3.Error:
-        return False
+        # A locked database is not an answer, and every caller reads False as
+        # "nothing shows these files any more" before deleting them. Kept, so
+        # the worst case is a folder collected on the next delete.
+        logger.warning("Could not check references for sandbox %s; keeping it", session_id)
+        return True
     finally:
         conn.close()
 

@@ -7275,11 +7275,32 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool]]":
             root = record.get("rootPath") or None
         except (ValueError, TypeError, KeyError):
             continue
-        if path and os.path.isdir(path) and not os.path.islink(path):
+        if _recorded_workspace_remains(path, root):
             records.append((name, path, root, pending))
         else:
             forget_orphaned_project(name)
     return records
+
+
+def _recorded_workspace_remains(workspace: str, root: "str | None") -> bool:
+    """Whether anything a record names is still on disk.
+
+    The project root as well as its sandbox: a delete that removed the sandbox
+    and stopped at a locked file elsewhere leaves the rest of the workspace,
+    and dropping the record here loses both the path and the user's request.
+    """
+    for path in (workspace, root):
+        if path and os.path.isdir(path) and not os.path.islink(path):
+            return True
+    return False
+
+
+def forget_orphaned_project_if_gone(project_id: str, workspace: str, root: "str | None") -> None:
+    """Drop the record only once the workspace really has gone."""
+    if _recorded_workspace_remains(workspace, root):
+        logger.warning("Workspace for %s is still there; left pending", project_id)
+        return
+    forget_orphaned_project(project_id)
 
 
 def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | None") -> None:
@@ -7315,13 +7336,9 @@ def collect_orphaned_project_workspaces() -> None:
             if sandbox_is_referenced_elsewhere(session):
                 continue
             _delete_recorded_workspace(project_id, workspace, root)
-            if not os.path.exists(workspace):
-                forget_orphaned_project(project_id)
-            else:
-                # A locked file on Windows, or a network volume having a bad
-                # moment. The record stays so the next launch tries again:
-                # forgetting it loses both the path and the user's request.
-                logger.warning("Workspace for %s is still there; left pending", project_id)
+            # A locked file on Windows, or a network volume having a bad
+            # moment: the record stays so the next launch tries again.
+            forget_orphaned_project_if_gone(project_id, workspace, root)
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
             logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
 
@@ -7352,7 +7369,9 @@ def finish_workspace_delete_when_idle(
 def _recorded_project_workdir(project_id: str) -> "str | None":
     """The kept workspace of a deleted project, wherever the user put it."""
     for name, path, _root, _pending in list_orphaned_projects():
-        if name == project_id:
+        # Only a sandbox still there: a record kept alive by the rest of its
+        # workspace names a directory nothing can be served from.
+        if name == project_id and os.path.isdir(path):
             return path
     return None
 
@@ -7982,15 +8001,28 @@ def _sandbox_fallback(
     # In a root the user pointed us at, a directory already sitting under this
     # name is theirs: a call with no session id would otherwise run in it. The
     # one we made instead is remembered, so it is not a new one every call.
-    made = os.path.join(root, f"{name}_{_name_suffix(name)}")
+    stem = f"{name}_{_name_suffix(name)}"
+    candidates = [os.path.join(root, stem)] + [
+        os.path.join(root, f"{stem}-{n}") for n in range(2, _MAX_FALLBACK_NAMES + 1)
+    ]
     if not create:
-        return made if _marker_owner(made) == name else _nothing_to_serve(name)
-    try:
-        os.makedirs(made, exist_ok = True)
-    except OSError:
-        return os.path.join(root, f"{name}_unusable")
-    _claim_sandbox(made, name)
-    return made
+        for made in candidates:
+            if not os.path.islink(made) and _marker_owner(made) == name:
+                return made
+        return _nothing_to_serve(name)
+    for made in candidates:
+        # exist_ok alone would take a directory of theirs that happens to carry
+        # this name, and follow a link out of the root to run wherever it
+        # points, so the entry has to be free and the claim has to succeed.
+        if not _free_for(made, name):
+            continue
+        try:
+            os.makedirs(made, exist_ok = True)
+        except OSError:
+            continue
+        if _claim_sandbox(made, name):
+            return made
+    return _nothing_to_serve(name)
 
 
 # Where a read is sent when the chat owns nothing. Outside every sandbox root

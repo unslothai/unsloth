@@ -322,10 +322,10 @@ export async function deleteChatItem(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
-    // Only the surfaces with the switch can ask up front. From the others the
-    // chat is gone and its folder is unreachable, so the offer is made here
-    // rather than leaving one behind per deleted chat.
-    if (!args.deleteFiles) offerToDeleteKeptSandboxes(kept);
+    // Whether or not deletion was asked for: a sandbox that could not be
+    // removed leaves files with no card left to reach them from, and the chat
+    // is already gone, so this offer is the only notice and the only retry.
+    offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);
     notifyChatHistoryUpdated();

@@ -2282,7 +2282,9 @@ def test_the_sandbox_listing_runs_in_a_worker():
     from routes import inference as inference_routes
 
     source = inspect.getsource(inference_routes.list_sandbox_files)
-    assert "run_in_threadpool(_sandbox_listing" in source
+    # Resolution goes with it: that scans the root for a marked directory.
+    assert "_sandbox_listing(sandbox_dir)" in source
+    assert "run_in_threadpool(_resolve_and_list)" in source
     assert "os.stat" not in source
 
 
@@ -4570,6 +4572,187 @@ def test_a_deferred_delete_removes_the_whole_workspace(tmp_path, monkeypatch):
     tools.collect_orphaned_project_workspaces()
 
     assert not root.exists(), sorted(p.name for p in root.iterdir()) if root.exists() else None
+
+
+def _deleted_project(tmp_path, monkeypatch, project_id, workspace):
+    """Drive delete_project for a project whose only member is itself."""
+    import asyncio
+
+    from routes import chat_history
+
+    project = {
+        "id": project_id,
+        "name": "Notes",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "sandboxPath": str(workspace / "sandbox"),
+        "rootPath": str(workspace),
+        "memberIds": [],
+        "activeResearchRunIds": [],
+    }
+    monkeypatch.setattr(chat_history, "delete_chat_project", lambda pid, delete_files: dict(project))
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
+    return asyncio.new_event_loop().run_until_complete(
+        chat_history.delete_project(
+            project_id, request = None, delete_files = True, current_subject = "test",
+        )
+    )
+
+
+def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeypatch):
+    """The rows have gone by then, so a delete that stops at a locked file
+    leaves a workspace nothing names and no way to ask for it again."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj31415"
+    workspace = tmp_path / "Notes-proj3141"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    # The storage helper refuses anything it does not recognise, and a locked
+    # file leaves the tree behind the same way.
+    monkeypatch.setattr(studio_db, "delete_project_workspace", lambda project: None)
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    records = tools.list_orphaned_projects()
+    assert records == [(project_id, str((workspace / "sandbox").resolve()),
+                        str(workspace.resolve()), True)], records
+
+    # And the next collection finishes the job the user asked for.
+    monkeypatch.undo()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    tools.collect_orphaned_project_workspaces()
+    assert not workspace.exists()
+
+
+def test_a_half_deleted_workspace_keeps_its_record(tmp_path, monkeypatch):
+    """The sandbox went and something else in the workspace did not: dropping
+    the record here loses the path and the user's request with it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    project_id = "proj27182"
+    workspace = tmp_path / "Notes-proj2718"
+    sandbox = workspace / "sandbox"
+    sandbox.mkdir(parents = True)
+    tools.record_orphaned_project(project_id, str(sandbox), True, str(workspace))
+
+    shutil.rmtree(sandbox)
+    (workspace / "datasets").mkdir()
+    records = tools.list_orphaned_projects()
+    assert [(r[0], r[3]) for r in records] == [(project_id, True)], records
+    # Nothing is served from a sandbox that is not there.
+    assert tools._recorded_project_workdir(project_id) is None
+
+    shutil.rmtree(workspace)
+    assert tools.list_orphaned_projects() == []
+
+
+def test_a_database_that_will_not_answer_keeps_the_files(monkeypatch):
+    """False reads as "no other chat shows these files" and the caller then
+    deletes them; a locked database is not that answer."""
+    import sqlite3
+
+    from storage import studio_db
+
+    class _Broken:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(studio_db, "get_connection", lambda: _Broken())
+    assert studio_db.sandbox_is_referenced_elsewhere("thread-1") is True
+
+
+def test_the_default_sandbox_never_lands_in_a_directory_of_theirs(tmp_path, monkeypatch):
+    """A session-less call falls back to _default, and in a shared root both
+    that name and the derived one can already be the user's."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    (root / "_default").mkdir()
+    theirs = root / f"_default_{tools._name_suffix('_default')}"
+    theirs.mkdir()
+    (theirs / "thesis.tex").write_text("x", encoding = "utf-8")
+
+    workdir = Path(tools._sandbox_fallback(str(root), "_default", create = True))
+    assert workdir != theirs, "a tool call would have run in the user's directory"
+    assert tools._marker_owner(str(workdir)) == "_default"
+    assert not (workdir / "thesis.tex").exists()
+    # And the read path finds the same one.
+    assert Path(tools._sandbox_fallback(str(root), "_default")) == workdir
+
+
+def test_the_default_sandbox_is_not_created_through_a_link(tmp_path, monkeypatch):
+    """makedirs(exist_ok) follows a directory symlink, and the marker and the
+    tool call would both land in whatever it points at."""
+    root = _shared_root(tmp_path, monkeypatch)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    (root / "_default").mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (root / f"_default_{tools._name_suffix('_default')}").symlink_to(outside)
+
+    workdir = Path(tools._sandbox_fallback(str(root), "_default", create = True))
+    assert workdir.resolve() != outside.resolve(), "the call ran through the link"
+    assert not (outside / tools._SANDBOX_MARKER).exists()
+
+
+def test_a_sandbox_listing_does_not_resolve_on_the_event_loop(tmp_path, monkeypatch):
+    """Resolving scans the root and may read the legacy one: on a slow or
+    network filesystem that holds every other request."""
+    import asyncio
+    import threading
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    ran_on = []
+
+    def slow_resolve(session_id, create = False):
+        ran_on.append(threading.get_ident())
+        return str(tmp_path / "nowhere")
+
+    monkeypatch.setattr(inference, "_sandbox_dir_for", slow_resolve)
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+
+    loop_thread = threading.get_ident()
+    asyncio.new_event_loop().run_until_complete(
+        inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
+    )
+    assert ran_on and loop_thread not in ran_on, "resolution ran on the event loop"
+
+
+def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():
+    """A sandbox the backend could not remove comes back as kept, and by then
+    the chat has gone: this offer is the only notice and the only retry."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+    for hook in ("features/chat/hooks/use-chat-sidebar-items.ts",
+                 "features/chat/hooks/use-chat-projects.ts"):
+        text = (src / hook).read_text(encoding = "utf-8")
+        assert "offerToDeleteKeptSandboxes(kept)" in text, hook
+        assert "!args.deleteFiles) offerToDeleteKeptSandboxes" not in text, hook
+
+
+async def _noop_async(*args, **kwargs):
+    return None
 
 
 if __name__ == "__main__":
