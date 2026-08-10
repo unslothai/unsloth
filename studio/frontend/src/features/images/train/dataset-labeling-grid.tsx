@@ -30,6 +30,7 @@ import {
   deleteDiffusionDatasetImage,
   diffusionDatasetImageUrl,
   fetchGalleryObjectUrl,
+  imageRecordsOnly,
   listDiffusionDatasetImages,
   setDiffusionDatasetCaption,
 } from "../api";
@@ -194,7 +195,8 @@ export function DatasetLabelingGrid({
     setPage(0); // a new dataset (or refresh) always starts at the first batch
     listDiffusionDatasetImages(dataset)
       .then((r) => {
-        if (!cancelled) setRecords(r.images);
+        // clips list alongside images but have no thumbnail endpoint; the grid is image-only.
+        if (!cancelled) setRecords(imageRecordsOnly(r.images));
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : "Failed to list images");

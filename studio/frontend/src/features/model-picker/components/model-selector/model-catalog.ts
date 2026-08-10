@@ -349,9 +349,17 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
-        // Cluster measurements at the default 1344x768, 124-frame preset. The
-        // lower-GPU tier holds one 66 GB component at a time and keeps the full
-        // model in RAM; the higher tier retains more weights on-device.
+        // Cluster measurements at the default 1344x768, 124-frame preset. The lower-GPU tier
+        // holds one 66 GB component at a time and keeps the full model in RAM; the higher tier
+        // retains more weights on-device.
+        //
+        // THESE ARE GiB, and the backend estimators they mirror are decimal GB, so the two sets
+        // of numbers must never be copied across. The hardware API divides MiB and bytes by
+        // 1024-based units (nvidia.py memory_total_gb, main.py available_gb) while the generation
+        // guard in video.py divides runtime bytes by 1_000_000_000. Converted, these tiers are
+        // 79.5 / 150.3 GB and 132.1 / 85.9 GB, which is exactly the estimators' 78.74 / 150 and
+        // 132 / 85 with a small margin. Raising them to the decimal figures applies the
+        // conversion twice and sends capable hosts to GGUF.
         offloadFitTiers: [
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },

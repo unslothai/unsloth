@@ -161,6 +161,30 @@ def test_a_suggested_count_never_falls_outside_the_family_range():
     assert "supported counts run from 124 to 345" in str(excinfo.value)
 
 
+def test_the_frame_gate_enforces_the_range_it_names():
+    """A lattice point outside the family's trained window is refused, not snapped.
+
+    The gate already computed the floor and the ceiling to WORD its lattice error, then accepted
+    counts outside them: 5, 90 and 107 are all real 17k + 5 points below H3's floor of 124 and were
+    snapped up to 124, and 362 and 872 were snapped down to 345. On the native path that turns
+    num_frames=5 into a 25x compute surprise, silently.
+    """
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert (h3.min_num_frames, h3.max_num_frames) == (124, 345)
+    for count in (5, 90, 107, 362, 872):
+        # Each is genuinely on the lattice, so only the range check can catch it.
+        assert (count - h3.frame_offset) % h3.frame_step == 0
+        with pytest.raises(ValueError) as excinfo:
+            validate_video_request_shape(h3, num_frames = count)
+        assert "counts run from 124 to 345" in str(excinfo.value)
+    # The three counts the interface offers stay valid.
+    for count in (124, 243, 345):
+        validate_video_request_shape(h3, num_frames = count)
+    # Families that declare no window are untouched: LTX-2 keeps its whole lattice.
+    for count in (1, 9, 121, 1017):
+        validate_video_request_shape(LTX2, num_frames = count)
+
+
 def test_omitted_fields_are_always_valid():
     """None means "use the family default", which is valid by construction."""
     validate_video_request_shape(LTX2)
