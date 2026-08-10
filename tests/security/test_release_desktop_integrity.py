@@ -506,13 +506,11 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "exit 0" not in before_control
     ), "unavailable cmdlets still short-circuit the scan before the positive control"
 
-    # The two cmdlets fail independently ($status is a live-service WMI call,
-    # $pref reads registry-backed settings), so each probe must sit inside the
-    # guard for the result it reads - the guard for *its own* cmdlet, not merely
-    # some guard. Pooling both bodies would accept $pref.MAPSReporting moved under
-    # `if ($status)`, where a dead status cmdlet again discards a readable
-    # MAPSReporting=0 and publishes on a scan blind to the cloud "!ml" verdicts
-    # this gate exists to catch, exactly as a blanket $cmdletsDown guard did.
+    # The two cmdlets fail independently, so each probe must sit under its OWN
+    # guard, not merely some guard: pooling both bodies would accept
+    # $pref.MAPSReporting under `if ($status)`, where a dead status cmdlet again
+    # discards a readable MAPSReporting=0 and scans blind to the "!ml" cloud
+    # verdicts this gate exists to catch.
     guards = {
         "$status": _guarded_bodies(scan, "if ($status) {"),
         "$pref": _guarded_bodies(scan, "if ($pref) {"),
@@ -549,8 +547,8 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
         "cmdlet would discard the other cmdlet's readable result"
     )
 
-    # The only remaining skip is a control that will not fire, the one signal
-    # that MpCmdRun cannot scan either.
+    # The only remaining skip: a control that will not fire, the one signal that
+    # MpCmdRun cannot scan either.
     skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
     assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
     assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]
@@ -564,14 +562,12 @@ def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
 def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     """A sample that vanishes during the scan is a live engine, not a missing one.
 
-    Defender remediates asynchronously - Microsoft dropped "save the file" as a
-    validation step precisely because it is not deterministic - and MpCmdRun opens
-    the sample, which is itself the trigger. So the write can succeed, `Test-Path`
-    can see the file, and real-time protection can quarantine it out from under the
-    scan. MpCmdRun then prints neither "found N threats" nor a threat name,
-    `$controlPassed` stays false, and with the cmdlets down the skip branch exits 0,
-    publishing every bundle unscanned on a runner whose scanner just proved itself.
-    Only a sample that survives means no scanner.
+    Defender remediates asynchronously and MpCmdRun opening the sample is itself
+    the trigger, so the write can succeed, `Test-Path` can see the file, and
+    real-time protection can quarantine it mid-scan. MpCmdRun then reports no
+    threat, `$controlPassed` stays false, and with the cmdlets down the skip branch
+    exits 0, publishing every bundle unscanned on a runner whose scanner just
+    proved itself. Only a sample that survives means no scanner.
     """
     scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
 
@@ -590,9 +586,8 @@ def test_a_sample_quarantined_mid_scan_passes_the_positive_control():
     assert (
         "$controlPassed = $true" in recheck
     ), "the vanished sample is noticed but still does not pass the control"
-    # Only a vanished sample may pass this way. -DisableRemediation keeps the scan
-    # itself from deleting the file, so with no engine the sample survives, this
-    # check never fires, and the missing-scanner skip still applies.
+    # Only a vanished sample may pass this way. -DisableRemediation stops the scan
+    # from deleting the file, so with no engine it survives and the skip applies.
     assert recheck.index("-not (Test-Path $eicarPath)") < recheck.index(
         "$controlPassed = $true"
     ), "the control passes without first confirming the sample is gone"

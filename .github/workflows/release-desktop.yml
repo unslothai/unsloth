@@ -1213,12 +1213,11 @@ jobs:
           if (-not $unavailable -and -not $status) { $unavailable += 'Get-MpComputerStatus returned nothing' }
           if (-not $unavailable -and -not $pref)   { $unavailable += 'Get-MpPreference returned nothing' }
 
-          # Absent scanner vs. bad verdict: only a missing scanner may skip, and a
-          # misconfigured one or a real detection still fails the job. Dead cmdlets
-          # are not a missing scanner - WMI provider and service RPC back the
-          # cmdlets, MpCmdRun talks to the engine directly - and treating them as
-          # one shipped three releases unscanned since 2026-08-06. So carry on and
-          # let the EICAR positive control below decide whether a scanner exists.
+          # Absent scanner vs. bad verdict: only a missing scanner may skip; a
+          # misconfigured one or a real detection still fails. Dead cmdlets are not
+          # a missing scanner - WMI and service RPC back them, MpCmdRun talks to
+          # the engine directly - and conflating the two shipped three releases
+          # unscanned since 2026-08-06. Let the EICAR control below decide.
           $cmdletsDown = [bool]$unavailable
           if ($cmdletsDown) {
             Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
@@ -1233,10 +1232,9 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
-          # Guard each check on the result it reads, not a blanket flag: the two
-          # cmdlets fail independently ($status is a live-service WMI call, $pref
-          # reads registry-backed settings). Dropping a readable $pref loses the
-          # MAPS and block-at-first-sight checks while the EICAR control passes.
+          # Guard each check on the cmdlet that read it, not a blanket flag: the
+          # two fail independently (live WMI call vs. registry), so a blanket
+          # guard drops a readable $pref's MAPS and block-at-first-sight checks.
           $fatal = @()
           $degraded = @()
           if ($status) {
@@ -1279,11 +1277,10 @@ jobs:
           if (Test-Path $eicarPath) {
             $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
             $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
-            # Remediation is asynchronous, so the sample can survive Test-Path and
-            # be quarantined before MpCmdRun opens it, leaving the scan nothing to
-            # find. The sample disappearing is the control firing, not a missing
-            # scanner: nothing else here deletes it, and -DisableRemediation keeps
-            # this scan from doing so, so with no engine it is still on disk below.
+            # Remediation is asynchronous: the sample can pass Test-Path and still
+            # be quarantined mid-scan. Vanishing means the control fired, not a
+            # missing scanner - nothing else deletes it and -DisableRemediation
+            # stops this scan from doing so, so a dead engine leaves it on disk.
             if (-not $controlPassed -and -not (Test-Path $eicarPath)) {
               Write-Host 'EICAR positive control quarantined before the scan could open it; real-time protection is live.'
               $controlPassed = $true
@@ -1356,10 +1353,9 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          # Keyed on the cmdlet doing the reading, not the blanket flag: $pref can
-          # be live while $status is down. With $pref unreadable there is nothing
-          # to read back; a detection could then quarantine a copy mid-scan, which
-          # surfaces below as an unscannable bundle and still fails the job.
+          # Keyed on the reading cmdlet, not the blanket flag: $pref can be live
+          # while $status is down. With $pref unreadable there is nothing to read
+          # back, and a mid-scan quarantine still fails below as unscannable.
           if ($pref) {
             $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
             $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
