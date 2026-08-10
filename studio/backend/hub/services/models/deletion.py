@@ -862,9 +862,7 @@ def _delete_cached_model_blocking(
                     # copies we did not look at is exactly the fail-open this precondition exists
                     # to prevent. Raising here lands in the fail-closed 503 below.
                     raise RuntimeError(f"cache root not present in the scan: {cache_path}")
-            still_orphan = not any(
-                companion_assets.repo_holds_denoiser(repo) for repo in copies
-            )
+            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(
