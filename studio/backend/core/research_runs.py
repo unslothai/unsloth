@@ -864,7 +864,7 @@ class ResearchSupervisor:
         for source, result in zip(targets, results):
             if isinstance(result, BaseException) or not isinstance(result, str):
                 continue
-            body = strip_result_for_model(result)
+            body = strip_result_for_model(result, "web_search")
             if is_tool_error(body):
                 continue
             body = _clean_scraped_text(body)
@@ -2054,7 +2054,7 @@ class ResearchSupervisor:
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
-            clean_result = strip_result_for_model(result)
+            clean_result = strip_result_for_model(result, "web_search")
             step_result = {
                 "action": action["action"],
                 "input": argument,

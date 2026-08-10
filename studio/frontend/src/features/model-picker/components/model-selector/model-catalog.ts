@@ -26,6 +26,9 @@ export interface ModelArtifact {
   offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
+  /** Restrict a bundled GGUF repo's variant menu to filenames for this artifact.
+   * Used when one repo publishes several independently loadable model partitions. */
+  ggufFilenamePrefix?: string;
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip.
    * Only a fallback: the Hub listing's own `expand=gguf` total wins wherever it
    * reports one. Rows the listing never returns (a repo it does not index, a
@@ -346,16 +349,38 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     capabilities: { audio: true },
     artifacts: [
       bf16Pipeline("MiniMaxAI/MiniMax-H3", 145, {
-        // Cluster measurements at the default 1344x768, 124-frame preset. The
-        // lower-GPU tier holds one 66 GB component at a time and keeps the full
-        // model in RAM; the higher tier retains more weights on-device.
+        // Cluster measurements at the default 1344x768, 124-frame preset. The lower-GPU tier
+        // holds one 66 GB component at a time and keeps the full model in RAM; the higher tier
+        // retains more weights on-device.
+        //
+        // THESE ARE GiB, and the backend estimators they mirror are decimal GB, so the two sets
+        // of numbers must never be copied across. The hardware API divides MiB and bytes by
+        // 1024-based units (nvidia.py memory_total_gb, main.py available_gb) while the generation
+        // guard in video.py divides runtime bytes by 1_000_000_000. Converted, these tiers are
+        // 79.5 / 150.3 GB and 132.1 / 85.9 GB, which is exactly the estimators' 78.74 / 150 and
+        // 132 / 85 with a small margin. Raising them to the decimal figures applies the
+        // conversion twice and sends capable hosts to GGUF.
         offloadFitTiers: [
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
       // The FL2VA denoiser this repo publishes, summed off its GGUF tensor shapes.
-      gguf("unsloth/MiniMax-H3-GGUF", { totalParams: 20_111_438_744 }),
+      gguf("unsloth/MiniMax-H3-GGUF", {
+        label: "GGUF - Text and frames",
+        keywords: ["gguf", "quantized", "fl2va", "keyframes"],
+        totalParams: 20_111_438_744,
+        ggufFilenamePrefix: "minimax_h3_fl2va",
+      }),
+      // The community bundle currently publishing the Ref2VA quants. Its repo also contains
+      // FL2VA files and Qwen companions, so the filename prefix keeps this artifact's menu on
+      // the reference partition while the backend's bundle filter keeps companions out.
+      gguf("leejet/MiniMax-H3-GGUF", {
+        label: "GGUF - References",
+        keywords: ["gguf", "quantized", "ref2va", "references"],
+        totalParams: 20_111_438_744,
+        ggufFilenamePrefix: "minimax_h3_ref2va",
+      }),
     ],
   },
   {
@@ -583,6 +608,19 @@ export function curatedCapabilitiesFor(
   };
 }
 
+/** Human-facing name of an exact curated artifact, including the artifact label
+ * when its model has more than one selectable representation. */
+export function curatedDisplayNameFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): string | null {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit) return null;
+  return hit.group.artifacts.length > 1
+    ? `${hit.group.displayName} (${hit.artifact.label})`
+    : hit.group.displayName;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];
@@ -590,10 +628,7 @@ export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
     for (const artifact of group.artifacts) {
       options.push({
         id: artifact.repoId,
-        name:
-          group.artifacts.length > 1
-            ? `${group.displayName} (${artifact.label})`
-            : group.displayName,
+        name: curatedDisplayNameFor(artifact.repoId, catalog) ?? group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
       });

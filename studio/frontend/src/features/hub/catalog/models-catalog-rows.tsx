@@ -762,6 +762,8 @@ export const InventoryRow = memo(function InventoryRow({
         }
         del={deletableRepoId ? {
           title: isDataset ? "Delete cached dataset?" : "Delete cached model?",
+          // Datasets have no companion base repo, so only models get a preview.
+          impact: isDataset ? undefined : { repoId: deletableRepoId },
           description: (
             <>
               This will remove{" "}

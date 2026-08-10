@@ -322,3 +322,310 @@ def test_public_dict_dtype_string(dtype, expected):
     )
     d = t.as_public_dict()
     assert d["dtype"] == expected and "torch." not in d["dtype"]
+
+
+# -- float64 capability + the RoPE demotion it drives -------------------------------------------
+
+
+def test_only_mps_lacks_float64(monkeypatch):
+    torch = _make_torch(mps_available = True, mps_probe = "pass")
+    _install(monkeypatch, torch)
+    assert dd.resolve_diffusion_device_target().supports_float64 is False
+    for device in ("cuda", "xpu", "cpu"):
+        assert dd.diffusion_device_target_from_torch_device(device, FP32).supports_float64 is True
+    assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
+
+
+class _RopeModule:
+    def __init__(self, double_precision = True):
+        self.double_precision = double_precision
+
+
+class _Component:
+    def __init__(self, *mods):
+        self._mods = mods
+
+    def modules(self):
+        return iter(self._mods)
+
+
+class _Pipe:
+    def __init__(self, **components):
+        self.components = components
+
+
+def _mps_target():
+    return dd.diffusion_device_target_from_torch_device("mps", FP32)
+
+
+def _cuda_target():
+    return dd.diffusion_device_target_from_torch_device("cuda", FP32)
+
+
+def test_force_float32_rope_demotes_every_component_on_mps():
+    # Two components, several modules each: the connectors and the transformer both carry RoPE,
+    # so demoting only the first one found would still crash inside the denoise loop.
+    conn, dit_a, dit_b = _RopeModule(), _RopeModule(), _RopeModule()
+    pipe = _Pipe(connectors = _Component(conn), transformer = _Component(dit_a, dit_b))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 3
+    assert not any(m.double_precision for m in (conn, dit_a, dit_b))
+
+
+def test_force_float32_rope_leaves_float64_devices_untouched():
+    rope = _RopeModule()
+    pipe = _Pipe(transformer = _Component(rope))
+    assert dd.force_float32_rope(pipe, _cuda_target()) == 0
+    assert rope.double_precision is True
+
+
+def test_force_float32_rope_skips_modules_without_the_flag():
+    already_off = _RopeModule(double_precision = False)
+    plain = object()
+    pipe = _Pipe(vae = _Component(already_off, plain))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 0
+
+
+def test_force_float32_rope_tolerates_non_module_components():
+    # Pipelines carry schedulers and tokenizers with no .modules(); they must not abort the walk.
+    rope = _RopeModule()
+    pipe = _Pipe(scheduler = object(), tokenizer = None, transformer = _Component(rope))
+    assert dd.force_float32_rope(pipe, _mps_target()) == 1
+    assert rope.double_precision is False
+
+
+def test_the_video_loader_demotes_rope():
+    # The tests above prove the helper works, not that anything calls it: deleting the call site
+    # leaves every one of them green while LTX-2 goes back to raising on Metal. Where in the
+    # loader is not asserted -- the flag is read when a pipeline first builds its frequency
+    # tables, after load_pipeline returns -- but reaching it unconditionally is, since the helper
+    # already no-ops on a float64 device and a guard here could only ever get the polarity wrong.
+    #
+    # Asserted as "reached with no condition above it" rather than by rejecting `if`: a guard can
+    # equally be written `target.supports_float64 and force_float32_rope(...)` or as a ternary,
+    # and naming the shapes only rejects the ones already thought of.
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "core/inference/video.py").read_text(
+        encoding = "utf-8"
+    )
+    loader = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "load_pipeline"
+    )
+
+    def _is_rope_call(node):
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "force_float32_rope"
+        )
+
+    # Everything a condition could skip, whatever syntax expresses it.
+    conditional = {
+        id(inner)
+        for node in ast.walk(loader)
+        if isinstance(node, (ast.If, ast.IfExp, ast.BoolOp))
+        for inner in ast.walk(node)
+    }
+    assert any(
+        isinstance(n, ast.Expr) and _is_rope_call(n.value) and id(n) not in conditional
+        for n in ast.walk(loader)
+    ), (
+        "load_pipeline does not reach force_float32_rope unconditionally, so the demotion is "
+        "either gone or behind a guard -- and a guard here can only be wrong, since the helper "
+        "already no-ops wherever float64 works"
+    )
+
+
+# ── Pressure-gated decoder sync ───────────────────────────────────────
+
+
+def _target(device: str) -> dd.DiffusionDeviceTarget:
+    return dd.DiffusionDeviceTarget(
+        device = device,
+        dtype = FP32,
+        backend = device,
+        vendor = None,
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+
+
+class _FakeDecoder:
+    """A VAE decoder module, following nn.Module: a hook returning non-None replaces the output."""
+
+    def __init__(self) -> None:
+        self.hooks: list = []
+
+    def register_forward_hook(self, hook):
+        self.hooks.append(hook)
+
+    def decode(self, calls: int) -> list:
+        outputs = []
+        for index in range(calls):
+            out = f"out{index}"
+            for hook in self.hooks:
+                replacement = hook(self, (), out)
+                if replacement is not None:
+                    out = replacement
+            outputs.append(out)
+        return outputs
+
+
+def _pipe_with(decoder) -> types.SimpleNamespace:
+    return types.SimpleNamespace(vae = types.SimpleNamespace(decoder = decoder))
+
+
+def _mps_torch(used = 0, recommended = 100) -> types.ModuleType:
+    """torch whose mps backend counts synchronize() calls over a settable memory reading."""
+    torch = types.ModuleType("torch")
+    torch.syncs = 0
+    torch.used = used
+
+    def _bump():
+        torch.syncs += 1
+
+    torch.mps = types.SimpleNamespace(
+        synchronize = _bump,
+        recommended_max_memory = lambda: recommended,
+        driver_allocated_memory = lambda: torch.used,
+    )
+    return torch
+
+
+@pytest.mark.parametrize("device", ["cuda", "xpu", "cpu"])
+def test_decoder_sync_is_metal_only(monkeypatch, device):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target(device)) is False
+    assert decoder.hooks == []
+
+
+def test_decoder_sync_idle_while_memory_is_plentiful(monkeypatch):
+    # The whole point of the gate: a decode that fits pays nothing at all.
+    torch = _mps_torch(recommended = 100, used = 10)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    decoder.decode(5)
+    assert torch.syncs == 0
+
+
+def test_decoder_sync_runs_once_per_decoder_call_above_the_threshold(monkeypatch):
+    torch = _mps_torch(recommended = 100, used = 10)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    decoder.decode(2)
+    assert torch.syncs == 0
+    # The growth this bounds is per decoder call, so every call above the threshold syncs.
+    torch.used = 100 * dd.DECODE_SYNC_FRACTION
+    decoder.decode(3)
+    assert torch.syncs == 3
+    # ...and it stands down again once the allocator has given the memory back.
+    torch.used = 10
+    decoder.decode(4)
+    assert torch.syncs == 3
+
+
+def test_decoder_sync_threshold_scales_with_the_device(monkeypatch):
+    # Pins the policy AND that the budget is a fraction of this device's working set rather than a
+    # fixed byte count -- a decode is only "running out" relative to the machine it runs on.
+    torch = _mps_torch(recommended = 200, used = 169)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    decoder.decode(1)
+    assert torch.syncs == 0
+    torch.used = 170
+    decoder.decode(1)
+    assert torch.syncs == 1
+    assert dd.DECODE_SYNC_FRACTION == 0.85
+
+
+def test_decoder_sync_preserves_the_decoder_output(monkeypatch):
+    # An nn.Module forward hook that returns non-None REPLACES the output; this one must not.
+    torch = _mps_torch(recommended = 100, used = 100)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    assert decoder.decode(2) == ["out0", "out1"]
+    assert torch.syncs == 2
+
+
+@pytest.mark.parametrize("pipe", [types.SimpleNamespace(), _pipe_with(None), _pipe_with(object())])
+def test_decoder_sync_no_op_without_a_hookable_decoder(monkeypatch, pipe):
+    monkeypatch.setitem(sys.modules, "torch", _mps_torch())
+    assert dd.install_decoder_sync(pipe, _target("mps")) is False
+
+
+def _mps_torch_without_recommended(used = 0) -> types.ModuleType:
+    """torch 2.4's mps surface: driver_allocated_memory and synchronize, no working-set reading.
+
+    Verified against torch/mps/__init__.py at v2.4.0 (absent) and v2.5.0 (present), and against
+    an installed torch 2.4.1.
+    """
+    torch = _mps_torch(used = used)
+    del torch.mps.recommended_max_memory
+    return torch
+
+
+def test_decoder_sync_survives_a_torch_without_the_memory_reading(monkeypatch):
+    # install.sh keeps an existing venv's torch (>=2.4), and reading a 2.5 API there raised
+    # AttributeError from inside the video load -- after the download, with no OOM to explain it.
+    torch = _mps_torch_without_recommended()
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    # No budget to compare against, so it must not silently decide the decode is fine: an
+    # unbounded Wan decode is what grew past 148 GiB.
+    assert decoder.decode(3) == ["out0", "out1", "out2"]
+    assert torch.syncs == 3
+
+
+def test_decoder_sync_survives_a_working_set_reading_that_raises(monkeypatch):
+    torch = _mps_torch()
+
+    def _boom():
+        raise RuntimeError("MPS backend is not available")
+
+    torch.mps.recommended_max_memory = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    decoder.decode(2)
+    assert torch.syncs == 2
+
+
+def test_decoder_sync_survives_a_gauge_that_raises_mid_decode(monkeypatch):
+    torch = _mps_torch(recommended = 100, used = 10)
+
+    def _boom():
+        raise RuntimeError("driver reading unavailable")
+
+    torch.mps.driver_allocated_memory = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    dd.install_decoder_sync(_pipe_with(decoder), _target("mps"))
+    # The decode survives, and an unreadable gauge takes the safe side rather than skipping.
+    assert decoder.decode(2) == ["out0", "out1"]
+    assert torch.syncs == 2
+
+
+def test_decoder_sync_survives_a_synchronize_that_raises(monkeypatch):
+    # The no-budget fallback synchronises every call, so a torch whose mps surface is degraded
+    # enough to hide recommended_max_memory would then raise on every decoder call. The bound is
+    # an optimisation; losing the generation to it is not a trade worth making.
+    torch = _mps_torch_without_recommended()
+
+    def _boom():
+        raise RuntimeError("Torch not compiled with MPS enabled")
+
+    torch.mps.synchronize = _boom
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    decoder = _FakeDecoder()
+    assert dd.install_decoder_sync(_pipe_with(decoder), _target("mps")) is True
+    assert decoder.decode(2) == ["out0", "out1"]

@@ -2845,7 +2845,7 @@ def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     monkeypatch.setattr(
         deletion,
         "_delete_cached_model_blocking",
-        lambda repo_id, variant, hf_token, cache_path = None: {
+        lambda repo_id, variant, hf_token, cache_path = None, **_kw: {
             "status": "deleted",
             "repo_id": repo_id,
         },
@@ -4367,3 +4367,21 @@ def test_a_cancelled_quant_beside_a_scope_still_answers_from_state(monkeypatch, 
         )
     )
     assert [(v.quant, v.partial) for v in response.variants] == [("Q6_K", True)]
+
+
+def test_a_standalone_h3_denoiser_gguf_is_recognised_by_its_filename():
+    """H3's GGUFs carry no metadata keys at all (kv_count 0), so ``general.architecture`` is
+    absent and the NAME is the only evidence there is. Keying only on the two bundle repo ids
+    meant a denoiser copied into a custom local directory returned a null task and was dropped
+    from the Video On Device picker, even though the loader validates exactly these prefixes.
+    """
+    for name in (
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "minimax_h3_ref2va-Q8_0.gguf",
+        "/home/me/models/h3/minimax_h3_fl2va-Q4_K_M.gguf",
+    ):
+        assert models_route._arch_to_task(None, (name,)) == models_route._VIDEO_GEN_TASK, name
+
+    # The conditioner and unrelated GGUFs in the same folder must NOT be claimed as video.
+    for name in ("qwen3vl-Q8_0.gguf", "minimax_h3_notes.txt", "llama-Q4_K_M.gguf"):
+        assert models_route._arch_to_task(None, (name,)) is None, name

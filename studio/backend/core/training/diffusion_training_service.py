@@ -60,6 +60,15 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
 
+    # This child never runs LogConfig.setup_logging, so it installs the Hub default
+    # here; the diffusers half is done inside the two trainer entrypoints, which are
+    # the first points where diffusers is actually imported.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        pass
+
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 
@@ -290,6 +299,9 @@ def _idle_state() -> dict[str, Any]:
         "avg_loss": None,
         "learning_rate": None,
         "grad_norm": None,
+        # The last per-modality losses of a joint run; None on families that train one modality.
+        "video_loss": None,
+        "audio_loss": None,
         "num_images": None,
         "in_model_load": False,
         "output_dir": None,
@@ -319,7 +331,23 @@ def _idle_state() -> dict[str, Any]:
         "metric_loss": [],
         "metric_lr": [],
         "metric_grad_norm": [],
+        # The two halves of MiniMax-H3's joint objective. Null on every other family, and null
+        # on H3 steps that reported only the combined loss, so the series stay index-aligned.
+        "metric_video_loss": [],
+        "metric_audio_loss": [],
     }
+
+
+# The value series, in append order, paired index-for-index with ``metric_steps``. One list so a
+# new series cannot be added to the appends and forgotten in the decimation below, which would
+# leave the curves silently misaligned rather than failing.
+_METRIC_SERIES: tuple[str, ...] = (
+    "metric_loss",
+    "metric_lr",
+    "metric_grad_norm",
+    "metric_video_loss",
+    "metric_audio_loss",
+)
 
 
 def _append_metric(
@@ -328,14 +356,16 @@ def _append_metric(
     loss: Any,
     lr: Any,
     grad_norm: Any = None,
+    video_loss: Any = None,
+    audio_loss: Any = None,
 ) -> None:
-    """Append one (step, loss, lr, grad_norm) point to the bounded history arrays on
-    ``state``.
+    """Append one (step, loss, lr, grad_norm, video_loss, audio_loss) point to the bounded
+    history arrays on ``state``.
 
     Only records finite, positive-step points (mirrors the LLM trainer, which logs history
     only for step > 0 with a real loss). When the arrays hit ``_METRIC_CAP`` they are
     decimated in place (keep every other point) so appends stay bounded without losing the
-    curve's shape. lr / grad_norm may be None (kept as None so those series can be sparse
+    curve's shape. Everything but loss may be None (kept as None so those series can be sparse
     while staying index-aligned with ``steps``)."""
     try:
         istep = int(step)
@@ -346,28 +376,26 @@ def _append_metric(
     floss = _finite_or_none(loss)
     if floss is None:  # non-numeric or non-finite: skip, keep the curve JSON-safe
         return
-    # lr / grad_norm may be None or non-finite; non-finite is nulled (not dropped) to stay index-aligned.
-    flr = _finite_or_none(lr)
-    fgn = _finite_or_none(grad_norm)
+    # Every series but loss may be None or non-finite; non-finite is nulled (not dropped) to
+    # stay index-aligned.
+    values = {
+        "metric_loss": floss,
+        "metric_lr": _finite_or_none(lr),
+        "metric_grad_norm": _finite_or_none(grad_norm),
+        "metric_video_loss": _finite_or_none(video_loss),
+        "metric_audio_loss": _finite_or_none(audio_loss),
+    }
     steps = state["metric_steps"]
-    losses = state["metric_loss"]
-    lrs = state["metric_lr"]
-    gns = state["metric_grad_norm"]
     if len(steps) >= _METRIC_CAP:
         state["metric_steps"] = steps[::2]
-        state["metric_loss"] = losses[::2]
-        state["metric_lr"] = lrs[::2]
-        state["metric_grad_norm"] = gns[::2]
-        steps, losses, lrs, gns = (
-            state["metric_steps"],
-            state["metric_loss"],
-            state["metric_lr"],
-            state["metric_grad_norm"],
-        )
+        for key in _METRIC_SERIES:
+            state[key] = (state.get(key) or [])[::2]
+        steps = state["metric_steps"]
     steps.append(istep)
-    losses.append(floss)
-    lrs.append(flr)
-    gns.append(fgn)
+    for key in _METRIC_SERIES:
+        # setdefault, not [key]: a run resumed from a record written before a series existed
+        # carries a state dict without it, and losing the whole point is worse than a short tail.
+        state.setdefault(key, []).append(values[key])
 
 
 def _resolved_total_steps(state: dict[str, Any], cfg: dict[str, Any]) -> int:
@@ -537,10 +565,13 @@ class DiffusionTrainingService:
 
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
-        # Validate cheaply BEFORE spawning so a bad request fails fast with a clear error.
+        # Validate cheaply BEFORE spawning so a bad request fails fast with a clear error. The
+        # normalised config is kept: it carries the resolved family the recipe overrides below
+        # are keyed on, which the raw request dict does not have to name.
         from .diffusion_lora_trainer import _config_from_dict
+        from .diffusion_train_common import train_recipe_overrides
 
-        _config_from_dict(config).normalized()
+        normalized_cfg = _config_from_dict(config).normalized()
 
         # Join a finished job's pump OUTSIDE the lock: its final state writes take this lock, so joining under it would stall the start and let the stale pump overwrite the new state.
         with self._lock:
@@ -600,8 +631,13 @@ class DiffusionTrainingService:
             # against, instead of trusting the pathname and offering back whatever later
             # occupies that slot.
             self._seed_source_identity(config)
-            # Keep the config (minus secrets) for the persisted run record.
+            # Keep the config (minus secrets) for the persisted run record, with the fields this
+            # family's loop REPLACES rather than honours set to what it will actually run. The
+            # trainer applies the same table in the child, which the record is not written from,
+            # so without this Previous runs described a recipe (cropping, flipping, min-SNR
+            # weighting) that no step of the run ever used.
             self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config.update(train_recipe_overrides(normalized_cfg))
             self._pump = threading.Thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )
@@ -775,6 +811,8 @@ class DiffusionTrainingService:
                 "avg_loss": s.get("avg_loss"),
                 "learning_rate": s.get("learning_rate"),
                 "grad_norm": s.get("grad_norm"),
+                "video_loss": s.get("video_loss"),
+                "audio_loss": s.get("audio_loss"),
                 "samples_per_second": s.get("samples_per_second"),
                 "peak_memory_gb": s.get("peak_memory_gb"),
                 "num_images": s.get("num_images"),
@@ -820,6 +858,8 @@ class DiffusionTrainingService:
                     "loss": s.get("metric_loss") or [],
                     "lr": s.get("metric_lr") or [],
                     "grad_norm": s.get("metric_grad_norm") or [],
+                    "video_loss": s.get("metric_video_loss") or [],
+                    "audio_loss": s.get("metric_audio_loss") or [],
                 },
             }
             path = _runs_dir() / f"{s['job_id']}.json"
@@ -924,6 +964,15 @@ class DiffusionTrainingService:
                 grad_norm = (
                     _finite_or_none(ev["grad_norm"]) if "grad_norm" in ev else s["grad_norm"]
                 )
+                # The two halves of a joint objective, when the trainer reports them. Folded
+                # like the rest rather than dropped: on MiniMax-H3 the combined loss can hold
+                # steady while one modality degrades, and these are the only signal that says so.
+                video_loss = (
+                    _finite_or_none(ev["video_loss"]) if "video_loss" in ev else s["video_loss"]
+                )
+                audio_loss = (
+                    _finite_or_none(ev["audio_loss"]) if "audio_loss" in ev else s["audio_loss"]
+                )
                 s.update(
                     status = "running",
                     step = ev.get("step", s["step"]),
@@ -932,6 +981,8 @@ class DiffusionTrainingService:
                     avg_loss = avg_loss,
                     learning_rate = learning_rate,
                     grad_norm = grad_norm,
+                    video_loss = video_loss,
+                    audio_loss = audio_loss,
                     message = "Training...",
                 )
                 # Fold optional perf fields so the UI shows throughput + peak VRAM.
@@ -939,13 +990,15 @@ class DiffusionTrainingService:
                     s["samples_per_second"] = ev.get("samples_per_second")
                 if ev.get("peak_memory_gb") is not None:
                     s["peak_memory_gb"] = ev.get("peak_memory_gb")
-                # Retain a bounded (step, loss, lr, grad_norm) history for the live charts.
+                # Retain a bounded per-step history for the live charts.
                 _append_metric(
                     s,
                     ev.get("step"),
                     ev.get("loss"),
                     ev.get("learning_rate"),
                     ev.get("grad_norm"),
+                    ev.get("video_loss"),
+                    ev.get("audio_loss"),
                 )
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete with no preceding model_load_completed, leaving a stale indicator.

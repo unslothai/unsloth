@@ -33,6 +33,8 @@ import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
     _GATED_MIRROR_PAIRS,
+    _MIRROR_PAIRS,
+    _UNGATED_MIRROR_PAIRS,
     assert_flux2_gguf_matches_base,
     canonical_base,
     detect_family,
@@ -43,6 +45,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_companion_only_repo_ids,
     supported_family_names,
+    upstream_is_gated,
 )
 
 
@@ -177,8 +180,8 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_GATED_MIRROR_PAIRS) == 24
-    for upstream, mirror in _GATED_MIRROR_PAIRS:
+    assert len(_MIRROR_PAIRS) == 24
+    for upstream, mirror in _MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
         # Case-insensitive in, since a card tag may carry any casing.
@@ -191,6 +194,28 @@ def test_gated_mirror_table_round_trips():
     assert canonical_base(hunyuan) == hunyuan
 
 
+def test_only_the_genuinely_gated_half_reads_as_gated():
+    """Redirecting a fetch and needing credentials are different questions.
+
+    Most of the table is mirrored to keep the fetch inside ``unsloth/*``, not to route around a
+    gate, and callers that override a user's cache must key on the gate rather than on "a mirror
+    exists". Klein base-4B is the one that makes this concrete: a default trainable base, which
+    is mirrored, and which the Hub serves anonymously.
+    """
+    assert len(_GATED_MIRROR_PAIRS) == 12
+    assert len(_UNGATED_MIRROR_PAIRS) == 12
+    for upstream, _mirror in _GATED_MIRROR_PAIRS:
+        assert upstream_is_gated(upstream), upstream
+        assert upstream_is_gated(upstream.upper()), upstream
+    for upstream, _mirror in _UNGATED_MIRROR_PAIRS:
+        assert not upstream_is_gated(upstream), upstream
+    assert mirror_repo("black-forest-labs/FLUX.2-klein-base-4B")
+    assert not upstream_is_gated("black-forest-labs/FLUX.2-klein-base-4B")
+    # A repo outside the table entirely is not gated either.
+    assert not upstream_is_gated("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
+    assert not upstream_is_gated(None)
+
+
 def test_no_mirror_is_a_companion_only_repo():
     """A mirror substitutes for the WHOLE base, so it must never be a components-only repo.
 
@@ -199,7 +224,7 @@ def test_no_mirror_is_a_companion_only_repo():
     missing-weights error. The companion-only set is exactly that list of repos.
     """
     companions = sd_cpp_companion_only_repo_ids()
-    for _upstream, mirror in _GATED_MIRROR_PAIRS:
+    for _upstream, mirror in _MIRROR_PAIRS:
         assert mirror.lower() not in companions, mirror
 
 
@@ -222,7 +247,7 @@ def test_every_third_party_bf16_pipeline_the_catalog_offers_is_mirrored():
         "export const VIDEO_CATALOG", 1
     )[0]
     offered = set(re.findall(r'bf16Pipeline\(\s*"([^"]+)"', images))
-    mirrored = {u.lower() for u, _m in _GATED_MIRROR_PAIRS}
+    mirrored = {u.lower() for u, _m in _MIRROR_PAIRS}
     # Anything under unsloth/ is already ours, and the deliberate Hunyuan exception is recorded
     # beside the table with the territorial reason it cannot be mirrored.
     missing = sorted(
@@ -254,7 +279,7 @@ def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
 
 def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
     _no_cache(monkeypatch)
-    for upstream, mirror in _GATED_MIRROR_PAIRS:
+    for upstream, mirror in _MIRROR_PAIRS:
         assert prefer_ungated_mirror(upstream) == mirror
     # A base outside the table is untouched.
     hunyuan = "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
@@ -6080,8 +6105,13 @@ class _FakeSibling:
 
 
 class _FakeInfo:
-    def __init__(self, siblings):
+    def __init__(
+        self,
+        siblings,
+        sha = None,
+    ):
         self.siblings = siblings
+        self.sha = sha
 
 
 GB = 1024**3
@@ -6099,7 +6129,11 @@ _FLUX_BASE_SIBLINGS = [
 _FLUX_BASE_SIBLINGS_BY_NAME = {s.rfilename: s.size for s in _FLUX_BASE_SIBLINGS}
 
 
-def _fake_hf_api(monkeypatch, repos):
+def _fake_hf_api(
+    monkeypatch,
+    repos,
+    shas = None,
+):
     """Point HfApi.model_info at a canned sibling list per repo id."""
 
     class _Api:
@@ -6109,9 +6143,16 @@ def _fake_hf_api(monkeypatch, repos):
             files_metadata = False,
             token = None,
         ):
-            return _FakeInfo(repos[repo_id])
+            return _FakeInfo(repos[repo_id], (shas or {}).get(repo_id))
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    # Download-plan tests describe their cache state explicitly. Never let a developer's real
+    # Studio cache make an entry disappear from these otherwise hermetic tests.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: False),
+    )
 
 
 def test_download_plan_scopes_the_base_repo_files(monkeypatch):
@@ -6145,6 +6186,10 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     checkpoint, base = plan["entries"]
     assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
     assert checkpoint["bytes"] == 7 * GB
+    # The panel labels "Model file" vs "Required assets" from this flag. Only the planner can name
+    # the selected entry, so it says so outright: the companion base is assets, not the pick.
+    assert checkpoint["checkpoint"] is True
+    assert base["checkpoint"] is False
     assert "flux1-dev.safetensors" not in base["files"]
     assert not any(f.startswith("transformer/") for f in base["files"])
     assert not any(f.startswith("assets/") for f in base["files"])
@@ -6153,6 +6198,268 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     # Sized per repo, so each download job gets its own expected bytes.
     assert base["bytes"] < 24 * GB
     assert plan["total_bytes"] == checkpoint["bytes"] + base["bytes"]
+    assert plan["required_bytes"] == plan["total_bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
+
+
+def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypatch):
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    )
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: repo_id
+            == "unsloth/FLUX.1-dev-GGUF"
+            and filename == "flux1-dev-Q4_K_M.gguf"
+        ),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert [entry["repo_id"] for entry in plan["entries"]] == ["unsloth/FLUX.1-dev"]
+    assert "text_encoder/model.safetensors" in plan["entries"][0]["files"]
+    assert plan["total_bytes"] == plan["entries"][0]["bytes"]
+    # Cache state changes the pending download, never the selector's declared footprint.
+    assert plan["required_bytes"] == 7 * GB + plan["total_bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
+
+
+def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    )
+    _all_cached(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename, revision = None, expected_size = None, **kwargs: True),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert plan["entries"] == []
+    assert plan["total_bytes"] == 0
+    assert plan["required_bytes"] > 7 * GB
+    assert plan["checkpoint_bytes"] == 7 * GB
+
+
+def test_download_plan_sizes_the_checkpoint_when_the_base_is_the_same_repo(monkeypatch):
+    # A combined repo (explicit base_repo, or a self-referential base_model tag) keys both Hub
+    # lookups on one id. Overwriting instead of merging left the checkpoint at 0 bytes and put the
+    # companion total in checkpoint_bytes, and listing it twice double counted the footprint.
+    combined = "unsloth/Combined-Image-GGUF"
+    _fake_hf_api(
+        monkeypatch,
+        {
+            combined: [
+                _FakeSibling("model-Q4_K_M.gguf", 7 * GB),
+                _FakeSibling("model_index.json", 1000),
+                _FakeSibling("text_encoder/model.safetensors", 2 * GB),
+                _FakeSibling("vae/diffusion_pytorch_model.safetensors", 300),
+            ],
+        },
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: combined)
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    )
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(
+        combined, gguf_filename = "model-Q4_K_M.gguf", base_repo = combined
+    )
+
+    assert len(plan["entries"]) == 1, "one repo, one scoped job"
+    entry = plan["entries"][0]
+    assert entry["gguf_filename"] == "model-Q4_K_M.gguf"
+    assert entry["files"].count("model-Q4_K_M.gguf") == 1
+    assert plan["checkpoint_bytes"] == 7 * GB
+    assert entry["bytes"] == plan["required_bytes"] == 7 * GB + 2 * GB + 1300
+
+    assert entry["checkpoint"] is True
+
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_files_already_cached",
+        staticmethod(
+            lambda _repo, files, _revision = None, _declared_sizes = None: (
+                set(files) if files == ["model-Q4_K_M.gguf"] else set()
+            )
+        ),
+    )
+    warming = DiffusionBackend().download_plan(
+        combined, gguf_filename = "model-Q4_K_M.gguf", base_repo = combined
+    )
+    assert warming["entries"][0]["files"] == entry["files"]
+
+    assert warming["entries"][0]["checkpoint"] is False
+
+
+def _write_hub_cache(
+    root,
+    repo_id,
+    filename,
+    sha,
+    size,
+    *,
+    symlink = True,
+    set_main = True,
+):
+    """The tree hf_hub_download leaves behind: blobs/ + snapshots/<sha>/ + refs/main."""
+    import os
+
+    repo_dir = (root / f"models--{repo_id.replace('/', '--')}").resolve()
+    blobs, snaps, refs = repo_dir / "blobs", repo_dir / "snapshots" / sha, repo_dir / "refs"
+    for d in (blobs, (snaps / filename).parent, refs):
+        d.mkdir(parents = True, exist_ok = True)
+    blob = blobs / f"etag-{sha}"
+    blob.write_bytes(b"\0" * size)
+    target = snaps / filename
+    if symlink:
+        os.symlink(os.path.relpath(blob, target.parent), target)
+    else:
+        import shutil
+        shutil.copyfile(blob, target)
+    if set_main:
+        (refs / "main").write_text(sha)
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids = ["posix_links", "windows_copies"])
+def test_a_cached_file_survives_an_unrelated_commit_to_its_repo(tmp_path, monkeypatch, symlink):
+    # model_info().sha is the REPO head, so a README commit moves it while every weight stays
+    # byte identical. Calling those files missing would re-stage the whole footprint and can fail
+    # a disk preflight for space nobody needs, so the size the plan declared has the last word.
+    repo, name = "black-forest-labs/FLUX.1-dev", "text_encoder/model.safetensors"
+    _write_hub_cache(tmp_path, repo, name, "a" * 40, 4096, symlink = symlink)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
+
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 4096)
+    assert DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 4096
+    ), "an unrelated repo commit must not invalidate a file the plan sized identically"
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "b" * 40, 9999
+    ), "a republished file has a different declared size and must be fetched through the manager"
+    # Nothing declared to compare against: trust the ref rather than call a present file missing.
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "b" * 40, 0)
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids = ["posix_links", "windows_copies"])
+def test_an_explicit_current_snapshot_does_not_hide_a_stale_main_ref(
+    tmp_path, monkeypatch, symlink
+):
+    # The planner sizes revision B, but the loader omits revision and follows refs/main to A. A
+    # same-size B hit must not make the planner omit the file: the two calls would use different
+    # snapshots, moving revalidation into the load (or reading A offline).
+    repo, name = "black-forest-labs/FLUX.1-dev", "text_encoder/model.safetensors"
+    stale, current = "a" * 40, "b" * 40
+    _write_hub_cache(tmp_path, repo, name, stale, 4096, symlink = symlink)
+    _write_hub_cache(
+        tmp_path,
+        repo,
+        name,
+        current,
+        4096,
+        symlink = symlink,
+        set_main = False,
+    )
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
+
+    assert not DiffusionBackend._hub_file_is_cached(repo, name, current, 4096)
+
+    # Once the loader's unpinned ref names B too, the staged manager can safely omit it.
+    repo_dir = tmp_path / f"models--{repo.replace('/', '--')}"
+    (repo_dir / "refs" / "main").write_text(current)
+    assert DiffusionBackend._hub_file_is_cached(repo, name, current, 4096)
+
+
+@pytest.mark.parametrize("symlink", [True, False], ids = ["posix_links", "windows_copies"])
+def test_a_damaged_file_is_restaged_even_under_the_pinned_revision(tmp_path, monkeypatch, symlink):
+    # Naming the right commit is not proof the bytes are right. A truncated or half-copied file
+    # can sit at that path, and the copy layout has no symlink keeping the blob out of it, so the
+    # pinned probe has to corroborate with the declared size exactly as the main-ref probe does.
+    # Otherwise the plan omits the file and the load consumes the damaged entry.
+    repo, name = "black-forest-labs/FLUX.1-dev", "text_encoder/model.safetensors"
+    _write_hub_cache(tmp_path, repo, name, "a" * 40, 1024, symlink = symlink)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "unused"))
+
+    assert not DiffusionBackend._hub_file_is_cached(
+        repo, name, "a" * 40, 4096
+    ), "the pinned commit is right but the bytes are not, so it must be restaged"
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 1024)
+    # Still no size to compare against: an intact-looking hit is trusted, as before.
+    assert DiffusionBackend._hub_file_is_cached(repo, name, "a" * 40, 0)
+
+
+def test_download_plan_probes_the_cache_at_the_revision_it_sized(monkeypatch):
+    # An unpinned probe answers from the LOCAL main ref, so a republished companion reads as
+    # present and the loader fetches it inline, outside the download manager.
+    seen = []
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+        shas = {"unsloth/FLUX.1-dev-GGUF": "abc123", "black-forest-labs/FLUX.1-dev": "def456"},
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
+    )
+    # Upstream serves this pick, so both entries keep the id the sizes were read from. A mirror
+    # swap deliberately drops the pin instead: the vendor's commit means nothing in that repo.
+    _all_cached(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(
+            lambda repo_id, filename, revision = None, expected_size = None, **kwargs: bool(
+                seen.append(revision)
+            )
+        ),
+    )
+
+    DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert set(seen) == {"abc123", "def456"}
 
 
 def test_download_plan_decides_the_widening_from_the_base_listing(monkeypatch):
@@ -6218,6 +6525,23 @@ def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
     assert "text_encoder/model.fp16.safetensors" not in files
 
 
+def test_download_plan_flags_a_mirrored_pipeline_as_the_checkpoint(monkeypatch):
+    # The regression this flag exists for. A gated pipeline is STAGED from its ungated mirror, so
+    # the entry's repo id is unsloth/FLUX.1-dev while the pick is black-forest-labs/FLUX.1-dev.
+    # The page used to derive the label by comparing those two ids, which made every file of the
+    # selected model read as "Required assets". Only the planner knows about the swap.
+    gated = "black-forest-labs/FLUX.1-dev"
+    _fake_hf_api(monkeypatch, {gated: _FLUX_BASE_SIBLINGS})
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(gated, model_kind = "pipeline")
+
+    assert len(plan["entries"]) == 1
+    entry = plan["entries"][0]
+    assert entry["repo_id"] == "unsloth/FLUX.1-dev" != gated
+    assert entry["checkpoint"] is True
+
+
 def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
     # Nothing to stage: the files are already on disk.
     local = tmp_path / "my-model"
@@ -6230,6 +6554,8 @@ def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
 
     plan = DiffusionBackend().download_plan(str(local), gguf_filename = "weights.gguf")
     assert plan["entries"] == []
+    assert plan["required_bytes"] == 0
+    assert plan["checkpoint_bytes"] == 0
 
 
 def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monkeypatch):
@@ -6356,6 +6682,7 @@ _ZIMAGE_BASE_SIBLINGS = [
     _FakeSibling("text_encoder/model.safetensors", 8 * GB),
     _FakeSibling("vae/diffusion_pytorch_model.safetensors", 300),
 ]
+_ZIMAGE_BASE_SIBLINGS_BY_NAME = {s.rfilename: s.size for s in _ZIMAGE_BASE_SIBLINGS}
 
 
 _QWEN_EDIT_Q6 = "qwen-image-edit-2511-Q6_K.gguf"
@@ -6465,6 +6792,190 @@ def test_download_plan_stages_no_second_denoiser_for_an_uncached_prequant(monkey
     assert plan["total_bytes"] == 4 * GB + base["bytes"] < 17 * GB
 
 
+def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monkeypatch):
+    # An explicit fp8 request loads the hosted prequant INSTEAD of the base transformer/ shards,
+    # which the plan already excludes. required_bytes is the on-disk footprint the picker renders
+    # as "Full required size", so leaving the prequant out under-reports it by the whole denoiser.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+
+    # Counted AND staged: the load fetches this checkpoint inline otherwise, under the load lock
+    # and past the manager's progress, cancel and disk preflight.
+    staged = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
+    assert ("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt") in staged
+    assert plan["required_bytes"] == plan["total_bytes"]
+    # Measured against the same pick without the quant, so the base's small configs do not have
+    # to be enumerated here: the delta is exactly the prequant checkpoint.
+    baseline = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
+    )
+    assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
+    # A companion, never the selected model.
+    prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
+    assert prequant["checkpoint"] is False
+
+
+def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    source = types.SimpleNamespace(
+        kind = "repo",
+        location = "unsloth/Qwen-Image-FP8",
+        filename = "Qwen-Image-INT8.pt",
+        fallback_filename = "transformer_int8.pt",
+    )
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Qwen-Image-GGUF": [_FakeSibling("Qwen-Image-Q4_K_M.gguf", 4 * GB)],
+            "Qwen/Qwen-Image": _ZIMAGE_BASE_SIBLINGS,
+            source.location: [_FakeSibling(source.filename, 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(dmod, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image")
+    monkeypatch.setattr(dmod, "select_transformer_quant_scheme", lambda *a, **k: "fp8")
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda *a, **k: ("fp8", "int8"),
+    )
+    monkeypatch.setattr(
+        dmod,
+        "usable_prequant_source",
+        lambda fam, scheme, **kw: source if scheme == "int8" else None,
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda *a, **k: True)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+        text_encoder_quant = "off",
+    )
+    baseline = DiffusionBackend().download_plan(
+        "unsloth/Qwen-Image-GGUF",
+        gguf_filename = "Qwen-Image-Q4_K_M.gguf",
+        text_encoder_quant = "off",
+        speed_mode = "off",
+    )
+
+    assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
+    assert any(source.filename in entry["files"] for entry in plan["entries"])
+
+
+def test_download_plan_omits_the_prequant_under_a_definite_offload_policy(monkeypatch):
+    # The fast path needs a plan with no offload, or a quant-sized replan that came back with
+    # none. Balanced and low_vram offload BY MODE, which no replan can clear, so the load keeps
+    # the GGUF and never fetches the hosted checkpoint. Counting it overstates the footprint by
+    # the whole denoiser even though an explicit quant was requested.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = True)
+
+    for kwargs in (
+        {"memory_mode": "balanced"},
+        {"memory_mode": "low_vram"},
+        {"cpu_offload": True},
+    ):
+        plan = DiffusionBackend().download_plan(
+            "unsloth/Z-Image-GGUF",
+            gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+            transformer_quant = "fp8",
+            **kwargs,
+        )
+        assert plan["required_bytes"] == plan["total_bytes"], kwargs
+        assert not any(f.endswith("-FP8.pt") for e in plan["entries"] for f in e["files"]), kwargs
+
+    # A resident-capable pick still pays for it, so the gate cannot just zero everything.
+    resident = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+    assert any(f.endswith("-FP8.pt") for e in resident["entries"] for f in e["files"])
+
+
+def test_download_plan_omits_the_prequant_for_an_auto_pick_at_speed_off(monkeypatch):
+    # load_pipeline forces an AUTO quant to "off" under Speed="off", which normalizes to None and
+    # skips the fast path, so nothing is fetched and the footprint must not claim it.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = True)
+
+    auto = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf", speed_mode = "off"
+    )
+    assert not any(f.endswith("-FP8.pt") for e in auto["entries"] for f in e["files"])
+
+    # An EXPLICIT quant is not forced off, so it still loads the prequant and still pays for it.
+    explicit = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF",
+        gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf",
+        speed_mode = "off",
+        transformer_quant = "fp8",
+    )
+    assert any(f.endswith("-FP8.pt") for e in explicit["entries"] for f in e["files"])
+
+
+def test_download_plan_omits_a_prequant_an_auto_pick_would_decline(monkeypatch):
+    # Auto runs the GGUF as-is rather than download an uncached hosted checkpoint, so those bytes
+    # never land and must not inflate the figure either. Only an explicit request pays for it.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/Z-Image-GGUF": [_FakeSibling("Z-Image-Turbo-Q4_K_M.gguf", 4 * GB)],
+            "Tongyi-MAI/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+            "unsloth/Z-Image-Turbo-FP8": [_FakeSibling("Z-Image-Turbo-FP8.pt", 6 * GB)],
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo", lambda *a, **k: "Tongyi-MAI/Z-Image-Turbo"
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+    monkeypatch.setattr(
+        "core.inference.diffusion._uncached_prequant_repo",
+        lambda *a, **k: "unsloth/Z-Image-Turbo-FP8",
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/Z-Image-GGUF", gguf_filename = "Z-Image-Turbo-Q4_K_M.gguf"
+    )
+
+    assert plan["required_bytes"] == plan["total_bytes"]
+
+
 def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatch):
     # Only a GGUF pick is restricted: a full pipeline's transformer IS the repo's.
     _fake_hf_api(monkeypatch, {"unsloth/some-pipeline": _ZIMAGE_BASE_SIBLINGS})
@@ -6473,6 +6984,156 @@ def test_download_plan_for_a_pipeline_kind_ignores_the_prequant_cache(monkeypatc
     plan = DiffusionBackend().download_plan("unsloth/some-pipeline", model_kind = "pipeline")
 
     assert any(f.startswith("transformer/") for f in plan["entries"][0]["files"])
+
+
+def test_download_plan_restages_a_base_split_across_both_cache_roots(monkeypatch):
+    # Studio's cache folder is a setting, so a base can end up half in the old root and half in the
+    # new one. _prefetch_files refuses to name a snapshot in that state and the assembly is pinned
+    # to hub_cache_dir(), so the old-root half is invisible to from_pretrained. Staging nothing
+    # there means the load re-pulls it inline, past the plan's progress, cancel and disk preflight.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    old_root_only = {"model_index.json"}
+
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
+        # roots=(live,) asks the active root; roots=(None,) asks huggingface_hub's import-time one.
+        asks_live = roots is not None and roots != (None,)
+        return (filename not in old_root_only) if asks_live else (filename in old_root_only)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    entry = plan["entries"][0]
+    assert set(entry["files"]) == set(_ZIMAGE_BASE_SIBLINGS_BY_NAME)
+    assert entry["bytes"] == sum(_ZIMAGE_BASE_SIBLINGS_BY_NAME[n] for n in old_root_only)
+
+
+def test_download_plan_restages_the_old_root_half_when_other_files_are_missing_too(monkeypatch):
+    # The mixed case that matters most: some files sit in the old root, others are absent entirely.
+    # Those absent ones land in the LIVE root when staged, so the repo ends up straddling both even
+    # though nothing looked split at plan time. The old-root half has to come along.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    old_root_only = {"model_index.json"}
+    absent = {"vae/diffusion_pytorch_model.safetensors"}
+
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
+        if filename in absent:
+            return False
+        asks_live = roots is not None and roots != (None,)
+        return (filename not in old_root_only) if asks_live else (filename in old_root_only)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    entry = plan["entries"][0]
+    assert set(entry["files"]) == set(_ZIMAGE_BASE_SIBLINGS_BY_NAME)
+    assert entry["bytes"] == sum(_ZIMAGE_BASE_SIBLINGS_BY_NAME[n] for n in old_root_only | absent)
+
+
+def test_download_plan_stages_a_file_a_stale_live_copy_shadows(monkeypatch):
+    # The nastiest split: the live root holds an OLD copy under the right name and the other root
+    # holds the revision the plan sized. reuse_other_cache_root only switches roots when the live
+    # lookup finds nothing, so the stale copy wins and the load reads it, or refetches inline.
+    # Treating that as cached would report an empty plan for a base that is not actually usable.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+    shadowed = {"model_index.json"}
+
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
+        asks_live = roots is not None and roots != (None,)
+        if filename in shadowed:
+            # Present in the live root but the wrong bytes; correct in the other root.
+            return expected_size is None if asks_live else True
+        return asks_live
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    entry = plan["entries"][0]
+    assert set(entry["files"]) == set(_ZIMAGE_BASE_SIBLINGS_BY_NAME)
+    assert entry["bytes"] == sum(_ZIMAGE_BASE_SIBLINGS_BY_NAME[n] for n in shadowed)
+
+
+def test_download_plan_stages_nothing_for_a_base_wholly_in_the_other_root(monkeypatch):
+    # The case reuse_other_cache_root exists for: one root holds the WHOLE base, so _prefetch_files
+    # hands back that snapshot and the load reads it off disk. Nothing to restage.
+    _fake_hf_api(monkeypatch, {"unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS})
+
+    def probe(
+        repo_id,
+        filename,
+        revision = None,
+        expected_size = None,
+        roots = None,
+        **kwargs,
+    ):
+        return roots is None or roots == (None,)
+
+    monkeypatch.setattr(DiffusionBackend, "_hub_file_is_cached", staticmethod(probe))
+
+    plan = DiffusionBackend().download_plan("unsloth/Z-Image-Turbo", model_kind = "pipeline")
+
+    assert plan["entries"] == [], "a base living entirely in one root is already loadable"
+
+
+def test_download_plan_declines_an_unrecognised_gguf_instead_of_raising(monkeypatch):
+    # A neutral repo whose id AND filename match no family resolves no companions, and the family
+    # fallback used to raise on None. The picker asks for a plan on every hub pick, so that 500s
+    # the route; planning no work is the honest answer and the load still handles its own fetch.
+    _fake_hf_api(monkeypatch, {})
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+
+    assert plan == {"entries": [], "total_bytes": 0, "required_bytes": 0, "checkpoint_bytes": 0}
+
+
+def test_download_plan_still_plans_an_unrecognised_gguf_given_an_explicit_base(monkeypatch):
+    # An explicit base_repo supplies what family detection could not, so the pick must still plan.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "someone/mixed-gguf-collection": [
+                _FakeSibling("totally-unknown-thing-Q4_K_M.gguf", 4_000)
+            ],
+            "unsloth/Z-Image-Turbo": _ZIMAGE_BASE_SIBLINGS,
+        },
+    )
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(
+        "someone/mixed-gguf-collection",
+        gguf_filename = "totally-unknown-thing-Q4_K_M.gguf",
+        model_kind = "gguf",
+        base_repo = "unsloth/Z-Image-Turbo",
+    )
+
+    assert plan["entries"], "an explicit base still has a companion set to stage"
 
 
 # ── teardown fence ────────────────────────────────────────────────────────────
@@ -6977,7 +7638,7 @@ def test_download_plan_skips_files_already_in_the_cache(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend,
         "_files_already_cached",
-        staticmethod(lambda repo_id, files, revision = None: set(files)),
+        staticmethod(lambda repo_id, files, revision = None, declared_sizes = None: set(files)),
     )
 
     plan = DiffusionBackend().download_plan(
@@ -7010,7 +7671,7 @@ def test_download_plan_stages_only_what_the_cache_is_missing(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: (
+            lambda repo_id, files, revision = None, declared_sizes = None: (
                 set() if repo_id.endswith("-GGUF") else set(files)
             )
         ),
@@ -7032,6 +7693,7 @@ def _seed_cache_file(
     filename,
     sha,
     *,
+    size = None,
     dangling = False,
 ):
     """Write ``filename`` into a real HF cache layout at ``sha``, refs/main pointing there."""
@@ -7050,6 +7712,9 @@ def _seed_cache_file(
             pytest.skip("symlinks unavailable on this host")
     else:
         target.write_bytes(b"x")
+        if size is not None:
+            with target.open("r+b") as handle:
+                handle.truncate(size)
     return target
 
 
@@ -7107,7 +7772,8 @@ def test_files_already_cached_skips_unusable_hits(monkeypatch, tmp_path):
 
     probe = DiffusionBackend._files_already_cached
     files = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
-    assert probe(repo, files, sha) == set(files)
+    assert probe(repo, files, sha, {name: 1 for name in files}) == set(files)
+    assert probe(repo, files, sha, {files[0]: 1, files[1]: 2}) == set()
     # The dangling link and the file that was never fetched both leave the set incomplete.
     assert probe(repo, [*files, "text_encoder/model.safetensors"], sha) == set()
     assert probe(repo, [*files, "scheduler/scheduler_config.json"], sha) == set()
@@ -7203,10 +7869,16 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
         DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs, **_kw: False
     )
     _all_cached(monkeypatch)
-    for name in _FLUX_BASE_SIBLINGS_BY_NAME:
+    for name, size in _FLUX_BASE_SIBLINGS_BY_NAME.items():
         if _base_file_downloaded(name, include_transformer = False):
-            _seed_cache_file(other, base, name, base_sha)
-    _seed_cache_file(other, "unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", gguf_sha)
+            _seed_cache_file(other, base, name, base_sha, size = size)
+    _seed_cache_file(
+        other,
+        "unsloth/FLUX.1-dev-GGUF",
+        "flux1-dev-Q4_K_M.gguf",
+        gguf_sha,
+        size = 7 * GB,
+    )
 
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
@@ -7214,7 +7886,11 @@ def test_download_plan_drops_a_repo_the_fallback_root_holds_whole(monkeypatch, t
 
     # incompatible_reason rides in the same envelope: the plan is where a FLUX.2 GGUF/base
     # mismatch is reported, and None is "nothing known to be wrong".
-    assert plan == {"entries": [], "total_bytes": 0, "incompatible_reason": None}
+    assert plan["entries"] == []
+    assert plan["total_bytes"] == 0
+    assert plan["incompatible_reason"] is None
+    assert plan["required_bytes"] > 0
+    assert plan["checkpoint_bytes"] == 7 * GB
 
 
 def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path):
@@ -7268,7 +7944,7 @@ def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: (
+            lambda repo_id, files, revision = None, declared_sizes = None: (
                 set()
                 if repo_id.endswith("-GGUF")
                 else {n for n in files if n != "vae/diffusion_pytorch_model.safetensors"}
@@ -7323,7 +7999,7 @@ def test_download_plan_files_do_not_shrink_as_a_repo_warms(monkeypatch):
                 DiffusionBackend,
                 "_files_already_cached",
                 staticmethod(
-                    lambda repo_id, files, revision = None: (
+                    lambda repo_id, files, revision = None, declared_sizes = None: (
                         set() if repo_id.endswith("-GGUF") else set(cached_for_base(files))
                     )
                 ),
@@ -7397,7 +8073,10 @@ def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
         DiffusionBackend,
         "_files_already_cached",
         staticmethod(
-            lambda repo_id, files, revision = None: seen.append((repo_id, revision)) or set()
+            lambda repo_id, files, revision = None, declared_sizes = None: seen.append(
+                (repo_id, revision)
+            )
+            or set()
         ),
     )
 
@@ -7436,9 +8115,10 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
         repo_id,
         files,
         revision = None,
+        declared_sizes = None,
     ):
         revisions.append(revision)
-        return real(repo_id, files, revision)
+        return real(repo_id, files, revision, declared_sizes)
 
     monkeypatch.setattr(DiffusionBackend, "_files_already_cached", staticmethod(_spy))
 
