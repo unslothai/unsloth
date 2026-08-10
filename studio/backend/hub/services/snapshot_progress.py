@@ -403,7 +403,9 @@ def _referenced_commits(entry: Path) -> "frozenset[str]":
     return frozenset(commits)
 
 
-def _snapshot_is_stale_copy(snapshot: Path, manifest: "Optional[download_manifest.Manifest]") -> bool:
+def _snapshot_is_stale_copy(
+    snapshot: Path, manifest: "Optional[download_manifest.Manifest]"
+) -> bool:
     """Whether ``snapshot`` names a revision this cache dir has moved off.
 
     Only asked where there is no symlink to read. HF names a snapshot dir after its commit, so
@@ -614,8 +616,7 @@ def compute_snapshot_progress(
                         frozenset(partial_bytes),
                     )
                     for snap in snapshot_dirs.get()
-                    if not expected_hashes
-                    or _snapshot_resolves_to(manifest, snap, expected_hashes)
+                    if not expected_hashes or _snapshot_resolves_to(manifest, snap, expected_hashes)
                 ),
                 default = 0,
             )
