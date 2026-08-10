@@ -87,6 +87,8 @@ export const fr = {
       images: "Images",
       video: "Vidéo",
       audio: "Audio",
+      trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
+      videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
       newBadge: "Nouveau",
@@ -929,6 +931,9 @@ export const fr = {
         allowNetworkAccess: "Autoriser l'accès réseau du canvas",
         allowNetworkAccessDescription:
           "Permettre aux aperçus Canvas de charger des scripts, des styles, des polices, des médias et d'autres ressources depuis des CDN. Laissez cette option désactivée pour des aperçus entièrement hors ligne.",
+        blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
+        blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
+        blockedBannerAction: "Autoriser pour ce Canvas",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -1413,6 +1418,7 @@ export const fr = {
       history: "Historique",
     },
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
+    checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
     sections: {
       model: "Modèle",

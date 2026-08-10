@@ -86,6 +86,8 @@ export const es = {
       images: "Imágenes",
       video: "Vídeo",
       audio: "Audio",
+      trainChecking: "Comprobando si este equipo admite entrenamiento...",
+      videoChecking: "Comprobando si este equipo admite vídeo...",
       more: "Más",
       customizeSidebar: "Personalizar la barra lateral",
       newBadge: "Nuevo",
@@ -923,6 +925,9 @@ export const es = {
         allowNetworkAccess: "Permitir acceso de red en Canvas",
         allowNetworkAccessDescription:
           "Permite que las vistas previas de Canvas carguen scripts, estilos, fuentes, medios y recursos de red desde CDNs. Mantenlo desactivado para vistas previas totalmente sin conexión.",
+        blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
+        blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
+        blockedBannerAction: "Permitir en este Canvas",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",
@@ -1402,6 +1407,7 @@ export const es = {
       history: "Historial",
     },
     loadingRuntime: "Cargando entorno de entrenamiento...",
+    checkingSupport: "Comprobando si este equipo admite entrenamiento...",
     backToHistory: "Volver al historial",
     sections: {
       model: "Modelo",

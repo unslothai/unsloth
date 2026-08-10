@@ -79,6 +79,9 @@ export const en = {
       images: "Images",
       video: "Video",
       audio: "Audio",
+      // Hover text while the row spins, before this machine's capability is measured.
+      trainChecking: "Checking this machine for training support...",
+      videoChecking: "Checking this machine for video support...",
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
@@ -892,6 +895,9 @@ export const en = {
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
           "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+        blockedBanner: "Blocked {count} external resource from {hosts}.",
+        blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
+        blockedBannerAction: "Allow for this canvas",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -1351,6 +1357,7 @@ export const en = {
     imageTraining: "Image training",
     goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
+    checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
     sections: {
       model: "Model",

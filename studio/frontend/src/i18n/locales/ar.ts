@@ -84,6 +84,8 @@ export const ar = {
       images: "الصور",
       video: "الفيديو",
       audio: "الصوت",
+      trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
+      videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
@@ -899,6 +901,9 @@ export const ar = {
         allowNetworkAccess: "السماح بوصول Canvas إلى الشبكة",
         allowNetworkAccessDescription:
           "اسمح لمعاينات Canvas بتحميل النصوص البرمجية والأنماط والخطوط والوسائط وموارد الشبكة من شبكات CDN. أبقِه معطّلاً للمعاينات دون اتصال بالكامل.",
+        blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
+        blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
+        blockedBannerAction: "السماح لهذا الـ Canvas",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -1364,6 +1369,7 @@ export const ar = {
       history: "السجل",
     },
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
+    checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
     sections: {
       model: "النموذج",
