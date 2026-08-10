@@ -264,7 +264,15 @@ def assert_video_precision_available(
     # refused for want of hardware neither the rewrite nor the real loader needs, so a supported
     # CPU load comes back as a 409. Whether the artifact suits THIS base is decided at the seed,
     # which is not a host-level impossibility and so is not this gate's question.
-    if getattr(fam, "modular_workflow", None) and h3_te_quant_scheme(te_mode) is not None:
+    # PIPELINE loads only. The hosted conditioner is a Diffusers-path artifact; the native GGUF
+    # path picks its Q2/Q4 encoder off the denoiser filename and discards text_encoder_quant
+    # entirely, so exempting it would let an explicit request through to a load that answers it at
+    # an unrelated precision -- the very thing the fail-closed contract exists to stop.
+    if (
+        model_kind == "pipeline"
+        and getattr(fam, "modular_workflow", None)
+        and h3_te_quant_scheme(te_mode) is not None
+    ):
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
     te_reason = None
@@ -1833,8 +1841,14 @@ class VideoBackend:
             if dq_repo:
                 total += add(dq_repo, dq_files)
             # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/.
+            # VERIFIED, like the load: this entry both ADDS 27 GB and REMOVES the dense encoder
+            # from the base entry below, so a name match that the load will decline gets the plan
+            # and the disk preflight wrong in both directions at once -- 27 GB staged and never
+            # used, 62 GB needed and never advertised. This function is already the network-bound
+            # one (it is nothing but model_info calls, wrapped in the try below), so the few-KB
+            # index read is in keeping.
             h3_te_repo, h3_te_files = self._h3_te_quant_hub_files(
-                self._h3_te_quant_scheme(fam, text_encoder_quant, base), api
+                self._h3_te_quant_scheme_verified(fam, text_encoder_quant, base, hf_token), api
             )
             if h3_te_repo:
                 total += add(h3_te_repo, h3_te_files)

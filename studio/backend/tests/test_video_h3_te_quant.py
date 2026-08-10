@@ -647,3 +647,33 @@ def test_the_staging_skip_reads_the_same_index_the_seed_will(tmp_path):
     # An unreadable index keeps the dense shards rather than guessing.
     assert backend._h3_te_base_index_source(str(tmp_path / "nope"), None) is None
     assert backend._h3_te_quant_scheme_verified(fam, "int8", str(tmp_path / "nope"), None) is None
+
+
+def test_a_projection_left_dense_is_refused_not_budgeted():
+    """strict=True proves the artifact and the skeleton name the same tensors, not that they are
+    quantized. A projection re-uploaded as a plain dense weight drops out of the swap, loads
+    cleanly, and would be recorded as engaged int8 while the resident encoder crept back toward
+    51 GB -- and the VRAM preflight sizes the floor from the ENGAGED scheme."""
+    from torch import nn
+
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class
+
+    quantized_cls = _int8_convrot_linear_class()
+
+    class _Layer(nn.Module):
+        def __init__(self, dense_projection):
+            super().__init__()
+            self.self_attn = nn.Module()
+            self.self_attn.q_proj = (
+                nn.Linear(8, 8) if dense_projection else quantized_cls(8, 8, False, 256)
+            )
+
+    def _dense_names(stack):
+        return [n for n, m in stack.named_modules() if isinstance(m, nn.Linear)]
+
+    # The check the loader makes, on a stack where every projection was swapped.
+    assert _dense_names(nn.ModuleList([_Layer(False), _Layer(False)])) == []
+    # And on one where a single projection came back dense.
+    assert _dense_names(nn.ModuleList([_Layer(False), _Layer(True)])) == ["1.self_attn.q_proj"]
+    # The stand-in is not an nn.Linear, so it cannot be mistaken for one.
+    assert not isinstance(quantized_cls(8, 8, False, 256), nn.Linear)

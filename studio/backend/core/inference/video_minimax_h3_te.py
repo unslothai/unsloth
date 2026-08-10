@@ -429,9 +429,29 @@ def load_h3_quantized_text_encoder(
                     tensor = tensor.to(dtype)
                 state_dict[h3_te_remap_key(name)] = tensor
 
-        # strict=True is the whole safety argument: it proves the artifact and the meta-initialised
-        # skeleton describe the same 902 tensors, so a re-upload that renames, adds or drops one
-        # fails the load instead of silently conditioning on partly random weights.
+        # strict=True proves the artifact and the meta-initialised skeleton describe the same 902
+        # tensors, so a re-upload that renames, adds or drops one fails the load instead of
+        # silently conditioning on partly random weights. It does NOT prove they are quantized:
+        # a projection re-uploaded as a plain dense ``weight`` with its scale and metadata removed
+        # simply drops out of the set above, leaves the original bfloat16 Linear in place, and
+        # loads cleanly under strict. The load would then be recorded as engaged int8 while the
+        # resident encoder crept back toward the dense 51 GB, and the VRAM preflight -- which
+        # sizes the floor from the ENGAGED scheme -- would clear a generation that cannot fit.
+        #
+        # Checked structurally rather than against a count, so it stays true if the layer or
+        # projection set ever changes: no ordinary Linear may survive inside the decoder stack.
+        # The vision tower keeps its own dense Linears and is not in scope.
+        dense = [
+            name
+            for name, module in language_model.layers.named_modules()
+            if isinstance(module, torch.nn.Linear)
+        ]
+        if dense:
+            raise ValueError(
+                f"{len(dense)} decoder projection(s) are not quantized in this artifact, "
+                f"e.g. {', '.join(sorted(dense)[:3])}; it is not the {scheme} checkpoint this "
+                f"path budgets for"
+            )
         encoder.load_state_dict(state_dict, strict = True, assign = True)
         # Nothing may be left on meta. A dense CPU rebuild is NOT an acceptable repair here (it is
         # the 51 GB allocation this path exists to avoid), so a leftover is a refusal and the caller
