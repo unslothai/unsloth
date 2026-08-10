@@ -73,6 +73,7 @@ from .models.loader_utils import (
 )
 from .models._utils import _convert_torchao_model
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
+from .device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
 from huggingface_hub import HfApi
 
@@ -3145,8 +3146,7 @@ def unsloth_save_pretrained_gguf(
     for _ in range(3):
         import gc
         gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        clean_gpu_cache()
 
     # Step 7: Get model dtype and type
     try:

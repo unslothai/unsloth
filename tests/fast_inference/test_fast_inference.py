@@ -63,6 +63,9 @@ PROMPTS = [
     for q in QUESTIONS
 ]
 
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+
 
 def length_reward_func(completions, **kwargs) -> list[float]:
     """Reward longer completions. The fractional tie-break keeps rewards distinct
@@ -80,7 +83,7 @@ def _metric(metrics, *names):
     return None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fast_inference needs a CUDA GPU + vLLM")
+@pytest.mark.skipif(not (cuda_available or xpu_available), reason = "fast_inference needs a CUDA or XPU GPU + vLLM")
 def test_fast_inference():
     # Import here, not at module load: importing unsloth probes for an
     # accelerator and errors on CPU-only machines, so deferring keeps pytest
@@ -184,7 +187,7 @@ def test_fast_inference():
 
 
 if __name__ == "__main__":
-    if torch.cuda.is_available():
+    if cuda_available or xpu_available:
         test_fast_inference()
     else:
-        print("Skipping fast_inference test: needs a CUDA GPU + vLLM")
+        print("Skipping fast_inference test: needs a CUDA or XPU GPU + vLLM")

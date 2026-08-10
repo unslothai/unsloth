@@ -39,6 +39,10 @@ from trl import SFTConfig, SFTTrainer
 from trl.trainer.sft_trainer import DataCollatorForLanguageModeling
 
 
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
 class _FakeConfig(SimpleNamespace):
     # get_transformers_model_type() resolves through to_dict(), which SimpleNamespace lacks.
     def to_dict(self):
@@ -1025,7 +1029,7 @@ def test_enable_sample_packing_only_requires_torch_call():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+    not (cuda_available or xpu_available), reason = "builds a real 4bit model on an accelerator"
 )
 def test_enable_sample_packing_trl_collator(tmp_path):
     if torch.cuda.is_available():
@@ -1089,7 +1093,7 @@ def test_enable_padding_free_metadata():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available(), reason = "builds a real 4bit model on an accelerator"
+    not (cuda_available or xpu_available), reason = "builds a real 4bit model on an accelerator"
 )
 def test_packing_sdpa(tmp_path):
     if torch.cuda.is_available():
