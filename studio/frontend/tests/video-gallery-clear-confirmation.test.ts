@@ -22,7 +22,7 @@ test("video gallery bulk deletion requires an explicit confirmation", () => {
   assert.ok(!clearButton.includes("handleClearAll"));
 
   const dialog = source.slice(
-    source.indexOf("<AlertDialog\n        open={clearConfirmOpen}"),
+    source.indexOf("<AlertDialog\n        open={active && clearConfirmOpen}"),
     source.indexOf("<Dialog\n        open={pendingH3Load"),
   );
   assert.ok(
@@ -44,7 +44,7 @@ test("video gallery bulk deletion requires an explicit confirmation", () => {
   assert.ok(dialog.includes("void handleClearAll();"));
 });
 
-test("video gallery confirmation stays controlled while clearing", () => {
+test("video gallery confirmation stays controlled while clearing and off-route", () => {
   const handler = source.slice(
     source.indexOf("const handleClearAll = useCallback("),
     source.indexOf("// Load a clip's recipe back into the form inputs."),
@@ -59,8 +59,9 @@ test("video gallery confirmation stays controlled while clearing", () => {
   );
 
   const root = source.slice(
-    source.indexOf("<AlertDialog\n        open={clearConfirmOpen}"),
+    source.indexOf("<AlertDialog\n        open={active && clearConfirmOpen}"),
     source.indexOf('<AlertDialogContent size="sm">'),
   );
+  assert.ok(root.includes("open={active && clearConfirmOpen}"));
   assert.ok(root.includes("if (!clearingGallery) setClearConfirmOpen(open);"));
 });

@@ -2615,7 +2615,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       <AlertDialog
-        open={clearConfirmOpen}
+        open={active && clearConfirmOpen}
         onOpenChange={(open) => {
           if (!clearingGallery) setClearConfirmOpen(open);
         }}
