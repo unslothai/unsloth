@@ -3150,14 +3150,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   return (
     // The chat-style layout gives this page no outer top inset, so clear the custom
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      {/* grid at every width, not an overlay below md: the absolute mode switch painted over the model selector and the Video link. */}
-      {/* @container, not md:/xl:, because the header is the viewport minus a sidebar the user can drag between 260px and 480px. */}
-      <div className="@container pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+    <div className="diffusion-surface @container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      {/* Below 50rem, equal side tracks keep the mode switch centered without overlaying
+          either action group. Above it, the 408px rail continues through the header and
+          Create / Train centers over the preview pane. */}
+      <div className="pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2 @[50rem]:grid-cols-[408px_minmax(0,1fr)] @[50rem]:gap-0">
         <div
           className={cn(
-            "pointer-events-none flex min-w-0 items-center",
+            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
             isMobile
               ? "pl-12"
               : !pinned && isTauri
@@ -3165,14 +3165,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
         >
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
             {pageMode === "train" ? (
               <TrainBaseSelector
                 families={trainFamilies}
                 familyName={trainFamilyName}
                 base={trainBaseChoice}
                 onSelect={(family, repo) => {
-                  // Set both together: the panel reseed effect keeps a base valid for the new family.
                   setTrainFamilyName(family);
                   setTrainBaseChoice(repo);
                 }}
@@ -3194,62 +3193,49 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 onOpenChange={(o) => setSelectorOpen(active && o)}
               />
             )}
-          {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs a
-              resident model, so it is hidden for exactly the span a first load runs. A real button, not the
-              trigger's aria-hidden eject hit area, so it is reachable by keyboard and a screen reader. Says
-              "load", never "download": the download manager's own Cancel stops a staged pull, a different job. */}
-          {pageMode !== "train" && busy === "loading" && (
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  aria-label="Cancel load"
-                  className="!h-[34px] rounded-full text-xs"
-                  onClick={() => void handleCancelLoad()}
-                >
-                  Cancel load
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Stop loading this model</TooltipContent>
-            </Tooltip>
-          )}
+            {pageMode !== "train" && busy === "loading" && (
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    aria-label="Cancel load"
+                    className="!h-[34px] rounded-full text-xs"
+                    onClick={() => void handleCancelLoad()}
+                  >
+                    Cancel load
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Stop loading this model</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         </div>
-        {/* Create | Train page-mode switch, centred on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        {/* No padding on the grid, so the equal side tracks centre the pill on the header itself; px-11 makes the pair 277px, so it waits for the room. */}
-        <PillTabs
-          ariaLabel="Page mode"
-          value={pageMode}
-          onValueChange={(v) => setPageMode(v as "create" | "train")}
-          fit={true}
-          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
-          tabs={[
-            {
-              value: "create",
-              label: "Create",
-              icon: (
-                <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-              ),
-            },
-            {
-              value: "train",
-              label: "Train",
-              icon: (
-                <HugeiconsIcon
-                  icon={TestTubeOutlineIcon}
-                  className="size-3.5"
-                />
-              ),
-            },
-          ]}
-        />
-        {/* pr-2 rides the wrapper, not the grid: on the grid it would shift the centred pill by half of it. */}
-        <div className="pointer-events-none flex min-w-0 items-center justify-end pr-2">
-          {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
-          <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-            <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+        <div className="contents @[50rem]:grid @[50rem]:h-full @[50rem]:min-w-0 @[50rem]:grid-cols-[1fr_auto_1fr]">
+          <div className="pointer-events-auto justify-self-center pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-2">
+            <PillTabs
+              ariaLabel="Page mode"
+              value={pageMode}
+              onValueChange={(v) => setPageMode(v as "create" | "train")}
+              fit={true}
+              className="h-[34px] [&>button]:h-[34px] [&>button]:px-3 @[68rem]:[&>button]:px-11"
+              tabs={[
+                { value: "create", label: "Create", icon: <HugeiconsIcon icon={SparklesIcon} className="size-3.5" /> },
+                { value: "train", label: "Train", icon: <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-3.5" /> },
+              ]}
+            />
+          </div>
+          <div className="pointer-events-none flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:col-start-3">
+            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <MediaPageLink
+                to="/video"
+                label="Video"
+                icon={FlimSlateIcon}
+                labelClassName="hidden @[50rem]:inline"
+                arrowClassName="hidden @[50rem]:block"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -3271,14 +3257,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           onFamiliesChange={setTrainFamilies}
         />
       ) : (
-      /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
-         Full width, so the canvas grows with the window; the settings column stays fixed.
-         pl-8 puts its content 40px in, level with the model selector label above and
-         with pr-8 on the other side of the column.
-         overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
-         which would let a wide row pan the page sideways on a phone. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
-        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
+      /* Settings column + preview canvas. Structural borders stay edge-to-edge;
+         spacing belongs inside each pane. The same 50rem page-container breakpoint
+         drives this body and the header above, regardless of sidebar width. */
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
@@ -3287,7 +3270,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               // pb-20 at every width: the floating Generate button below is absolutely
               // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
               // phone padding puts it on top of the last control.
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 px-10 pt-9 pb-20 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3827,7 +3810,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center px-10 pb-7">
             {busy === "generating" ? (
               /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
                  (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
@@ -3853,9 +3836,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
-          {/* With the pane's pl-2, the 40px gutter the settings column has off the page edge. */}
-          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 pl-8">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0">
+          <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[60px]">
             {selected && selectedSrc ? (
               <>
                 <img
@@ -3954,8 +3936,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           {(images.length > 0 || busy === "generating") && (
             <div
               ref={stripRef}
-              // Same 40px gutter as the viewer above.
-              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 p-3 pl-8"
+              // The rule spans the pane; only the thumbnail contents receive the 40px gutter.
+              className="hover-scrollbar flex shrink-0 gap-2 overflow-x-auto border-t border-foreground/10 px-10 py-3"
               onScroll={(e) => {
                 // Near the right edge: pull the next older page (infinite scroll).
                 const el = e.currentTarget;

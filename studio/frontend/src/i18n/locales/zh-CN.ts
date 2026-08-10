@@ -873,6 +873,9 @@ export const zhCN = {
         allowNetworkAccess: "允许 Canvas 访问网络",
         allowNetworkAccessDescription:
           "允许 Canvas 预览从 CDN 加载脚本、样式、字体、媒体和网络资源。若需完全离线预览请保持关闭。",
+        blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerAction: "允许此 Canvas",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
