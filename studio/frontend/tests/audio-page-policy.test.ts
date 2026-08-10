@@ -431,13 +431,33 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   // for the backend to refuse it. Mirrors _MAX_AUDIO_SECONDS and the b64 upload ceiling.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /const RECORDING_MAX_BYTES = /);
+  assert.match(audioPageSource, /const RECORDING_MAX_BYTES = 25 \* 1024 \* 1024;/);
   assert.match(
     audioPageSource,
-    /recordedBytes \+= event\.data\.size;[\s\S]*?if \(recordedBytes > RECORDING_MAX_BYTES\) stopAtLimit\("size"\);/,
+    /if \(recordedBytes \+ event\.data\.size > RECORDING_MAX_BYTES\) \{\s*stopAtLimit\("size"\);/,
   );
   assert.match(
     audioPageSource,
     /window\.setTimeout\(\s*\(\) => stopAtLimit\("duration"\),\s*RECORDING_MAX_SECONDS \* 1000,/,
   );
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
+});
+
+test("macOS hides trained TTS checkpoints that are not GGUF", () => {
+  // MLX has no TTS decoder, so a LoRA or merged safetensors row deterministically fails
+  // with "not supported on the MLX backend yet". The catalog rows are already filtered to
+  // families with a GGUF sibling; these have none.
+  assert.match(
+    audioPageSource,
+    /\.filter\(\(lora\) => !isMac \|\| lora\.export_type === "gguf"\)/,
+  );
+});
+
+test("the transcript download revokes its URL only after the click is consumed", () => {
+  // Immediate revocation raced browsers that resolve a synthetic download navigation
+  // asynchronously, leaving the action with no file.
+  assert.match(
+    audioPageSource,
+    /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
+  );
 });

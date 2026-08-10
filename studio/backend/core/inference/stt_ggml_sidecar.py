@@ -1030,7 +1030,7 @@ class GgmlSttSidecar:
         # Reject a missing model before decoding so a long clip does not burn CPU
         # only to 409 (matches the Transformers sidecar's preflight).
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)

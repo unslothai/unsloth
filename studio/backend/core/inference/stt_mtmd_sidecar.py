@@ -942,7 +942,7 @@ class MtmdSttSidecar:
         # preload that succeeded only discarded the user's recording.
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)

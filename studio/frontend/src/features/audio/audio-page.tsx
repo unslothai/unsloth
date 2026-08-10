@@ -147,7 +147,9 @@ const PAGE_SIZE = 50;
 // Mirrors the STT sidecar's own limits (_MAX_AUDIO_SECONDS, STT_AUDIO_B64_MAX_CHARS), so a
 // recording is stopped at the boundary rather than uploaded and refused.
 const RECORDING_MAX_SECONDS = 30 * 60;
-const RECORDING_MAX_BYTES = 96 * 1024 * 1024;
+// STT_AUDIO_RAW_MAX_BYTES in utils/upload_limits.py. A larger client cap let a dense codec
+// build a recording the raw route then refused with 413.
+const RECORDING_MAX_BYTES = 25 * 1024 * 1024;
 const RECORDING_CHUNK_MS = 1000;
 const TTS_MAX_TOKENS = 8192;
 // Max tokens caps the OUTPUT, and the prompt's own tokens sit in the same context window, so
@@ -1426,9 +1428,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
+          // Stop before appending the chunk that crosses the limit, so what is uploaded is
+          // always inside it rather than one chunk over.
+          if (recordedBytes + event.data.size > RECORDING_MAX_BYTES) {
+            stopAtLimit("size");
+            return;
+          }
           chunks.push(event.data);
           recordedBytes += event.data.size;
-          if (recordedBytes > RECORDING_MAX_BYTES) stopAtLimit("size");
         }
       });
       recorder.addEventListener("stop", () => {
@@ -1507,7 +1514,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     anchor.href = url;
     anchor.download = `${(transcribedName ?? "transcript").replace(/\.[^.]+$/, "")}.txt`;
     anchor.click();
-    URL.revokeObjectURL(url);
+    // Deferred like the gallery download below: browsers that resolve the synthetic
+    // navigation asynchronously were left with a revoked URL and no file.
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [transcript, transcribedName]);
 
   // --- Gallery actions ----------------------------------------------------
@@ -1627,6 +1636,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (cancelled) return;
         setTrainedTtsModels(
           res.loras
+            // MLX has no TTS decoder, so a trained LoRA or merged safetensors checkpoint
+            // deterministically fails with "not supported on the MLX backend yet" on Mac.
+            // The catalog rows are already filtered to families with a GGUF sibling; these
+            // have none, so offering them only produces that error.
+            .filter((lora) => !isMac || lora.export_type === "gguf")
             .filter((lora) => isTtsAudioType(lora.audio_type))
             .map((lora) => ({
               id: lora.adapter_path,
@@ -1645,7 +1659,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [active]);
+  }, [active, isMac]);
 
   // --- Render -------------------------------------------------------------
 

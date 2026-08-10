@@ -396,8 +396,33 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
     if prompt:
         context_length = _monitor_context_length()
         if context_length:
-            budget = max(1, min(budget, context_length - max(1, len(prompt) // 3)))
+            budget = max(1, min(budget, context_length - _prompt_token_estimate(prompt)))
     return budget
+
+
+def _prompt_token_estimate(prompt: str) -> int:
+    """Tokens the prompt will occupy, from the loaded tokenizer where one is reachable.
+
+    The len//3 fallback under-counts CJK and emoji badly, which is exactly the input that
+    then overflows the context, so ask the tokenizer first and only guess when it is absent.
+    """
+    try:
+        backend = _peek_inference_backend()
+        if backend is not None and backend.active_model_name:
+            models = getattr(backend, "models", {}) or {}
+            info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+            tokenizer = info.get("tokenizer") if isinstance(info, dict) else None
+            if tokenizer is not None and hasattr(tokenizer, "encode"):
+                count = len(tokenizer.encode(prompt))
+                if count > 0:
+                    return count
+    except Exception:  # noqa: BLE001 - an estimate must never fail the request
+        pass
+    # llama-server holds its own tokenizer, so estimate by character class instead of a
+    # flat ratio: CJK and emoji are about a token each, Latin text about a third of one.
+    # A flat len(prompt) would be safe but would reject ordinary English that fits.
+    dense = sum(1 for ch in prompt if ord(ch) > 0x2E7F)
+    return max(1, dense + (len(prompt) - dense) // 3)
 
 
 _OPENAI_COMPAT_STREAM_STALL_TIMEOUT_ENV = "UNSLOTH_OPENAI_COMPAT_STREAM_STALL_TIMEOUT"
