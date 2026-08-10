@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import inspect
 import os
 import re
@@ -30,14 +31,20 @@ def _message(message_id: str, thread_id: str) -> chat_history.ChatMessage:
     )
 
 
-def test_route_handlers_are_sync():
-    """An async handler would run studio.db's blocking sqlite on the event loop."""
+def test_async_delete_handlers_dispatch_sqlite_to_the_threadpool():
+    """Cleanup handlers may be async, but their blocking sqlite work must leave the event loop."""
     coroutine_handlers = sorted(
         route.endpoint.__name__
         for route in chat_history.router.routes
         if inspect.iscoroutinefunction(route.endpoint)
     )
-    assert coroutine_handlers == []
+    assert coroutine_handlers == ["clear_history", "delete_project", "delete_threads"]
+    for handler in (
+        chat_history.clear_history,
+        chat_history.delete_project,
+        chat_history.delete_threads,
+    ):
+        assert "run_in_threadpool" in inspect.getsource(handler)
 
 
 def test_replace_thread_messages_rejects_body_thread_mismatch(monkeypatch):
@@ -182,25 +189,36 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
     captured_operation_ids: list[str | None] = []
 
-    def clear_with_ids(thread_ids, operation_id = None):
+    def clear_with_ids(thread_ids = (), operation_id = None):
         captured.extend(thread_ids)
         captured_operation_ids.append(operation_id)
-        return [], list(thread_ids)
+        return list(thread_ids), []
 
-    monkeypatch.setattr(
-        chat_history,
-        "clear_chat_history_with_active_research_runs",
-        clear_with_ids,
-    )
+    async def remove_sandboxes(_thread_ids, _delete_files):
+        return 0, []
+
+    monkeypatch.setattr(chat_history, "clear_chat_history", clear_with_ids)
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", remove_sandboxes)
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
+    monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
     request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
 
-    response = chat_history.clear_history(
-        request,
-        chat_history.ChatClearRequest(ids = ["pending-thread"], operationId = "clear-operation-1"),
-        current_subject = "test-user",
+    response = asyncio.run(
+        chat_history.clear_history(
+            request,
+            chat_history.ChatClearRequest(
+                ids = ["pending-thread"], operationId = "clear-operation-1"
+            ),
+            current_subject = "test-user",
+        )
     )
 
-    assert response == {"status": "deleted", "deletedThreadIds": ["pending-thread"]}
+    assert response == {
+        "status": "deleted",
+        "deletedThreadIds": ["pending-thread"],
+        "sandboxes_removed": 0,
+        "sandboxes_kept": [],
+    }
     assert captured == ["pending-thread"]
     assert captured_operation_ids == ["clear-operation-1"]
 
@@ -211,30 +229,35 @@ def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
         "name": "Project",
         "createdAt": 1,
         "updatedAt": 1,
+        "memberIds": ["thread-1"],
+        "activeResearchRunIds": ["run-1"],
     }
     cancelled: list[str] = []
     monkeypatch.setattr(
         chat_history,
-        "delete_chat_project_with_active_research_runs",
-        lambda _project_id: (project, ["run-1"]),
+        "delete_chat_project",
+        lambda _project_id, delete_files = False: project,
     )
     monkeypatch.setattr(
         chat_history,
-        "_cancel_deleted_research_runs",
+        "_cancel_research_runs",
         lambda _request, run_ids: cancelled.extend(run_ids),
     )
+    monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda _ids: None)
 
-    def fail_workspace_cleanup(_project):
+    async def fail_workspace_cleanup(_ids, _delete_files):
         raise OSError("workspace is busy")
 
-    monkeypatch.setattr(chat_history, "delete_chat_project_workspace", fail_workspace_cleanup)
+    monkeypatch.setattr(chat_history, "_remove_sandboxes", fail_workspace_cleanup)
 
     with pytest.raises(OSError, match = "workspace is busy"):
-        chat_history.delete_project(
-            "project-1",
-            SimpleNamespace(),
-            delete_files = True,
-            current_subject = "test-user",
+        asyncio.run(
+            chat_history.delete_project(
+                "project-1",
+                SimpleNamespace(),
+                delete_files = True,
+                current_subject = "test-user",
+            )
         )
 
     assert cancelled == ["run-1"]

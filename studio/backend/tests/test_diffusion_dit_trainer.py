@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unit tests for the flow-matching DiT LoRA trainer (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image).
+"""Unit tests for the flow-matching DiT LoRA trainer (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / LTX-2).
 
 CPU-only: cover family resolution, the per-family spec table, the QLoRA prequant
 heuristic, the bf16-only guard, and the gated-repo name check. The full training loop is
@@ -46,6 +46,8 @@ def test_specs_cover_the_dit_families():
         "krea-2",
         "flux.2-klein",
         "flux.2-dev",
+        # The first VIDEO family; its own assertions live in test_diffusion_dit_trainer_ltx2.
+        "ltx-2",
     }
     # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
@@ -153,6 +155,30 @@ def test_flux2_bases_pass_the_trusted_base_gate():
     _assert_trusted_base_model("black-forest-labs/FLUX.2-dev")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("someone/random-flux2-finetune")
+
+
+def test_zimage_offers_the_undistilled_base_the_upstream_recipe_trains_on():
+    # examples/dreambooth/README_z_image.md trains on Tongyi-MAI/Z-Image, not the distilled Turbo,
+    # and the trust gate refused that id until it joined the allowlist. The nf4 Turbo stays first
+    # so it remains the picker's default.
+    from core.inference.diffusion_families import detect_family
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    fam = detect_family("Tongyi-MAI/Z-Image")
+    assert fam is not None and fam.name == "z-image"
+    assert fam.train_base_repos == (
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+        "Tongyi-MAI/Z-Image-Turbo",
+        "Tongyi-MAI/Z-Image",
+    )
+    _assert_trusted_base_model("Tongyi-MAI/Z-Image")
+    with pytest.raises(ValueError, match = "untrusted"):
+        _assert_trusted_base_model("someone/random-z-image-finetune")
+    # The upstream script's target list; the family spec must already match it.
+    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0")
+    # No deploy pairing: an adapter previews on whichever checkpoint it trained on. A family-wide
+    # one would also rewrite the nf4 Turbo base, sending a QLoRA run's preview to a dense fp32 load.
+    assert fam.deploy_base_repo is None
 
 
 def test_every_train_base_is_deployable_as_an_inference_pipeline():

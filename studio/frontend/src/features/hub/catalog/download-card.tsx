@@ -299,6 +299,7 @@ export function DeleteConfirmDialog({
   title,
   description,
   deleting,
+  blocked = false,
   onConfirm,
 }: {
   open: boolean;
@@ -306,6 +307,8 @@ export function DeleteConfirmDialog({
   title: string;
   description: ReactNode;
   deleting: boolean;
+  /** Another installed model needs these files. Confirming would 400, so do not offer it. */
+  blocked?: boolean;
   onConfirm: () => void;
 }) {
   return (
@@ -319,7 +322,7 @@ export function DeleteConfirmDialog({
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={deleting}
+            disabled={deleting || blocked}
             onClick={(e) => {
               e.preventDefault();
               onConfirm();

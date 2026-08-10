@@ -4,8 +4,8 @@
 """
 Chat history API routes backed by studio.db.
 
-Handlers are sync defs so Starlette runs studio.db's blocking sqlite in its threadpool
-instead of on the event loop, where it would stall every other request.
+SQLite-backed handlers are sync defs unless they also perform asynchronous cleanup. Those
+mixed handlers explicitly send their database transaction through Starlette's threadpool.
 """
 
 import sqlite3
@@ -25,13 +25,12 @@ from storage.studio_db import (
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
     build_chat_history_export,
-    clear_chat_history_with_active_research_runs,
+    clear_chat_history,
     count_chat_threads,
     count_forks_for_message,
     delete_chat_attachment,
-    delete_chat_project_workspace,
-    delete_chat_threads_with_active_research_runs,
-    delete_chat_project_with_active_research_runs,
+    delete_chat_project,
+    delete_chat_threads,
     ensure_chat_project_workspace,
     fork_chat_thread,
     get_chat_attachment,
@@ -115,6 +114,12 @@ class ChatProject(BaseModel):
     updatedAt: int
 
 
+class ChatProjectDeleted(ChatProject):
+    """The deleted project, plus the member sandboxes that still hold files."""
+
+    sandboxes_kept: list[str] = []
+
+
 class ChatProjectPatch(BaseModel):
     name: Optional[str] = None
     instructions: Optional[str] = None
@@ -142,6 +147,9 @@ class ChatMessageSyncRequest(BaseModel):
 
 class ChatDeleteRequest(BaseModel):
     ids: list[str]
+    # Files a tool call wrote. Off by default: they are the user's and the chat
+    # card offers them as downloads. An empty sandbox is removed either way.
+    delete_files: bool = False
 
 
 class ChatClearRequest(BaseModel):
@@ -374,15 +382,157 @@ def _cancel_deleted_research_runs(request: Request, run_ids: list[str]) -> None:
             )
 
 
+def _cancel_active_research(request: Request, thread_ids: list[str]) -> None:
+    """Compatibility path for callers that must cancel runs before deleting their rows."""
+    if not thread_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for thread_id in thread_ids:
+        try:
+            active = research_runs_db.list_active(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+        for run in active:
+            try:
+                status = research_runs_db.request_cancel(run["id"])
+                if supervisor is not None and status == "cancelling":
+                    supervisor.cancel(run["id"])
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "chat_history.cancel_active_research_failed run_id=%s",
+                    run.get("id"),
+                    exc_info = True,
+                )
+
+
+def _cancel_research_runs(request: Request, run_ids: list[str]) -> None:
+    """Stop these research runs by id. Best effort, like every cleanup here."""
+    if not run_ids:
+        return
+    try:
+        from storage import research_runs_db
+    except Exception:  # noqa: BLE001 - research storage optional/unavailable
+        return
+    supervisor = getattr(request.app.state, "research_supervisor", None)
+    for run_id in run_ids:
+        # The row is usually already gone here, which makes request_cancel raise:
+        # the supervisor is what actually stops the worker, so it is told first
+        # and the status update is the best-effort half.
+        if supervisor is not None:
+            try:
+                supervisor.cancel(run_id)
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not signal research run %s", run_id, exc_info = True)
+        try:
+            research_runs_db.request_cancel(run_id)
+        except Exception:  # noqa: BLE001
+            pass  # no row to update, which is the ordinary case after a delete
+
+
+def _cancel_active_generations(thread_ids: list[str]) -> None:
+    """Stop any generation still running for these threads.
+
+    The sandbox goes with the thread, but a request that has not reached the
+    executor yet would dispatch its tool call afterwards, recreate the folder,
+    and write files no chat can reach. The in-flight guard only covers calls
+    already inside the executor. Best effort: this must never break a delete.
+    """
+    if not thread_ids:
+        return
+    try:
+        from state import active_generations
+    except Exception:  # noqa: BLE001 - never block a delete on this
+        return
+    for thread_id in thread_ids:
+        try:
+            active_generations.cancel_thread(thread_id)
+        except Exception:  # noqa: BLE001
+            continue
+
+
 @router.delete("/threads")
-def delete_threads(
+async def delete_threads(
     payload: ChatDeleteRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    deleted_research_run_ids = delete_chat_threads_with_active_research_runs(payload.ids)
-    _cancel_deleted_research_runs(request, deleted_research_run_ids)
-    return {"status": "deleted"}
+    from starlette.concurrency import run_in_threadpool
+
+    deleted_research_run_ids = await run_in_threadpool(delete_chat_threads, payload.ids)
+    _cancel_research_runs(request, deleted_research_run_ids)
+    _cancel_active_generations(payload.ids)
+    # Keyed by thread id, so nothing can reference the folder once the thread
+    # is gone. Clean it up rather than leaking one per chat.
+    # In a worker: right after an upgrade this also runs the legacy move, and a
+    # cross-filesystem copy on the event loop stops every other request.
+    removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":
+    """Drop each thread's sandbox off the event loop. Never raises.
+
+    Returns how many went and which ids still have files. The chat is the only
+    way to those files, so a caller that never offered the choice can offer it
+    once it knows there was something to keep.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    def _remove() -> "tuple[int, list[str]]":
+        from core.inference.tools import (
+            record_kept_sandbox,
+            remove_session_sandbox,
+            sandbox_removal_deferred,
+            session_sandbox_has_files,
+        )
+        from storage.studio_db import sandbox_is_referenced_elsewhere
+
+        removed, kept = 0, []
+        for thread_id in thread_ids:
+            # The row went first, and another tab can upsert the same id in the
+            # meantime. That chat is alive, with a tool call possibly running in
+            # here, so its folder is not this delete's to take.
+            if get_chat_thread(thread_id) is not None:
+                continue
+            # A fork clones the message content, cards and all, so the source
+            # chat's files are still on screen in a chat the user kept.
+            if delete_files and sandbox_is_referenced_elsewhere(thread_id):
+                if session_sandbox_has_files(thread_id):
+                    kept.append(thread_id)
+                    # The user asked for these files and the chat is gone, so
+                    # nothing comes back to that folder: written down, and the
+                    # collection below takes it once the last fork goes too.
+                    record_kept_sandbox(thread_id)
+                continue
+            # Again, next to the removal: the reference scan above reads
+            # every message, and another tab can recreate the chat while it runs.
+            if get_chat_thread(thread_id) is not None:
+                continue
+            if remove_session_sandbox(thread_id, delete_files = delete_files):
+                removed += 1
+            # A removal that had to wait for a running tool call is reported as
+            # kept: that call can still write a file, and this is the only
+            # answer the caller gets.
+            elif sandbox_removal_deferred(thread_id) or session_sandbox_has_files(thread_id):
+                kept.append(thread_id)
+        return removed, kept
+
+    try:
+        result = await run_in_threadpool(_remove)
+    except Exception:
+        logger.warning("chat_history.sandbox_cleanup_failed", exc_info = True)
+        return 0, []
+    # Whatever this delete asked for: the last chat referencing a workspace the
+    # user already asked to delete can go through the plain path, and only the
+    # records marked pending are ever collected.
+    from core.inference.tools import collect_orphaned_project_workspaces
+
+    await run_in_threadpool(collect_orphaned_project_workspaces)
+    return result
 
 
 @router.get("/attachments")
@@ -569,24 +719,148 @@ def patch_project(
     return ChatProject(**project)
 
 
-@router.delete("/projects/{project_id}", response_model = ChatProject)
-def delete_project(
+@router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
+async def delete_project(
     project_id: str,
     request: Request,
     delete_files: bool = Query(False),
     current_subject: str = Depends(get_current_subject),
 ):
-    project, deleted_research_run_ids = delete_chat_project_with_active_research_runs(project_id)
+    from starlette.concurrency import run_in_threadpool
+
+    # Rows first, files last: a member chat can still be running a tool in the
+    # workspace, and its cwd disappearing mid-call either kills the call or
+    # leaves what it writes next in a directory no project owns.
+    project = await run_in_threadpool(
+        lambda: delete_chat_project(project_id, delete_files = False)
+    )
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    _cancel_deleted_research_runs(request, deleted_research_run_ids)
-    # Cancellation must happen before fallible workspace cleanup. The database transaction has
-    # already removed these runs, so a cleanup error cannot be allowed to strand their workers.
-    if delete_files:
-        delete_chat_project_workspace(project)
+    # The transaction is the only authority on membership and it runs first, so
+    # a chat moved in just before is deleted and one moved out survives. An
+    # earlier listing would stop a chat that is still there.
+    member_ids = list(project.get("memberIds") or [])
+    # By run id: the rows are gone by now, so there is nothing left to look up.
+    _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
+    _cancel_active_generations(member_ids)
+    if project.get("sandboxPath"):
+        from core.inference.tools import (
+            finish_workspace_delete_when_idle,
+            forget_orphaned_project,
+            forget_orphaned_project_if_gone,
+            live_project_owns,
+            project_session_id,
+            record_orphaned_project,
+            wait_for_sessions_idle,
+        )
+        from storage.studio_db import (
+            delete_project_workspace,
+            sandbox_is_referenced_elsewhere,
+        )
+
+        # Cancelling only asks: a call already in the executor still has its
+        # cwd in there, and removing it strands what it writes next. The shared
+        # id first, since a call in a project runs as `project-<id>`.
+        shared = project_session_id(project_id)
+        idle = (
+            await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
+            if delete_files
+            else True
+        )
+        # A chat forked out of the project still shows cards for the shared
+        # workspace, and the fork is not one of the ids deleted here.
+        referenced = await run_in_threadpool(sandbox_is_referenced_elsewhere, shared, None)
+        # The row went first, so another client can create a project with this
+        # id in the window. It resolves to the same default path, and a tool
+        # call of its own may be writing in there right now.
+        recreated = await run_in_threadpool(get_chat_project, project_id) is not None
+        if not delete_files:
+            # The files stay, so the only job here is making them reachable: the
+            # row that held a custom path is gone, and a fork's cards still name
+            # this session.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                False,
+                project.get("rootPath"),
+            )
+        elif recreated:
+            logger.warning(
+                "Kept project workspace %s: a project was created with that id",
+                project_id,
+            )
+        elif not idle:
+            # Still running after the wait. Removing a live tool call's working
+            # directory is worse than keeping files the user asked to delete,
+            # and the record below means the next delete can still collect them.
+            logger.warning(
+                "Kept project workspace %s: a tool call was still running in it",
+                project_id,
+            )
+        elif referenced:
+            logger.info(
+                "Kept project workspace %s: a surviving chat still shows its files",
+                project_id,
+            )
+        if delete_files and idle and not referenced and not recreated:
+            # Written down first: the delete can decline an unexpected path or
+            # stop at a locked file, and the row that knew where this workspace
+            # lives has already gone. The record is the only way back to it.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                True,
+                project.get("rootPath"),
+            )
+            # Once more, next to the delete itself: the record write above is
+            # an await, and a project created in that window resolves to this
+            # same path.
+            if await run_in_threadpool(get_chat_project, project_id) is not None:
+                logger.warning(
+                    "Kept project workspace %s: a project was created with that id",
+                    project_id,
+                )
+                # Only when the new row is about these folders: the default
+                # root carries the project's name, so a project remade under
+                # this id can sit elsewhere and the old one would be stranded.
+                if await run_in_threadpool(
+                    live_project_owns,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                ):
+                    await run_in_threadpool(forget_orphaned_project, project_id)
+            else:
+                await run_in_threadpool(delete_project_workspace, project)
+                await run_in_threadpool(
+                    forget_orphaned_project_if_gone,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                )
+        elif delete_files and not recreated:
+            # Written down so it can be resolved and later collected: the row
+            # that knew where it lives is gone. The root too, since the deferred
+            # delete removes what the immediate one would; not for a live id.
+            await run_in_threadpool(
+                record_orphaned_project,
+                project_id,
+                project["sandboxPath"],
+                True,
+                project.get("rootPath"),
+            )
+            if not idle:
+                # Nothing else would come back to it: the collection otherwise
+                # waits for some later delete that may never happen.
+                finish_workspace_delete_when_idle(project_id)
+    # Each member chat had its own sandbox for anything it wrote before joining
+    # the project, and deleting the project removes the only records of them.
+    _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
     # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
     try:
         import os
@@ -616,7 +890,9 @@ def delete_project(
                 conn.close()
     except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
         logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
-    return ChatProject(**project)
+    # Those folders are reachable from nothing now, so the caller is told which
+    # ones survived and can offer the delete once.
+    return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)
 
 
 @router.get("/threads/{thread_id}/messages", response_model = ChatMessageListResponse)
@@ -748,19 +1024,57 @@ def record_import_ledger(
 
 
 @router.delete("")
-def clear_history(
+async def clear_history(
     request: Request,
     payload: Optional[ChatClearRequest] = None,
+    delete_files: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
-    # Pending frontend creators may not have rows yet. Tombstone their known ids in the same
-    # transaction so a successful clear also fences any POST that commits afterward.
-    deleted_research_run_ids, deleted_thread_ids = clear_chat_history_with_active_research_runs(
-        payload.ids if payload else (),
-        operation_id = payload.operationId if payload else None,
+    from starlette.concurrency import run_in_threadpool
+
+    # Admission is already closed in the frontend. Include its pending and legacy ids in the
+    # transaction's fence so a delayed POST cannot recreate a chat after this returns.
+    thread_ids = (
+        list(payload.ids)
+        if payload is not None
+        else [thread["id"] for thread in await run_in_threadpool(list_chat_threads)]
     )
-    _cancel_deleted_research_runs(request, deleted_research_run_ids)
-    return {"status": "deleted", "deletedThreadIds": deleted_thread_ids}
+
+    def _clear_rows() -> tuple[list[str], list[str]]:
+        if payload is None:
+            cleared, cleared_runs = clear_chat_history()
+        else:
+            cleared, cleared_runs = clear_chat_history(
+                payload.ids,
+                operation_id = payload.operationId,
+            )
+        return cleared, cleared_runs
+
+    # The clear reports what it deleted, which is what gets cleaned up: a thread
+    # added between the listing above and the delete is gone too, and its
+    # sandbox would otherwise be stranded.
+    cleared, cleared_runs = await run_in_threadpool(_clear_rows)
+    # A chat started between the listing and the transaction is in `cleared`
+    # but was never cancelled, and a generation still running would dispatch a
+    # tool and rebuild the sandbox this call is about to remove.
+    listed = set(thread_ids)
+    late = [thread_id for thread_id in cleared if thread_id not in listed]
+    _cancel_active_generations(thread_ids)
+    if late:
+        _cancel_active_generations(late)
+    # By id: the rows went with the threads, so nothing can look them up now.
+    _cancel_research_runs(request, cleared_runs)
+    # "Clear all chats" is the common bulk delete, so it has to clean up the
+    # same folders DELETE /threads does; otherwise every sandbox is stranded.
+    # delete_files matches DELETE /threads: off by default, since the files are
+    # the user's, but a caller clearing everything can ask for them too.
+    removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)
+    return {
+        "status": "deleted",
+        "deletedThreadIds": cleared,
+        "sandboxes_removed": removed,
+        "sandboxes_kept": kept,
+    }
 
 
 @router.get("/settings", response_model = ChatSettingsResponse)

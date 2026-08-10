@@ -320,6 +320,13 @@ def _offload_embedding_unsupported_platform():
     return None
 
 
+def _embedding_dispatch_device(input_embeddings):
+    # accelerate's hook wraps forward and re-sends the ids to the device it recorded, after
+    # our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
+    hook = getattr(input_embeddings, "_hf_hook", None)
+    return None if hook is None else getattr(hook, "execution_device", None)
+
+
 def _resolve_offload_embedding(model, offload_embedding):
     """Report `offload_embedding` as True only when the offload will really run.
 
@@ -346,6 +353,12 @@ def _resolve_offload_embedding(model, offload_embedding):
         print(
             "Unsloth: Not offloading embeddings; this model ties embed_tokens "
             "to lm_head, so offloading saves no VRAM."
+        )
+        return False
+    if _embedding_dispatch_device(in_embed) is not None:
+        print(
+            "Unsloth: Not offloading embeddings; this model is dispatched across devices, "
+            "which overrides the offload."
         )
         return False
     return True

@@ -50,6 +50,7 @@ from hub.utils.snapshot_filters import (
 from hub.utils.gguf_plan import (
     GgufVariantPlan,
     build_gguf_variant_plans,
+    plan_for_variant,
     plan_from_expected_files,
     sibling_sha256,
 )
@@ -615,7 +616,10 @@ def _gguf_variant_target_plan(
         raise RuntimeError(
             f"Metadata unavailable while resolving GGUF variant '{variant}' " f"for {repo_id}"
         ) from e
-    return build_gguf_variant_plans(list(info.siblings)).get(variant.lower())
+    # plan_for_variant, not .get: a repo that files every variant under one shared container
+    # qualifies every key, and a stored pin or an explicit repo:Q4_K_M then missed the map and
+    # the worker exited with "No GGUF shards matching variant".
+    return plan_for_variant(build_gguf_variant_plans(list(info.siblings)), variant)
 
 
 def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mode: str) -> None:

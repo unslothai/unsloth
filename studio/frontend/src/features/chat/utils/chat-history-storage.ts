@@ -2,29 +2,29 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  buildBackendChatExport,
   ChatThreadDeletedError,
+  batchListChatMessages,
+  buildBackendChatExport,
   clearBackendChats,
   deleteChatProject,
   deleteChatThreads,
-  getChatProject,
   getChatMessage,
+  getChatProject,
   getChatThread,
-  batchListChatMessages,
-  listChatProjects,
   listChatImportLedger,
   listChatMessages,
+  listChatProjects,
   listChatThreads,
   notifyChatHistoryUpdated,
   recordChatImportLedger,
-  saveChatProject,
   saveChatMessage,
+  saveChatProject,
   saveChatThread,
   syncChatMessages,
   updateChatProject,
   updateChatThread,
 } from "../api/chat-api";
-import { db, DEXIE_DB_NAME } from "../db";
+import { DEXIE_DB_NAME, db } from "../db";
 import type {
   MessageRecord,
   ModelType,
@@ -459,11 +459,12 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
 
     // Slow path: diff Dexie against the server-side ledger and import
     // any threads not already recorded.
-    const [legacyThreads, backendThreads, importedThreadIds] = await Promise.all([
-      db.threads.toArray(),
-      listChatThreads({ includeArchived: true }),
-      listChatImportLedger(),
-    ]);
+    const [legacyThreads, backendThreads, importedThreadIds] =
+      await Promise.all([
+        db.threads.toArray(),
+        listChatThreads({ includeArchived: true }),
+        listChatImportLedger(),
+      ]);
 
     const backendThreadsById = new Map(
       backendThreads.map((thread) => [thread.id, thread]),
@@ -505,7 +506,12 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
     const newlyImportedIds: string[] = [];
     for (const thread of unimportedThreads) {
       const backendThread = backendThreadsById.get(thread.id);
-      if (!backendThread) {
+      if (backendThread) {
+        backendThreadsById.set(
+          thread.id,
+          await backfillLegacyThreadFields(backendThread, thread),
+        );
+      } else {
         const saved = await saveLegacyChatThread(thread);
         if (!saved) {
           // Record the authoritative deletion in the migration ledger too, so another browser's
@@ -515,11 +521,6 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
         }
         backendThreadsById.set(thread.id, thread);
         legacyChatImportGeneration += 1;
-      } else {
-        backendThreadsById.set(
-          thread.id,
-          await backfillLegacyThreadFields(backendThread, thread),
-        );
       }
 
       const legacyMessages = legacyByThread.get(thread.id) ?? [];
@@ -748,8 +749,7 @@ export async function listStoredChatThreads(
   return Array.from(byId.values())
     .filter((thread) => matchesThreadListArgs(thread, args))
     .sort(
-      (a, b) =>
-        (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+      (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
     );
 }
 
@@ -823,8 +823,8 @@ export async function updateStoredChatProject(
 export async function deleteStoredChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
-  await deleteChatProject(projectId, args);
+): Promise<string[]> {
+  return deleteChatProject(projectId, args);
 }
 
 export async function moveStoredChatItemToProject(
@@ -834,10 +834,12 @@ export async function moveStoredChatItemToProject(
   const threadIds =
     item.type === "single"
       ? [item.id]
-      : (await listStoredChatThreads({
+      : (
+          await listStoredChatThreads({
             pairId: item.id,
             includeArchived: true,
-        })).map((thread) => thread.id);
+          })
+        ).map((thread) => thread.id);
 
   await Promise.all(
     Array.from(new Set(threadIds)).map((threadId) =>
@@ -895,21 +897,24 @@ export async function updateStoredChatThread(
   return updateChatThread(threadId, patch);
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function deleteStoredChatThreads(
   idsToDelete: string[],
-): Promise<void> {
-  // Incognito threads were never stored, so there's nothing to delete --
-  // drop them to skip the no-op backend DELETE (and the history-refresh
-  // event it would fire) when the active temporary chat is closed.
-  const ids = Array.from(
-    new Set(idsToDelete.filter((id) => !isThreadIncognito(id))),
-  );
-  if (ids.length === 0) return;
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  // Incognito chats have no history row, but their ids still name sandboxes. Send every id to
+  // the backend for file cleanup while limiting Dexie and write-coordinator work to stored chats.
+  idsToDelete = Array.from(new Set(idsToDelete));
+  const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
+  if (idsToDelete.length === 0) return [];
+  let kept: string[] = [];
   // the backend tombstones every requested id in the transaction that deletes its row, so a save
   // reaching sqlite later is rejected rather than resurrecting the thread
   try {
-    await deleteChatThreads(ids);
+    kept = await deleteChatThreads(idsToDelete, args);
   } catch (error) {
+    // With only incognito ids there is no row whose absence can reconcile an ambiguous response.
+    if (ids.length === 0) throw error;
     // an aborted or dropped response is not proof the delete failed. the caller rolls its
     // tombstone back on a throw, and doing that for a row the backend did remove leaves the
     // thread 410 on every later write, so confirm the rows really survived first.
@@ -932,6 +937,7 @@ export async function deleteStoredChatThreads(
     initializingThreadRecords.delete(id);
   }
   threadRecordWrites.confirmFinalState(ids);
+  if (ids.length === 0) return kept;
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -939,6 +945,7 @@ export async function deleteStoredChatThreads(
     })
     .catch(() => undefined);
   markChatThreadsDeleted(ids);
+  return kept;
 }
 
 export async function countStoredChats(): Promise<number> {
@@ -950,6 +957,8 @@ export interface ClearStoredChatsResult {
   legacy: "cleared" | "failed" | "skipped";
   deletedThreadIds: string[];
   failedThreadIds: string[];
+  /** Ids whose sandbox still holds files, so the offer can be made once. */
+  sandboxesKept: string[];
 }
 
 let clearStoredChatsPromise: Promise<ClearStoredChatsResult> | null = null;
@@ -986,6 +995,7 @@ async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsRe
     legacy: "skipped",
     deletedThreadIds: [],
     failedThreadIds: [],
+    sandboxesKept: [],
   };
   let backendDeletedThreadIds: string[] = [];
   const runBackendClear = () =>
@@ -1001,7 +1011,11 @@ async function clearStoredChatsWithAdmissionClosed(): Promise<ClearStoredChatsRe
     // out is not proof its transaction did not run, and the retry takes the writer lock behind
     // that transaction and replays its recorded result, so admission cannot reopen into a window
     // where a new chat is created and then deleted by a clear that lands late.
-    backendDeletedThreadIds = await runBackendClear().catch(() => runBackendClear());
+    const backendResult = await runBackendClear().catch(() =>
+      runBackendClear(),
+    );
+    backendDeletedThreadIds = backendResult.deletedThreadIds;
+    result.sandboxesKept = backendResult.sandboxesKept;
     result.backend = "cleared";
     threadRecordWrites.confirmFinalState(idsToFence);
   } catch (error) {

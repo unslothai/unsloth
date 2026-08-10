@@ -114,6 +114,15 @@ async def video_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            # Validation is quant-keyed: a scheme this family can serve only from a hosted
+            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
+            # download, or the panel fetches ~98.7 GB before /video/load can say no.
+            transformer_quant = request.transformer_quant,
+            # And the partition, because one of those quant-keyed refusals is task-keyed: the
+            # hosted pre-quantized H3 checkpoints are fl2va denoisers, so a quantized ref2va is
+            # rejected. /video/load passes this and refuses; without it here the plan below staged
+            # the 66 GB dense transformer_ref/ AND the incompatible fl2va quant first.
+            h3_task = request.h3_task,
         )
         # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
         # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
@@ -141,6 +150,14 @@ async def video_download_plan(
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
+            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
+            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
+            # the load never opens.
+            transformer_quant = request.transformer_quant,
+            # And the MiniMax-H3 partition, because the two denoisers live in separate 66.28 GB
+            # subfolders: a ref2va load opens transformer_ref/, which the plan would otherwise
+            # miss entirely while staging the fl2va transformer/ it never opens.
+            h3_task = request.h3_task,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
@@ -185,6 +202,7 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            h3_task = request.h3_task,
         )
         # Refuse while training is running (VRAM competition) BEFORE the precision check below:
         # that check runs an uncached quantise+matmul probe on the GPU, which would initialise a
@@ -225,6 +243,7 @@ async def load_video_model(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
+                h3_task = request.h3_task,
             )
 
         if device != "cpu":
@@ -289,6 +308,14 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
+            first_frame = request.first_frame,
+            last_frame = request.last_frame,
+            reference_images = request.reference_images,
+            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+            reference_audios = request.reference_audios,
+            reference_image_size = request.reference_image_size,
+            flow_shift = request.flow_shift,
+            audio_flow_shift = request.audio_flow_shift,
         )
     except VideoShapeError as exc:
         # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body

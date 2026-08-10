@@ -31,6 +31,7 @@ from dataclasses import replace
 
 
 import re as _re
+from urllib.parse import quote as _urlquote
 
 # Model size extraction (shared with core/inference/llama_cpp.py)
 from utils.models import extract_model_size_b as _extract_model_size_b
@@ -154,6 +155,14 @@ _install_httpcore_asyncgen_silencer()
 # Status polls can start a cold subprocess probe or wait on a release lookup.  Keep
 # that bounded work out of the default executor, which drives local token streaming.
 _STATUS_PROBE_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-status")
+
+# Stop has to preempt exactly when the box is busy, so it gets its own workers for the same reason
+# the probes above do. Every /images/generate sits in the default executor for the whole run (it
+# blocks on the backend's serial _generate_lock), so concurrent generations can occupy that pool
+# and leave a cancel queued until the run it was meant to stop has already finished. Off the
+# default executor rather than on the event loop: cancelling a native sd.cpp run kills a process
+# tree, which is not a short call.
+_CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inference-cancel")
 
 
 def _loaded_chat_template() -> Optional[str]:
@@ -2233,11 +2242,24 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // Stamp the load this frame was served for. A report still in flight
+        // when the canvas is swapped would otherwise be read as the new one's.
+        const loadVersion = new URLSearchParams(location.search).get("v") || "";
+        const reportBlocked = (event) => {
+          parent.postMessage({
+            type: "unsloth:artifact-blocked",
+            blockedURI: event.blockedURI || "",
+            effectiveDirective: event.effectiveDirective || "",
+            v: loadVersion,
+          }, "*");
+        };
         const render = (html) => {
           installStorageFallbacks();
           document.open();
           document.write(html);
           document.close();
+          // document.open() drops listeners bound before it, so rebind here.
+          document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
         window.addEventListener("message", (event) => {
@@ -2576,7 +2598,10 @@ def _confirm_gate_needs_stream(payload) -> bool:
         return False
     from core.inference.tools import is_always_safe_tool
 
-    return not all(is_always_safe_tool(t) for t in enabled)
+    # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
+    # gate can only prompt while streaming. Without this a non-streaming auto request is
+    # admitted, then blocks in wait_tool_decision on an approval the client never reads.
+    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
 
 
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
@@ -13524,64 +13549,254 @@ _SANDBOX_MEDIA_TYPES = {
 }
 
 
-@router.get("/sandbox/{session_id}/{filename}")
-async def serve_sandbox_file(
-    session_id: str,
-    filename: str,
-    request: Request,
-    token: Optional[str] = None,
-):
+def _sandbox_dir_for(session_id: str, create: bool = True) -> str:
+    """The session's sandbox directory.
+
+    ``create=False`` resolves the path without materialising it, so a read-only
+    request cannot leave a directory behind for every id it is asked about.
     """
-    Serve image files created by Python tool execution.
+    from core.inference.tools import get_sandbox_workdir, resolve_sandbox_workdir
 
-    Accepts auth via an Authorization header or a query token. Studio uses an
-    authenticated fetch and object URL; query auth remains for older clients.
+    resolver = get_sandbox_workdir if create else resolve_sandbox_workdir
+    return os.path.realpath(resolver(session_id))
+
+
+# A tool may write into a subdirectory, so a single segment is not enough. Taken
+# from the snapshot walk rather than restated, so the card can never advertise a
+# file this route would then refuse.
+from core.inference.tools import (
+    _INTERNAL_SANDBOX_FILES,
+    _MAX_SANDBOX_PATH_SEGMENTS,
+    _MAX_SNAPSHOT_DIRS,
+    _MAX_SNAPSHOT_FILES,
+    _servable_segment,
+)
+
+
+def _contained_sandbox_path(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, absolute path) for a user-supplied relative path.
+
+    Character allowlist per segment and realpath containment as the image route
+    has always done, factored out so the two callers cannot drift. Containment
+    is decided by the resolved path, never by the string, so a symlink pointing
+    out of the sandbox is refused like any other escape.
     """
-    from fastapi.responses import FileResponse
-
-    # ── Authentication (header or query param) ──────────────────
-    await _authenticate_header_or_query(request, token)
-
-    # ── Filename sanitization ───────────────────────────────────
-    safe_filename = os.path.basename(filename)
-    if not safe_filename or safe_filename in (".", ".."):
+    parts = [part for part in filename.replace("\\", "/").split("/") if part not in ("", ".")]
+    if not parts or len(parts) > _MAX_SANDBOX_PATH_SEGMENTS:
         raise HTTPException(status_code = 404, detail = "Not found")
-    # Defense-in-depth allowlist (clears CodeQL py/path-injection), still allowing
-    # names like "loss curve.png"; basename + extension + realpath below are the guards.
-    if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", safe_filename):
-        raise HTTPException(status_code = 404, detail = "Not found")
-
-    # ── Extension allowlist ─────────────────────────────────────
-    ext = os.path.splitext(safe_filename)[1].lower()
-    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
-    if not media_type:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "File type not allowed",
-        )
-
-    # ── Path containment check ──────────────────────────────────
-    from core.inference.tools import get_sandbox_workdir
-
-    sandbox_dir = os.path.realpath(get_sandbox_workdir(session_id))
-    file_path = os.path.realpath(os.path.join(sandbox_dir, safe_filename))
+    for part in parts:
+        # os.path.join would let an absolute segment (or a Windows drive) throw
+        # the prefix away; realpath containment catches it, this is the guard in front.
+        if part == ".." or os.path.isabs(part) or os.path.splitdrive(part)[0]:
+            raise HTTPException(status_code = 404, detail = "Not found")
+        if not _re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", part):
+            raise HTTPException(status_code = 404, detail = "Not found")
+    sandbox_dir = _sandbox_dir_for(session_id, create = False)
+    file_path = os.path.realpath(os.path.join(sandbox_dir, *parts))
     if file_path != sandbox_dir and not file_path.startswith(sandbox_dir + os.sep):
         raise HTTPException(
             status_code = status.HTTP_403_FORBIDDEN,
             detail = "Access denied",
         )
+    return sandbox_dir, file_path
 
-    if not os.path.isfile(file_path):
-        raise HTTPException(status_code = 404, detail = "Not found")
 
-    return FileResponse(
-        path = file_path,
-        media_type = media_type,
-        headers = {
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+def _sandbox_listing_names(sandbox_dir: str) -> "list[str]":
+    """Relative paths of the files in a sandbox, subdirectories included.
+
+    Bounded the same way the snapshot walk is, so a chat that unpacked an
+    archive cannot turn a listing into a filesystem crawl.
+    """
+    names: "list[str]" = []
+    visited = 0
+    for base, dirs, entries in os.walk(sandbox_dir):
+        visited += 1
+        if visited > _MAX_SNAPSHOT_DIRS:
+            return names
+        depth = base[len(sandbox_dir) :].count(os.sep)
+        # depth 0 is the sandbox itself, whose files are one segment.
+        # Segments the route would refuse are dropped here too, so the two walks agree.
+        dirs[:] = (
+            []
+            if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
+            else [d for d in sorted(dirs) if not d.startswith(".") and _servable_segment(d)]
+        )
+        for entry in sorted(entries):
+            # Mirrors the snapshot, dotfiles included, and like it hides the
+            # bookkeeping only where we write it.
+            if base == sandbox_dir and entry in _INTERNAL_SANDBOX_FILES:
+                continue
+            if not _servable_segment(entry):
+                continue
+            path = os.path.join(base, entry)
+            try:
+                if not os.path.isfile(path) or os.path.islink(path):
+                    continue
+            except OSError:
+                continue
+            names.append(os.path.relpath(path, sandbox_dir).replace(os.sep, "/"))
+            if len(names) >= _MAX_SNAPSHOT_FILES:
+                return names
+    return names
+
+
+def _sandbox_listing(sandbox_dir: str) -> "list[dict]":
+    """Name, size and mtime for everything this chat's tools left behind."""
+    files = []
+    if not os.path.isdir(sandbox_dir):
+        return files
+    for name in _sandbox_listing_names(sandbox_dir):
+        path = os.path.join(sandbox_dir, name)
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        files.append(
+            {
+                "name": name,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime),
+                "inline": os.path.splitext(name)[1].lower() in _SANDBOX_MEDIA_TYPES,
+            }
+        )
+    return files
+
+
+@router.get("/sandbox/{session_id}")
+async def list_sandbox_files(
+    session_id: str,
+    request: Request,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Where this chat's files are, and what is in there.
+
+    The path answers "where did my file go"; before this the only way to find
+    one was to search the filesystem by hand.
+    """
+    await _authenticate_header_or_query(request, token)
+
+    from starlette.concurrency import run_in_threadpool
+
+    def _resolve_and_list() -> "tuple[str, list[dict]]":
+        # The query form carries an id a path segment cannot: an API client can
+        # use one with a slash in it, and ASGI decodes %2F before route matching.
+        sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        if not os.path.isdir(sandbox_dir):
+            # Right after an upgrade the background move can rename the legacy
+            # tree into place between resolving and walking it. One more resolve
+            # finds it at the destination rather than showing an empty chat.
+            sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        return sandbox_dir, _sandbox_listing(sandbox_dir)
+
+    # Resolving scans the root for a marked directory and may read the legacy
+    # root too, so it belongs in the worker with the walk: on a slow or network
+    # filesystem either one would hold the event loop for every other request.
+    sandbox_dir, files = await run_in_threadpool(_resolve_and_list)
+    return {"path": sandbox_dir, "files": files}
+
+
+@router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
+async def serve_sandbox_file(
+    session_id: str,
+    filename: str,
+    request: Request,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """
+    Serve a file a tool call created in this chat's sandbox.
+
+    Images keep their real media type and render inline. Everything else is an
+    opaque attachment: the model picks these filenames, so an inline text/html
+    or image/svg+xml would be same-origin script execution. nosniff plus a
+    Content-Disposition filename is what makes serving them safe.
+
+    Accepts auth via an Authorization header or a query token. Studio uses an
+    authenticated fetch and object URL; query auth remains for older clients.
+    """
+    # ── Authentication (header or query param) ──────────────────
+    await _authenticate_header_or_query(request, token)
+
+    # ── Filename sanitization + path containment ────────────────
+    import stat as _stat
+
+    from starlette.concurrency import run_in_threadpool
+
+    safe_filename = os.path.basename(filename)
+
+    # In a worker like the listing: resolving the sandbox touches the
+    # filesystem, and so does the open below.
+    def _open_checked() -> "tuple[int, int]":
+        _dir, path = _contained_sandbox_path(session or session_id, filename)
+        if not os.path.isfile(path):
+            # As in the listing: the legacy move can rename the tree out from
+            # under a path resolved a moment ago, and the file is at the new one.
+            _dir, path = _contained_sandbox_path(session or session_id, filename)
+        try:
+            # O_NOFOLLOW: tool code runs in this directory and can put a link
+            # here between the check and the open.
+            handle = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        try:
+            info = os.fstat(handle)
+            # The descriptor is what gets read, so it is what the containment
+            # check has to be about: resolved again, and the same file, or a
+            # parent swapped for a link would be served from outside the root.
+            _dir, again = _contained_sandbox_path(session or session_id, filename)
+            checked = os.stat(again)
+            if not _stat.S_ISREG(info.st_mode) or (checked.st_dev, checked.st_ino) != (
+                info.st_dev,
+                info.st_ino,
+            ):
+                raise HTTPException(status_code = 404, detail = "Not found")
+        except BaseException:
+            os.close(handle)
+            raise
+        return handle, info.st_size
+
+    handle, size = await run_in_threadpool(_open_checked)
+    head_only = getattr(request, "method", "GET").upper() == "HEAD"
+    if head_only:
+        # FastAPI does not add HEAD to a GET route, and the client asks with one
+        # to refresh the session and settle whether the file is still there.
+        # Nothing is read: the artifact can be gigabytes.
+        os.close(handle)
+
+    ext = os.path.splitext(safe_filename)[1].lower()
+    media_type = _SANDBOX_MEDIA_TYPES.get(ext)
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if media_type is None:
+        media_type = "application/octet-stream"
+        # RFC 5987: ASCII fallback plus UTF-8 form, so "ventas año.csv" saves.
+        ascii_name = safe_filename.encode("ascii", "replace").decode("ascii").replace('"', "_")
+        quoted = _urlquote(safe_filename)
+        headers["Content-Disposition"] = (
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quoted}"
+        )
+
+    headers["Content-Length"] = str(size)
+    if head_only:
+        return Response(status_code = 200, media_type = media_type, headers = headers)
+
+    def _read():
+        # Exactly the length in the header: another call can still append to
+        # this file, and a body longer than Content-Length is cut off or
+        # refused by the client rather than simply carrying the extra.
+        remaining = size
+        with os.fdopen(handle, "rb") as opened:
+            while remaining > 0:
+                chunk = opened.read(min(64 * 1024, remaining))
+                if not chunk:
+                    return
+                remaining -= len(chunk)
+                yield chunk
+
+    return StreamingResponse(_read(), media_type = media_type, headers = headers)
 
 
 # =====================================================================
@@ -20700,6 +20915,24 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
     return DiffusionGenerateProgressResponse(**progress)
 
 
+@studio_router.post("/images/generate/cancel")
+async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+    """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
+
+    Resolved through the engine router, so it stops a diffusers denoise (at its next step
+    boundary) and a native sd.cpp run (which kills the sd-cli process tree) alike. The
+    generation's OWN request is what reports the outcome: it unwinds with the cancelled
+    sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
+    running, so the page can settle its button back to Generate rather than wait for a
+    generation that already finished."""
+    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+
+    cancelled = await asyncio.get_running_loop().run_in_executor(
+        _CANCEL_EXECUTOR, get_active_diffusion_engine().cancel_generate
+    )
+    return {"cancelled": cancelled}
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # OpenAI-compatible images API (POST /v1/images/generations). The inference router is mounted at both /api/inference and /v1, so this
 # also answers /v1/images/generations for OpenAI clients. The Studio Image tab uses the richer /images/generate above; this is the spec shape.
@@ -20863,6 +21096,17 @@ async def openai_image_generations(
         # A RuntimeError with the model now unloaded means it was evicted mid-call (a race): 503. Every other failure is a real 500 whose raw message must not reach the client.
         if isinstance(exc, RuntimeError) and not backend.is_loaded:
             raise HTTPException(status_code = 503, detail = _NO_IMAGE_MODEL_MSG)
+        # The activation refusal is the one message here written FOR the caller: it names the
+        # resolution, the budget and the remedies. Sanitising it into "Image generation failed."
+        # left an OpenAI client with a 500 for a request only they can fix, while the Studio
+        # route showed the reason. Typed, so no other ValueError's raw text escapes.
+        from core.inference.diffusion_memory import ImageActivationShortfallError
+
+        if isinstance(exc, ImageActivationShortfallError):
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(str(exc), status = 400, param = "size"),
+            )
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 

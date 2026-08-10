@@ -425,6 +425,44 @@ assert.equal(
   "BF16 - 480p",
 );
 
+// MiniMax-H3 uses measured component-offload tiers instead of the resident 70% rule.
+const h3 = groupForRepoId("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG);
+assert.ok(h3);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 48, systemRamGb: 256, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 80, systemRamGb: 192, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 122, systemRamGb: 96, isDownloaded: notDownloaded })
+    .format,
+  "gguf",
+);
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 123, systemRamGb: 96, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+// The upper tier, in the units the picker is actually handed: 132 GiB of VRAM is 141.7 decimal
+// GB, past the 132 GB at which the backend estimator drops its host-RAM floor to 85 GB, and
+// 85 GiB of RAM is 91.3 GB. So this host fits, and a tier table written in decimal GB would
+// wrongly send it to GGUF.
+assert.equal(
+  pickDefaultArtifact(h3, { gpuGb: 132, systemRamGb: 85, isDownloaded: notDownloaded })
+    .format,
+  "bf16",
+);
+
 // ── official BF16 artifacts (added so groups are not unsloth-quant-only) ────────
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget (bnb-4bit/fp8 win there, asserted above) but on an 80 GB GPU (budget 56) it fits and wins.
 assert.equal(

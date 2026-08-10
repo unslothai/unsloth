@@ -2171,6 +2171,17 @@ const Composer: FC<{
   );
   const [materializingDroppedImages, setMaterializingDroppedImages] =
     useState(false);
+  const hasPendingAudioAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingAudioAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  const registeringAudioDrops = useNativeIntentStore(
+    (s) => s.registeringAudioDrops > 0,
+  );
+  const [materializingDroppedAudio, setMaterializingDroppedAudio] =
+    useState(false);
   // A parked send must not fire on a failed drop: the user is owed the toast and
   // their text, not a send of the text alone. Assigned below, once the callback exists.
   const cancelQueuedSendRef = useRef<(() => void) | null>(null);
@@ -2187,6 +2198,133 @@ const Composer: FC<{
     seenImageDropFailuresRef.current = imageDropFailures;
     cancelQueuedSendRef.current?.();
   }, [imageDropFailures]);
+  const audioDropFailures = useNativeIntentStore(
+    (s) => (nativeAttachmentTargetKey ? s.audioDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
+  );
+  const seenAudioDropFailuresRef = useRef(audioDropFailures);
+  // Cancel the parked send before `endAudioDropRegistration` reopens the gate.
+  useEffect(() => {
+    if (seenAudioDropFailuresRef.current === audioDropFailures) return;
+    seenAudioDropFailuresRef.current = audioDropFailures;
+    cancelQueuedSendRef.current?.();
+  }, [audioDropFailures]);
+  // Registering and reading a dropped clip is async, so hold the send gate:
+  // the composer sees nothing until `addAttachment` lands.
+  useEffect(() => {
+    if (!nativeAttachmentTargetKey) {
+      return;
+    }
+    const targetKey = nativeAttachmentTargetKey;
+    const identityAtSetup = composerIdentityRef.current;
+    useNativeIntentStore
+      .getState()
+      .claimAudioAttachments(identityAtSetup, targetKey);
+    let disposed = false;
+    let draining = false;
+
+    // A re-key follows the same composer; a thread switch parks the clip back.
+    const stillThisComposer = () =>
+      composerIdentityRef.current === identityAtSetup;
+    // A remount hides the new key, so tag the batch; the next instance claims it.
+    const requeue = (intents: NativeIntent[]) => {
+      const key = stillThisComposer()
+        ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
+        : targetKey;
+      const store = useNativeIntentStore.getState();
+      store.addAudioAttachments(key, intents);
+      store.noteAudioDropOwner(key, identityAtSetup);
+    };
+
+    const drainPendingAudio = async () => {
+      if (disposed || draining) return;
+      draining = true;
+      setMaterializingDroppedAudio(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeAudioAttachments(targetKey);
+          if (intents.length === 0) break;
+          for (const [index, intent] of intents.entries()) {
+            if (disposed) {
+              requeue(intents.slice(index));
+              return;
+            }
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped audio", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              // Do not let a send parked on this clip go out as bare text.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              continue;
+            }
+            // The read is async; a chat switch in that window must not steal the clip.
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              requeue(intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch {
+              // Chat-wide, not per file (no audio model, too large, already
+              // attached), and every adapter path toasted: stop quietly.
+              if (stillThisComposer()) cancelQueuedSendRef.current?.();
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
+        // A drain for a target already left must not touch the flag; cleanup
+        // cleared it, and the live target may have set it again.
+        if (!disposed) {
+          // The early returns requeue mid-batch, and a drop can land while
+          // `draining` gated the subscription.
+          const pending =
+            useNativeIntentStore.getState().pendingAudioAttachments[targetKey]
+              ?.length ?? 0;
+          // Only the instance still owning this composer re-drains; otherwise
+          // the batch stays parked rather than looping here forever.
+          if (pending > 0 && stillThisComposer()) {
+            void drainPendingAudio();
+          } else {
+            setMaterializingDroppedAudio(false);
+          }
+        }
+      }
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      // A predecessor's requeue can land after setup, so keep watching.
+      const orphaned = Object.entries(state.audioDropOwners).some(
+        ([key, owner]) => owner === identityAtSetup && key !== targetKey,
+      );
+      if (orphaned) {
+        useNativeIntentStore
+          .getState()
+          .claimAudioAttachments(identityAtSetup, targetKey);
+        return;
+      }
+      if ((state.pendingAudioAttachments[targetKey]?.length ?? 0) > 0) {
+        void drainPendingAudio();
+      }
+    });
+    void drainPendingAudio();
+
+    return () => {
+      disposed = true;
+      setMaterializingDroppedAudio(false);
+      unsubscribe();
+    };
+  }, [nativeAttachmentTargetKey, aui]);
+
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
@@ -2324,6 +2462,10 @@ const Composer: FC<{
     registeringImageDrops ||
     hasPendingImageAttachments ||
     materializingDroppedImages;
+  const hasMaterializingAudioAttachments =
+    registeringAudioDrops ||
+    hasPendingAudioAttachments ||
+    materializingDroppedAudio;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2364,6 +2506,7 @@ const Composer: FC<{
     !isComposing &&
     !hasPendingAttachments &&
     !hasMaterializingImageAttachments &&
+    !hasMaterializingAudioAttachments &&
     !disabled &&
     !overlay;
 
@@ -2852,14 +2995,16 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" = "indexing") => {
+    (waitingOn: "indexing" | "images" | "audio" = "indexing") => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
       const title =
         waitingOn === "images"
           ? "Waiting for dropped images"
-          : "Waiting for documents to finish indexing";
+          : waitingOn === "audio"
+            ? "Waiting for dropped audio"
+            : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -2869,24 +3014,25 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
-  // A materializing image is a wait, not a refusal: park the send. Both gates
-  // route through here so they cannot disagree on what is recoverable.
-  const parkIfWaitingOnImages = useCallback(() => {
+  // A materializing image or clip is a wait, not a refusal: park the send.
+  // Both gates share this so they cannot disagree on what is recoverable.
+  const parkIfWaitingOnAttachments = useCallback(() => {
     if (
       disabled ||
       overlay ||
-      !hasMaterializingImageAttachments ||
+      (!hasMaterializingImageAttachments && !hasMaterializingAudioAttachments) ||
       !hasSendableContent ||
       isComposingRef.current ||
       hasPendingAttachments
     ) {
       return;
     }
-    enqueueSend("images");
+    enqueueSend(hasMaterializingImageAttachments ? "images" : "audio");
   }, [
     disabled,
     overlay,
     hasMaterializingImageAttachments,
+    hasMaterializingAudioAttachments,
     hasSendableContent,
     hasPendingAttachments,
     isComposingRef,
@@ -2898,8 +3044,10 @@ const Composer: FC<{
       !hasSendableContent ||
       isComposingRef.current ||
       hasPendingAttachments ||
-      hasMaterializingImageAttachments,
+      hasMaterializingImageAttachments ||
+      hasMaterializingAudioAttachments,
     [
+      hasMaterializingAudioAttachments,
       hasMaterializingImageAttachments,
       hasPendingAttachments,
       hasSendableContent,
@@ -2955,7 +3103,7 @@ const Composer: FC<{
     (event: { preventDefault: () => void }) => {
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        parkIfWaitingOnImages();
+        parkIfWaitingOnAttachments();
         return true;
       }
       if (indexingActive && !overlay) {
@@ -2971,7 +3119,7 @@ const Composer: FC<{
       indexingActive,
       overlay,
       enqueueSend,
-      parkIfWaitingOnImages,
+      parkIfWaitingOnAttachments,
     ],
   );
 
@@ -2986,7 +3134,8 @@ const Composer: FC<{
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
-      hasMaterializingImageAttachments
+      hasMaterializingImageAttachments ||
+      hasMaterializingAudioAttachments
     ) {
       return;
     }
@@ -3002,6 +3151,7 @@ const Composer: FC<{
     pendingSend,
     indexingActive,
     hasMaterializingImageAttachments,
+    hasMaterializingAudioAttachments,
     aui,
     clearStoredDraft,
     dismissWaitToast,
@@ -3050,7 +3200,10 @@ const Composer: FC<{
   // a pending send when the composer changes under it after the press.
   const dictationBlocked = dictationSendBlocked({
     composerDisabled: Boolean(disabled),
-    uploading: hasPendingAttachments || hasMaterializingImageAttachments,
+    uploading:
+      hasPendingAttachments ||
+      hasMaterializingImageAttachments ||
+      hasMaterializingAudioAttachments,
     researchActive: isResearchActive,
     runActive: threadIsRunning || promptQueueActive,
     queueDisabled: Boolean(disableQueue),
@@ -3125,7 +3278,7 @@ const Composer: FC<{
       }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
-        parkIfWaitingOnImages();
+        parkIfWaitingOnAttachments();
         return;
       }
 
@@ -3259,7 +3412,7 @@ const Composer: FC<{
       interceptSend,
       isResearchActive,
       overlay,
-      parkIfWaitingOnImages,
+      parkIfWaitingOnAttachments,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,

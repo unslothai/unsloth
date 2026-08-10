@@ -28,6 +28,8 @@ class _FakeBackend:
         self.loaded = False
         # Repo ids of in-flight (uncommitted) loads. The unload route reads this to keep DIFFUSION ownership during a concurrent load.
         self.loading: tuple = ()
+        # Stands in for the real engines' _active_generate_cancel: None while idle.
+        self.active_generate_cancel = None
 
     @property
     def is_loaded(self) -> bool:
@@ -147,6 +149,14 @@ class _FakeBackend:
     def generate_progress(self):
         # Idle by default; the persist-window override lives in the route, not here.
         return {"active": False, "step": 0, "total_steps": 0, "fraction": 0.0, "eta_seconds": None}
+
+    def cancel_generate(self):
+        # Both real engines return False when nothing is in flight; the fake tracks the same event.
+        cancel = self.active_generate_cancel
+        if cancel is None:
+            return False
+        cancel.set()
+        return True
 
     def unload(self):
         self.loaded = False
@@ -1566,6 +1576,85 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert len(seen["loras"] or []) == 1
 
 
+def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
+    # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
+    # a field the planner sets but the model does not declare is dropped silently on serialization.
+    # That is exactly how the checkpoint marker was lost, leaving a mirrored pipeline mislabelled.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+
+    def _plan(model_path, **kwargs):
+        return {
+            "entries": [
+                {
+                    "repo_id": "unsloth/FLUX.1-dev",  # the ungated MIRROR, not the picked id
+                    "files": ["model_index.json"],
+                    "bytes": 10,
+                    "gguf_filename": None,
+                    "checkpoint": True,
+                },
+                {
+                    "repo_id": "some/text-encoder",
+                    "files": ["model.safetensors"],
+                    "bytes": 20,
+                    "gguf_filename": None,
+                    "checkpoint": False,
+                },
+            ],
+            "total_bytes": 30,
+            "required_bytes": 30,
+            "checkpoint_bytes": 10,
+        }
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert [e["checkpoint"] for e in resp.json()["entries"]] == [True, False]
+
+
+def test_download_plan_defaults_the_checkpoint_marker_for_an_older_planner(client, monkeypatch):
+    # A plan built before the marker existed must still serialize, defaulting to not-the-checkpoint
+    # so the picker falls back to its own derivation rather than seeing a missing key.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda model_path, **kwargs: {
+            "entries": [{"repo_id": "a/b", "files": ["f"], "bytes": 1}],
+            "total_bytes": 1,
+        },
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["entries"][0]["checkpoint"] is False
+
+
 def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
     # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
     from core.inference import diffusion_engine_router as router
@@ -1834,6 +1923,61 @@ def test_gallery_image_accepts_a_record_written_before_the_build_fields():
     assert record.gguf_filename is None
     assert record.transformer_quant is None
     assert record.baked_loras == []
+
+
+def test_cancel_generation_route_reports_false_when_idle(client):
+    # Nothing in flight: the route answers 200/False so the page settles its button back to Generate
+    # instead of waiting on a generation that already finished.
+    resp = client.post("/api/inference/images/generate/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_cancel_generation_route_stops_an_in_flight_generation(client):
+    # The route must reach the SAME event the denoise loop watches, and the cancelled generation
+    # must unwind as a 409 with nothing persisted.
+    import threading
+
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+    started = threading.Event()
+
+    def _wait_for_cancel(**kwargs):
+        cancel = threading.Event()
+        backend.active_generate_cancel = cancel
+        started.set()
+        try:
+            assert cancel.wait(5), "cancel event was never set"
+            raise RuntimeError("Diffusion generation was cancelled.")
+        finally:
+            backend.active_generate_cancel = None
+
+    backend.generate = _wait_for_cancel
+    result: dict = {}
+
+    def _run():
+        result["resp"] = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert started.wait(5)
+
+    cancelled = client.post("/api/inference/images/generate/cancel")
+    assert cancelled.status_code == 200 and cancelled.json()["cancelled"] is True
+
+    worker.join(10)
+    assert result["resp"].status_code == 409
+    assert result["resp"].json()["detail"] == "Diffusion generation was cancelled."
+    # A cancelled run leaves no gallery entry.
+    assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_cancel_generation_route_requires_auth():
+    # The cancel route stops a multi-GB job, so it must sit behind the same auth as every other route.
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    unauth = TestClient(app)
+    assert unauth.post("/api/inference/images/generate/cancel").status_code in (401, 403)
 
 
 @pytest.mark.parametrize(
