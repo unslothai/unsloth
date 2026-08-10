@@ -153,6 +153,8 @@ test("the shared image picker owns native drops and ignores stale reads", async 
   // the native policy takes fewer formats than the picker's own image/*.
   assert.match(source, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
   assert.match(source, /NATIVE_IMAGE_EXTS\.includes\(/);
+  // Index-keyed reference slots keep the picker mounted when one is removed.
+  assert.match(source, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
 });
 
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
