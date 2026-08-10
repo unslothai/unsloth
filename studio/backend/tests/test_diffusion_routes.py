@@ -1840,6 +1840,46 @@ async def _disconnected_after_first(planned: list[str]) -> bool:
     return bool(planned)
 
 
+def test_one_producer_per_listing_when_candidates_race():
+    """Candidates plan on worker threads, so two racing the same key both passed the membership
+    check. That duplicated the Hub call, and once failures became cacheable a loser's error could
+    land on top of the winner's listing and omit every row that needed it."""
+    import asyncio
+    import threading
+    import time
+
+    from core.inference.plan_metadata import plan_model_info, shared_plan_metadata
+
+    calls: list[str] = []
+    lock = threading.Lock()
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            with lock:
+                calls.append(repo_id)
+            # Slow enough that the other three are inside plan_model_info while this one produces.
+            time.sleep(0.2)
+            return types.SimpleNamespace(siblings = [], sha = "sha")
+
+    api = _Api()
+
+    # Through asyncio.to_thread, as the route plans candidates: it copies the context into each
+    # worker, which is what puts them on one cache. A bare Thread would not, and each would fetch.
+    async def _race():
+        with shared_plan_metadata():
+            return await asyncio.gather(
+                *(
+                    asyncio.to_thread(plan_model_info, api, "unsloth/LTX-2.3-GGUF")
+                    for _ in range(4)
+                )
+            )
+
+    seen = asyncio.run(_race())
+
+    assert calls == ["unsloth/LTX-2.3-GGUF"], "exactly one worker may fetch a key"
+    assert len(seen) == 4 and all(s is seen[0] for s in seen), "all four share that one listing"
+
+
 def test_a_failing_listing_is_not_retried_by_every_candidate():
     # An offline or rate-limiting Hub would otherwise have all 63 LTX candidates repeat the same
     # slow failing call, turning one outage into a request storm.

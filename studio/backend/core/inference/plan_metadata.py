@@ -14,11 +14,27 @@ every lookup goes to the Hub.
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
 _cache: ContextVar[Optional[dict]] = ContextVar("plan_metadata_cache", default = None)
+# Guards the slot table only, never a Hub call: candidates plan on worker threads, so two of them
+# racing the same key would otherwise both fetch, and the loser's error could overwrite the
+# winner's listing and omit every row that needed it.
+_slots_guard = threading.Lock()
+
+
+class _Slot:
+    """One key's listing, produced once and awaited by everyone else."""
+
+    __slots__ = ("done", "value", "error")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.value: Any = None
+        self.error: Optional[BaseException] = None
 
 
 @contextmanager
@@ -48,12 +64,21 @@ def plan_model_info(
     if cache is None:
         return api.model_info(repo_id, files_metadata = files_metadata, token = token)
     key = (repo_id, files_metadata, token)
-    if key not in cache:
+    with _slots_guard:
+        slot = cache.get(key)
+        produce = slot is None
+        if produce:
+            slot = cache[key] = _Slot()
+    if produce:
         try:
-            cache[key] = api.model_info(repo_id, files_metadata = files_metadata, token = token)
-        except Exception as exc:  # noqa: BLE001 -- cached to re-raise, never swallowed
-            cache[key] = exc
-    hit = cache[key]
-    if isinstance(hit, BaseException):
-        raise hit
-    return hit
+            slot.value = api.model_info(repo_id, files_metadata = files_metadata, token = token)
+        except Exception as exc:  # noqa: BLE001 -- kept to re-raise, never swallowed
+            slot.error = exc
+        finally:
+            # In finally, so a producer that dies unexpectedly cannot leave the others waiting.
+            slot.done.set()
+    else:
+        slot.done.wait()
+    if slot.error is not None:
+        raise slot.error
+    return slot.value

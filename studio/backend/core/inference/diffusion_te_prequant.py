@@ -402,8 +402,13 @@ def _resolve_checkpoint_path(source: TePrequantSource, hf_token: Optional[str]) 
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        from huggingface_hub import hf_hub_download
-        return hf_hub_download(repo_id = source.location, filename = source.filename, token = hf_token)
+        from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+        # Both roots, because the download plan drops this repo when either serves it whole: pinned
+        # to one, a checkpoint the picker reported as no transfer was fetched again at load.
+        return hf_hub_download_with_xet_fallback(
+            source.location, source.filename, hf_token, reuse_other_cache_root = True
+        )
     return None
 
 
