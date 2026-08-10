@@ -395,7 +395,9 @@ def _referenced_commits(entry: Path) -> "frozenset[str]":
         try:
             if not ref.is_file():
                 continue
-            commit = download_manifest.normalized_commit_hash(ref.read_text().strip())
+            commit = download_manifest.normalized_commit_hash(
+                ref.read_text(encoding = "utf-8").strip()
+            )
         except (OSError, ValueError):
             continue
         if commit:
