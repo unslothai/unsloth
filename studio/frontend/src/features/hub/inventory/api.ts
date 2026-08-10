@@ -338,14 +338,20 @@ export async function deleteCachedModel(
   variant?: string,
   hfToken?: string | null,
   cachePath?: string | null,
+  onlyIfOrphan?: boolean,
 ): Promise<void> {
-  const payload: Record<string, string> = { repo_id: repoId };
+  const payload: Record<string, string | boolean> = { repo_id: repoId };
   if (variant) {
     payload.variant = variant;
   }
   // Scope the delete to this row's cache so copies in other caches survive.
   if (cachePath) {
     payload.cache_path = cachePath;
+  }
+  // Free up space acts on a list that can be minutes old. The server re-derives the orphan
+  // condition just before unlinking and 409s if a download turned the row into a real model.
+  if (onlyIfOrphan) {
+    payload.only_if_orphan = true;
   }
   const response = await authFetch("/api/hub/delete-cached", {
     method: "DELETE",

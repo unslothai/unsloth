@@ -732,3 +732,31 @@ def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
     assert companion_cleanup.companion_dependents(vae) == []
     offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
     assert offered == {legacy, vae}
+
+
+def test_free_up_space_refuses_a_row_that_became_an_installed_model(monkeypatch):
+    """The listing can be minutes old. A download of the same repo finishing in the background
+    turns an orphaned companion into an installed checkpoint, and neither existing guard sees it:
+    begin_delete only refuses a download still in flight, and the companion guard ignores the
+    target as its own dependent. Remove would then delete the model the user just downloaded."""
+    from hub.services.models import deletion
+
+    base = BASE_REPO
+    # The companion-only copy Free up space listed, now carrying a downloaded denoiser.
+    _install(monkeypatch, _repo(base, [("transformer/diffusion_pytorch_model.safetensors", 9_000)]))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(deletion.delete_cached_model_response(base, only_if_orphan = True))
+    assert excinfo.value.status_code == 409
+    assert "no longer an unused asset" in excinfo.value.detail
+
+
+def test_the_orphan_precondition_lets_a_real_orphan_through(monkeypatch):
+    """The precondition only refuses; a row that is still companion-only reaches the delete, and
+    it must not become a second way for an ordinary delete to fail."""
+    from hub.services.models import deletion
+
+    _install(monkeypatch, _repo(BASE_REPO, [("model_index.json", 460)]))
+    try:
+        deletion._delete_cached_model_blocking(BASE_REPO, None, None, only_if_orphan = True)
+    except HTTPException as exc:
+        assert exc.status_code != 409, exc.detail

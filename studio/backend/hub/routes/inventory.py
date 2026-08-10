@@ -258,7 +258,11 @@ async def delete_cached_model(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
     cache_path: Optional[str] = Body(None),
+    # Free up space's precondition: refuse with 409 if the repo is no longer an unused asset.
+    only_if_orphan: bool = Body(False),
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    return await deletion.delete_cached_model_response(
+        repo_id, variant, hf_token, cache_path, only_if_orphan
+    )

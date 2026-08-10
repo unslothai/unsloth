@@ -99,6 +99,7 @@ export function FreeUpSpaceDialog({
             undefined,
             hfToken || undefined,
             companion.cache_path ?? undefined,
+            true,
           );
           removed += 1;
           freed += companion.size_bytes;

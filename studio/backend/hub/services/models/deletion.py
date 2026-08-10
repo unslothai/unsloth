@@ -755,12 +755,16 @@ async def delete_cached_model_response(
     variant: Optional[str] = None,
     hf_token: Optional[str] = None,
     cache_path: Optional[str] = None,
+    only_if_orphan: bool = False,
 ):
     """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
 
     When *variant* is provided, only the GGUF files matching that quant label
     are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
     Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
     """
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
@@ -807,7 +811,12 @@ async def delete_cached_model_response(
         raise HTTPException(status_code = 400, detail = detail)
     try:
         return await asyncio.to_thread(
-            _delete_cached_model_blocking, repo_id, variant, hf_token, cache_path
+            _delete_cached_model_blocking,
+            repo_id,
+            variant,
+            hf_token,
+            cache_path,
+            only_if_orphan = only_if_orphan,
         )
     finally:
         downloads.registry.end_delete(repo_key, variant)
@@ -819,7 +828,43 @@ def _delete_cached_model_blocking(
     variant: Optional[str],
     hf_token: Optional[str],
     cache_path: Optional[str] = None,
+    *,
+    only_if_orphan: bool = False,
 ) -> dict:
+    # Free up space asks for this: the row it is removing was an orphan when the list was built,
+    # and the list can be minutes old. A download of that same repo finishing in the background
+    # turns it into an installed checkpoint, and neither guard below catches that -- begin_delete
+    # only refuses a download still in flight, and the companion guard deliberately ignores the
+    # target as its own dependent. Re-derived here, after begin_delete has closed the repo to new
+    # downloads, so the answer cannot go stale between the check and the unlink.
+    if only_if_orphan:
+        from hub.services.models import companion_cleanup
+        from hub.utils import companion_assets
+
+        try:
+            still_orphan = not any(
+                companion_assets.repo_holds_denoiser(repo)
+                for repo in companion_cleanup._repos_by_id(
+                    cache_inventory.all_hf_cache_scans()
+                ).get(repo_id.strip().lower(), [])
+            )
+        except Exception as e:
+            logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
+            raise HTTPException(
+                status_code = 503,
+                detail = (
+                    "Couldn't confirm these assets are still unused. Try again in a moment."
+                ),
+            )
+        if not still_orphan:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"{repo_id} now holds an installed model, so it is no longer an unused "
+                    "asset. Reopen Free up space to see the current list."
+                ),
+            )
+
     # A companion base repo carries the text encoders, VAE and tokenizer for every quant of its
     # family, so removing it while one is installed leaves that quant unloadable with nothing on
     # screen to say why. Derived from what is installed right now, never from a stored count, and
