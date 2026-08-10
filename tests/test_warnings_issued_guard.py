@@ -369,7 +369,13 @@ def _sft_config():
 class _RecordingTrainer:
     """trl.SFTTrainer's signature, enough of it to see what arrives."""
 
-    def __init__(self, model = None, args = None, train_dataset = None, processing_class = None):
+    def __init__(
+        self,
+        model = None,
+        args = None,
+        train_dataset = None,
+        processing_class = None,
+    ):
         self.args = args
         self.train_dataset = train_dataset
 
