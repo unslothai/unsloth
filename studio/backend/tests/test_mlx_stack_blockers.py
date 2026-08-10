@@ -119,3 +119,65 @@ def test_only_the_mlx_verdict_carries_a_detail(monkeypatch, reason):
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
     monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", None)
     assert hw.CHAT_ONLY_DETAIL is None
+
+
+# The detail only means anything beside the reason it explains, so it travels with it
+# through every place the verdict is saved, restored, discarded or read.
+def test_a_failed_forced_redetect_restores_the_detail(monkeypatch):
+    """detect_hardware() puts back the verdict a raising pass clobbered, detail included.
+
+    Without it the restored verdict is still mlx_unavailable but has lost the blocker,
+    so the row goes back to the generic message this change exists to replace.
+    """
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
+    monkeypatch.setattr(hw, "CHAT_ONLY", True)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "mlx_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "mlx-vlm 0.1.0 is older than 0.4.4")
+    hw.DETECTION_COMPLETE.set()
+
+    def explode():
+        # A pass clears the verdict before it probes; this one dies in between.
+        hw.CHAT_ONLY_REASON = None
+        hw.CHAT_ONLY_DETAIL = None
+        raise RuntimeError("probe died")
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", explode)
+    with pytest.raises(RuntimeError):
+        hw.detect_hardware()
+
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+    assert hw.CHAT_ONLY_DETAIL == "mlx-vlm 0.1.0 is older than 0.4.4"
+
+
+def test_a_discarded_verdict_takes_the_detail_with_it(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "mlx_unavailable")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "mlx-lm is not installed (needs >=0.22.0)")
+    hw._discard_detection_locked()
+    assert hw.CHAT_ONLY_REASON is None
+    assert hw.CHAT_ONLY_DETAIL is None
+
+
+def test_health_reads_the_detail_inside_the_guarded_snapshot(monkeypatch):
+    """A forced re-detect starting mid-read must not pair one pass's reason with another's
+    detail, which is what reading the global after the snapshot allowed."""
+    import main
+
+    monkeypatch.setattr(main._hw_module, "DEVICE", main._hw_module.DeviceType.CPU)
+    monkeypatch.setattr(main._hw_module, "CHAT_ONLY", True)
+    monkeypatch.setattr(main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
+    monkeypatch.setattr(main._hw_module, "CHAT_ONLY_DETAIL", "mlx-vlm 0.1.0 is older than 0.4.4")
+    main._hw_module.DETECTION_COMPLETE.set()
+
+    snapshot = main._hardware_snapshot()
+    assert snapshot is not None
+    assert len(snapshot) == 3, "the detail has to come out of the same guarded read"
+    assert snapshot[1] == "mlx_unavailable"
+    assert snapshot[2] == "mlx-vlm 0.1.0 is older than 0.4.4"
+
+    # A later pass clearing the globals cannot change what this snapshot reports.
+    monkeypatch.setattr(main._hw_module, "CHAT_ONLY_DETAIL", None)
+    assert snapshot[2] == "mlx-vlm 0.1.0 is older than 0.4.4"

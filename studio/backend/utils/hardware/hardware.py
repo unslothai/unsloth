@@ -132,10 +132,11 @@ def owning_detection_epoch(epoch: Optional[int]):
 
 def _discard_detection_locked() -> None:
     """Drop a verdict produced for an epoch that has been retired."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM
     DEVICE = None
     CHAT_ONLY = True
     CHAT_ONLY_REASON = None
+    CHAT_ONLY_DETAIL = None
     IS_ROCM = False
     DETECTION_COMPLETE.clear()
 
@@ -368,7 +369,7 @@ def detect_hardware() -> DeviceType:
       4. MLX   (Apple Silicon via MLX framework)
       5. CPU   (fallback)
     """
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM, DETECTION_GENERATION
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM, DETECTION_GENERATION
     with _DETECT_LOCK:
         # A forced pass mutates the globals partway through; leaving the event set lets
         # /api/health serve that as settled, so the sidebar MLX poll caches reason=None,
@@ -377,7 +378,7 @@ def detect_hardware() -> DeviceType:
         # Snapshot the whole verdict, not just the event: a raise mid-pass leaves a
         # half-written answer the autorepair path swallows, and losing "mlx_unavailable"
         # stops the sidebar poll for good.
-        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM)
+        published = (DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM)
         # Owning epoch first, current only as a fallback. The MLX self-heal calls this
         # after a pip install that can outlast the lifespan; reading current would adopt
         # the epoch shutdown moved to, so the next lifespan finds DEVICE set and skips
@@ -399,7 +400,7 @@ def detect_hardware() -> DeviceType:
                 # cleared, and the next lifespan would treat that as measured.
                 _discard_detection_locked()
                 raise
-            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM = published
+            DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, IS_ROCM = published
             # Restore rather than leave it clear: start_background_detection() declines
             # once DEVICE is set, so an unset event keeps health provisional forever.
             if was_complete:
@@ -427,7 +428,7 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
     Thread.start(), since the thread can be scheduled after a shutdown retired it and
     reading it here would bind the pass to the retirement it must lose to. Direct callers
     pass nothing and own the current epoch."""
-    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, DETECTION_GENERATION
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, CHAT_ONLY_DETAIL, DETECTION_GENERATION
     with _DETECT_LOCK:
         if epoch is None:
             # A nested read inside an owning scope belongs to that pass, not to whatever
@@ -454,6 +455,8 @@ def ensure_hardware_detected(epoch: Optional[int] = None) -> DeviceType:
                 DEVICE = DeviceType.CPU
                 CHAT_ONLY = True
                 CHAT_ONLY_REASON = "detection_failed"
+                # The pass may have got as far as recording one for a different reason.
+                CHAT_ONLY_DETAIL = None
             # Inside the branch: the orchestrator rebuilds its curated defaults whenever this
             # counter moves, so bumping on the cached path caused needless rebuilds. Forced
             # detect_hardware() bumps it too.
