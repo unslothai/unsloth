@@ -115,10 +115,7 @@ def _load_to_sharegpt():
 
 def _alpaca():
     from datasets import Dataset
-
-    return Dataset.from_dict(
-        {"instruction" : ["a", "b", "c", "d"], "output" : ["1", "2", "3", "4"]}
-    )
+    return Dataset.from_dict({"instruction": ["a", "b", "c", "d"], "output": ["1", "2", "3", "4"]})
 
 
 def test_conversation_extension_with_columns_kept():
