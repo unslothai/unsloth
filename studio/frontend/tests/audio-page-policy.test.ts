@@ -335,3 +335,22 @@ test("history-only downloads revoke their temporary blob URL", () => {
     /handleDownloadClipById[\s\S]{0,500}galleryCache\.srcById\.set/,
   );
 });
+
+test("the recorder is gated on the same capability check the composer uses", () => {
+  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) is not a
+  // secure context, so navigator.mediaDevices is undefined there. Without this
+  // gate Record is enabled and its only outcome is "Could not access the
+  // microphone", which blames the wrong thing.
+  assert.match(
+    audioPageSource,
+    /StudioModelDictationAdapter\.isSupported\(\)/,
+    "the audio page must reuse the dictation capability check",
+  );
+  assert.match(
+    audioPageSource,
+    /disabled=\{\s*!recordingSupported/,
+    "Record must be disabled when recording is unsupported",
+  );
+  // File upload stays available, so transcription still works on those hosts.
+  assert.match(audioPageSource, /accept="audio\/\*"/);
+});
