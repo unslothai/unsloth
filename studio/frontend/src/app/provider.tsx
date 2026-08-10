@@ -398,7 +398,11 @@ function TauriUpdateLayer({
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
       ref={stack.ref}
-      className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+      // Last resort when the cap is smaller than the cards: the rail scrolls
+      // rather than spilling them over the composer. The padding and the
+      // negative margin that cancels it keep the card shadows out of the
+      // scroller's clip without moving the cards themselves.
+      className="pointer-events-none fixed right-4 z-[9998] -m-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain p-3"
       style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
       <UpdateBanner
@@ -560,6 +564,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void wasLaunchedHidden().then(async (hiddenAtLaunch) => {
       if (!hiddenAtLaunch || disposed) return;
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
+
       const unlisten = await getCurrentWindow().onFocusChanged(({ payload }) => {
         if (!payload || disposed) return;
         stopListening?.();
@@ -681,7 +686,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             pushes the top of the stack off screen. */}
         <div
           ref={stack.ref}
-          className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
+          // Last resort when the cap is smaller than the cards: the rail scrolls
+          // rather than spilling them over the composer. The padding and the
+          // negative margin that cancels it keep the card shadows out of the
+          // scroller's clip without moving the cards themselves.
+          className="pointer-events-none fixed right-4 z-[9998] -m-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain p-3"
           style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >
           <WebUpdateBanner

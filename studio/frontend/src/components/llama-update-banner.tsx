@@ -134,7 +134,9 @@ export function LlamaUpdateBanner({
       className={cn(
         positioned
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-          : "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px]",
+          : // shrink-0: nothing in this card can give up height, so a capped
+            // stack squeezing it only prints its text over its own buttons.
+            "pointer-events-auto w-[calc(100vw-2rem)] max-w-[400px] shrink-0",
       )}
       data-testid="llama-update-banner"
     >

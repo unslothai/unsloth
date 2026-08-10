@@ -109,11 +109,19 @@ export function UpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              : // min-h-32 is the card with its notes closed: 8rem covers the
+                // header, the buttons and the card's own padding. A capped
+                // stack therefore takes the card's height out of the notes,
+                // which clip, and stops at the row of buttons instead of
+                // squeezing until the notes print over them. min-height:auto
+                // would be the whole card including the notes, so the card
+                // would not give up anything and the banner under it would be
+                // the one clipped instead.
+                "pointer-events-auto flex min-h-32 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           data-testid="tauri-update-banner"
         >
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
             <button
               type="button"
               onClick={onDismiss}
@@ -137,7 +145,7 @@ export function UpdateBanner({
               </svg>
             </button>
 
-            <div className="flex min-w-0 items-start gap-4 pr-6">
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
               <Icon
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
@@ -168,7 +176,7 @@ export function UpdateBanner({
             </div>
 
             {showFailure && lastFailure && (
-              <p className="mt-3 line-clamp-2 text-xs text-destructive">
+              <p className="mt-3 line-clamp-2 shrink-0 text-xs text-destructive">
                 {lastFailure.error}
               </p>
             )}
@@ -186,7 +194,8 @@ export function UpdateBanner({
 
             <div
               className={cn(
-                "mt-4 flex flex-wrap items-center gap-x-1 gap-y-2",
+                // Wraps on a narrow card, never compresses on a short one.
+                "mt-4 flex shrink-0 flex-wrap items-center gap-x-1 gap-y-2",
                 !showFailure && notesTargetVersion
                   ? "justify-between"
                   : "justify-end",
@@ -261,14 +270,16 @@ export function UpdateBanner({
               )}
             </div>
             {manualMessage && (
-              <p className="mt-3 text-xs text-destructive">{manualMessage}</p>
+              <p className="mt-3 shrink-0 text-xs text-destructive">
+                {manualMessage}
+              </p>
             )}
             {manualReport && (
               <textarea
                 readOnly={true}
                 value={manualReport}
                 onFocus={(event) => event.currentTarget.select()}
-                className="mt-2 h-28 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
+                className="mt-2 h-28 w-full shrink-0 resize-none rounded-lg border border-border/50 bg-muted/30 p-2 font-mono text-ui-10 text-muted-foreground"
               />
             )}
           </div>

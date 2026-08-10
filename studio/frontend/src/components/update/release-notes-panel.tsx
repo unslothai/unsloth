@@ -113,7 +113,9 @@ export function ReleaseNotesPanel({
 
   return (
     <div
-      className={cn("mt-3 flex min-h-0 flex-col", className)}
+      // Clipped, not just capped: this is the one part of the card allowed to
+      // give up height, so its content must not paint over the buttons below.
+      className={cn("mt-3 flex min-h-0 flex-col overflow-hidden", className)}
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
@@ -145,7 +147,7 @@ export function ReleaseNotesPanel({
               ) : null}
             </section>
           ) : (
-            <ReleaseNotesSummary preview={preview} />
+            <ReleaseNotesSummary preview={preview} version={version} />
           )
         ) : (
           <NotesStatus
@@ -166,8 +168,10 @@ export function ReleaseNotesPanel({
 /** Collapsed view: the first few bullets, one line each where possible. */
 function ReleaseNotesSummary({
   preview,
+  version,
 }: {
   preview: ReturnType<typeof releaseNotesPreview> | null;
+  version: string;
 }): ReactElement | null {
   if (preview === null || preview.items.length === 0) {
     return null;
@@ -176,7 +180,13 @@ function ReleaseNotesSummary({
 
   return (
     <ul
-      className="space-y-1 py-2 pr-1"
+      // Scrolls for the same reason the expanded notes do: in a short window
+      // the card's slot for this list is smaller than the list, and without a
+      // scroller here the bullets are painted straight over the buttons.
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
+      tabIndex={0}
+      aria-label={`Release notes summary for version ${version}`}
+      className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
       {items.map((item, index) => (
