@@ -53,10 +53,8 @@ def truncate_exception(event_dict: dict) -> dict:
     head = _MAX_EXC_CHARS - _EXC_TAIL_CHARS
     dropped = len(text) - _MAX_EXC_CHARS
     event_dict["exception"] = (
-        text[:head]
-        + f"\n... [{dropped} chars of traceback omitted; "
-        "raise UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ...\n"
-        + text[-_EXC_TAIL_CHARS:]
+        text[:head] + f"\n... [{dropped} chars of traceback omitted; "
+        "raise UNSLOTH_STUDIO_MAX_EXCEPTION_CHARS to see it all] ...\n" + text[-_EXC_TAIL_CHARS:]
     )
     return event_dict
 
