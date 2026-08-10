@@ -2954,10 +2954,25 @@ def test_confirm_gate_needs_stream():
 
     safe = ["web_search", "search_knowledge_base"]
     # auto + a safe-only selection never prompts -> no stream needed.
-    assert _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = safe)) is False
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["search_knowledge_base"])
+        )
+        is False
+    )
+    # web_search prompts once the model supplies a ``url`` (it fetches that page instead
+    # of searching), so it needs a stream to deliver that prompt. Without this the request
+    # is admitted and then blocks in wait_tool_decision on an approval the non-streaming
+    # client can never answer.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
-        is False
+        is True
+    )
+    assert (
+        _confirm_gate_needs_stream(
+            req(permission_mode = "auto", enabled_tools = ["web_search", "search_knowledge_base"])
+        )
+        is True
     )
     # render_html can prompt when its canvas reaches the network, so a selection
     # that includes it needs a stream to deliver that prompt.

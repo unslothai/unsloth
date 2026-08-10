@@ -2597,7 +2597,12 @@ def _confirm_gate_needs_stream(payload) -> bool:
         return False
     from core.inference.tools import is_always_safe_tool
 
-    return not all(is_always_safe_tool(t) for t in enabled)
+    # web_search prompts once the model supplies a ``url`` (it fetches that page rather
+    # than searching), and the gate can only prompt while streaming, so it no longer
+    # qualifies for the safe-only exception: without this a non-streaming auto request
+    # is admitted, then blocks in wait_tool_decision with the approval id stranded in a
+    # stream event the client never reads.
+    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
 
 
 # Cancel registry. Proxies (e.g. Colab) can swallow client fetch aborts so
