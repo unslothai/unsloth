@@ -174,9 +174,7 @@ def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
         # it here sent the user to Free up space to remove a row that is never there. Per copy,
         # like the listing: one pipeline copy in another cache root must not hide a companion-only
         # copy that Free up space really will offer.
-        elif base_key in offerable and any(
-            not _repo_holds_denoiser(r) for r in base_repos
-        ):
+        elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
         # Else: a base only a recorded link names. It is unheld, but the orphan endpoint is
         # table-only by design (a mis-recorded link must never turn an unrelated repo into a
