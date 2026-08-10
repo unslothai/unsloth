@@ -633,13 +633,13 @@ jobs:
             throw new Error('Desktop release must not target RPM packages');
           }
           if (Array.isArray(targets) && targets.some((target) => String(target).toLowerCase() === 'appimage')) {
-            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the thin AppImage packager');
+            throw new Error('Tauri AppImage bundling must stay disabled; the release uses the portable AppImage packager');
           }
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
           if (config.bundle?.linux?.appimage) {
-            throw new Error('bundle.linux.appimage must not be configured for the thin AppImage release path');
+            throw new Error('bundle.linux.appimage must not be configured for the portable AppImage release path');
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
@@ -659,7 +659,7 @@ jobs:
           // A pinned version/path is reproducibility, not integrity: the asset
           // can be replaced after upload. Require the immutable SHA-256 digest
           // to be pinned AND verified before chmod +x. Scope every check to the
-          // real "Pin thin AppImage toolchain" step so this guard cannot
+          // real "Pin AppImage toolchain" step so this guard cannot
           // satisfy itself; a file-wide scan would match the guard's own code.
           const expectedAppimagetoolDigest = 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0';
           const expectedRuntimeDigest = '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d';
@@ -667,9 +667,9 @@ jobs:
             const trimmed = line.trim();
             return trimmed.startsWith('#') || trimmed.startsWith('//');
           };
-          const stepStart = lines.findIndex((line) => /^\s*- name: Pin thin AppImage toolchain\s*$/.test(line));
+          const stepStart = lines.findIndex((line) => /^\s*- name: Pin AppImage toolchain\s*$/.test(line));
           if (stepStart === -1) {
-            throw new Error('Desktop Linux release must keep the "Pin thin AppImage toolchain" step');
+            throw new Error('Desktop Linux release must keep the "Pin AppImage toolchain" step');
           }
           const stepIndent = lines[stepStart].search(/\S/);
           let stepEnd = lines.length;
@@ -955,7 +955,7 @@ jobs:
           }
 
       # ── Linux: pin AppImage packaging toolchain ──
-      - name: Pin thin AppImage toolchain
+      - name: Pin AppImage toolchain
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         env:
@@ -997,8 +997,8 @@ jobs:
             -v --bundles deb
             --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-      # ── Linux: wrap the deb payload without bundling the GTK/WebKit stack ──
-      - name: Build and sign thin Linux AppImage
+      # ── Linux: wrap the deb payload and bundle the GTK/WebKit stack with it ──
+      - name: Build and sign portable Linux AppImage
         id: package_linux
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
@@ -1032,23 +1032,22 @@ jobs:
           output_dir="studio/src-tauri/target/release/bundle/appimage"
           appimage="$output_dir/unsloth-studio_${APP_VERSION}_amd64.AppImage"
           export APPIMAGE_PATH="$appimage"
-          studio/src-tauri/linux/build-thin-appimage.sh \
-            "$deb_path" \
-            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
-            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
-            "$appimage"
-
-          # Portable build for hosts without WebKitGTK. The thin AppImage above
-          # needs libwebkit2gtk-4.1 from the host and prints an apt command when
-          # it is absent -- which an immutable distro cannot run. SteamOS is the
-          # concrete case: it ships libgtk-3 and libsoup-3 but no WebKit and no
-          # apt, so the thin bundle cannot start there at all.
-          portable="$output_dir/unsloth-studio_${APP_VERSION}_amd64-portable.AppImage"
+          # The portable bundle is the ONLY AppImage we ship.
+          #
+          # The thin build reuses the deb payload and takes WebKitGTK from the host,
+          # which makes it an AppImage that still depends on the distro -- and the
+          # distros with the strongest reason to want an AppImage are the immutable
+          # ones that cannot satisfy that dependency. SteamOS is the concrete case:
+          # libgtk-3 ✓, libsoup-3 ✓, libwebkit2gtk-4.1 ✗, and no apt to install it
+          # with, so the thin AppRun printed an apt command the user could not run.
+          # Shipping both meant the obvious download was the one that does not work
+          # where it is most needed. build-thin-appimage.sh is kept in-tree and still
+          # covered by its tests, but nothing in the release path calls it.
           studio/src-tauri/linux/build-portable-appimage.sh \
             "$deb_path" \
             "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
-            "$portable"
+            "$appimage"
           signature="${appimage}.sig"
           # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
           npx --prefix studio tauri signer sign "$appimage"

@@ -1,4 +1,12 @@
-"""Contracts for the host-integrated Linux AppImage release path."""
+"""Contracts for the Linux AppImage release path.
+
+The release ships exactly one AppImage and it is the PORTABLE one. A thin
+AppImage still depends on the host for WebKitGTK, which makes it useless on the
+immutable distros that have the most reason to want an AppImage -- so shipping
+both meant the plainly-named download was the one that could not run there.
+build-thin-appimage.sh stays in the tree and keeps the contracts below; nothing
+in the release path calls it.
+"""
 
 import os
 import shlex
@@ -24,7 +32,7 @@ def _step(name: str):
 
 
 def test_release_pins_the_appimage_builder_and_runtime_by_digest():
-    step = _step("Pin thin AppImage toolchain")
+    step = _step("Pin AppImage toolchain")
     assert step["if"] == "matrix.platform == 'ubuntu-22.04'"
     assert "/AppImage/appimagetool/releases/download/1.9.1/" in step["env"]["APPIMAGETOOL_URL"]
     assert len(step["env"]["APPIMAGETOOL_SHA256"]) == 64
@@ -37,13 +45,20 @@ def test_release_pins_the_appimage_builder_and_runtime_by_digest():
 
 def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
     build = _step("Build Linux deb")
-    package = _step("Build and sign thin Linux AppImage")
+    package = _step("Build and sign portable Linux AppImage")
     stage = _step("Stage release assets")
 
     assert "--bundles deb" in build["with"]["args"]
     assert '"createUpdaterArtifacts":false' in build["with"]["args"]
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build.get("env", {})
-    assert "build-thin-appimage.sh" in package["run"]
+    # Exactly one AppImage is built, and it is the portable one. Compare against
+    # the commands only: the step explains in a comment why the thin builder is no
+    # longer called, and a naive substring check would match that explanation.
+    commands = "\n".join(
+        line for line in package["run"].splitlines() if not line.strip().startswith("#")
+    )
+    assert commands.count("build-portable-appimage.sh") == 1
+    assert "build-thin-appimage.sh" not in commands
     assert 'tauri signer sign "$appimage"' in package["run"]
     assert 'tauri signer sign "$appimage" > "$signature"' not in package["run"]
     assert "base64.b64decode(signature_value, validate=True)" in package["run"]

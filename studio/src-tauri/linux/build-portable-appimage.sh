@@ -5,8 +5,8 @@
 # Build a SELF-CONTAINED Linux AppImage: the WebKit/GTK stack travels inside the
 # bundle instead of being required from the host.
 #
-# Why this exists alongside build-thin-appimage.sh
-# ------------------------------------------------
+# Why this replaced build-thin-appimage.sh in the release
+# -------------------------------------------------------
 # The thin AppImage reuses the deb payload and takes the desktop stack from the
 # host. That is correct on a distro that ships WebKitGTK 4.1, and its AppRun
 # prints an apt command when the host does not. But the distros with the
@@ -20,6 +20,11 @@
 # prints cannot be followed: /usr is read-only and there is no apt. Electron
 # apps ship on those machines without trouble because Electron carries its own
 # browser engine; a Tauri app has to bundle WebKitGTK to reach parity.
+#
+# Shipping both left the obvious download -- the one named plainly *.AppImage --
+# as the one that does not work where an AppImage is most needed. So this is now
+# the only AppImage the release builds, under that plain name. The thin script
+# stays in the tree and keeps its tests, but the release path does not call it.
 #
 # Why not linuxdeploy
 # -------------------
