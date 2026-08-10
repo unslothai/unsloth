@@ -1150,10 +1150,26 @@ class VideoBackend:
             binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
         engine = SdCppEngine(binary)
-        if not binary or engine.version() is None:
-            raise RuntimeError(
-                "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
-            )
+        # Re-vet and take the identity under ONE reader claim. ensure_h3_sd_cpp_binary checked the
+        # file it returned, but an install can start between that return and this line, and an
+        # in-place replacement would then become the recorded identity without ever having been
+        # checked for H3 support or the selected accelerator -- after which every generation
+        # compares the replacement against itself and lets it through. Inside the claim no install
+        # can start, so the build that answers --help here is the build whose identity is stored.
+        from .sd_cpp_backend import _tree_reader, sd_cpp_supports_minimax_h3
+        from .sd_cpp_engine import is_managed_binary
+
+        with _tree_reader(binary, cancel_event, VIDEO_CANCELLED_MSG):
+            if not binary or engine.version() is None:
+                raise RuntimeError(
+                    "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
+                )
+            if is_managed_binary(binary) and not sd_cpp_supports_minimax_h3(binary):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary was replaced by an install that does not "
+                    "support MiniMax-H3. Try the load again."
+                )
+            binary_identity = _sd_cli_identity(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -1187,10 +1203,10 @@ class VideoBackend:
 
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
-            # Pinned HERE, where ensure_h3_sd_cpp_binary has just vetted this exact file for H3
-            # support and accelerator. Taking it at generation time instead would compare a
-            # replacement against itself.
-            binary_identity = _sd_cli_identity(binary),
+            # Pinned under the reader claim above, where this exact file answered --help with the
+            # H3 options. Taking it at generation time instead would compare a replacement against
+            # itself.
+            binary_identity = binary_identity,
             files = SdCppModelFiles(
                 diffusion_model = str(resolved[0]),
                 llm = str(resolved[1]),
@@ -3689,7 +3705,7 @@ class VideoBackend:
             binary_identity = getattr(runtime, "binary_identity", None)
             try:
                 try:
-                    with _tree_reader(binary, cancel):
+                    with _tree_reader(binary, cancel, VIDEO_CANCELLED_MSG):
                         current_identity = _sd_cli_identity(binary)
                         # Unreadable now (swept), or readable but not what the load vetted. A
                         # runtime carrying no recorded identity cannot answer the second question,

@@ -5156,7 +5156,7 @@ def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
 
     # A replacement that lands DURING the wait is caught the same way.
     @contextlib.contextmanager
-    def _install_lands_during_the_wait(_binary, _cancel = None):
+    def _install_lands_during_the_wait(_binary, _cancel = None, _msg = None):
         managed.write_bytes(b"yet another build")
         os.utime(managed, (2, 2))
         yield
@@ -5166,3 +5166,33 @@ def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match = "Reload the model"):
         backend.generate(prompt = "p", width = 960, height = 544)
     assert len(calls) == 1
+
+
+def test_a_cancelled_h3_install_wait_reads_as_a_cancellation(monkeypatch, tmp_path):
+    """The reader is shared with the image path, whose sentinel _run_generate does not recognise.
+    Left untranslated, an ordinary H3 cancellation surfaces as "Video generation failed"."""
+    pytest.importorskip("PIL.Image")
+    import threading
+
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.video_families import VIDEO_CANCELLED_MSG
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls, binary = managed)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(bk, "_tree_installing", True)
+    monkeypatch.setattr(bk, "_TREE_WAIT_TICK_S", 0.02)
+
+    # Cancel shortly after the generation parks in the install wait.
+    threading.Timer(0.1, lambda: backend.cancel_generate()).start()
+    with pytest.raises(RuntimeError) as exc:
+        backend.generate(prompt = "p", width = 960, height = 544)
+    assert str(exc.value) == VIDEO_CANCELLED_MSG
+    assert calls == []

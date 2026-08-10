@@ -2052,3 +2052,41 @@ def test_a_cancelled_request_leaves_the_install_wait(tmp_path, monkeypatch):
     assert time.monotonic() - started < 30
     assert "cancel" in str(exc.value).lower()
     assert bk._tree_readers == 0
+
+
+def test_the_cuda_runtime_is_fetched_before_anything_is_swept(tmp_path, monkeypatch, capsys):
+    """A cudart download / digest / extract failure after the sweep leaves the old binaries gone,
+    is not a SupersededBinaryError, and so gets memoised as a failed accelerator with the caller
+    holding paths that no longer exist. Fetching it first removes the window entirely."""
+    order: list[str] = []
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+
+    real_sweep = sdmod._discard_superseded_binaries
+    monkeypatch.setattr(
+        sdmod,
+        "_discard_superseded_binaries",
+        lambda root, supplied: (order.append("sweep"), real_sweep(root, supplied))[1],
+    )
+    monkeypatch.setattr(
+        sdmod,
+        "_maybe_fetch_windows_cudart",
+        lambda *_a, **_k: order.append("cudart"),
+    )
+    install(install_dir = tmp_path)
+    assert order == ["cudart", "sweep"]
+
+
+def test_a_failure_after_the_sweep_is_an_incomplete_replacement(tmp_path, monkeypatch):
+    """Everything from the sweep onwards leaves a tree that is a mixture of two bundles. Reported
+    as anything else, ensure_* memoises the accelerator and suppresses the retry that repairs it."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+
+    def _boom(_root, _supplied):
+        raise OSError("the filesystem went away mid-sweep")
+
+    monkeypatch.setattr(sdmod, "_discard_superseded_binaries", _boom)
+    with pytest.raises(sdmod.SupersededBinaryError) as exc:
+        install(install_dir = tmp_path)
+    assert "part way through a replacement" in str(exc.value)

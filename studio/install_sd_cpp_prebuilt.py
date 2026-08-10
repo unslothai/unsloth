@@ -648,13 +648,28 @@ def install(
         cli_name = _binary_names()[0]
         if not any(p.name == cli_name for p in supplied):
             raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
+        # Windows CUDA builds need the separately-published cudart runtime DLLs. BEFORE the
+        # sweep, not after: its download / digest / extract can fail, and a failure once the old
+        # binaries are gone is neither recoverable here nor reported as one, so ensure_* would
+        # memoise the accelerator and hand back paths the sweep had already removed. Nothing it
+        # writes is an sd-cli or an sd-server, so the sweep below cannot take it.
+        _maybe_fetch_windows_cudart(release, chosen, target)
         # Extraction merges, so anything the previous bundle put somewhere this one does not write
         # survives -- and it outranks the new copy whenever its path sorts higher. Drop what this
         # bundle did not supply, so the tree and the record written below agree.
+        #
+        # LAST, and everything after it is an incomplete replacement by definition: from here the
+        # tree is a mixture of two bundles, and the caller has to retry the sweep rather than
+        # memoise the accelerator as unavailable.
         if _may_own:
-            _discard_superseded_binaries(target, supplied)
-        # Windows CUDA builds need the separately-published cudart runtime DLLs.
-        _maybe_fetch_windows_cudart(release, chosen, target)
+            try:
+                _discard_superseded_binaries(target, supplied)
+            except SupersededBinaryError:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- any failure here leaves a mixed tree
+                raise SupersededBinaryError(
+                    f"the managed tree was left part way through a replacement: {exc}"
+                ) from exc
     finally:
         # Always drop the archive: a corrupt or partial one must not linger and defeat a later retry.
         archive.unlink(missing_ok = True)

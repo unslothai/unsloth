@@ -122,7 +122,11 @@ def _tree_claimed_for_install():
 
 
 @contextlib.contextmanager
-def _tree_reader(binary: Optional[str], cancel_event: Optional[threading.Event] = None):
+def _tree_reader(
+    binary: Optional[str],
+    cancel_event: Optional[threading.Event] = None,
+    cancelled_message: str = DIFFUSION_CANCELLED_MSG,
+):
     """Run ``binary`` out of the managed tree, holding off any install for the duration.
 
     Only a MANAGED copy needs this. An sd-cli from ``SD_CLI_PATH`` / ``UNSLOTH_SD_CPP_PATH``, an
@@ -146,7 +150,10 @@ def _tree_reader(binary: Optional[str], cancel_event: Optional[threading.Event] 
             deadline = time.monotonic() + _TREE_WAIT_TIMEOUT_S
             while _tree_installing:
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError(DIFFUSION_CANCELLED_MSG)
+                    # The caller's own sentinel: the video path recognises only its own, and an
+                    # image message reaching it reads as "Video generation failed" for what is an
+                    # ordinary cancellation.
+                    raise RuntimeError(cancelled_message)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise RuntimeError(
@@ -1063,37 +1070,49 @@ class SdCppDiffusionBackend:
                     # nothing executing in it yet to claim for), so an install can have swept this
                     # path between layouts since _resolve_backend picked it. Re-resolve before
                     # starting: the stale path would drop the load to one-shot for nothing, or
-                    # start a build this load did not select. No install from here (allow_install
-                    # False) -- this is a re-read, not a second upgrade attempt.
-                    refreshed = ensure_sd_server_binary(
-                        allow_install = False, accelerator = self._resolved_accelerator()
-                    )
-                    if refreshed and refreshed != server_binary:
-                        logger.info(
-                            "sd-server moved during the asset download: %s -> %s",
-                            server_binary,
-                            refreshed,
+                    # start a build this load did not select.
+                    #
+                    # Under the READER, and held until _pending_server is published. Re-resolving
+                    # alone does not close the race: allow_install=False only declines to install,
+                    # it does not wait for or claim the tree, so an installer that has already
+                    # passed its in-use check can sweep this executable between the re-read and
+                    # the start. Once _pending_server is published, _tree_in_use covers it and the
+                    # claim is no longer what is holding the installer off.
+                    with _tree_reader(server_binary, cancel_event):
+                        refreshed = ensure_sd_server_binary(
+                            allow_install = False, accelerator = self._resolved_accelerator()
                         )
-                        server_binary = refreshed
-                    if not server_binary or not _server_binary_runnable(server_binary):
-                        # Nothing runnable survived the replacement; the one-shot CLI is the
-                        # documented fallback and _resolve_engine re-resolves it from scratch.
-                        logger.warning(
-                            "sd-server is no longer usable after the asset download; "
-                            "falling back to one-shot sd-cli."
-                        )
-                        mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                        if refreshed and refreshed != server_binary:
+                            logger.info(
+                                "sd-server moved during the asset download: %s -> %s",
+                                server_binary,
+                                refreshed,
+                            )
+                            server_binary = refreshed
+                        if not server_binary or not _server_binary_runnable(server_binary):
+                            # Nothing runnable survived the replacement; the one-shot CLI is the
+                            # documented fallback and _resolve_engine re-resolves it from scratch.
+                            logger.warning(
+                                "sd-server is no longer usable after the asset download; "
+                                "falling back to one-shot sd-cli."
+                            )
+                            mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                        else:
+                            server = SdCppServer(server_binary)
+                            started = server
+                            # Published INSIDE the claim: _tree_in_use reads _pending_server, so
+                            # this is the handover from "a reader holds the tree" to "a starting
+                            # server does", with no gap between them.
+                            with self._lock:
+                                self._pending_server = server
                 if mode == "server":
                     assert server_binary is not None
-                    server = SdCppServer(server_binary)
-                    # The object to clear from _pending_server below. ``server`` itself is set to
-                    # None when start() fails and the load falls back to one-shot, and comparing
-                    # THAT against _pending_server left the stopped server published forever --
-                    # which now reads as "the managed tree is busy" for the rest of the process.
-                    started = server
-                    # Publish the uncommitted server so unload() / a superseding load can stop it mid-startup instead of waiting out the timeout.
-                    with self._lock:
-                        self._pending_server = server
+                    assert server is not None
+                    # ``started`` (set with _pending_server above) is the object to clear below.
+                    # ``server`` itself is set to None when start() fails and the load falls back
+                    # to one-shot, and comparing THAT against _pending_server left the stopped
+                    # server published forever, which reads as "the managed tree is busy" for the
+                    # rest of the process.
                     try:
                         # Blocks until the model is loaded and answering; raises with the log tail on failure.
                         server.start(
