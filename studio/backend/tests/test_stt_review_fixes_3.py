@@ -440,7 +440,9 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     in between and the port read would be the other server's."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000)
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
+    )
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
 
     posted = []
@@ -504,7 +506,9 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
     threw away a recording the preload had said was fine."""
     monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
-    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000)
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
+    )
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
     monkeypatch.setattr(
         MtmdSttSidecar,
@@ -521,7 +525,9 @@ def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
 def test_disconnecting_one_mtmd_request_does_not_kill_its_sibling(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "ensure_engine_available", lambda: None)
     monkeypatch.setattr(MtmdSttSidecar, "_ensure_model_downloaded", lambda *args: None)
-    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000)
+    monkeypatch.setattr(
+        mtmd_mod, "_decode_audio_bounded", lambda audio, cancel_event = None: b"\x00\x00" * 16000
+    )
     monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
 
     class _AliveProcess:
