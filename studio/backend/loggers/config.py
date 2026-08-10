@@ -66,17 +66,22 @@ def _truncate_middle(text: str, limit: int, tail: int) -> str:
 
 
 def truncate_exception(event_dict: dict) -> dict:
-    """Structlog processor: bound the rendered exception and its message."""
+    """Structlog processor: bound the rendered exception, its message and the event."""
     if _MAX_EXC_CHARS <= 0:
         return event_dict
     text = event_dict.get("exception")
     if isinstance(text, str):
         event_dict["exception"] = _truncate_middle(text, _MAX_EXC_CHARS, _EXC_TAIL_CHARS)
+    message_cap = min(_MAX_ERROR_CHARS, _MAX_EXC_CHARS)
     error = event_dict.get("error")
     if isinstance(error, str):
-        event_dict["error"] = _truncate_middle(
-            error, min(_MAX_ERROR_CHARS, _MAX_EXC_CHARS), _EXC_TAIL_CHARS
-        )
+        event_dict["error"] = _truncate_middle(error, message_cap, _EXC_TAIL_CHARS)
+    # f-string call sites interpolate the exception straight into the message
+    # (routes/inference.py: logger.error(f"...: {e}", exc_info = True)), so the event
+    # itself is a third copy that can carry the whole payload.
+    event = event_dict.get("event")
+    if isinstance(event, str):
+        event_dict["event"] = _truncate_middle(event, message_cap, _EXC_TAIL_CHARS)
     return event_dict
 
 

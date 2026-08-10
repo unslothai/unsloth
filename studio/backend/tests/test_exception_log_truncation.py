@@ -84,3 +84,17 @@ def test_redaction_runs_before_truncation():
     text = (_BACKEND / "loggers/config.py").read_text(encoding = "utf-8")
     order = text.index("filter_sensitive_data,\n"), text.index("_truncate_exception_processor,\n")
     assert order[0] < order[1], "filter_sensitive_data must come first in the chain"
+
+
+def test_the_event_field_is_capped_too():
+    # logger.error(f"failed: {e}", exc_info = True) puts the whole exception text in
+    # the event, a third copy the first two caps never saw.
+    text = "failed: " + ("q" * 4_000_000)
+    out = log_config.truncate_exception({"event": text})["event"]
+    assert len(out) < log_config._MAX_ERROR_CHARS + 200, len(out)
+    assert out.startswith("failed: ")
+
+
+def test_a_normal_event_name_is_untouched():
+    ev = {"event": "request_failed", "error": "boom"}
+    assert log_config.truncate_exception(dict(ev)) == ev
