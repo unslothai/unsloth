@@ -2757,13 +2757,44 @@ def _prune_empty_parents(start: Path, stop_at: Path) -> None:
         parent = parent.parent
 
 
+def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two variant spellings can name the SAME checkpoint, for the load-state guard.
+
+    Deletion accepts an unambiguous bare quant for a path-qualified key (the shared-container
+    layout, ``weights/model-Q4_K_M.gguf``), so a guard comparing the two spellings literally lets
+    a model loaded through a legacy bare pin be deleted through its advertised qualified row --
+    unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
+    refuses a delete, a false miss loses weights.
+    """
+    from hub.utils.gguf import bare_quant_alias
+
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    for key, bare in ((left, right), (right, left)):
+        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+            return True
+    return False
+
+
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_count = 0
     deleted_bytes = 0
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        if _extract_quant_label(path.name).lower() != variant.lower():
+        # Keyed on the path, not the basename: a repo holding several checkpoints at
+        # one quant would otherwise delete every one of them for a single row.
+        from utils.models.model_config import _gguf_variant_key
+
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError:
+            relative = path.name
+        if _gguf_variant_key(relative).lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
@@ -2897,7 +2928,9 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
+                # literal comparison here would wave through the very spelling it then deletes.
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
@@ -2914,7 +2947,7 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
@@ -3324,25 +3357,34 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                 if snaps.is_dir():
                     roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
-        want = _normalized_quant_label(quant)
+        want = (quant or "").strip()
         best_total = 0
         best_first: Optional[str] = None
         for root in roots:
-            matches: list[tuple[str, Path]] = []
-            total = 0
+            ranked: dict[int, list[tuple[str, Path, int]]] = {0: [], 1: []}
             for f in _iter_gguf_paths(root):
                 try:
                     rel = f.relative_to(root).as_posix()
                 except ValueError:
                     rel = f.name
-                q = _main_variant_gguf_label(rel)
-                if q is None or _normalized_quant_label(q) != want:
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 try:
-                    total += f.stat().st_size
+                    size = f.stat().st_size
                 except OSError:
                     continue
-                matches.append((rel, f))
+                ranked[rank].append((rel, f, size))
+            # Exact keys alone when any exist: summing them with the label matches counts other
+            # checkpoints' bytes into this row's estimate and can reveal one of their files.
+            # ... and within those, ONE shard family, the same rule group_gguf_variant_files
+            # applies: a snapshot holding the same quant twice (QwQ-32B's two BF16 shard sets)
+            # would otherwise report double the weights the loader opens, which /kv-cache-estimate
+            # turns into a false exceeds-memory warning and which can make a snapshot look
+            # "more complete" purely for holding a redundant copy.
+            chosen = _one_shard_family_of(ranked[0] or ranked[1])
+            matches = [(rel, f) for rel, f, _size in chosen]
+            total = sum(size for _rel, _f, size in chosen)
             # Prefer the most complete snapshot so a partial older revision can't underestimate bytes.
             if matches and total > best_total:
                 matches.sort(key = lambda m: m[0])
@@ -3458,6 +3500,9 @@ async def get_gguf_variants(
                 GgufVariantDetail(
                     filename = v.filename,
                     quant = v.quant,
+                    # A path-qualified key is not a label a picker can show; without this
+                    # the row reads as its whole relative path.
+                    display_label = getattr(v, "display_label", None),
                     size_bytes = v.size_bytes,
                     download_size_bytes = int(
                         getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
@@ -3643,6 +3688,62 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
     if _is_big_endian_gguf_path(rel_path, label):
         return None
     return label
+
+
+def _one_shard_family_of(entries: list) -> list:
+    """*entries* narrowed to the single shard family the loader would open.
+
+    ``(rel, path, size)`` triples. Same rule as ``hub.utils.gguf.group_gguf_variant_files``:
+    every shard of one split GGUF shares a family, two files that do not are two checkpoints, and
+    the family kept is the one holding the lexicographically first file. A genuinely split GGUF is
+    one family and survives whole.
+    """
+    if len(entries) < 2:
+        return list(entries)
+    from hub.utils.gguf import gguf_variant_family
+
+    families: dict[str, list] = {}
+    for entry in entries:
+        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+    if len(families) < 2:
+        return list(entries)
+    return min(families.values(), key = lambda group: min(e[0] for e in group))
+
+
+def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
+    """How well *want* names this file's variant: 0 for its own key, 1 for the legacy
+    quant-label spelling, None for neither.
+
+    *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
+    doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
+    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
+    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
+    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
+    files too and then took whichever sorted first. Exact keys are used alone whenever any
+    exist, and the label is the fallback for the rows that have no qualified spelling.
+    """
+    from utils.models.model_config import _gguf_variant_key
+
+    label = _main_variant_gguf_label(rel_path)
+    if label is None:
+        return None
+    if _variant_keys_match(_gguf_variant_key(rel_path), want):
+        return 0
+    return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
+
+
+def _variant_keys_match(key: str, want: str) -> bool:
+    """Whether *want* is *key*, for the exact-key test.
+
+    ``_normalized_quant_label`` strips hyphens and underscores, which is right for a bare quant
+    (``UD-Q4_K_XL`` and ``udq4kxl`` are the same ask) and wrong for a path: it folds ``exp-a/`` and
+    ``expa/`` into one, so two advertised checkpoints both answered to the other's key. A qualified
+    key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
+    bare aliases it was written for.
+    """
+    if "/" in key or "/" in want:
+        return key.strip().lower() == want.strip().lower()
+    return _normalized_quant_label(key) == _normalized_quant_label(want)
 
 
 def _normalized_quant_label(label: str) -> str:
@@ -4440,7 +4541,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
-        want = _normalized_quant_label(variant)
+        want = (variant or "").strip()
         candidate_revisions = sorted(
             (rev for repo_info in matching_repos for rev in repo_info.revisions),
             key = lambda rev: getattr(rev, "last_modified", 0) or 0,
@@ -4448,7 +4549,7 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         )
         for rev in candidate_revisions:
             snapshot = getattr(rev, "snapshot_path", None)
-            matches = []
+            ranked: dict[int, list[tuple[str, Path]]] = {0: [], 1: []}
             for f in rev.files:
                 p = Path(f.file_path)
                 rel = f.file_name
@@ -4457,11 +4558,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
                         rel = p.relative_to(snapshot).as_posix()
                     except ValueError:
                         pass
-                label = _main_variant_gguf_label(rel)
-                if label is None or _normalized_quant_label(label) != want:
+                rank = _main_variant_rank(rel, want)
+                if rank is None:
                     continue
                 if p.exists() or p.is_symlink():
-                    matches.append((rel, p))
+                    ranked[rank].append((rel, p))
+            # Exact keys alone when any exist, else the legacy label spelling.
+            matches = ranked[0] or ranked[1]
             if matches:
                 # Path-sorted so a sharded quant deterministically yields its first split.
                 return sorted(matches, key = lambda m: m[0].lower())[0][1]
