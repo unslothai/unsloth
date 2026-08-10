@@ -1286,6 +1286,63 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
     assert len(out["images"]) == 1 and len(fake.calls) == 1
 
 
+def test_server_start_failure_keeps_the_engine_the_fallback_resolved(monkeypatch):
+    # The fallback resolved an sd-cli and then threw it away, keeping the server path's engine of
+    # None. state.sd_accelerator was recorded off that None, so the first one-shot generation --
+    # which re-resolves sd-cli and reads its REAL accelerator -- saw a mismatch and refused the
+    # binary it had just fallen back to. The documented start-failure fallback loaded fine and
+    # then could not generate at all.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    class _BadServer:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            raise RuntimeError("sd-server broken")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _BadServer)
+    fake = _FakeEngine()
+    fake.binary = "/x/sd-cli"
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+    # Keyed on the binary, not constant: the whole bug is that the recorded accelerator was read
+    # off None, so a stub that answers the same for every argument would pass either way.
+    monkeypatch.setattr(
+        bk, "_installed_accelerator_of", lambda binary: "cuda" if binary == "/x/sd-cli" else None
+    )
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+    assert b._state is not None and b._state.mode == "oneshot"
+    assert b._state.sd_accelerator == "cuda"
+    # The check the recorded value exists for: the per-image re-resolution must accept the very
+    # binary this load fell back to.
+    out = b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(out["images"]) == 1 and len(fake.calls) == 1
+
+
 def test_run_load_redacts_paths_in_progress_error(monkeypatch):
     # A load failure surfaced via load_progress() must run through redact_native_paths, the same scrub the diffusers path applies.
     from utils import native_path_leases as npl

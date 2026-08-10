@@ -1024,13 +1024,18 @@ class SdCppDiffusionBackend:
                         "sd-server at %s is present but not runnable; trying one-shot sd-cli.",
                         server_binary,
                     )
+                    # Resolve ONCE and keep it: two calls can answer with two different
+                    # binaries if an install lands between them, and the state below reads the
+                    # accelerator off whichever object it ends up holding.
+                    fallback: Optional[SdCppEngine] = None
                     try:
-                        usable = self._resolve_engine().version() is not None
+                        fallback = self._resolve_engine()
+                        usable = fallback.version() is not None
                     except Exception:  # noqa: BLE001
                         usable = False
-                    if not usable:
+                    if not usable or fallback is None:
                         raise RuntimeError("sd-server binary is present but not runnable.")
-                    mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                    mode, server_binary, engine = "oneshot", None, fallback
             # The accelerator the managed tree held when THIS binary was chosen, taken where the
             # choice is made rather than sampled again later. The asset download below runs for
             # minutes with no claim on the tree, and an install that lands in that window replaces
@@ -1231,12 +1236,20 @@ class SdCppDiffusionBackend:
                             if self._pending_server is server:
                                 self._pending_server = None
                         server = None
+                        # KEEP the engine this fallback resolved. Discarding it left the local
+                        # `engine` at the server path's None, so state.sd_accelerator was recorded
+                        # as None and the first one-shot generation, which re-resolves sd-cli and
+                        # reads its real accelerator, rejected it as a different-accelerator
+                        # replacement: the load reports success and then cannot generate.
+                        fallback: Optional[SdCppEngine] = None
                         try:
-                            usable = self._resolve_engine().version() is not None
+                            fallback = self._resolve_engine()
+                            usable = fallback.version() is not None
                         except Exception:  # noqa: BLE001
                             usable = False
-                        if not usable:
+                        if not usable or fallback is None:
                             raise start_exc
+                        engine = fallback
                         mode = "oneshot"
                     finally:
                         if not started_ok:
