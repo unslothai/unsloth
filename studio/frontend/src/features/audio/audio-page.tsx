@@ -74,6 +74,7 @@ import { sttModelSize } from "@/features/settings/stores/stt-model-catalog";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -585,6 +586,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     void refreshSttStatus();
     void refreshGallery();
   }, [active, refreshStatus, refreshSttStatus, refreshGallery]);
+
+  // Activation alone is not enough: the loaded-models indicator can eject the TTS model
+  // out from under a page that stays active, leaving Generate enabled against an empty
+  // slot. Same reason Images and Video listen here.
+  useEffect(() => {
+    if (!active) return;
+    return subscribeModelLifecycle(({ runtime, loading }) => {
+      if (loading) return;
+      if (runtime === "chat") void refreshStatus();
+      if (runtime === "stt") void refreshSttStatus();
+    });
+  }, [active, refreshStatus, refreshSttStatus]);
 
   // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
@@ -1225,6 +1238,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       if (generatedClip) {
         setFallbackClip(null);
         selectClip(generatedClip.id);
+      } else if (generated.clip_id) {
+        // The server did persist it; only this refresh missed it (refreshGallery
+        // swallows a transient failure and returns the stale cache). Keep the id so a
+        // later refresh selects it, rather than labelling a saved clip unsaved forever.
+        setFallbackClip(null);
+        selectClip(generated.clip_id);
       } else {
         // Gallery persistence is best-effort server-side, so a full or unwritable
         // disk still returns the audio. Play it from the response rather than
@@ -1261,10 +1280,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     generateAbort.current?.abort();
   }, []);
 
-  // Leaving the page keeps the tab mounted, so cancel on both deactivation and unmount.
-  useEffect(() => {
-    if (!active) generateAbort.current?.abort();
-  }, [active]);
+  // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving
+  // the tab does not cancel synthesis, and the clip is persisted server-side, so
+  // it is still waiting in the gallery on return.
   useEffect(() => () => generateAbort.current?.abort(), []);
 
   // --- Transcribe ---------------------------------------------------------

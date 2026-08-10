@@ -2806,6 +2806,35 @@ export function HubModelPicker({
     communityBrowse.results,
   ]);
 
+  // The rest of the Hub evidence the Audio page judges a community row on. Keyed the
+  // same way, so a chat pick is routed on what the page would have listed it on rather
+  // than on its repo name alone.
+  const hubEvidenceById = useMemo(() => {
+    const map = new Map<
+      string,
+      { baseModel?: string | null; tags?: string[]; libraryName?: string | null }
+    >();
+    for (const r of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (map.has(r.id)) continue;
+      map.set(r.id, {
+        baseModel: r.baseModel,
+        tags: r.tags,
+        libraryName: r.libraryName,
+      });
+    }
+    return map;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
+
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
   // catalog for curated ids neither listing returned. Rows look it up by id and fall
   // back to repo-name detection when absent, which cannot see an audio track a name
@@ -3100,6 +3129,7 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            ...(hubEvidenceById.get(id) ?? {}),
           })
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
@@ -3132,7 +3162,7 @@ export function HubModelPicker({
       }
       onSelectProp(id, meta);
     },
-    [task, diffusionTaskById, navigateToPage, onSelectProp],
+    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
   );
 
   // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-

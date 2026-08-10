@@ -25,10 +25,18 @@ test("generation exposes a clickable Stop action wired to the request abort", ()
   );
 });
 
-test("leaving the audio page aborts an in-flight generation", () => {
+test("leaving the audio page does NOT abort an in-flight generation", () => {
+  // RootLayout keeps this page mounted precisely so synthesis survives a tab
+  // switch (see the note in routes/audio.tsx), the clip is persisted server-side
+  // so it is waiting in the gallery on return, and neither Images nor Video
+  // cancels on deactivation either. Only unmount aborts.
+  assert.doesNotMatch(
+    source,
+    /if \(!active\) generateAbort\.current\?\.abort\(\)/,
+  );
   assert.match(
     source,
-    /useEffect\(\(\) => \{\s*if \(!active\) generateAbort\.current\?\.abort\(\);\s*\}, \[active\]\)/,
+    /useEffect\(\(\) => \(\) => generateAbort\.current\?\.abort\(\), \[\]\)/,
   );
 });
 

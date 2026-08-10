@@ -145,3 +145,30 @@ def test_whisper_ids_keep_the_default_engine():
     from routes.inference import _stt_engine_for_model
     for model in (None, "", "whisper-1", "small", "large-v3-turbo", "openai/whisper-tiny"):
         assert _stt_engine_for_model(model) is None, model
+
+
+def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
+    """Without it a client that goes away leaves the sidecar transcribing under its lock.
+
+    The raw and OpenAI routes always passed the request; the base64 JSON route did not.
+    """
+    import base64
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from routes.inference import studio_router
+
+    cli, calls = _make_client(monkeypatch)
+    app = FastAPI()
+    install_api_error_handlers(app)
+    app.include_router(studio_router)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    cli = TestClient(app)
+    resp = cli.post(
+        "/audio/transcribe",
+        json = {"audio": base64.b64encode(b"RIFFfake").decode()},
+    )
+    assert resp.status_code == 200
+    assert calls[0]["raw"] == b"RIFFfake"
+    assert calls[0]["request"] is not None

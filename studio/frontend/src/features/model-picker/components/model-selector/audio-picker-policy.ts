@@ -76,18 +76,30 @@ export function audioPickIsRoutable({
   task,
   isGguf,
   isCurated,
+  baseModel,
+  tags,
+  libraryName,
 }: {
   id: string;
   task: string | null | undefined;
   isGguf: boolean;
   isCurated: boolean;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
 }): boolean {
   if (isCurated) return true;
+  // The same Hub evidence the Audio page's own lists judge on. Passing the id alone
+  // rejected a checkpoint whose family is in its tags or base model rather than its
+  // name, so the page listed it but the chat picker refused to route to it.
   return communityAudioRowIsRunnable({
     isStt: task === "automatic-speech-recognition",
     isTts: task === "text-to-speech",
     isGguf,
     id,
+    baseModel,
+    tags,
+    libraryName,
   });
 }
 

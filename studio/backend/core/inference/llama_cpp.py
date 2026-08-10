@@ -17057,8 +17057,15 @@ class LlamaCppBackend:
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Audio generation cancelled")
 
+        # Scale with the request the way the subprocess path does: a flat 300s aborts a
+        # legitimate long generation on a CPU-only or slow host now that the page offers
+        # more tokens than the old ceiling. 300s stays the floor, so nothing that fit
+        # before gets less time. Imported here to keep the module import acyclic.
+        from core.inference.orchestrator import _audio_generation_timeout
+
+        read_timeout = max(300.0, _audio_generation_timeout(max_new_tokens))
         with httpx.Client(
-            timeout = httpx.Timeout(300, connect = 10),
+            timeout = httpx.Timeout(read_timeout, connect = 10),
             headers = self._auth_headers,
             trust_env = False,
         ) as client:

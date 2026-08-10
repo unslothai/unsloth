@@ -15,6 +15,7 @@ host. Installing a soundfile decoder restores the pre-4.0 output contract,
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -23,6 +24,12 @@ logger = get_logger(__name__)
 
 _installed = False
 _ORIGINAL_ENCODE = None
+# The read-and-patch below must happen once. Two first-time callers (two dataset
+# format checks land on the threadpool together) can both pass the _installed
+# check, and the second then captures the already-installed shim as
+# _ORIGINAL_ENCODE, so its fallback branch recurses into itself until
+# RecursionError.
+_install_lock = threading.Lock()
 
 
 def _decode_with_soundfile(
@@ -124,9 +131,13 @@ def ensure_audio_decoding() -> bool:
         logger.warning("No usable audio decoder: torchcodec is broken and %s", exc)
         return False
     global _ORIGINAL_ENCODE
-    _ORIGINAL_ENCODE = Audio.encode_example
-    Audio.decode_example = _decode_with_soundfile
-    Audio.encode_example = _encode_with_soundfile
-    _installed = True
+    with _install_lock:
+        # Re-check under the lock: the loser of the race must not re-capture.
+        if _installed:
+            return True
+        _ORIGINAL_ENCODE = Audio.encode_example
+        Audio.decode_example = _decode_with_soundfile
+        Audio.encode_example = _encode_with_soundfile
+        _installed = True
     logger.info("torchcodec is unusable; decoding dataset audio with soundfile")
     return True

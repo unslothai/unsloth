@@ -13,6 +13,9 @@ from utils.datasets import audio_decode
 
 np = pytest.importorskip("numpy")
 sf = pytest.importorskip("soundfile")
+# The shim needs both: it resamples through librosa, so without it every
+# ensure_audio_decoding() below correctly returns False and the tests fail.
+pytest.importorskip("librosa")
 datasets = pytest.importorskip("datasets")
 
 
@@ -35,7 +38,11 @@ def broken_torchcodec(monkeypatch):
 
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", False)
     monkeypatch.setattr(Audio, "decode_example", Audio.decode_example)
+    # encode_example is patched too, so it needs restoring as well: leaving the
+    # shim installed made the next test capture it as _ORIGINAL_ENCODE.
+    monkeypatch.setattr(Audio, "encode_example", Audio.encode_example)
     monkeypatch.setattr(audio_decode, "_installed", False)
+    monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None)
 
 
 def test_a_broken_torchcodec_makes_datasets_refuse_the_column(broken_torchcodec):
@@ -88,9 +95,19 @@ def test_ensure_audio_decoding_reports_failure_without_soundfile(monkeypatch, br
 
 
 def test_a_working_torchcodec_is_left_alone(monkeypatch):
+    import sys
+    import types
+
     from datasets import config
     from datasets.features.audio import Audio
 
+    # Stub the decoder the guard probes for, so the assertion holds on hosts
+    # that have no torchcodec installed at all rather than a broken one.
+    module = sys.modules.get("datasets.features._torchcodec")
+    if module is None:
+        module = types.ModuleType("datasets.features._torchcodec")
+        module.AudioDecoder = object
+        monkeypatch.setitem(sys.modules, "datasets.features._torchcodec", module)
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", True)
     monkeypatch.setattr(audio_decode, "_installed", False)
     before = Audio.decode_example
@@ -138,11 +155,51 @@ def test_the_dataset_format_check_installs_the_decoder():
 
 
 def test_the_audio_trainer_paths_install_the_decoder():
-    import inspect
+    # Read the source rather than import it: this asserts a wiring contract, and
+    # importing the trainer drags in the whole torch/unsloth stack for it.
+    from pathlib import Path
 
-    from core.training import trainer
-
-    source = inspect.getsource(trainer)
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
+    ).read_text(encoding = "utf-8")
     assert "ensure_audio_decoding()" in source
     # Guarded so a text-only run never pays for the probe.
     assert "if self._audio_type or self.is_audio_vlm:" in source
+
+
+def test_a_concurrent_first_install_captures_the_original_encode_once(monkeypatch, broken_torchcodec):
+    """Two first-time callers must not both capture Audio.encode_example.
+
+    The loser used to capture the already-installed shim as _ORIGINAL_ENCODE, so
+    its fallback branch recursed into itself until RecursionError, breaking
+    dataset encoding for the whole process.
+    """
+    import threading
+
+    from datasets.features.audio import Audio
+
+    from utils.datasets import audio_decode
+
+    original = Audio.encode_example
+    monkeypatch.setattr(audio_decode, "_installed", False, raising = False)
+    monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None, raising = False)
+
+    start = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def install():
+        try:
+            start.wait(timeout = 10)
+            audio_decode.ensure_audio_decoding()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = install) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout = 30)
+
+    assert not errors, errors[:2]
+    assert audio_decode._ORIGINAL_ENCODE is original
+    assert audio_decode._ORIGINAL_ENCODE is not audio_decode._encode_with_soundfile

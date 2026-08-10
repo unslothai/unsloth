@@ -9670,9 +9670,12 @@ async def _transcribe_audio_bytes(
     language: Optional[str],
     fast: bool,
     engine: Optional[str] = None,
+    request: Optional[Request] = None,
 ) -> JSONResponse:
     """Run STT for already-decoded request bytes."""
-    return JSONResponse(content = await _transcribe_audio_result(raw, model, language, fast, engine))
+    return JSONResponse(
+        content = await _transcribe_audio_result(raw, model, language, fast, engine, request)
+    )
 
 
 async def _transcribe_audio_result(
@@ -9764,7 +9767,9 @@ async def _transcribe_audio_result(
 
 @studio_router.post("/audio/transcribe")
 async def transcribe_audio(
-    payload: TranscribeRequest, current_subject: str = Depends(get_current_subject)
+    payload: TranscribeRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """Transcribe dictation audio to text via the STT sidecar.
 
@@ -9780,8 +9785,10 @@ async def transcribe_audio(
         raw = base64.b64decode(b64, validate = True)
     except Exception:
         raise HTTPException(status_code = 400, detail = "Audio is not valid base64.")
+    # Same disconnect cancellation as the raw and OpenAI routes: without the request
+    # a client that goes away leaves the sidecar transcribing under its lock.
     return await _transcribe_audio_bytes(
-        raw, payload.model, payload.language, payload.fast, payload.engine
+        raw, payload.model, payload.language, payload.fast, payload.engine, request
     )
 
 

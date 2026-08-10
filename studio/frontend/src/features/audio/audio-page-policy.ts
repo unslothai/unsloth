@@ -186,14 +186,25 @@ export function mergeGalleryPage<T extends { id: string }>(
   removedId?: string,
 ): { clips: T[]; stitched: boolean } {
   const inPage = new Set(page.map((clip) => clip.id));
-  const tail = cached.filter(
-    (clip) => !inPage.has(clip.id) && clip.id !== removedId,
+  // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
+  if (page.length === 0) return { clips: [], stitched: false };
+  // The page is authoritative over the window it covers, so a cached clip inside that
+  // window and absent from the page was deleted by another client and must go. Only what
+  // sits BELOW the page's oldest entry is scrollback. Keying on the position of that
+  // entry, since a clip record carries no cursor of its own.
+  const oldestInPage = cached.findIndex(
+    (clip) => clip.id === page[page.length - 1].id,
   );
   // No overlap with a non-empty cache means the page has moved past everything held, so
   // stitching would render a gap as contiguous and no cursor could ever reach it.
-  if (tail.length > 0 && tail.length === cached.length && page.length > 0) {
-    return { clips: [...page], stitched: false };
+  if (oldestInPage === -1) {
+    const overlaps = cached.some((clip) => inPage.has(clip.id));
+    if (!overlaps && cached.length > 0) return { clips: [...page], stitched: false };
   }
+  const scrollback = oldestInPage === -1 ? cached : cached.slice(oldestInPage + 1);
+  const tail = scrollback.filter(
+    (clip) => !inPage.has(clip.id) && clip.id !== removedId,
+  );
   return { clips: [...page, ...tail], stitched: tail.length > 0 };
 }
 
