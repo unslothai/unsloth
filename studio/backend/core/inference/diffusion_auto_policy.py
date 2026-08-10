@@ -87,7 +87,6 @@ def _base_key(base_repo: Optional[str]) -> str:
     custom base silently misses its override and gets sized as the family default.
     """
     from .diffusion_families import canonical_base
-
     return canonical_base(base_repo).strip().lower()
 
 
