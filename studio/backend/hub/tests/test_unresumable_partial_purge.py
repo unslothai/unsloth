@@ -5,6 +5,7 @@
 
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -25,9 +26,17 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(root))
     monkeypatch.setattr(download_registry, "hf_cache_root", lambda **_kwargs: root)
-    # iter_active_repo_cache_dirs resolves the root through hf_cache_state, not the caller.
+    # The cache-dir iterators resolve the root through hf_cache_state, not the caller.
     monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda **_kwargs: root)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
     return blobs_dir
+
+
+def _join_background_sweep():
+    """The all-caches pass is threaded so it cannot delay startup; wait for it here."""
+    for thread in threading.enumerate():
+        if thread.name == "hf-abandoned-partial-sweep":
+            thread.join(10)
 
 
 def _abandon(path):
@@ -243,7 +252,7 @@ def test_unresumable_bytes_are_not_credited_against_the_disk_check(monkeypatch, 
     (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -259,7 +268,7 @@ def test_a_finalized_blob_still_counts_against_the_disk_check(monkeypatch, blobs
     (blobs / _MAIN).write_bytes(b"x" * 25)
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
     monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
@@ -282,6 +291,7 @@ def test_startup_sweep_does_not_depend_on_a_breadcrumb(monkeypatch, tmp_path, bl
     )
 
     download_registry.reap_orphan_workers()
+    _join_background_sweep()
 
     assert not partial.exists()
 
@@ -301,6 +311,7 @@ def test_startup_sweep_leaves_a_resumable_partial_alone(monkeypatch, tmp_path, b
     )
 
     download_registry.reap_orphan_workers()
+    _join_background_sweep()
 
     assert partial.exists()
 
@@ -312,7 +323,7 @@ def test_a_reaped_job_does_not_wait_out_the_grace_on_its_own_blobs(monkeypatch, 
     partial.write_bytes(b"x" * 25)  # freshly written, as a just-cancelled download's would be
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -340,7 +351,7 @@ def test_ownership_never_overrides_the_lock(monkeypatch, blobs):
     _abandon(partial)
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -361,7 +372,7 @@ def test_ownership_never_overrides_peer_protection(monkeypatch, blobs):
     partial.write_bytes(b"x" * 25)
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -408,7 +419,7 @@ def test_a_job_owning_its_whole_repo_needs_no_hash_list(monkeypatch, blobs):
     partial.write_bytes(b"x" * 25)  # fresh, as a just-cancelled snapshot download's would be
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -453,13 +464,14 @@ def test_the_boot_sweep_runs_after_the_orphan_is_killed(monkeypatch, tmp_path, b
     )
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
     def _kill(_pid):
         order.append("kill")
         locked["held"] = False  # the lock dies with the process
+        return True
 
     monkeypatch.setattr(download_registry, "_kill_orphan", _kill)
     monkeypatch.setattr(
@@ -469,6 +481,7 @@ def test_the_boot_sweep_runs_after_the_orphan_is_killed(monkeypatch, tmp_path, b
     )
 
     download_registry.reap_orphan_workers()
+    _join_background_sweep()
 
     assert order[0] == "kill"
     assert not partial.exists()
@@ -481,7 +494,7 @@ def test_a_companion_the_dead_worker_was_writing_is_owned_too(monkeypatch, blobs
     companion.write_bytes(b"x" * 25)  # fresh, as a just-cancelled worker's companion would be
     monkeypatch.setattr(
         download_registry,
-        "iter_active_repo_cache_dirs",
+        "iter_destructive_repo_cache_dirs",
         lambda *_a, **_k: [blobs.parent],
     )
 
@@ -521,3 +534,110 @@ def test_the_reaper_waits_for_the_worker_to_actually_die(monkeypatch):
     download_registry._kill_orphan(4242)
 
     assert alive["n"] == 0  # returned only once the process was gone, not straight after kill
+
+
+def test_a_worker_that_will_not_die_keeps_its_breadcrumb_and_its_partial(
+    monkeypatch, tmp_path, blobs
+):
+    """An unreapable worker is still running, so nothing about it is ours to claim."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    crumb = workers / "job.json"
+    crumb.write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "repo_type": "model",
+                "repo_id": "Org/Model",
+                "variant": None,
+                "transport": "http",
+                "hub_cache": str(blobs.parent.parent),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: True)
+    monkeypatch.setattr(download_registry, "_is_our_worker", lambda *_a: True)
+    monkeypatch.setattr(download_registry, "_kill_orphan", lambda _pid: False)  # would not die
+    monkeypatch.setattr(download_registry, "hf_cache_roots", lambda *_a, **_k: [tmp_path / "none"])
+
+    download_registry.reap_orphan_workers()
+    _join_background_sweep()
+
+    assert partial.exists()
+    assert crumb.exists()  # still tracked, so the next boot tries again
+
+
+def test_a_locked_peer_partial_still_counts_against_the_disk_check(monkeypatch, blobs):
+    """A sibling variant is finishing the shared companion, so we need no room for it."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    (blobs / _NONCE_PARTIAL).write_bytes(b"x" * 25)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: False)
+    assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 0
+
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: True)
+    assert download_registry.existing_blob_bytes("model", "Org/Model", frozenset({_MAIN})) == 25
+
+
+def test_the_sweep_will_not_cross_a_case_variant_directory(monkeypatch, tmp_path):
+    """owns_all_blobs plus a case-insensitive collision could otherwise reach a neighbour."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    root = tmp_path / "hub"
+    mine = root / "models--Org--Model" / "blobs"
+    other = root / "models--org--model" / "blobs"
+    mine.mkdir(parents = True)
+    other.mkdir(parents = True)
+    for blobs_dir in (mine, other):
+        partial = blobs_dir / _NONCE_PARTIAL
+        partial.write_bytes(b"x" * 25)
+        _abandon(partial)
+
+    download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        owns_all_blobs = True,
+        root = str(root),
+    )
+
+    assert not (mine / _NONCE_PARTIAL).exists()
+    assert (other / _NONCE_PARTIAL).exists()
+
+
+def test_ownership_is_recovered_from_the_manifest_when_hashes_never_resolved(monkeypatch):
+    """A variant job whose API-side pre-resolution failed carries an EMPTY hash set."""
+    from types import SimpleNamespace
+
+    from hub.services import download_lifecycle
+    from hub.utils import download_manifest
+
+    metadata = SimpleNamespace(
+        variant = "Q4_K_M",
+        hub_cache = None,
+        progress_blob_hashes = frozenset(),
+    )
+    manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "Org/Model",
+        variant = "Q4_K_M",
+        started_at = "",
+        expected_files = (download_manifest.ExpectedFile(path = "m.gguf", size = 5, sha256 = _MAIN),),
+    )
+    monkeypatch.setattr(download_manifest, "read_manifest", lambda *_a, **_k: manifest)
+
+    owned, owns_all = download_lifecycle._sweep_ownership(
+        metadata, frozenset(), frozenset(), "model", "Org/Model"
+    )
+
+    assert owns_all is False  # a variant job never owns its siblings' blobs
+    assert owned == frozenset({_MAIN})

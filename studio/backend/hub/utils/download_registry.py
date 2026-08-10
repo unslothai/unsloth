@@ -77,6 +77,7 @@ from hub.utils.hf_cache_state import (
     blob_download_lock_held,
     hf_cache_roots,
     incomplete_blob_hash,
+    iter_destructive_repo_cache_dirs,
     partial_is_resumable,
 )
 
@@ -258,24 +259,26 @@ def _is_our_worker(pid: int, repo_id: Optional[str]) -> bool:
     return True
 
 
-def _kill_orphan(pid: int) -> None:
-    """Signal the process and wait for it to actually be gone.
+def _kill_orphan(pid: int) -> bool:
+    """Signal the process and wait for it to actually be gone. True once it is.
 
     The wait is what makes the boot sweep meaningful: the signal only schedules the death, and
     a sweep that runs a microsecond later still sees the worker's Hugging Face blob lock and
     spares a partial nothing will ever finish. Bounded, because a pid we cannot reap is not a
-    reason to hold up startup.
+    reason to hold up startup -- and answering False there matters: a survivor must keep its
+    breadcrumb and must not have its live partial claimed as ours to delete.
     """
     try:
         os.kill(pid, signal.SIGTERM if sys.platform == "win32" else signal.SIGKILL)
     except OSError:
-        return
+        return not _process_alive(pid)
     deadline = time.monotonic() + _ORPHAN_REAP_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if not _process_alive(pid):
-            return
+            return True
         time.sleep(0.05)
-    logger.debug("Orphan worker pid=%s still alive after the reap timeout.", pid)
+    logger.warning("Orphan worker pid=%s is still alive after the reap timeout.", pid)
+    return False
 
 
 # Long enough for a SIGKILLed worker to be torn down, short enough not to delay a boot.
@@ -376,7 +379,16 @@ def reap_orphan_workers() -> None:
             continue
         try:
             if _process_alive(pid) and _is_our_worker(pid, repo_id):
-                _kill_orphan(pid)
+                if not _kill_orphan(pid):
+                    # Still running. Keeping the breadcrumb keeps it tracked for the next boot,
+                    # and claiming no ownership keeps its live partial out of the sweep.
+                    logger.warning(
+                        "Could not reap download worker pid=%s repo=%s; leaving its "
+                        "breadcrumb and partial in place.",
+                        pid,
+                        repo_id,
+                    )
+                    continue
                 # Its partial is unreadable now and its writer is gone, but only as of this
                 # line. The sweep has to come after the kill, not before, or it reads the
                 # still-held blob lock and spares a file nothing will ever finish.
@@ -401,7 +413,13 @@ def reap_orphan_workers() -> None:
 
 
 def _boot_sweep(reaped: "Sequence[tuple[str, str, Optional[str]]]") -> None:
-    """Startup cleanup, run only once every surviving worker above has been killed."""
+    """Startup cleanup, run only once every surviving worker above has been killed.
+
+    The reaped repos are swept inline: that work is bounded by the breadcrumbs and it settles
+    the caches a returning user is most likely to look at. The all-caches pass is not bounded
+    by anything -- it walks every repo dir, stats every partial and probes locks -- so it goes
+    to a thread rather than holding the lifespan open ahead of the first request.
+    """
     swept = 0
     try:
         for repo_type, repo_id, hub_cache in reaped:
@@ -412,13 +430,27 @@ def _boot_sweep(reaped: "Sequence[tuple[str, str, Optional[str]]]") -> None:
                 owns_all_blobs = True,
                 root = hub_cache,
             )
-        swept += sweep_abandoned_partials_in_all_caches()
     except Exception as exc:
-        logger.debug("Boot sweep of abandoned partials failed: %s", exc)
+        logger.debug("Boot sweep of reaped downloads failed: %s", exc)
     if swept:
         logger.info(
             "Swept %d unresumable partial blob(s) left by a previous backend instance.", swept
         )
+
+    def _sweep_all_caches() -> None:
+        try:
+            removed = sweep_abandoned_partials_in_all_caches()
+        except Exception as exc:
+            logger.debug("Background sweep of abandoned partials failed: %s", exc)
+            return
+        if removed:
+            logger.info("Swept %d unresumable partial blob(s) from the HF caches.", removed)
+
+    threading.Thread(
+        target = _sweep_all_caches,
+        name = "hf-abandoned-partial-sweep",
+        daemon = True,
+    ).start()
 
 
 class _PurgeOutcome(NamedTuple):
@@ -842,7 +874,10 @@ def sweep_abandoned_partials(
     if isinstance(root, str):
         root = Path(root) if root else None
     removed = 0
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+    # The destructive iterator, not the active one: this deletes, and on a case-insensitive
+    # collision the active iterator yields every spelling while this one resolves to the exact
+    # directory or refuses. A job owning "its" repo does not own a differently-cased neighbour.
+    for entry in iter_destructive_repo_cache_dirs(repo_type, repo_id, root = root):
         outcome = _purge_incomplete_blobs(
             entry,
             only_blob_hashes,
@@ -988,11 +1023,18 @@ def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str
                 blob_hash = partial_hash if partial_hash is not None else blob.name
                 if blob_hash not in present:
                     continue
-                if partial_hash is not None and not partial_is_resumable(blob.name):
+                if (
+                    partial_hash is not None
+                    and not partial_is_resumable(blob.name)
+                    and not blob_download_lock_held(entry, blob_hash)
+                ):
                     # Callers spend this on "bytes we will not have to fetch again", and
                     # _preflight_disk_space subtracts it from the space a download needs. An
                     # unresumable partial is refetched in full into a new path, so counting it
-                    # would clear a download for a disk that cannot hold it.
+                    # would clear a download for a disk that cannot hold it. A LOCKED one is
+                    # different: a live peer is finishing it and snapshot_download will block
+                    # on that lock and reuse the result, so those bytes are not ours to find
+                    # room for. Two GGUF variants sharing an mmproj hit this every time.
                     continue
                 # Broken advisory locks can leave several process-unique writers for one etag.
                 # They are duplicate attempts, not additive completion, so keep the largest.
