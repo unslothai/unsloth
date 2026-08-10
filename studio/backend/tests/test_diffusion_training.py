@@ -629,7 +629,7 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
-def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch):
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch, dit_train_host):
     """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
 
     It ran unconditionally and fires on any folder with a clip in it, above the discovery that
@@ -665,7 +665,7 @@ def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, mo
     assert len(consulted) == 1
 
 
-def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch):
+def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch, dit_train_host):
     """Exempting a clip family from the clip refusal must not exempt it from the mixed case.
 
     discover_clip_caption_pairs enumerates video extensions only, so a still in a clip folder
