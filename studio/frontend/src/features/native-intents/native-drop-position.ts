@@ -11,9 +11,8 @@ function isPhysicalDropPosition(): boolean {
 }
 
 // The DOM is measured in CSS pixels, not the logical window ones the monitor
-// scale gives. devicePixelRatio is physical per CSS by definition, so it is the
-// divisor whenever it is readable; webview zoom moves it either side of the
-// monitor scale. Same distinction app/provider.tsx draws for layout.
+// scale gives, and webview zoom moves the two apart either way. Take
+// devicePixelRatio, which is physical per CSS by definition.
 function physicalPerCssPx(windowScaleFactor: number): number {
   const ratio = typeof window === "undefined" ? NaN : window.devicePixelRatio;
   if (Number.isFinite(ratio) && ratio > 0) return ratio;

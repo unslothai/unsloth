@@ -54,8 +54,8 @@ export function ImageDropzone({
     };
   }, []);
   // The reference slots are keyed by index, so removing one shifts a different
-  // image into a picker that stays mounted. Any change to `value` this picker
-  // did not make means a read in flight is for the slot as it used to be.
+  // image into a picker that stays mounted. A `value` this picker did not set
+  // means a read in flight is for the slot as it used to be.
   const seen = useRef(value);
   useEffect(() => {
     if (seen.current === value) return;

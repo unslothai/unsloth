@@ -125,8 +125,7 @@ test("a Windows drop position is divided by the scale factor", () => {
 });
 
 // Webview zoom moves devicePixelRatio either side of the monitor scale, and
-// elementFromPoint wants CSS pixels, not the logical window ones that scale
-// gives. Zoomed in first, then out.
+// elementFromPoint wants CSS pixels. Zoomed in first, then out.
 for (const ratio of [3, 1.5]) {
   test(`a Windows drop position follows a devicePixelRatio of ${ratio}`, () => {
     globalThis.window.devicePixelRatio = ratio;
