@@ -333,11 +333,9 @@ export function useStackGeometry(): StackPlacement {
       // Drop the cap and put it back in one synchronous block, so scrollHeight
       // sees the unconstrained layout but nothing else ever sees the uncapped
       // box. Through style, not state: React rewrites the same value next render.
-      //
-      // The stack scrolls when its cards do not fit, and an uncapped box does
-      // not overflow, so lifting the cap clamps scrollTop to 0 and putting it
-      // back does not undo that: any descendant resize would throw a reader
-      // back to the first banner. Restore it alongside the cap.
+      // An uncapped box does not overflow, so lifting the cap clamps scrollTop
+      // to 0 and putting it back does not undo that: every descendant resize
+      // would throw a reader back to the first card. Restore it with the cap.
       const capped = node.style.maxHeight;
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";

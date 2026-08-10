@@ -333,9 +333,9 @@ test("the height is measured with the hook's own cap lifted", async () => {
 });
 
 // The sweep above, re-run at the heights the stack actually takes.
-// The stack scrolls now, and an uncapped box does not overflow, so the
-// measurement has to put scrollTop back with the cap or a descendant resize
-// throws a reader of the download list back to the first banner.
+// The stack scrolls now, and an uncapped box does not, so the measurement has
+// to put scrollTop back with the cap or a resize below throws a reader of the
+// download list back to the first card.
 test("the measurement restores the stack's scroll position", async () => {
   const source = await readFile(
     new URL(

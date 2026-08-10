@@ -399,11 +399,9 @@ function TauriUpdateLayer({
     <div
       ref={stack.ref}
       // Scrolls when the cap is smaller than the cards, rather than spilling
-      // them over the page. The side gutter, cancelled by the margin, keeps the
-      // card shadows out of the scroller's clip. Horizontal only, because
-      // useStackGeometry measures this node's scrollHeight: vertical padding
-      // there inflates the height the placement thinks the stack needs, so a
-      // card that fits under the composer measures as one that does not.
+      // them over the page. The gutter, cancelled by the margin, keeps the card
+      // shadows out of the clip; horizontal only, since useStackGeometry reads
+      // this node's scrollHeight and vertical padding would inflate it.
       className="pointer-events-none fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
       style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
@@ -566,7 +564,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void wasLaunchedHidden().then(async (hiddenAtLaunch) => {
       if (!hiddenAtLaunch || disposed) return;
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
-
       const unlisten = await getCurrentWindow().onFocusChanged(({ payload }) => {
         if (!payload || disposed) return;
         stopListening?.();
@@ -689,12 +686,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         <div
           ref={stack.ref}
           // Scrolls when the cap is smaller than the cards, rather than
-          // spilling them over the page. The side gutter, cancelled by the
-          // margin, keeps the card shadows out of the scroller's clip.
-          // Horizontal only, because useStackGeometry measures this node's
-          // scrollHeight: vertical padding there inflates the height the
-          // placement thinks the stack needs, so a card that fits under the
-          // composer measures as one that does not.
+          // spilling them over the page. The gutter, cancelled by the margin,
+          // keeps the card shadows out of the clip; horizontal only, since
+          // useStackGeometry reads this node's scrollHeight and vertical
+          // padding would inflate it.
           className="pointer-events-none fixed right-4 z-[9998] -mx-3 flex flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain px-3"
           style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >

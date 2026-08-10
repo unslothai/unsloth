@@ -85,16 +85,14 @@ export function WebUpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : // The floor is this card with its notes closed, measured in a
-                // browser: 8rem wide enough for one row of actions, 12rem once
-                // the card is narrow enough to wrap them onto a second row
-                // (184px at a 390px viewport). 480px is where the card reaches
-                // its 448px max width; the row wraps at a 404px card, so that
-                // leaves margin for wider text. A capped rail takes the card's
-                // height out of the notes, which clip, and stops at the
-                // buttons. min-height:auto would be the whole card, so the card
-                // would give up nothing and the banner below it would be the
-                // one clipped.
+              : // Floor = this card with its notes closed, measured in a
+                // browser: 8rem for one row of actions, 12rem once the card is
+                // narrow enough to wrap them onto a second (184px at a 390px
+                // viewport). The row wraps below a 404px card, which is a 436px
+                // viewport, so 480px leaves margin for wider text. Under the
+                // floor a capped rail takes the height out of the notes, which
+                // clip; min-height:auto would instead be the whole card, so
+                // this one would yield nothing and clip the banner below it.
                 "pointer-events-auto flex min-h-48 w-[calc(100vw-2rem)] max-w-[448px] flex-col min-[480px]:min-h-32",
           )}
           data-testid="web-update-banner"
