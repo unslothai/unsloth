@@ -29,7 +29,7 @@ _EMBED_BATCH = 64  # bounds peak memory
 # Poll with a timeout so the generator wakes periodically to detect a gone
 # client or a terminal job whose worker died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
-_TERMINAL_JOB_STATUSES = {"completed", "failed"}
+_TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def _sha256_file(path: str) -> str:
