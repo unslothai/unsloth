@@ -5360,7 +5360,7 @@ def test_the_file_download_button_refreshes_the_session_first():
     session would save a 401 body under the file's name."""
     src = Path(__file__).resolve().parents[2] / "frontend/src"
     view = (src / "components/assistant-ui/sandbox-files-view.tsx").read_text(encoding = "utf-8")
-    assert "authFetch(apiUrl(path), { method: \"HEAD\" })" in view
+    assert 'authFetch(apiUrl(path), { method: "HEAD" })' in view
     assert view.index("authFetch(apiUrl(path)") < view.index("const token = getAuthToken()")
 
 
