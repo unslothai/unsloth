@@ -49,6 +49,8 @@ _LINKS_FILENAME = "companion-assets.json"
 _LINKS_VERSION = 1
 # A runaway writer must not grow an unbounded state file; oldest links are dropped first.
 _MAX_LINKS = 512
+# ... and per checkpoint, for the same reason: one key must not grow the file on its own.
+_MAX_BASES_PER_CHECKPOINT = 16
 # Serialises the read-modify-write below. Losing a link to a lost update is the one direction
 # that matters: an unrecorded base can look orphaned and be offered for removal.
 _WRITE_LOCK = threading.Lock()
@@ -151,7 +153,14 @@ def record_companion_link(checkpoint_repo_id: str, base_repo_id: str) -> bool:
         # -- a checkpoint reloaded every day but first recorded long ago is the most-used link
         # there is, and returning early on it let the cap throw it away.
         links.pop(key, None)
-        links[key] = existing if known else [*existing, base]
+        # Recency inside the list too, and capped: an explicit base_repo (or a card tag that
+        # changes) makes one checkpoint resolve a new base each load, and appending forever grew
+        # the file that _MAX_LINKS is supposed to bound -- it counts checkpoints, not their bases,
+        # and every dependency check parses and mirror-expands the whole list. A checkpoint has
+        # one or two bases in practice, so the cap is only ever reached by the runaway writer it
+        # is here for, and dropping the least recently resolved degrades to derivation.
+        fresh = [b for b in existing if _normalise(b) != _normalise(base)]
+        links[key] = [*fresh, base][-_MAX_BASES_PER_CHECKPOINT:]
         wrote = _write_companion_links(links)
         # False when nothing NEW was recorded; the refresh above still happened.
         return wrote and not known
@@ -199,24 +208,39 @@ _WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf")
 def repo_holds_denoiser(repo) -> bool:
     """Whether *repo* holds a runnable checkpoint, i.e. is a model the user installed.
 
-    Beyond the name-only test: a ``single_file_is_pipeline`` family (SDXL) caches its whole
-    checkpoint as ONE top-level file, ``sd_xl_base_1.0.safetensors``, with no denoiser folder to
-    recognise. Its repo is also a curated companion base whose self-dependency is dropped, so
-    without this the orphan listing called an installed SDXL an unused leftover and Free up space
-    would delete it. A companion-only fetch never lands a weight at the snapshot root, and the two
-    ways to be wrong are not symmetric: an orphan we decline to offer costs disk, a checkpoint we
-    offer costs the model."""
+    Beyond the name-only test: a single_file pick caches its checkpoint as ONE top-level file,
+    ``sd_xl_base_1.0.safetensors`` for a whole-pipeline family and ``flux2-dev-fp8.safetensors``
+    for a transformer-only one, with no denoiser folder to recognise. Those repos are curated
+    companion bases whose self-dependency is dropped, so without this the orphan listing called an
+    installed checkpoint an unused leftover and Free up space deleted it. A companion-only fetch
+    never lands a weight at the snapshot root, and the two ways to be wrong are not symmetric: an
+    orphan we decline to offer costs disk, a checkpoint we offer costs the model.
+
+    The one root weight that is NOT a checkpoint is the curated component repos' own asset, which
+    is why they are excluded by id: a single-file VAE or text encoder is the companion, and
+    reading it as an installed model is what kept an orphaned pair pinned to disk."""
     names = list(_snapshot_relative_names(repo))
     if any(holds_denoiser(name) for name in names):
         return True
     repo_id = str(getattr(repo, "repo_id", "") or "")
+    if _normalise(repo_id) in _component_only_repo_ids():
+        return False
     for name in names:
         if "/" in name or not name.lower().endswith(_WEIGHT_SUFFIXES):
             continue
-        fam = _detect_family(repo_id, name)
-        if fam is not None and getattr(fam, "single_file_is_pipeline", False):
+        if _detect_family(repo_id, name) is not None:
             return True
     return False
+
+
+def _component_only_repo_ids() -> set[str]:
+    """Curated sd.cpp component repo ids, under every identity they can be cached as."""
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+        return {_normalise(r) for r in _with_mirrors(sd_cpp_companion_only_repo_ids())}
+    except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
+        logger.debug("sd.cpp companion table unavailable: %s", exc)
+        return set()
 
 
 def _is_checkpoint_pick_name(name: str) -> bool:
@@ -592,12 +616,7 @@ def _cached_component_only_repo_ids(cache_scans) -> set[str]:
     holds the component under the legacy repack id the native fetch fell back to
     (``Comfy-Org/flux2-dev`` for ``unsloth/FLUX.2-dev-ComfyUI``). That id matches the flux.2-dev
     family just as literally, so leaving it out kept the very caches this exclusion is for."""
-    try:
-        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-        curated = {_normalise(r) for r in _with_mirrors(sd_cpp_companion_only_repo_ids())}
-    except Exception as exc:  # noqa: BLE001 -- no table means no exclusions, as before
-        logger.debug("sd.cpp companion table unavailable: %s", exc)
-        return set()
+    curated = _component_only_repo_ids()
     if not curated:
         return set()
     return curated - _denoiser_holding_repo_ids(cache_scans)

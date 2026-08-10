@@ -842,11 +842,23 @@ def _delete_cached_model_blocking(
         from hub.utils import companion_assets
 
         try:
+            copies = companion_cleanup._repos_by_id(cache_inventory.all_hf_cache_scans()).get(
+                repo_id.strip().lower(), []
+            )
+            # Only the copy being removed. The orphan listing emits one row per cache root
+            # precisely because a delete is scoped to one, so a full-pipeline copy in another
+            # remembered cache must not veto removing the companion-only copy that was listed.
+            if cache_path:
+                wanted = Path(cache_path)
+                scoped = [
+                    r
+                    for r in copies
+                    if getattr(r, "repo_path", None) and Path(getattr(r, "repo_path")) == wanted
+                ]
+                if scoped:
+                    copies = scoped
             still_orphan = not any(
-                companion_assets.repo_holds_denoiser(repo)
-                for repo in companion_cleanup._repos_by_id(
-                    cache_inventory.all_hf_cache_scans()
-                ).get(repo_id.strip().lower(), [])
+                companion_assets.repo_holds_denoiser(repo) for repo in copies
             )
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")

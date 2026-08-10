@@ -772,3 +772,62 @@ def test_the_orphan_precondition_lets_a_real_orphan_through(monkeypatch):
         deletion._delete_cached_model_blocking(BASE_REPO, None, None, only_if_orphan = True)
     except HTTPException as exc:
         assert exc.status_code != 409, exc.detail
+
+
+def test_a_transformer_only_single_file_in_its_own_base_repo_is_a_checkpoint(monkeypatch):
+    """Not only whole-pipeline families cache a root weight. A transformer-only single_file pick
+    of a curated base repo does too, and its self-dependency is dropped, so the listing called an
+    installed checkpoint a leftover and the orphan precondition would happily delete it."""
+    from hub.services.models import deletion
+
+    dev = "black-forest-labs/FLUX.2-dev"
+    _install(monkeypatch, _repo(dev, [("flux2-dev-fp8.safetensors", 9_000_000)]))
+    assert asyncio.run(companion_cleanup.orphan_companions_response())["companions"] == []
+    with pytest.raises(HTTPException) as excinfo:
+        deletion._delete_cached_model_blocking(dev, None, None, only_if_orphan = True)
+    assert excinfo.value.status_code == 409
+
+
+def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatch):
+    """The listing emits one row per cache root because a delete is scoped to one. A full pipeline
+    copy in another remembered cache must not veto removing the companion-only copy that was
+    listed, or that row 409s forever."""
+    from hub.services.models import deletion
+
+    dev = "black-forest-labs/FLUX.2-dev"
+    _install(
+        monkeypatch,
+        _repo(dev, [("transformer/diffusion_pytorch_model.safetensors", 9_000)], cache = "/c1"),
+        _repo(dev, [("model_index.json", 460)], cache = "/c2"),
+    )
+    rows = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    assert [r["cache_path"] for r in rows] == ["/c2/models--black-forest-labs--FLUX.2-dev"]
+    try:
+        deletion._delete_cached_model_blocking(dev, None, None, rows[0]["cache_path"], only_if_orphan = True)
+    except HTTPException as exc:
+        assert exc.status_code != 409, exc.detail
+
+
+def test_one_checkpoints_recorded_bases_are_bounded(monkeypatch):
+    """_MAX_LINKS counts checkpoints, not their bases, so a checkpoint resolved against a new
+    explicit base each load grew the state file on its own, and every delete check parses and
+    mirror-expands the whole list."""
+    for i in range(companion_assets._MAX_BASES_PER_CHECKPOINT + 5):
+        companion_assets.record_companion_link(GGUF_REPO, f"some-vendor/base-{i}")
+    bases = companion_assets.read_companion_links()[GGUF_REPO.lower()]
+    assert len(bases) == companion_assets._MAX_BASES_PER_CHECKPOINT
+    # The most recent survive; the oldest go.
+    assert bases[-1] == f"some-vendor/base-{companion_assets._MAX_BASES_PER_CHECKPOINT + 4}"
+    assert "some-vendor/base-0" not in bases
+
+
+def test_re_resolving_a_base_refreshes_its_place_in_the_list(monkeypatch):
+    """The cap is by recency, so a base still in use must not be evicted ahead of one nothing has
+    resolved since."""
+    companion_assets.record_companion_link(GGUF_REPO, "some-vendor/a")
+    companion_assets.record_companion_link(GGUF_REPO, "some-vendor/b")
+    companion_assets.record_companion_link(GGUF_REPO, "some-vendor/a")
+    assert companion_assets.read_companion_links()[GGUF_REPO.lower()] == [
+        "some-vendor/b",
+        "some-vendor/a",
+    ]
