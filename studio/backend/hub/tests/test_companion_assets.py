@@ -690,13 +690,20 @@ def test_copies_in_two_cache_roots_are_probed_together(monkeypatch):
     scans = [
         SimpleNamespace(
             repos = [
-                _repo("some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)], cache = "/c1")
+                _repo(
+                    "some-owner/custom", [("FLUX.2-klein-4B-Q4_K_M.gguf", 2_000_000)], cache = "/c1"
+                )
             ]
         ),
         SimpleNamespace(
             repos = [_repo("some-owner/custom", [("Qwen-Image-Q4_K_M.gguf", 9_000_000)], cache = "/c2")]
         ),
-        SimpleNamespace(repos = [_repo(klein, [("model_index.json", 460)]), _repo(qwen, [("model_index.json", 460)])]),
+        SimpleNamespace(
+            repos = [
+                _repo(klein, [("model_index.json", 460)]),
+                _repo(qwen, [("model_index.json", 460)]),
+            ]
+        ),
     ]
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
     monkeypatch.setattr(companion_cleanup.cache_inventory, "all_hf_cache_scans", lambda: scans)
@@ -726,11 +733,16 @@ def test_a_legacy_component_repack_is_not_read_as_a_checkpoint(monkeypatch):
     vae = "unsloth/FLUX.2-VAE"
     _install(
         monkeypatch,
-        _repo(legacy, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]),
+        _repo(
+            legacy, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]
+        ),
         _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
-    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert offered == {legacy, vae}
 
 
