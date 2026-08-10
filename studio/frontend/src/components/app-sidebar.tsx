@@ -229,6 +229,8 @@ type NavRowDef = {
   // The capability that decides `disabled` has not been measured yet. A row in this state is
   // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
   pending?: boolean;
+  // What that spinning row says on hover; detection can take minutes on a cold host.
+  pendingTooltip?: string;
   badge?: string;
   onClick: () => void;
   onIntent?: () => void;
@@ -345,6 +347,7 @@ function NavItem({
   className,
   spinner,
   tooltip,
+  alwaysTooltip,
   onIntent,
   badge,
   overlay,
@@ -365,6 +368,9 @@ function NavItem({
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
+  // Show that tooltip on the expanded row too, not just the collapsed rail where it
+  // stands in for the hidden label.
+  alwaysTooltip?: boolean;
   // Trailing "New" pill text.
   badge?: string;
   // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
@@ -375,6 +381,7 @@ function NavItem({
       <div className="relative">
         <SidebarMenuButton
           tooltip={tooltip ?? label}
+          alwaysTooltip={alwaysTooltip && Boolean(tooltip)}
           disabled={disabled}
           onClick={onClick}
           onPointerEnter={disabled ? undefined : onIntent}
@@ -553,7 +560,9 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      title={disabled ? tooltip : undefined}
+      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
+      // still being measured, which is enabled and has something to say.
+      title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
       onFocus={disabled ? undefined : onIntent}
@@ -1097,6 +1106,7 @@ export function AppSidebar() {
       tooltip: trainDisabledHint,
       spinner: trainingInProgress,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
         navigate({ to: "/studio" });
@@ -1114,6 +1124,7 @@ export function AppSidebar() {
       disabled: chatOnlyMeasured,
       tooltip: videoDisabledHint,
       pending: capabilitiesUnknown,
+      pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigate({ to: "/video" });
         closeMobileIfOpen();
@@ -2069,6 +2080,7 @@ export function AppSidebar() {
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
+                    alwaysTooltip={rowState.pending}
                     spinner={rowState.spinner}
                     testId={`nav-row-${id}`}
                     onClick={row.onClick}

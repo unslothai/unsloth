@@ -397,6 +397,7 @@ function TauriUpdateLayer({
   ) : (
     // Capped like the browser stack: the download panel shares it, so both must fit.
     <div
+      ref={stack.ref}
       className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
       style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
     >
@@ -679,6 +680,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport, or a long download list plus expanded notes
             pushes the top of the stack off screen. */}
         <div
+          ref={stack.ref}
           className="pointer-events-none fixed right-4 z-[9998] flex flex-col items-end gap-2"
           style={{ bottom: stack.bottom, maxHeight: stack.maxHeight }}
         >
