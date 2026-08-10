@@ -874,6 +874,20 @@ class VariantsAnswer(NamedTuple):
     context_source: Optional[str]
 
 
+def _default_variant_candidates(variants) -> list[str]:
+    """The filenames the automatic default may be picked from: ROOT rows when there are any.
+
+    ``pick_best_gguf`` keeps whichever filename it met first among equals, so a repo with
+    ``model-Q6_K.gguf`` beside ``distilled/model-Q6_K.gguf`` could make the qualified sibling the
+    default -- and then a bare repo id would mean one checkpoint here and another to
+    ``_match_variant(None, ...)`` and ``local_model_resolver``, which both define it as the root.
+    Every branch of this service (remote, cached, partial-local) has to apply it, or the answer
+    depends on which one served the request. Nothing at the root falls back to the whole set.
+    """
+    root_rows = [v.filename for v in variants if "/" not in v.quant]
+    return root_rows or [v.filename for v in variants]
+
+
 async def get_gguf_variants_answer(
     repo_id: str,
     prefer_local_cache: bool = False,
@@ -921,7 +935,7 @@ async def get_gguf_variants_answer(
 
             # The default comes from the ready rows; with none ready every row is the fallback.
             ready = [v for v in variants if _downloaded(v)]
-            best = pick_best_gguf([v.filename for v in (ready or variants)])
+            best = pick_best_gguf(_default_variant_candidates(ready or variants))
             default_variant = gguf_variant_key(best) if best else None
 
             return GgufVariantsResponse(
@@ -945,8 +959,7 @@ async def get_gguf_variants_answer(
         def _partial_local_response(
             response_repo_id: str, variants, has_vision: bool
         ) -> GgufVariantsResponse:
-            filenames = [v.filename for v in variants]
-            best = pick_best_gguf(filenames)
+            best = pick_best_gguf(_default_variant_candidates(variants))
             default_variant = gguf_variant_key(best) if best else None
             return GgufVariantsResponse(
                 repo_id = response_repo_id,
@@ -1160,13 +1173,7 @@ async def get_gguf_variants_answer(
             if fallback is not None:
                 return fallback
 
-        # Root rows first when there are any. pick_best_gguf ranks filenames and keeps whichever
-        # it met first among equals, so a repo with model-Q6_K.gguf beside distilled/model-Q6_K
-        # could hand the picker the distilled checkpoint as its automatic default -- while a bare
-        # repo id means the ROOT checkpoint to _match_variant(None, ...) and to
-        # local_model_resolver. One id, three resolvers, one answer.
-        root_rows = [v.filename for v in variants if "/" not in v.quant]
-        best = pick_best_gguf(root_rows or [v.filename for v in variants])
+        best = pick_best_gguf(_default_variant_candidates(variants))
         default_variant = gguf_variant_key(best) if best else None
 
         # Per-snapshot accounting: a variant counts as present only when one

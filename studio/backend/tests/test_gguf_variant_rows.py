@@ -941,4 +941,44 @@ def test_the_remote_default_variant_prefers_the_root_checkpoint():
 
     source = inspect.getsource(service)
     assert 'root_rows = [v.filename for v in variants if "/" not in v.quant]' in source
-    assert "pick_best_gguf(root_rows or [v.filename for v in variants])" in source
+    assert "pick_best_gguf(_default_variant_candidates(variants))" in source
+
+
+def test_the_load_guard_sees_the_alias_the_delete_accepts():
+    """Deletion accepts an unambiguous bare quant for a path-qualified key (the shared-container
+    layout), so a guard comparing spellings literally lets a model loaded through a legacy bare
+    pin be deleted through its advertised qualified row -- unlinking the resident model's own
+    snapshot and blob. Loose on purpose: a false match only refuses a delete."""
+    from routes.models import _variant_names_same_checkpoint as same
+
+    assert same("Q4_K_M", "weights/model-Q4_K_M")
+    assert same("weights/model-Q4_K_M", "Q4_K_M")
+    assert same("Q4_K_M", "Q4_K_M")
+    # Two different checkpoints are never the same, in either direction.
+    assert not same("Q4_K_M", "Q6_K")
+    assert not same("distilled/model-Q6_K", "other/model-Q6_K")
+    # An unknown side never matches: the caller falls back to its own not-loaded branch.
+    assert not same(None, "Q4_K_M")
+    assert not same("Q4_K_M", "")
+
+
+def test_every_branch_derives_the_default_from_the_root_rows():
+    """Remote, cached and partial-local all answer /gguf-variants, so all three have to define a
+    bare repo id the way _match_variant(None, ...) and local_model_resolver do -- the ROOT
+    checkpoint -- or the automatic default depends on which branch served the request."""
+    import inspect
+    import types
+
+    from hub.services.models import gguf_variants as service
+
+    rows = [
+        types.SimpleNamespace(filename = "distilled/model-Q6_K.gguf", quant = "distilled/model-Q6_K"),
+        types.SimpleNamespace(filename = "model-Q6_K.gguf", quant = "Q6_K"),
+    ]
+    assert service._default_variant_candidates(rows) == ["model-Q6_K.gguf"]
+    # Nothing at the root falls back to the whole set rather than answering nothing.
+    assert service._default_variant_candidates(rows[:1]) == ["distilled/model-Q6_K.gguf"]
+    # No branch may call pick_best_gguf on the raw filenames any more.
+    source = inspect.getsource(service)
+    assert source.count("pick_best_gguf(_default_variant_candidates(") == 3
+    assert "pick_best_gguf(filenames)" not in source

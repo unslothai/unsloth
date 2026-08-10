@@ -2752,6 +2752,29 @@ def _prune_empty_parents(start: Path, stop_at: Path) -> None:
         parent = parent.parent
 
 
+def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
+    """Whether two variant spellings can name the SAME checkpoint, for the load-state guard.
+
+    Deletion accepts an unambiguous bare quant for a path-qualified key (the shared-container
+    layout, ``weights/model-Q4_K_M.gguf``), so a guard comparing the two spellings literally lets
+    a model loaded through a legacy bare pin be deleted through its advertised qualified row --
+    unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
+    refuses a delete, a false miss loses weights.
+    """
+    from hub.utils.gguf import bare_quant_alias
+
+    left = (a or "").strip().lower()
+    right = (b or "").strip().lower()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    for key, bare in ((left, right), (right, left)):
+        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+            return True
+    return False
+
+
 def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_count = 0
     deleted_bytes = 0
@@ -2900,7 +2923,9 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
+                # literal comparison here would wave through the very spelling it then deletes.
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
@@ -2917,7 +2942,7 @@ async def delete_finetuned_model(
             and (
                 not gguf_variant
                 or not llama_backend.hf_variant
-                or llama_backend.hf_variant.lower() == gguf_variant.lower()
+                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
             )
         ):
             raise HTTPException(
