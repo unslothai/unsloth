@@ -2030,7 +2030,13 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     if project is None:
         return None
     root_path = project.get("rootPath") or _default_project_root(project)
+    workspace_existed = Path(root_path).expanduser().exists()
     root_path = _ensure_project_workspace(root_path)
+    # a delete running in another threadpool worker can drop the row while this read recreates
+    # its workspace, leaving a directory no record points at
+    if not workspace_existed and get_chat_project(id) is None:
+        delete_chat_project_workspace({**project, "rootPath": root_path})
+        return None
     if project.get("rootPath") == root_path:
         return project
     conn = get_connection()

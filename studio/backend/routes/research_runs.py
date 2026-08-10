@@ -296,7 +296,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
 
 
 @router.post("", status_code = 202)
-async def create_research_run(
+def create_research_run(
     payload: CreateResearchRun,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -347,7 +347,7 @@ async def create_research_run(
 
 
 @router.get("/active")
-async def active_research_runs(
+def active_research_runs(
     thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {
@@ -357,12 +357,12 @@ async def active_research_runs(
 
 
 @router.get("/{run_id}")
-async def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
+def get_research_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     return _require_run(run_id)
 
 
 @router.put("/{run_id}/plan")
-async def update_research_plan(
+def update_research_plan(
     run_id: str,
     payload: UpdatePlan,
     current_subject: str = Depends(get_current_subject),
@@ -378,7 +378,7 @@ async def update_research_plan(
 
 
 @router.post("/{run_id}/approve")
-async def approve_research_plan(
+def approve_research_plan(
     run_id: str,
     payload: ApprovePlan,
     request: Request,
@@ -399,7 +399,7 @@ async def approve_research_plan(
 
 
 @router.post("/{run_id}/cancel")
-async def cancel_research_run(
+def cancel_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
@@ -415,7 +415,7 @@ async def cancel_research_run(
 
 
 @router.post("/{run_id}/retry")
-async def retry_research_run(
+def retry_research_run(
     run_id: str,
     request: Request,
     current_subject: str = Depends(get_current_subject),
