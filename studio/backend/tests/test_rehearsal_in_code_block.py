@@ -32,14 +32,14 @@ def _names(content, enabled_tool_names = ENABLED):
 
 
 QUOTED = {
-    "fenced": f"Docs:\n{FENCE}\nterminal[ARGS]{{\"command\": \"id\"}}\n{FENCE}",
-    "fenced_with_language": f"{FENCE}json\nterminal[ARGS]{{\"command\": \"id\"}}\n{FENCE}",
-    "fenced_indented": f"  {FENCE}\n  terminal[ARGS]{{\"command\": \"id\"}}\n  {FENCE}",
-    "tilde_fence": "~~~\nterminal[ARGS]{\"command\": \"id\"}\n~~~",
-    "inline_span": "Write `terminal[ARGS]{\"command\": \"id\"}` to run it.",
+    "fenced": f'Docs:\n{FENCE}\nterminal[ARGS]{{"command": "id"}}\n{FENCE}',
+    "fenced_with_language": f'{FENCE}json\nterminal[ARGS]{{"command": "id"}}\n{FENCE}',
+    "fenced_indented": f'  {FENCE}\n  terminal[ARGS]{{"command": "id"}}\n  {FENCE}',
+    "tilde_fence": '~~~\nterminal[ARGS]{"command": "id"}\n~~~',
+    "inline_span": 'Write `terminal[ARGS]{"command": "id"}` to run it.',
     # A block still streaming has no closing fence yet; it must not execute in the
     # window before the fence arrives.
-    "unclosed_fence": f"{FENCE}\nterminal[ARGS]{{\"command\": \"id\"}}",
+    "unclosed_fence": f'{FENCE}\nterminal[ARGS]{{"command": "id"}}',
 }
 
 
@@ -56,26 +56,26 @@ def test_quoted_rehearsal_stays_visible(case):
 
 
 def test_unquoted_rehearsal_still_calls():
-    content = "Running now. terminal[ARGS]{\"command\": \"id\"}"
+    content = 'Running now. terminal[ARGS]{"command": "id"}'
     assert _names(content) == ["terminal"]
     assert strip_tool_call_markup(content, enabled_tool_names = ENABLED) == "Running now. "
 
 
 def test_rehearsal_after_a_closed_fence_still_calls():
-    content = f"{FENCE}\nx = 1\n{FENCE}\nterminal[ARGS]{{\"command\": \"id\"}}"
+    content = f'{FENCE}\nx = 1\n{FENCE}\nterminal[ARGS]{{"command": "id"}}'
     assert _names(content) == ["terminal"]
 
 
 def test_indented_rehearsal_outside_code_still_calls():
     """Leading whitespace alone is not a code block."""
-    assert _names("  terminal[ARGS]{\"command\": \"id\"}") == ["terminal"]
+    assert _names('  terminal[ARGS]{"command": "id"}') == ["terminal"]
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        "[TOOL_CALLS]web_search{\"query\": \"x\"}",
-        "<tool_call>{\"name\": \"web_search\", \"arguments\": {\"query\": \"x\"}}</tool_call>",
+        '[TOOL_CALLS]web_search{"query": "x"}',
+        '<tool_call>{"name": "web_search", "arguments": {"query": "x"}}</tool_call>',
     ],
 )
 def test_explicit_markers_in_a_fence_still_call(body):
@@ -88,8 +88,5 @@ def test_unrestricted_mode_also_skips_quoted_rehearsal():
 
 
 def test_backtick_inside_arguments_does_not_hide_a_later_call():
-    content = (
-        "web_search[ARGS]{\"query\": \"what is `ls`\"}\n"
-        "terminal[ARGS]{\"command\": \"id\"}"
-    )
+    content = 'web_search[ARGS]{"query": "what is `ls`"}\nterminal[ARGS]{"command": "id"}'
     assert _names(content) == ["web_search", "terminal"]
