@@ -67,7 +67,8 @@ from .diffusion_memory import (
     file_size_mib,
     normalize_memory_mode,
     plan_diffusion_memory,
-    snapshot_device_memory,
+    raise_on_unified_memory_shortfall,
+    settled_snapshot_device_memory,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -1946,6 +1947,7 @@ class VideoBackend:
                 diffusers = diffusers,
                 torch = torch,
                 fam = fam,
+                target = target,
                 repo_id = repo_id,
                 base = base,
                 kind = kind,
@@ -1980,7 +1982,9 @@ class VideoBackend:
             transformer_quant = "off" if speed_off else TQ_AUTO
 
         # ── memory plan: family-table resident estimate + frames-aware headroom.
-        device_memory = snapshot_device_memory(target)
+        # Settled, not raw: this plan is the one the unified-memory refusal below judges, so the
+        # previous pipeline's cached-but-free allocator buffers must not read as occupied.
+        device_memory = settled_snapshot_device_memory(target)
         components = fam.bf16_components_gb
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its
@@ -2012,7 +2016,16 @@ class VideoBackend:
             its bf16 size. Pure and cheap (``plan_diffusion_memory`` is arithmetic), so the
             dense-encoder plan can be rebuilt below if the pre-cast injection does not land."""
             text_encoder_gb = components[1] * scale if components is not None else 0.0
-            companions_gb = text_encoder_gb + components[2] if components is not None else 0.0
+            # dtype_scale doubles bf16 terms when the fp16 promotion lands fp32 on an accelerator.
+            # A vae_force_fp32 family is the one component it must NOT touch: its table term is
+            # already recorded at fp32 and assembly pins the VAE to fp32 either way, so scaling it
+            # counts those bytes twice (2.8 GB on Wan TI2V-5B) against a hard refusal.
+            vae_gb = components[2] if components is not None else 0.0
+            vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
+            scaled_te_gb = text_encoder_gb * dtype_scale
+            scaled_vae_gb = vae_gb * vae_scale
+            companions_gb = text_encoder_gb + vae_gb if components is not None else 0.0
+            scaled_companions_gb = scaled_te_gb + scaled_vae_gb if components is not None else 0.0
             if log and scale != 1.0 and components is not None:
                 logger.info(
                     "video.te_prequant_budget: budgeting the pre-cast %s text encoder at %.2f of "
@@ -2024,16 +2037,14 @@ class VideoBackend:
                 )
             if kind == "pipeline":
                 model_dense_mib = (
-                    int((components[0] + companions_gb) * mib_per_gb * dtype_scale)
+                    int((components[0] * dtype_scale + scaled_companions_gb) * mib_per_gb)
                     if components is not None
                     else None
                 )
                 companion_mib = None
             else:
                 companion_mib = (
-                    int(companions_gb * mib_per_gb * dtype_scale)
-                    if components is not None
-                    else None
+                    int(scaled_companions_gb * mib_per_gb) if components is not None else None
                 )
                 # Budget ALL weights: companions stay resident, so budgeting the transformer alone lets auto pick OFFLOAD_NONE and OOM.
                 model_dense_mib = (
@@ -2050,6 +2061,14 @@ class VideoBackend:
             # Parity with the image dense-quant path: the bf16-table plan can force offload a quantised DiT would not need, so re-plan with the scheme factor and keep resident if it fits.
             dense_plan = planned
             replanned_for_quant = False
+            # NOT re-triggered by a unified-memory shortfall, deliberately. This re-plan prices the
+            # quantised DiT's STEADY size, but the video path has no pre-quantised artifact: the DiT
+            # is always materialised dense (from_pretrained / from_single_file) and
+            # quantize_transformer rewrites it in place afterwards, so the build PEAK is the bf16
+            # figure whatever scheme is picked. On discrete VRAM the steady state is the right thing
+            # to plan placement against -- an oversized peak raises a catchable torch OOM and offload
+            # is still there -- but on unified memory the peak is what the OS kills for, with no
+            # exception to catch, so the refusal below has to keep reading the dense plan.
             if (
                 kind == "pipeline"
                 and planned.offload_policy != "none"
@@ -2085,6 +2104,12 @@ class VideoBackend:
             return planned, dense_plan, replanned_for_quant
 
         plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = True)
+
+        # On unified memory the plan's 'none' policy is a placement, not a fit: there is no
+        # offload tier left to fall back to, so an oversized load is killed by the OS with no
+        # torch OOM to catch. Refuse now, after the eviction above and before any weight is
+        # materialised -- on the dense plan, which is what the DiT build peaks at (see above).
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
 
         # ── build the pipeline.
         pipeline_cls = getattr(diffusers, fam.pipeline_class)
@@ -2533,6 +2558,66 @@ class VideoBackend:
         )
         return self.status()
 
+    @staticmethod
+    def _raise_on_modular_unified_shortfall(
+        fam: VideoFamily,
+        *,
+        target: Any,
+        dtype: Any,
+        device: str,
+        memory_mode: Optional[str],
+        scheme: Optional[str],
+    ) -> None:
+        """Refuse a modular (MiniMax-H3) load whose components cannot fit unified memory.
+
+        The conventional path plans and refuses in ``load_pipeline``; the modular dispatch returns
+        before that, so the one family whose dense component set is 144.2 GB -- the largest by a
+        wide margin, and the one the refusal matrix says must be declined on every Mac it models --
+        was the only one that never reached the check.
+
+        Sized on what ``load_components`` will actually build: the family's dense bf16 table, with
+        the denoiser priced at its steady quantised size when a hosted pre-quantized checkpoint is
+        about to be seeded in its place. Best-effort like the rest of the sizing helpers -- a
+        family with no table, or an unreadable device, plans nothing and the load proceeds as
+        before."""
+        components = getattr(fam, "bf16_components_gb", None)
+        if not components:
+            return
+        import torch
+
+        # Same rule as the conventional path: the table is bf16, so an fp32 promotion on an
+        # accelerator doubles it.
+        dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
+        transformer_gb, text_encoder_gb, vae_gb = components
+        # Only a scheme with a hosted checkpoint replaces the dense denoiser; anything else (auto
+        # included) keeps the released bfloat16 components, which is what the modular loader does.
+        #
+        # Its MEASURED size when the family publishes one, not the generic steady factor: H3's
+        # hosted denoisers are quantized AND structurally pruned (the curve-form adaLN), so 0.55 x
+        # 66.3 GB reads 36.5 GB against a real ~20.3 GB, and the 16 GB gap is enough to refuse a
+        # supported prequant load that fits on a 128 GB Mac.
+        measured = getattr(fam, "prequant_resident_gb", None) if scheme else None
+        factor = _QUANT_STEADY_FACTOR.get(scheme) if scheme else None
+        if measured:
+            transformer_gb = float(measured)
+        elif factor is not None:
+            transformer_gb *= factor
+        mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+        plan = plan_diffusion_memory(
+            target = target,
+            device_memory = settled_snapshot_device_memory(target),
+            model_dense_mib = int(
+                (transformer_gb + text_encoder_gb + vae_gb) * dtype_scale * mib_per_gb
+            ),
+            runtime_headroom_mib = estimate_video_runtime_mib(
+                width = fam.resolution_presets[0][0],
+                height = fam.resolution_presets[0][1],
+                num_frames = fam.default_num_frames,
+            ),
+            requested_mode = normalize_memory_mode(memory_mode),
+        )
+        raise_on_unified_memory_shortfall(plan, family = getattr(fam, "name", None), logger = logger)
+
     def _load_h3_modular_pipeline(
         self,
         *,
@@ -2548,6 +2633,7 @@ class VideoBackend:
         memory_mode: Optional[str],
         transformer_quant: Optional[str] = None,
         h3_task: Optional[str] = None,
+        target: Any = None,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
     ) -> dict[str, Any]:
@@ -2586,6 +2672,22 @@ class VideoBackend:
                 f"no hosted pre-quantized {scheme} checkpoint for {fam.name} reference video"
             )
             scheme = None
+        # The conventional loader refuses an oversized unified-memory load before any weight is
+        # materialised; this workflow returns above that check, so it runs its own here. It has to:
+        # load_components builds every component dense, and the ComponentsManager's CPU offload
+        # frees nothing on unified memory (host and device are one pool), so H3's 144.2 GB
+        # component set is an OS kill with no torch OOM to catch. Placed after `scheme` settles and
+        # before ANY weight is opened -- the hosted pre-quantized denoiser below is materialised on
+        # the CPU, which is the same memory.
+        umem_target = target if target is not None else resolve_diffusion_device_target()
+        self._raise_on_modular_unified_shortfall(
+            fam,
+            target = umem_target,
+            dtype = dtype,
+            device = device,
+            memory_mode = memory_mode,
+            scheme = scheme,
+        )
         if scheme is not None:
             from .diffusion_prequant import load_prequantized_transformer, resolve_prequant_source
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
@@ -2656,6 +2758,20 @@ class VideoBackend:
         # keyframe/reference paths). workflow= only narrows the name list load_components already
         # built, and that list skips every component whose attribute is set, so the seeding above
         # still keeps the dense 66.3 GB transformer from being fetched.
+        if scheme is not None and transformer_quant_engaged is None:
+            # The seeding above is best-effort by contract: a missing, corrupt, stale or
+            # base-mismatched checkpoint drops to the released bfloat16 denoiser, and that is the
+            # 66.3 GB the check before it did not size. load_components would then build it with
+            # no refusal left to stop it, which on unified memory is the OS kill this whole guard
+            # exists to prevent. Re-run it on the dense set, still before any weight is opened.
+            self._raise_on_modular_unified_shortfall(
+                fam,
+                target = umem_target,
+                dtype = dtype,
+                device = device,
+                memory_mode = memory_mode,
+                scheme = None,
+            )
         pipe.load_components(
             workflow = workflow,
             dtype = dtype,

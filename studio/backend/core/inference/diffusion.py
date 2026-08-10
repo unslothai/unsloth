@@ -25,7 +25,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
@@ -44,6 +44,7 @@ from .diffusion_families import (
     DiffusionFamily,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
+    _is_local_path,
     canonical_base,
     cache_holds_files,
     default_generation_params,
@@ -77,9 +78,11 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     raise_on_image_activation_shortfall,
+    raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
     refine_memory_plan_for_components,
     settled_snapshot_device_memory,
+    unified_memory_shortfall_message,
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -138,6 +141,7 @@ from .diffusion_auto_policy import (
     RESOLVED_APPLIED,
     RESOLVED_FELL_BACK,
     RESOLVED_UNSUPPORTED,
+    base_repo_bf16_components_gb,
     build_resolved_record,
     family_bf16_components_gb,
     precision_fallback_allowed,
@@ -2625,6 +2629,22 @@ class DiffusionBackend:
                     base_local_dir = _base_local_dir,
                     fetch_base = fetch_base,
                 )
+                # On unified memory the plan above is final -- the quant re-plans below are
+                # CUDA-only -- and its 'none' policy is a placement, not a fit. Refuse here,
+                # after the eviction above freed the previous pipeline (so the free reading is
+                # the memory this load actually gets) and before any weight is materialised.
+                # A pipeline's weight term is cached SHARD bytes, which is a download size, not a
+                # resident one: Z-Image and Lumina ship fp32 shards that halve when loaded as bf16
+                # (the size table records 24.6 GB of Z-Image shards as 12.3 GB resident). Refusing
+                # on the download figure would turn away a load that fits, so judge the refusal
+                # against the table's resident total whenever it knows this base.
+                raise_on_unified_memory_shortfall(
+                    self._resident_sized_plan(
+                        plan, fam, base, target, kind, text_encoder_quant = text_encoder_quant
+                    ),
+                    family = getattr(fam, "name", None),
+                    logger = logger,
+                )
 
                 # The caller's RAW request, captured before the tri-state below rewrites it: status
                 # has to be able to say "you asked for fp8" long after the loader declined it.
@@ -2986,7 +3006,23 @@ class DiffusionBackend:
                                 # at the snapshot the load will read, not the live root alone.
                                 base_local_dir = _base_local_dir,
                             )
-                            if dense_plan.offload_policy != OFFLOAD_NONE:
+                            # On unified memory the policy cannot express a misfit -- the planner
+                            # returns 'none' for ANY size there, because offload shuffles bytes
+                            # within one pool -- so the check above never fires and the dense build
+                            # proceeds to be OS-killed. Size it explicitly instead, and decline to
+                            # the packed GGUF (which already passed the load-level refusal) rather
+                            # than raising: a fallback that fits is better than no load at all.
+                            unified_shortfall = unified_memory_shortfall_message(
+                                dense_plan, family = getattr(fam, "name", None)
+                            )
+                            if unified_shortfall is not None:
+                                dense_possible = False
+                                dense_fallback_allowed = False
+                                dense_decline_reason = (
+                                    "the dense bf16 transformer this quant is built from does not "
+                                    f"fit this device's unified memory ({dense_mib} MiB)"
+                                )
+                            elif dense_plan.offload_policy != OFFLOAD_NONE:
                                 dense_possible = False
                                 dense_fallback_allowed = False
                                 dense_decline_reason = (
@@ -3007,6 +3043,72 @@ class DiffusionBackend:
                                 "prefetch's capacity gate declined its shards), so the dense bf16 "
                                 "build cannot run on this host"
                             )
+                        # A hosted prequant never builds dense, so the check above says nothing
+                        # about what actually lands. On unified memory that gap is a hole: the
+                        # OFFLOAD_NONE gate below is satisfied for ANY size there, and an fp8/int8
+                        # artifact can outweigh the packed GGUF that just passed the load-level
+                        # refusal (0.55x bf16 against a Q4's ~0.3x), so the load would materialise
+                        # an unsized transformer and be OS-killed. Size the artifact itself and
+                        # decline to the GGUF when it does not fit. Unified only: off it, the
+                        # OFFLOAD_NONE test already carries this and the extra resolve is waste.
+                        if (
+                            prequant is not None
+                            and getattr(plan.device_memory, "memory_kind", None) == "unified_memory"
+                        ):
+                            prequant_candidate = resolve_dense_quant_candidate(
+                                fam = fam,
+                                target = target,
+                                requested = transformer_quant,
+                                base_repo = base,
+                                prequant_path = transformer_prequant_path,
+                                force_dense = _has_active_lora(loras),
+                                logger = logger,
+                            )
+                            if (
+                                prequant_candidate is not None
+                                and unified_memory_shortfall_message(
+                                    self._plan_memory(
+                                        target,
+                                        single_file_path,
+                                        base,
+                                        fam,
+                                        memory_mode,
+                                        cpu_offload,
+                                        kind = kind,
+                                        repo_id = repo_id,
+                                        fetch_base = fetch_base,
+                                        transformer_resident_override_mib = (
+                                            prequant_candidate.transient_transformer_mib
+                                        ),
+                                        # companions_mib is the DENSE encoder plus the VAE, but
+                                        # assembly is handed text_encoder_quant and injects the
+                                        # pre-cast encoder when one is configured. Price that
+                                        # share the way the load-level plan does, or a footprint
+                                        # that fits is declined on bytes never materialised.
+                                        companion_override_mib = (
+                                            self._precast_scaled_companions_mib(
+                                                prequant_candidate, fam, target, text_encoder_quant
+                                            )
+                                        ),
+                                    ),
+                                    family = getattr(fam, "name", None),
+                                )
+                                is not None
+                            ):
+                                dense_declined = True
+                                dense_possible = False
+                                dense_fallback_allowed = False
+                                transformer_quant_decline = (
+                                    "the pre-quantised transformer does not fit this device's "
+                                    "unified memory, where offloading it would free nothing, so "
+                                    "the packed GGUF was loaded instead"
+                                )
+                                logger.info(
+                                    "diffusion.transformer_quant_declined: the pre-quantised "
+                                    "transformer (%s MiB) does not fit unified memory; "
+                                    "loading the GGUF",
+                                    prequant_candidate.transient_transformer_mib,
+                                )
                         # A dense misfit with a prequant source only forbids the dense fallback; with
                         # none, auto could still have picked a DIFFERENT scheme that does have a
                         # hosted checkpoint. auto returns one winner, and a winner with no published
@@ -3055,12 +3157,24 @@ class DiffusionBackend:
                                     transformer_resident_override_mib = (
                                         retry_candidate.transient_transformer_mib
                                     ),
-                                    companion_override_mib = retry_candidate.companions_mib,
+                                    # Same pre-cast encoder pricing as the fit check above.
+                                    companion_override_mib = self._precast_scaled_companions_mib(
+                                        retry_candidate, fam, target, text_encoder_quant
+                                    ),
                                 )
                                 if retry_candidate is not None
                                 else None
                             )
-                            if retry_plan is not None and retry_plan.offload_policy == OFFLOAD_NONE:
+                            if (
+                                retry_plan is not None
+                                and retry_plan.offload_policy == OFFLOAD_NONE
+                                # Same unified caveat as above: 'none' is not a fit there, so the
+                                # rung being retried has to be sized explicitly before it is pinned.
+                                and unified_memory_shortfall_message(
+                                    retry_plan, family = getattr(fam, "name", None)
+                                )
+                                is None
+                            ):
                                 logger.info(
                                     "diffusion.transformer_quant: %s has no prequant and cannot "
                                     "build dense; retrying auto at %s, whose checkpoint is cached "
@@ -3895,6 +4009,120 @@ class DiffusionBackend:
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         pipe.to(device)
         return pipe
+
+    @staticmethod
+    def _precast_scaled_companions_mib(
+        candidate: Any, fam: DiffusionFamily, target: Any, text_encoder_quant: Optional[str]
+    ) -> Optional[int]:
+        """``candidate.companions_mib`` with the text-encoder share priced at the PRE-CAST size
+        when this pick takes its encoder from a hosted fp8 checkpoint.
+
+        The estimate is always the DENSE encoder plus the VAE, but assembly is handed
+        ``text_encoder_quant`` and injects the pre-cast encoder when one is configured, so the
+        unified-memory fit check below would refuse on bytes the load never materialises: for
+        FLUX.2-dev's Mistral-24B that is ~17 GB of an encoder the pipeline never builds. Keyed on
+        the same ``te_prequant_budget_scale`` the load-level resident plan uses, so a budget cannot
+        claim a saving the load does not take. The VAE share is untouched: nothing on this path
+        quantises it."""
+        companions = getattr(candidate, "companions_mib", None)
+        if companions is None:
+            return None
+        try:
+            from .diffusion_te_prequant import te_prequant_budget_scale
+
+            scale = te_prequant_budget_scale(fam, te_quant_mode = text_encoder_quant, target = target)
+            encoders = int(getattr(candidate, "text_encoders_mib", 0) or 0)
+            if scale == 1.0 or encoders <= 0:
+                return int(companions)
+            return int(companions) - encoders + int(encoders * scale)
+        except Exception:  # noqa: BLE001 -- sizing aid only; the dense total still refuses safely
+            return int(companions)
+
+    def _resident_sized_plan(
+        self,
+        plan: Any,
+        fam: DiffusionFamily,
+        base: str,
+        target: DiffusionDeviceTarget,
+        kind: str,
+        text_encoder_quant: Optional[str] = None,
+    ) -> Any:
+        """``plan`` with its weight term replaced by the family table's bf16-RESIDENT total, for
+        the unified-memory refusal only.
+
+        A full-pipeline plan sizes weights from cached shard bytes, which is what the repo stores,
+        not what ends up resident: a family shipping fp32 shards (Z-Image, Lumina) halves on the
+        bf16 cast, so the refusal would reject a load that comfortably fits. The table is
+        documented as post-cast resident sizes, so it is the right number to refuse on. Only ever
+        LOWERS the estimate -- a table that reads higher than the shards (a narrow fp8 base that
+        upcasts) is already handled in the plan, and taking the max here would double-count it.
+        Left alone entirely for single-file/GGUF kinds, whose on-disk size IS their resident size,
+        on any target that is not sized in bf16, and for a LOCAL directory: the table is keyed on
+        upstream repo ids, so a local checkpoint can only ever reach the coarse family entry, and
+        a family covering more than one size (a local FLUX.2-klein 9B against klein's 4B default)
+        would be lowered to a number less than half what it loads. On disk is the measured truth
+        there; only a hub id the table actually recognises earns the substitution."""
+        try:
+            # A whole-pipeline single file (SDXL) carries the U-Net, VAE and text encoders itself,
+            # and the base repo is read for config only -- but the plan still adds the base's
+            # cached companion weights, so a user who once loaded the full pipeline has those
+            # bytes counted twice. Harmless as an offload hint, a rejected load as a hard refusal.
+            if kind == "single_file" and getattr(fam, "single_file_is_pipeline", False):
+                companion = plan.estimates.get("companion_dense_mib")
+                current = plan.estimates.get("model_dense_mib")
+                if companion and current is not None and int(companion) < int(current):
+                    return replace(
+                        plan,
+                        estimates = {
+                            **plan.estimates,
+                            "model_dense_mib": int(current) - int(companion),
+                        },
+                    )
+                return plan
+            if kind != "pipeline" or _is_local_path(base):
+                return plan
+            import torch
+
+            if getattr(target, "dtype", None) not in (torch.bfloat16, torch.float16):
+                return plan
+            # RECOGNISED bases only. The table is keyed on exact upstream ids, so a fine-tune or a
+            # renamed mirror the family detector still matches by name would fall through to the
+            # coarse family entry -- and for a family carrying two sizes that entry is the smaller
+            # one, so a 9B derivative would be lowered to the 4B number and walk past the refusal.
+            # Accept the family's own default base and anything with an explicit override; anything
+            # else keeps its measured size.
+            canonical = canonical_base(base)
+            if (
+                base_repo_bf16_components_gb(base) is None
+                and canonical.lower() != str(getattr(fam, "base_repo", "") or "").lower()
+            ):
+                return plan
+            table = family_bf16_components_gb(fam, base)
+            if table is None:
+                return plan
+            # The table's encoder term is the DENSE one. When this pick takes its encoder pre-cast
+            # from a hosted fp8 checkpoint the resident encoder is about 0.65x that, and for a
+            # heavyweight one (FLUX.2-dev's Mistral-24B, 48 GB) budgeting the dense figure is tens
+            # of GB of weights the pipeline never materialises -- enough to refuse a load that fits.
+            # Keyed on te_prequant_sources through the shared helper, the same resolver assembly
+            # uses, so the budget cannot claim a saving the load does not take.
+            from .diffusion_te_prequant import te_prequant_budget_scale
+
+            te_scale = te_prequant_budget_scale(
+                fam, te_quant_mode = text_encoder_quant, target = target
+            )
+            transformer_gb, text_encoders_gb, vae_gb = table
+            resident_gb = transformer_gb + text_encoders_gb * te_scale + vae_gb
+            current = plan.estimates.get("model_dense_mib")
+            table_mib = int(resident_gb * (1000.0**3) / (1024.0 * 1024.0))
+            if current is None or table_mib >= int(current):
+                return plan
+            return replace(
+                plan,
+                estimates = {**plan.estimates, "model_dense_mib": table_mib},
+            )
+        except Exception:  # noqa: BLE001 — sizing aid only; refuse on the plan as built
+            return plan
 
     def _plan_memory(
         self,

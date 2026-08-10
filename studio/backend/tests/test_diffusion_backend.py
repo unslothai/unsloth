@@ -7380,6 +7380,149 @@ def test_download_plan_skips_nothing_when_the_hub_reports_no_commit(monkeypatch)
     }
 
 
+# ── unified-memory oversize refusal, at the image load seam ───────────────────
+# The planner is shared with video, so the image loader needs the same guard: a Mac user
+# picking an oversized image checkpoint hits the identical SIGKILL (no torch OOM to catch,
+# because the mps target disables the MPS allocator's high-watermark limit).
+
+
+def _unified_snapshot(total_gib):
+    from core.inference.diffusion_memory import DeviceMemory
+    total = total_gib * 1024
+    return lambda target: DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+
+
+def _oversized_gguf(
+    monkeypatch,
+    tmp_path,
+    total_gib,
+    *,
+    resident_mib = 24 * 1024,
+):
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(
+        "core.inference.diffusion.settled_snapshot_device_memory", _unified_snapshot(total_gib)
+    )
+    # The 7-byte fake checkpoint sizes to 1 MiB; stand in a realistic resident footprint.
+    monkeypatch.setattr(
+        "core.inference.diffusion.estimate_gguf_resident_mib", lambda storage: resident_mib
+    )
+    return DiffusionBackend()
+
+
+def test_unified_memory_refuses_an_oversized_image_load(fake_runtime, monkeypatch, tmp_path):
+    backend = _oversized_gguf(monkeypatch, tmp_path, 16)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "base/repo",
+            family_override = "z-image",
+        )
+    message = str(excinfo.value)
+    assert "z-image" in message
+    assert "unified memory" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
+    # Refused before the pipeline was built.
+    assert backend.status()["loaded"] is False
+
+
+def test_unified_memory_allows_an_image_load_that_fits(fake_runtime, monkeypatch, tmp_path):
+    backend = _oversized_gguf(monkeypatch, tmp_path, 128)
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
+
+
+def test_unified_memory_image_refusal_is_overridable(fake_runtime, monkeypatch, tmp_path):
+    from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 16)
+    monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
+
+
+def test_discrete_vram_image_load_is_unaffected_by_the_refusal(fake_runtime, monkeypatch, tmp_path):
+    from core.inference.diffusion_memory import DeviceMemory
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(
+        "core.inference.diffusion.settled_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 13_107, 16_384),
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.estimate_gguf_resident_mib", lambda storage: 24 * 1024
+    )
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "base/repo",
+        family_override = "z-image",
+    )
+    assert status["loaded"] is True
+
+
+# ── the resident-size substitution must not out-guess a measured local checkpoint ──
+
+
+def _plan_with_weights(mib):
+    from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
+    return MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = "none",
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = DeviceMemory("mps", "mps", "unified_memory", 32_768, 65_536),
+        estimates = {"model_dense_mib": mib, "safe_device_budget_mib": 24_000},
+    )
+
+
+def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, monkeypatch):
+    """The table is keyed on UPSTREAM ids, so a local directory can only reach the coarse family
+    entry -- and a family with more than one size under it (a local FLUX.2-klein 9B against
+    klein's 4B default) would be re-sized to less than half what it loads, walking straight past
+    the refusal into the OS killer. On disk is the measured truth for a local path."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
+    backend = DiffusionBackend()
+    measured = 34_000  # what a 9B pipeline's shards actually weigh
+
+    local = str(Path.cwd())
+    plan = _plan_with_weights(measured)
+    kept = backend._resident_sized_plan(plan, fam, local, target, "pipeline")
+    assert kept.estimates["model_dense_mib"] == measured
+
+    # A hub id the table does recognise still gets the substitution: that is the fp32-shard case
+    # (Z-Image, Lumina) this exists for, and it is what keeps a load that fits from being refused.
+    lowered = backend._resident_sized_plan(
+        plan, fam, "black-forest-labs/FLUX.2-klein-4B", target, "pipeline"
+    )
+    assert lowered.estimates["model_dense_mib"] < measured
+
+
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):
     """An explicit Speed=off rewrites an auto request to "off" and the plan stages no
     transformer/ on purpose. Reading that expected absence as a decline told the caller their
@@ -8030,6 +8173,271 @@ def test_a_completed_generation_stops_advertising_itself_as_cancellable(
 def test_cancel_generate_is_a_no_op_without_a_load(fake_runtime):
     # The route calls this unconditionally, so an idle backend must answer False, not raise.
     assert DiffusionBackend().cancel_generate() is False
+
+
+def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
+    fake_runtime, monkeypatch, tmp_path
+):
+    """A GGUF pick on unified memory can still be upsized by the dense fast path: the hosted
+    fp8/int8 artifact is roughly 0.55x bf16 against a Q4's ~0.3x, so it can be twice the file that
+    just passed the load-level refusal. The planner returns 'none' for any size on unified memory,
+    so the OFFLOAD_NONE gate cannot catch that, and the prequant path skips the dense-size check
+    (it never builds dense). Without an explicit size the load materialises it and is OS-killed."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_auto_policy import DenseQuantEstimate
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 32, resident_mib = 8 * 1024)
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    # A hosted pre-cast checkpoint IS available, which is what skips the dense-size check.
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: DenseQuantEstimate(
+            scheme = "fp8",
+            steady_transformer_mib = 40 * 1024,
+            transient_transformer_mib = 40 * 1024,  # far past a 32 GiB pool's safe budget
+            companions_mib = 2 * 1024,
+            prequant = True,
+        ),
+    )
+
+    status = backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        model_kind = "gguf",
+    )
+    # The GGUF fits and loads; the oversized quant is declined rather than materialised.
+    assert status["loaded"] is True
+    assert status["transformer_quant"] is None
+    resolved = status["resolved"]["transformer_quant"]
+    assert resolved["value"] == "off"
+    assert "unified memory" in (resolved["reason"] or "")
+
+
+def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tmp_path):
+    # The same shape with an artifact that fits must be untouched: this guard only ever removes a
+    # candidate the device cannot hold, never one it can.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_auto_policy import DenseQuantEstimate
+
+    backend = _oversized_gguf(monkeypatch, tmp_path, 32, resident_mib = 8 * 1024)
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: DenseQuantEstimate(
+            scheme = "fp8",
+            steady_transformer_mib = 6 * 1024,
+            transient_transformer_mib = 6 * 1024,
+            companions_mib = 2 * 1024,
+            prequant = True,
+        ),
+    )
+    calls: list = []
+
+    def _record(self, *a, **kw):
+        calls.append("built")
+        # Raising here keeps the stub out of pipeline assembly; the loader's own handler falls
+        # back to the GGUF, and reaching this line at all is the assertion.
+        raise RuntimeError("stub")
+
+    monkeypatch.setattr(dmod.DiffusionBackend, "_load_dense_quant_pipeline", _record)
+
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        family_override = "z-image",
+        model_kind = "gguf",
+    )
+    assert calls == ["built"], "a prequant that fits must still reach the dense fast path"
+
+
+def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
+    fake_runtime, monkeypatch
+):
+    """The table's encoder term is the dense one, and a pick that takes its encoder PRE-CAST from a
+    hosted fp8 checkpoint loads roughly 0.65x of it. Budgeting the dense figure against a hard
+    refusal turns tens of GB the pipeline never materialises into a rejected load."""
+    import torch
+
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    backend = DiffusionBackend()
+    plan = _plan_with_weights(200_000)  # so the table always wins
+
+    dense = backend._resident_sized_plan(plan, fam, base, target, "pipeline")
+    monkeypatch.setattr(dmod, "family_bf16_components_gb", dmod.family_bf16_components_gb)
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_sources",
+        lambda fam, te_quant_mode = None, target = None: {"text_encoder": object()},
+    )
+    precast = backend._resident_sized_plan(
+        plan, fam, base, target, "pipeline", text_encoder_quant = "fp8"
+    )
+    dense_mib = dense.estimates["model_dense_mib"]
+    precast_mib = precast.estimates["model_dense_mib"]
+    assert precast_mib < dense_mib, "a pre-cast encoder must lower the refusal's weight term"
+    # Only the ENCODER term moves: transformer and VAE are untouched by a text-encoder quant.
+    transformer_gb, encoders_gb, _vae = dmod.family_bf16_components_gb(fam, base)
+    saved_gb = (dense_mib - precast_mib) * (1024.0 * 1024.0) / (1000.0**3)
+    assert saved_gb == pytest.approx(encoders_gb * (1.0 - TE_PREQUANT_BUDGET_SCALE), rel = 0.02)
+
+
+def test_the_resident_size_table_never_shrinks_an_unrecognised_remote_variant(fake_runtime):
+    """Same hole as the local-path one, reached from the Hub: a fine-tune or a renamed mirror that
+    the family detector still matches by name is NOT an exact key in the size table, so it falls
+    through to the family entry -- and for a family carrying two sizes that entry is the smaller
+    one. A 9B derivative lowered to the 4B number walks straight past the refusal."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("black-forest-labs/FLUX.2-klein-9B")
+    backend = DiffusionBackend()
+    measured = 34_000
+    plan = _plan_with_weights(measured)
+
+    kept = backend._resident_sized_plan(
+        plan, fam, "someone/FLUX.2-klein-9B-anime-tune", target, "pipeline"
+    )
+    assert kept.estimates["model_dense_mib"] == measured
+    # The two recognised shapes still get it: an explicit per-base override, and the family default.
+    override = backend._resident_sized_plan(
+        plan, fam, "black-forest-labs/FLUX.2-klein-9B", target, "pipeline"
+    )
+    assert override.estimates["model_dense_mib"] < measured
+    default = backend._resident_sized_plan(plan, fam, fam.base_repo, target, "pipeline")
+    assert default.estimates["model_dense_mib"] < measured
+
+
+def test_a_whole_pipeline_single_file_is_not_charged_for_cached_companions(fake_runtime):
+    """An SDXL-style single file carries the U-Net, VAE and text encoders itself and the base repo
+    is read for config only, but the plan still adds the base's cached companion weights. As an
+    offload hint that is conservative; as a hard refusal it rejects a checkpoint that fits, and
+    only for users who happen to have loaded the full pipeline before."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_memory import DeviceMemory, MemoryPlan
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = False,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    fam = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert fam.single_file_is_pipeline, "this test is about the SDXL-shaped families"
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = "none",
+        vae_tiling = False,
+        vae_slicing = False,
+        device_memory = DeviceMemory("mps", "mps", "unified_memory", 32_768, 65_536),
+        estimates = {
+            "model_dense_mib": 14_000,  # the checkpoint (7 GB) plus 7 GB of cached companions
+            "companion_dense_mib": 7_000,
+            "safe_device_budget_mib": 10_000,
+        },
+    )
+    sized = DiffusionBackend()._resident_sized_plan(
+        plan, fam, "stabilityai/stable-diffusion-xl-base-1.0", target, "single_file"
+    )
+    assert sized.estimates["model_dense_mib"] == 7_000
+
+
+def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, monkeypatch):
+    """``DenseQuantEstimate.companions_mib`` is always the DENSE encoder plus the VAE, but the
+    assembly this check is sizing is handed ``text_encoder_quant`` and injects the pre-cast
+    encoder. Refusing on the dense figure declines a prequant that fits on bytes never
+    materialised -- for FLUX.2-dev's Mistral-24B that is tens of GB. The load-level resident plan
+    already applies te_prequant_budget_scale; this is the same scale on the same estimate."""
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_PREQUANT_BUDGET_SCALE
+
+    fam = detect_family("black-forest-labs/FLUX.2-dev")
+    assert fam is not None and fam.te_prequant_repos, "the fixture family lost its pre-cast repo"
+    # 48 GB of encoder, 0.4 GB of VAE, in the estimate's own units.
+    encoders = 48_000
+    candidate = types.SimpleNamespace(companions_mib = encoders + 400, text_encoders_mib = encoders)
+
+    scaled = DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8")
+    # No pre-cast encoder resolves in this environment unless te_prequant_sources says so, so pin
+    # the two outcomes on the resolver rather than assuming one.
+    from core.inference.diffusion_te_prequant import te_prequant_sources
+
+    if te_prequant_sources(fam, te_quant_mode = "fp8", target = object()):
+        assert scaled == 400 + int(encoders * TE_PREQUANT_BUDGET_SCALE)
+        assert scaled < candidate.companions_mib
+    else:
+        assert scaled == candidate.companions_mib
+
+    # No encoder quant requested: the estimate is passed through untouched, byte for byte.
+    assert (
+        DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), None)
+        == candidate.companions_mib
+    )
+    # The VAE share is never scaled, and a candidate with no split degrades to the dense total.
+    no_split = types.SimpleNamespace(companions_mib = 1234, text_encoders_mib = 0)
+    assert DiffusionBackend._precast_scaled_companions_mib(no_split, fam, object(), "fp8") == 1234
+    # An estimate with no companions at all stays None, which _plan_memory reads as "no override".
+    empty = types.SimpleNamespace(companions_mib = None)
+    assert DiffusionBackend._precast_scaled_companions_mib(empty, fam, object(), "fp8") is None
+
+
+def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, monkeypatch):
+    """Both sides must read the same scale from the same resolver, or the fit check and the plan
+    it gates disagree about what the load builds."""
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("black-forest-labs/FLUX.2-dev")
+    monkeypatch.setattr(
+        "core.inference.diffusion_te_prequant.te_prequant_budget_scale",
+        lambda fam, *, te_quant_mode, target: 0.5 if te_quant_mode == "fp8" else 1.0,
+    )
+    candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
+    assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
 
 
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
