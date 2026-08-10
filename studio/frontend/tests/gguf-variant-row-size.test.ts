@@ -149,6 +149,16 @@ test("a repo larger than the request cap is still sizable", () => {
     companionBytes.includes("i += MAX_FILENAMES_PER_REQUEST"),
     "filenames must be chunked to the server's limit",
   );
+  // Each request is its own batch on the server, with its own concurrency bound and its own
+  // listings, so chunks in parallel would multiply the planning and re-fetch the same metadata.
+  assert.ok(
+    companionBytes.includes("for (const chunk of chunks) {"),
+    "chunks must go one at a time",
+  );
+  assert.ok(
+    !companionBytes.includes("Promise.all("),
+    "and never all at once",
+  );
 });
 
 test("a request that failed outright leaves its rows usable", () => {
@@ -164,9 +174,7 @@ test("a request that failed outright leaves its rows usable", () => {
     "utf8",
   );
   assert.ok(
-    /\.catch\(\(\) => \{\s*for \(const name of chunk\) blocked\.delete\(name\);/.test(
-      companionBytes,
-    ),
+    /catch \{\s*for \(const name of chunk\) blocked\.delete\(name\);/.test(companionBytes),
     "a failed chunk must release its own rows",
   );
   assert.ok(

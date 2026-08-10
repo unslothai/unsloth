@@ -34,6 +34,7 @@ from .diffusion_prequant import (
     _local_prequant_path_allowed,
     _same_base_model,
 )
+from .plan_metadata import plan_model_info
 
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected.
 TE_PREQUANT_FORMAT = "unsloth_prequant_text_encoder_state_dict_v1"
@@ -466,7 +467,7 @@ def te_prequant_hub_files(
         if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
             continue
         try:
-            info = api.model_info(source.location, files_metadata = True)
+            info = plan_model_info(api, source.location)
         except Exception as exc:  # noqa: BLE001 -- unavailable pre-cast means the dense encoder
             _warn(logger, f"hub_files:{source.location}", exc)
             continue

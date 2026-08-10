@@ -100,23 +100,28 @@ export function useCompanionBytes(
       }
     };
 
-    void Promise.all(
-      chunks.map((chunk) =>
-        resolve(repoId, chunk, controller.signal)
-          .then((answered) => {
-            for (const name of chunk) {
-              const value = answered?.get(name);
-              if (typeof value === "number" && Number.isFinite(value)) {
-                sizes.set(name, value);
-                blocked.delete(name);
-              }
+    // One chunk at a time. Each request is its own batch on the server, with its own concurrency
+    // bound and its own listings, so running them together would multiply the planning it does and
+    // re-fetch the checkpoint and base metadata per chunk.
+    void (async () => {
+      for (const chunk of chunks) {
+        if (controller.signal.aborted) return;
+        try {
+          const answered = await resolve(repoId, chunk, controller.signal);
+          for (const name of chunk) {
+            const value = answered?.get(name);
+            if (typeof value === "number" && Number.isFinite(value)) {
+              sizes.set(name, value);
+              blocked.delete(name);
             }
-          })
-          .catch(() => {
-            for (const name of chunk) blocked.delete(name);
-          }),
-      ),
-    ).then(publish);
+          }
+        } catch {
+          for (const name of chunk) blocked.delete(name);
+        }
+        // Published per chunk, so a large repo fills in as it resolves instead of all at once.
+        publish();
+      }
+    })();
 
     return () => {
       controller.abort();
