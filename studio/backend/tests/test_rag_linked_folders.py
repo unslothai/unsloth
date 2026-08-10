@@ -139,9 +139,10 @@ def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_h
 
     with _connection() as conn:
         assert store.get_document(conn, document_id) is None
-        assert conn.execute(
-            "SELECT 1 FROM ingestion_jobs WHERE id=?", (ingestion_job,)
-        ).fetchone() is None
+        assert (
+            conn.execute("SELECT 1 FROM ingestion_jobs WHERE id=?", (ingestion_job,)).fetchone()
+            is None
+        )
 
 
 @requires_sqlite_vec
