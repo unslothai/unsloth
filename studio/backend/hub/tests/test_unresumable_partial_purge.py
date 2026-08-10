@@ -303,3 +303,74 @@ def test_startup_sweep_leaves_a_resumable_partial_alone(monkeypatch, tmp_path, b
     download_registry.reap_orphan_workers()
 
     assert partial.exists()
+
+
+def test_a_reaped_job_does_not_wait_out_the_grace_on_its_own_blobs(monkeypatch, blobs):
+    """Cancelling writes the partial seconds before the sweep, so waiting strands it."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)  # freshly written, as a just-cancelled download's would be
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    # Without the ownership claim it has to wait, which is what stranded it for the session.
+    assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
+    assert partial.exists()
+
+    assert (
+        download_registry.sweep_abandoned_partials(
+            "model",
+            "Org/Model",
+            owned_blob_hashes = frozenset({_MAIN}),
+        )
+        == 1
+    )
+    assert not partial.exists()
+
+
+def test_ownership_never_overrides_the_lock(monkeypatch, blobs):
+    """hf locks before it creates the temp file, so a locked blob has a live writer."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "blob_download_lock_held", lambda *_a: True)
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        owned_blob_hashes = frozenset({_MAIN}),
+    )
+
+    assert swept == 0
+    assert partial.exists()
+
+
+def test_ownership_never_overrides_peer_protection(monkeypatch, blobs):
+    """A shared companion a sibling variant is writing stays out of reach."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        protected_blob_hashes = frozenset({_MAIN}),
+        owned_blob_hashes = frozenset({_MAIN}),
+    )
+
+    assert swept == 0
+    assert partial.exists()

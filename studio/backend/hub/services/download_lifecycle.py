@@ -1104,10 +1104,17 @@ def register_worker(
                 # recently written. A download runs for long enough that a partial orphaned
                 # before it started is well past the grace by now, and the peer set still
                 # shields a same-repo variant writing a shared companion right now.
+                # This job's own blobs skip the abandonment wait, but ONLY once the job is
+                # genuinely finished. A cancelled worker's partial was written seconds ago, so
+                # the wait would strand it for the rest of the session; and its writer has just
+                # been reaped, which is the very thing the wait is there to guess at. A retry
+                # relaunched above leaves the job active, and then it is not ours to assume.
+                terminal = registry.get_job(key).state not in ("running", "cancelling")
                 swept = download_registry.sweep_abandoned_partials(
                     repo_type,
                     repo_id,
                     protected_blob_hashes = registry.peer_blob_hashes(key),
+                    owned_blob_hashes = _own_blob_hashes if terminal else None,
                     # The cache this worker actually wrote to. Resolving the live one instead
                     # would miss the orphan whenever the download location changed mid-run,
                     # and sweep a cache this job never touched.

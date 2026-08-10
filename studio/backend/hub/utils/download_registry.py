@@ -402,6 +402,7 @@ def _purge_incomplete_blobs(
     protected_hashes: Optional[frozenset[str]] = None,
     *,
     unresumable_only: bool = False,
+    owned_hashes: Optional[frozenset[str]] = None,
 ) -> _PurgeOutcome:
     """Delete selected partials while preserving protected concurrent writes.
 
@@ -411,6 +412,12 @@ def _purge_incomplete_blobs(
     has touched for ``ABANDONED_PARTIAL_SECONDS``. Unlinking a live partial does not stop its
     writer on POSIX; it keeps filling an unlinked inode and then fails at the rename, so the
     cost of that mistake is another client's whole download.
+
+    ``owned_hashes`` are blobs whose only Studio-side writer has just been reaped, so the wait
+    buys nothing: the staleness check exists to infer a live writer, and here the answer is
+    known. The lock check still runs, which is what makes this safe -- hf takes the per-blob
+    lock BEFORE creating its temporary file, so any partial belonging to a live writer
+    (including a retry for this same job) is necessarily locked.
     """
     now = time.time()
     blobs_dir = entry / "blobs"
@@ -443,8 +450,9 @@ def _purge_incomplete_blobs(
                 # from one stalled on a slow network for longer than the grace.
                 if blob_download_lock_held(entry, blob_hash):
                     continue
-                if now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
-                    continue
+                if not (owned_hashes and blob_hash in owned_hashes):
+                    if now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
+                        continue
             blob.unlink()
             removed += 1
         except FileNotFoundError:
@@ -778,6 +786,7 @@ def sweep_abandoned_partials(
     *,
     only_blob_hashes: Optional[frozenset[str]] = None,
     protected_blob_hashes: Optional[frozenset[str]] = None,
+    owned_blob_hashes: Optional[frozenset[str]] = None,
     root: Optional[Path] = None,
 ) -> int:
     """Remove partials nothing can resume and nothing has touched. Returns how many went.
@@ -795,6 +804,7 @@ def sweep_abandoned_partials(
             only_blob_hashes,
             protected_blob_hashes,
             unresumable_only = True,
+            owned_hashes = owned_blob_hashes,
         )
         removed += outcome.removed
     return removed
