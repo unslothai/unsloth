@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The overlay rail is height-capped by stackGeometry, and on the chat routes
-// the composer publishes a box that makes the cap small. Everything in the rail
-// was shrinkable, so the cap came out of the update card: its release notes
-// were painted over its own "Show release notes / Remind me later / Update"
-// row, and the card was clipped mid-sentence.
+// the composer publishes a box that makes the cap small. Nothing in the rail
+// was shrink-0, so the cap came out of the update card and its release notes
+// were painted over its own row of buttons.
 //
-// The rule this pins: inside a card the notes are the only part allowed to give
-// up height, and they clip or scroll while doing it. Inside the rail the update
-// cards give up nothing, and the rail scrolls if that leaves it short.
+// The rule pinned here: the notes are the only part of a card allowed to give
+// up height, and they clip while doing it; the card floors at its buttons; the
+// rail scrolls if that still does not fit.
 //
 // Read from the source: the node suite has no DOM to compute styles in.
 

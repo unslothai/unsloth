@@ -180,9 +180,8 @@ function ReleaseNotesSummary({
 
   return (
     <ul
-      // Scrolls for the same reason the expanded notes do: in a short window
-      // the card's slot for this list is smaller than the list, and without a
-      // scroller here the bullets are painted straight over the buttons.
+      // Scrolls like the expanded notes: in a short window this list is
+      // taller than its slot, and unscrolled it paints over the buttons.
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
       aria-label={`Release notes summary for version ${version}`}

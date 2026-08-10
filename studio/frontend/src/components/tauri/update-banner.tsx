@@ -109,14 +109,11 @@ export function UpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : // min-h-32 is the card with its notes closed: 8rem covers the
-                // header, the buttons and the card's own padding. A capped
-                // stack therefore takes the card's height out of the notes,
-                // which clip, and stops at the row of buttons instead of
-                // squeezing until the notes print over them. min-height:auto
-                // would be the whole card including the notes, so the card
-                // would not give up anything and the banner under it would be
-                // the one clipped instead.
+              : // min-h-32 is this card with its notes closed. A capped rail
+                // takes its height out of the notes, which clip, and stops at
+                // the buttons. min-height:auto would be the whole card, so the
+                // card would give up nothing and the banner below it would be
+                // the one clipped.
                 "pointer-events-auto flex min-h-32 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           data-testid="tauri-update-banner"

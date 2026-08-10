@@ -5,15 +5,13 @@
 
 The reported failure: on New chat, in a window short enough that the composer
 crowds the rail, the app-update card's release notes were painted over its own
-"Show release notes / Remind me later / Update" row. Train and Model hub were
-fine, because only the chat routes publish a composer box into the frame store
-and only that box caps the rail.
+row of buttons. Train and Model hub were fine, because only the chat routes
+publish a composer box into the frame store and only that box caps the rail.
 
-Nothing in the node suite can catch this. It is a flex shrink distributed across
-a capped column, so it needs a real layout, a real ResizeObserver and the real
-route, and it only appears at particular viewport heights. The boxes are read
-back from getBoundingClientRect and intersected with whatever clips them, so a
-rect hidden by an overflow-hidden ancestor is not counted as visible.
+The node suite cannot catch this: it is a flex shrink across a capped column, so
+it needs a real layout, a real ResizeObserver and the real route, and it shows
+only at some viewport heights. Rects are intersected with whatever clips them,
+so anything an overflow-hidden ancestor hides does not count as visible.
 
 Both update endpoints are stubbed with page.route, so this runs on any host: no
 GPU, no pypi release, no llama.cpp build.
