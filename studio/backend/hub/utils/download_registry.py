@@ -363,6 +363,9 @@ def reap_orphan_workers() -> None:
     try:
         entries = list(parent.iterdir())
     except OSError:
+        # Unreadable breadcrumbs means no worker can be claimed as reaped, not that the caches
+        # go unswept: they are a separate tree and may well be readable.
+        _boot_sweep(reaped)
         return
     for entry in entries:
         if not entry.is_file() or not entry.name.endswith(".json"):

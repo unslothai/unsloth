@@ -641,3 +641,82 @@ def test_ownership_is_recovered_from_the_manifest_when_hashes_never_resolved(mon
 
     assert owns_all is False  # a variant job never owns its siblings' blobs
     assert owned == frozenset({_MAIN})
+
+
+def test_a_filesystem_without_flock_does_not_escape_the_probe(monkeypatch, tmp_path):
+    """NotImplementedError used to travel out and fail the download on every retry."""
+    import filelock
+
+    entry = tmp_path / "models--Org--Model"
+    lock_path = tmp_path / ".locks" / "models--Org--Model" / f"{_MAIN}.lock"
+    lock_path.parent.mkdir(parents = True)
+
+    class _NoFlock:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def __enter__(self):
+            raise NotImplementedError(
+                "FileSystem does not appear to support flock; use SoftFileLock instead"
+            )
+
+        def __exit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(filelock, "FileLock", _NoFlock)
+
+    # No lock file: nobody has locked this blob, whatever the filesystem supports.
+    assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is False
+
+    # With one, the answer is "held" rather than an exception -- which is also what a
+    # SoftFileLock would say, since its file IS the lock and that file is present.
+    lock_path.touch()
+    assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
+
+
+def test_an_unprobeable_lock_reads_as_held(monkeypatch, tmp_path):
+    """Ownership can skip the staleness gate, so a wrong 'free' deletes a live writer's file."""
+    import filelock
+
+    entry = tmp_path / "models--Org--Model"
+    lock_path = tmp_path / ".locks" / "models--Org--Model" / f"{_MAIN}.lock"
+    lock_path.parent.mkdir(parents = True)
+    lock_path.touch()
+
+    class _Broken:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError("something unforeseen")
+
+        def __exit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(filelock, "FileLock", _Broken)
+
+    assert hf_cache_state.blob_download_lock_held(entry, _MAIN) is True
+
+
+def test_unreadable_breadcrumbs_do_not_cancel_the_cache_sweep(monkeypatch, tmp_path, blobs):
+    """The workers dir and the HF caches are separate trees; one failing is not the other."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+
+    class _UnreadableDir:
+        def iterdir(self):
+            raise OSError("permission denied")
+
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: _UnreadableDir())
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(
+        download_registry, "hf_cache_roots", lambda *_a, **_k: [blobs.parent.parent]
+    )
+
+    download_registry.reap_orphan_workers()
+    _join_background_sweep()
+
+    assert not partial.exists()

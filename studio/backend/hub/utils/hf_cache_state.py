@@ -107,19 +107,28 @@ def blob_download_lock_held(entry: Path, blob_hash: str) -> bool:
     """
     lock_path = entry.parent / ".locks" / entry.name / f"{blob_hash}.lock"
     if not lock_path.exists():
+        # hf creates the lock file before taking the lock, so no file means no writer. It is
+        # also the answer for a SoftFileLock, whose file IS the lock (see below).
         return False
     try:
         from filelock import FileLock, Timeout
-    except Exception:  # noqa: BLE001 - no filelock means no opinion
+    except Exception:  # noqa: BLE001 - no filelock at all means no opinion
         return False
     try:
-        lock = FileLock(str(lock_path), timeout = 0)
-        with lock:
+        with FileLock(str(lock_path), timeout = 0):
             return False
     except Timeout:
         return True
-    except OSError:
-        return False
+    except Exception:  # noqa: BLE001 - deliberately broad, see below
+        # A filesystem without flock raises NotImplementedError here, and upstream's
+        # WeakFileLock answers it by retrying as a SoftFileLock (huggingface_hub
+        # utils/_fixes.py). Retrying is pointless for a PROBE: a soft lock is its file, and we
+        # only reach this line because that file exists, so the soft answer is "held" too.
+        # What matters is that the exception does not escape -- it used to travel out through
+        # the purge and fail the download on every retry. Any other unprobeable error answers
+        # the same way, because the caller's remaining guard is a staleness check that an
+        # ownership claim may skip, and a wrong "free" there deletes a live writer's file.
+        return True
 
 
 def partial_is_resumable(name: str) -> bool:
