@@ -5302,9 +5302,13 @@ def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypa
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     # The same id and the same folder: this is the project those files belong to.
     monkeypatch.setattr(
-        studio_db, "get_chat_project",
-        lambda pid: {"id": pid, "rootPath": str(workspace),
-                     "sandboxPath": str(workspace / "sandbox")},
+        studio_db,
+        "get_chat_project",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
     )
     tools.collect_orphaned_project_workspaces()
     assert (workspace / "fresh.csv").is_file(), "the new project's files went"
@@ -5506,9 +5510,13 @@ def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, mon
         lambda pid: answers.pop(0) if answers else None,
     )
     monkeypatch.setattr(
-        studio_db, "get_chat_project",
-        lambda pid: {"id": pid, "rootPath": str(workspace),
-                     "sandboxPath": str(workspace / "sandbox")},
+        studio_db,
+        "get_chat_project",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
     )
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
@@ -5614,7 +5622,7 @@ def test_only_a_sandbox_tool_s_result_is_unwrapped_for_replay():
     dialog = (src / "features/chat/prompt-storage/prompt-storage-dialog.tsx").read_text(
         encoding = "utf-8"
     )
-    assert "typeof p.toolName === \"string\" ? p.toolName : undefined," in dialog
+    assert 'typeof p.toolName === "string" ? p.toolName : undefined,' in dialog
     assert "toolResultModelText(p.result, name)" in dialog
 
 
@@ -5637,7 +5645,8 @@ def test_a_project_remade_somewhere_else_does_not_strand_the_old_workspace(tmp_p
 
     monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
     monkeypatch.setattr(
-        studio_db, "get_chat_project",
+        studio_db,
+        "get_chat_project",
         lambda pid: {"id": pid, "rootPath": str(new), "sandboxPath": str(new / "sandbox")},
     )
     assert tools.live_project_owns(project_id, str(old / "sandbox"), str(old)) is False
@@ -5661,9 +5670,13 @@ def test_a_chat_named_like_a_project_session_still_loses_its_files(tmp_path, mon
     (workspace / "sandbox").mkdir(parents = True)
     (workspace / "sandbox" / "shared.csv").write_text("a,b\n", encoding = "utf-8")
     monkeypatch.setattr(
-        studio_db, "ensure_chat_project_workspace",
-        lambda pid: {"id": pid, "rootPath": str(workspace),
-                     "sandboxPath": str(workspace / "sandbox")},
+        studio_db,
+        "ensure_chat_project_workspace",
+        lambda pid: {
+            "id": pid,
+            "rootPath": str(workspace),
+            "sandboxPath": str(workspace / "sandbox"),
+        },
     )
 
     session = tools.project_session_id("foo12345")
@@ -5693,13 +5706,19 @@ def test_a_download_sends_no_more_than_it_promised(tmp_path, monkeypatch):
     (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
     monkeypatch.setattr(
-        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: str(sandbox),
     )
 
     loop = asyncio.new_event_loop()
     response = loop.run_until_complete(
         inference.serve_sandbox_file(
-            "thread-1", "report.csv", request = None, token = None, session = None,
+            "thread-1",
+            "report.csv",
+            request = None,
+            token = None,
+            session = None,
         )
     )
     declared = int(response.headers["content-length"])

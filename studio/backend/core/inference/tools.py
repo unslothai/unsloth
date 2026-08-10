@@ -7514,7 +7514,11 @@ def _thread_exists(thread_id: str, unknown: bool = False) -> bool:
         return unknown
 
 
-def live_project_owns(project_id: str, workspace: str, root: "str | None" = None) -> bool:
+def live_project_owns(
+    project_id: str,
+    workspace: str,
+    root: "str | None" = None,
+) -> bool:
     """Whether a project with this id is the one those folders belong to.
 
     A reused id is not the same workspace: the default root carries the
@@ -8585,7 +8589,8 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
         # the chat's files would be left behind.
         root_here = os.path.realpath(sandbox_root())
         if not _claimed_by_this_run(session_id, root_here) and not _marked_sandbox_in(
-            root_here, session_id,
+            root_here,
+            session_id,
         ):
             return False
     # The folder may still be at the legacy root right after an upgrade. This
