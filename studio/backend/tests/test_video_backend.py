@@ -2465,6 +2465,92 @@ def test_h3_native_accelerator_load_keeps_the_video_gpu_claim(monkeypatch, tmp_p
     assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
 
+def test_the_load_time_accelerator_probe_runs_under_the_reader_claim(monkeypatch, tmp_path):
+    """--list-devices SPAWNS the managed sd-cli, so it needs the same claim the run takes.
+
+    Unclaimed, an install started by another in-process load sees no reader and extracts over the
+    executing binary: on Windows that fails on the locked file, on Linux it can leave the
+    replacement half-written. The later claimed recheck compares answers; it cannot undo damage
+    this first probe already allowed.
+    """
+    from core.inference import gpu_arbiter
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"managed")
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "ensure_sd_cpp_binary",
+        lambda *, allow_install, accelerator: str(managed),
+    )
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
+
+    held: list = []
+
+    def _watching_probe(binary):
+        held.append(sd_cpp_backend._tree_readers)
+        # An install decided at this instant must stand down rather than replace what is running.
+        with sd_cpp_backend._tree_claimed_for_install() as claimed:
+            held.append(claimed)
+        return True
+
+    # video.py imports this inside the load function, so the name must be replaced at its source
+    # module; patching the video module misses it entirely and the test would pass vacuously.
+    monkeypatch.setattr(sd_cpp_backend, "sd_cpp_lists_accelerator_device", _watching_probe)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    # First two entries are the load-time probe; the claimed recheck later in the load adds its
+    # own pair, so assert on the opening ones rather than the whole list.
+    assert held[:2] == [1, False], f"probe ran unclaimed: {held}"
+    assert sd_cpp_backend._tree_readers == 0, "the claim must be released after the probe"
+
+
 def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path):
     """The second load on a Linux CUDA host. The first one installed the CPU prebuilt (upstream
     publishes no Linux CUDA asset for the pinned tag), and from then on ensure_sd_cpp_binary finds
