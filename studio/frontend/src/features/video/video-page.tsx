@@ -91,6 +91,7 @@ import {
   type VideoGenerateProgress,
   type VideoLoadProgress,
   type VideoStatus,
+  type VideoLoadRequest,
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
@@ -622,6 +623,15 @@ type Busy = "loading" | "unloading" | "generating" | null;
 // What a pick optimistically replaced, so a load that never takes can put all of it back. The quant
 // label and the generation recipe move together at pick time, so they have to roll back together too.
 type PickRevert = { prev: string | null; steps: number; guidance: number };
+// Resolved Advanced controls pinned across preflight, staging, and load.
+type VideoLoadAdvanced = Pick<
+  VideoLoadRequest,
+  | "memory_mode"
+  | "speed_mode"
+  | "attention_backend"
+  | "transformer_cache"
+  | "transformer_quant"
+>;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
 function VideoGate({ children }: { children: ReactNode }) {
@@ -1346,6 +1356,40 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     };
   }, [refreshStatus, dismissLoadToast, pollLoadProgress, startGenPoll, stopGenPoll, ensureSrc]);
 
+  // Keep the snapshot helper stable: route effects depend on loadOrStage.
+  const loadControlsRef = useRef({
+    memoryMode,
+    speedMode,
+    attentionBackend,
+    transformerCache,
+    transformerQuant,
+  });
+  loadControlsRef.current = {
+    memoryMode,
+    speedMode,
+    attentionBackend,
+    transformerCache,
+    transformerQuant,
+  };
+  const currentLoadAdvanced = useCallback(
+    (kind: "gguf" | "single_file" | "pipeline"): VideoLoadAdvanced => {
+      const controls = loadControlsRef.current;
+      return {
+        memory_mode: controls.memoryMode === "auto" ? undefined : controls.memoryMode,
+        speed_mode: controls.speedMode === "auto" ? undefined : controls.speedMode,
+        attention_backend:
+          controls.attentionBackend === "auto" ? undefined : controls.attentionBackend,
+        transformer_cache:
+          controls.transformerCache === "auto" ? undefined : controls.transformerCache,
+        transformer_quant:
+          kind === "pipeline" && controls.transformerQuant !== "auto"
+            ? controls.transformerQuant
+            : undefined,
+      };
+    },
+    [],
+  );
+
   const handleLoad = useCallback(
     // Resolves true when the background load STARTED (callers may revert optimistic picker state on false).
     async (
@@ -1354,6 +1398,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         kind: "gguf" | "single_file" | "pipeline";
         filename?: string;
       },
+      // Staged loads use the controls their preflight validated.
+      pinned?: VideoLoadAdvanced,
     ): Promise<boolean> => {
       if (pollTimer.current) clearTimeout(pollTimer.current);
       setBusy("loading");
@@ -1363,26 +1409,23 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       // Snapshot the prior Reapply target first: a load that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
       const prevCanReapply = canReapply;
+      const advanced = pinned ?? currentLoadAdvanced(opts.kind);
       lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
       try {
-        // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id; the "auto"/"off" sentinels map to omitted.
+        // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id.
         await loadVideoModel({
           model_path: repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
           hf_token: hfApiToken(getHfToken()),
-          memory_mode: memoryMode === "auto" ? undefined : memoryMode,
-          speed_mode: speedMode === "auto" ? undefined : speedMode,
-          attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
-          transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
-          // Full-pipeline loads only: a GGUF / single-file DiT runs the precision its checkpoint
-          // carries. The Precision control is hidden for those kinds but the state persists across
-          // picks, so a stale scheme would reach a load that can only refuse it.
-          transformer_quant:
-            opts.kind === "pipeline" && transformerQuant !== "auto" ? transformerQuant : undefined,
+          memory_mode: advanced.memory_mode,
+          speed_mode: advanced.speed_mode,
+          attention_backend: advanced.attention_backend,
+          transformer_cache: advanced.transformer_cache,
+          transformer_quant: advanced.transformer_quant,
         });
       } catch (err) {
         lastLoad.current = prevLastLoad;
@@ -1402,11 +1445,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       refreshStatus,
       dismissLoadToast,
       canReapply,
-      memoryMode,
-      speedMode,
-      attentionBackend,
-      transformerCache,
-      transformerQuant,
+      currentLoadAdvanced,
     ],
   );
 
@@ -1414,23 +1453,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const pendingStagedLoad = useRef<{
     repoId: string;
     opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string };
+    advanced: VideoLoadAdvanced;
     // The pick that staged it: a download outlives its pick, so it must not evict a newer one when it lands.
     token: number;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
   handleLoadRef.current = handleLoad;
-  // Read through a ref for the same reason handleLoad is: loadOrStage is memoized so its
-  // consumers keep a stable identity, and a plain capture froze the precision at whatever was
-  // selected when the callback was built. The ordinary auto -> FP8 change then sent the plan no
-  // precision at all, skipping the pre-download refusal, and the user staged tens of GB before
-  // /video/load rejected the same pick.
-  const transformerQuantRef = useRef(transformerQuant);
-  transformerQuantRef.current = transformerQuant;
-  // And the memory request, for the same reason and through the same ref: the route refuses an
-  // explicit precision under balanced or low_vram only when it is told the memory mode, so a
-  // plan asked without it staged tens of GB and left the 409 to the load.
-  const memoryModeRef = useRef(memoryMode);
-  memoryModeRef.current = memoryMode;
   // A download finishing while this page is hidden must not evict the model the visible page loaded. The pick is held, not dropped.
   const stagedLoadDeferred = useRef(false);
   // Both deferred paths run the load minutes after the pick was reported started, so both need
@@ -1444,7 +1472,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       if (pendingStagedLoad.current === pending) pendingStagedLoad.current = null;
       if (!pickGuard.isLatest(pending.token)) return;
       const owned = stagedQuantRevert.current;
-      void handleLoadRef.current(pending.repoId, pending.opts).then((started) => {
+      void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced).then((started) => {
         if (started) return;
         if (quantRevert.current && quantRevert.current === owned) {
           revertPick(quantRevert.current);
@@ -1515,6 +1543,8 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
       if (source !== "hub") return handleLoadRef.current(repoId, opts);
+
+      const advanced = currentLoadAdvanced(opts.kind);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this job must not revert it.
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
@@ -1526,17 +1556,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           model_kind: opts.kind,
           // Same token handleLoad sends: without it the metadata lookup fails on a gated base and the plan drops the companion entry, so the load pulls those files inline.
           hf_token: hfApiToken(getHfToken()),
-          // And the same precision, for the same reason: the plan refuses a scheme this host
-          // cannot honour, so omitting it staged tens of GB of weights and left the refusal to
-          // the load afterwards. Sent under the identical pipeline-only rule handleLoad applies.
-          transformer_quant:
-            opts.kind === "pipeline" && transformerQuantRef.current !== "auto"
-              ? transformerQuantRef.current
-              : undefined,
-          // The same memory request handleLoad sends: the precision gate refuses the
-          // offload-forcing modes only when it can see them.
-          memory_mode:
-            memoryModeRef.current === "auto" ? undefined : memoryModeRef.current,
+          // The route preflights the same values used by the eventual load.
+          transformer_quant: advanced.transformer_quant,
+          memory_mode: advanced.memory_mode,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;
@@ -1547,7 +1569,12 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         // the contract rather than a live path -- keep it, or a future one lands unguarded.
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = { repoId, opts, token: token ?? pickGuard.claim() };
+          pendingStagedLoad.current = {
+            repoId,
+            opts,
+            advanced,
+            token: token ?? pickGuard.claim(),
+          };
           stagedQuantRevert.current = ownRevert;
           stage(
             plan.entries.map((e) => ({
@@ -1582,9 +1609,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         toast.error(incompatible);
         return false;
       }
-      return handleLoadRef.current(repoId, opts);
+      return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, pickGuard],
+    [stage, pickGuard, currentLoadAdvanced],
   );
 
   // A GGUF pick can arrive with only a repo id (a pinned row, a curated artifact, a local GGUF directory). The backend

@@ -26,49 +26,33 @@ test("the video download plan is asked with the selected precision", () => {
   );
   assert.ok(call.length > 0, "the plan call must exist");
   assert.ok(
-    call.includes("transformer_quant:"),
-    "the plan must be asked with the precision the load will use",
+    call.includes("transformer_quant: advanced.transformer_quant"),
+    "the plan must use the precision snapshot",
   );
-  // Under the same pipeline-only rule the load applies: a GGUF / single-file DiT runs the
-  // precision its checkpoint carries, and the stale control value must not reach either call.
-  assert.ok(call.includes('opts.kind === "pipeline"'));
+  const snapshot = source.slice(
+    source.indexOf("const currentLoadAdvanced = useCallback("),
+    source.indexOf("const handleLoad = useCallback("),
+  );
+  assert.ok(snapshot.includes("loadControlsRef.current"));
+
+  assert.ok(snapshot.includes('kind === "pipeline"'));
 });
 
-test("the staged plan reads the precision live, not the value it closed over", () => {
-  // loadOrStage is memoized on [stage, pickGuard] so its consumers keep a stable identity. A
-  // plain capture of transformerQuant therefore froze at the value selected when the callback
-  // was built, and the ordinary auto -> FP8 change sent the plan no precision at all: the
-  // pre-download refusal was skipped and tens of GB were staged before the load refused it.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 900,
+test("the staged plan pins its controls through the eventual load", () => {
+  const flow = source.slice(
+    source.indexOf("const loadOrStage = useCallback("),
+    source.indexOf("// A GGUF pick can arrive"),
   );
   assert.ok(
-    call.includes("transformerQuantRef.current"),
-    "the plan must read the precision through the ref",
+    flow.indexOf("const advanced = currentLoadAdvanced(opts.kind);") <
+      flow.indexOf("await getVideoDownloadPlan({"),
   );
-  assert.ok(
-    !/transformerQuant\s*[!=]==/.test(call),
-    "a direct read of the memoized capture is the stale value",
-  );
-  assert.ok(
-    source.includes("transformerQuantRef.current = transformerQuant"),
-    "the ref must be kept current on every render",
-  );
+  assert.match(flow, /pendingStagedLoad\.current = \{\s*repoId,\s*opts,\s*advanced,/);
+  assert.ok(source.includes("pending.opts, pending.advanced"));
+
+  assert.ok(flow.includes("handleLoadRef.current(repoId, opts, advanced)"));
 });
 
 test("the staged plan carries the memory request too", () => {
-  // The route refuses an explicit precision under balanced or low_vram only when it can see the
-  // memory mode. Omitting it here meant the plan succeeded, tens of GB were staged, and the
-  // identical pick was then rejected by /video/load -- the regression the plan gate exists for.
-  const call = source.slice(
-    source.indexOf("await getVideoDownloadPlan({"),
-    source.indexOf("await getVideoDownloadPlan({") + 1200,
-  );
-  assert.ok(call.includes("memory_mode:"), "the plan must be asked with the memory request");
-  assert.ok(
-    call.includes("memoryModeRef.current"),
-    "and read it live, like the precision",
-  );
-  assert.ok(source.includes("memoryModeRef.current = memoryMode"));
+  assert.equal(source.match(/memory_mode: advanced\.memory_mode/g)?.length, 2);
 });

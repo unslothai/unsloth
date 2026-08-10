@@ -788,7 +788,8 @@ class SdCppDiffusionBackend:
             entries.append(
                 {
                     "repo_id": repo,
-                    "files": missing,
+                    # A stable scope lets repeated picks adopt an in-flight download.
+                    "files": list(names),
                     "bytes": int(sum(sizes.get((repo, n), 0) for n in missing)),
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
                     "gguf_filename": gguf_filename if repo == fetch_repo_id else None,

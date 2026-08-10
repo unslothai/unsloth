@@ -245,6 +245,8 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
             }
         ),
     )
+    cached = {"z-image-turbo-Q4_K_M.gguf"}
+
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
@@ -253,7 +255,7 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
             filename,
             revision = None,
             expected_size = None,
-            **kwargs: filename.endswith(".gguf")
+            **kwargs: filename in cached
         ),
     )
 
@@ -262,9 +264,17 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         model_kind = "gguf",
     )
+    cached.add("split_files/vae/ae.safetensors")
+    warming = b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
 
     assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/Z-Image-Turbo-ComfyUI"]
+    assert plan["entries"][0]["files"] == warming["entries"][0]["files"]
     assert plan["total_bytes"] == 8_300
+    assert warming["total_bytes"] == 8_000
     assert plan["required_bytes"] == 12_300
     assert plan["checkpoint_bytes"] == 4_000
 
