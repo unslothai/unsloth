@@ -4477,12 +4477,10 @@ def has_text_only_provisional_card(name: str) -> bool:
 def _web_search_fetches_url(name: str, arguments: dict) -> bool:
     """web_search carrying a ``url`` fetches that exact page instead of searching.
 
-    Searching hands a query to a search engine; a direct fetch is an outbound request
-    to a host the *call* names, which is the one unprompted egress in the built-in set,
-    so it asks even though plain search stays always-safe. The name-only
-    ``is_always_safe_tool`` is deliberately unchanged: it gates the streaming
-    provisional card and the non-streaming stream requirement before arguments exist,
-    where a query-only search must keep running without a prompt."""
+    That fetch is egress to a host the *call* names, the one such case in the built-in
+    set, so it asks even though plain search stays always-safe. Name-only
+    ``is_always_safe_tool`` is deliberately unchanged: it runs before arguments exist
+    (provisional card, stream requirement), where a query-only search must not prompt."""
     return name == "web_search" and bool(str(arguments.get("url", "") or "").strip())
 
 

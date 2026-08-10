@@ -2278,8 +2278,7 @@ def test_builtin_readonly_tools_are_safe():
 
 
 def test_web_search_gated_only_when_it_fetches_a_url():
-    # Searching stays always-safe; a ``url`` makes the same tool fetch that exact page,
-    # an outbound request to a host the call names, so it asks in auto mode too.
+    # Searching stays always-safe; a ``url`` fetches that named host, so it asks in auto too.
     for gate in (is_potentially_unsafe_tool_call, is_high_risk_tool_call):
         assert gate("web_search", {"query": "hi"}) is False
         assert gate("web_search", {}) is False
@@ -2291,8 +2290,8 @@ def test_web_search_gated_only_when_it_fetches_a_url():
 
 
 def test_web_search_name_only_gate_is_unchanged():
-    # is_always_safe_tool runs before arguments exist (streaming provisional card, the
-    # non-streaming stream requirement), so a query-only search must not start prompting.
+    # Runs before arguments exist (provisional card, stream requirement), so a query-only
+    # search must not start prompting.
     from core.inference.tools import is_always_safe_tool
     assert is_always_safe_tool("web_search") is True
 
@@ -2960,10 +2959,8 @@ def test_confirm_gate_needs_stream():
         )
         is False
     )
-    # web_search prompts once the model supplies a ``url`` (it fetches that page instead
-    # of searching), so it needs a stream to deliver that prompt. Without this the request
-    # is admitted and then blocks in wait_tool_decision on an approval the non-streaming
-    # client can never answer.
+    # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
+    # that prompt, else the request is admitted then blocks in wait_tool_decision forever.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
         is True
