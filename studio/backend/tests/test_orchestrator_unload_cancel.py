@@ -2350,12 +2350,10 @@ def test_audio_input_stopped_while_queued_is_never_sent(monkeypatch):
 
 
 def test_a_scoped_load_cancel_that_never_reports_back_releases_the_load():
-    """/load waits for the cancel's teardown to signal cancel_complete, and only
-    /unload's finally sets it. A disconnect or a shutdown between the two leaves
-    nobody to set it, so the wait has to be bounded: an unbounded one parks the
-    load under inference_lifecycle_gate for the process lifetime, and
-    asyncio.to_thread's executor threads are non-daemon, so it also blocks exit.
-    """
+    """Only /unload's finally sets cancel_complete, so a disconnect or shutdown between the
+    two leaves nobody to set it. An unbounded wait parks the load under
+    inference_lifecycle_gate for the process lifetime, and asyncio.to_thread's executor
+    threads are non-daemon, so it also blocks exit."""
     import asyncio
 
     import routes.inference as inf

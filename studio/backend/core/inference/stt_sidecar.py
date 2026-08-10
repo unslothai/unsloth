@@ -216,10 +216,9 @@ class SttLanguageError(ValueError):
 def _close_connection_on_cancel(connection, cancel_event, done_event) -> None:
     """Abandon one blocked sidecar HTTP request, leaving its server resident.
 
-    Shutting the socket unblocks the waiting read without touching the process, so a
-    cancelled dictation does not cost the next one a server relaunch and model load.
-    Shared by the whisper.cpp and llama.cpp sidecars, which both speak HTTP to a
-    long-lived local server.
+    Shutting the socket unblocks the read without touching the process, so a cancelled
+    dictation does not cost the next one a server relaunch and model load. Shared by the
+    whisper.cpp and llama.cpp sidecars.
     """
     while not done_event.is_set():
         if not cancel_event.wait(0.05):
@@ -1469,9 +1468,8 @@ class WhisperSttSidecar:
     def unload(self, wait: bool = True) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
-        A transcription holds ``_lock`` for its whole duration, so a caller releasing
-        engines it does not own must be able to leave a busy one alone rather than
-        block behind it.
+        A transcription holds ``_lock`` throughout, so a caller releasing engines it does
+        not own must be able to leave a busy one alone.
         """
         if not self._lock.acquire(blocking = wait):
             return

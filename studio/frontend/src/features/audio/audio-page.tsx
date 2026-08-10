@@ -279,10 +279,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
-  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN
-   *  origin (`-H 0.0.0.0`) is not a secure context, so navigator.mediaDevices is
-   *  undefined there. Same check the chat composer gates its microphone on;
-   *  without it Record is offered and can only ever fail. */
+  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin
+   *  (`-H 0.0.0.0`) is not a secure context, so navigator.mediaDevices is undefined.
+   *  Same check the chat composer gates its microphone on. */
   const recordingSupported = useMemo(
     () => StudioModelDictationAdapter.isSupported(),
     [],

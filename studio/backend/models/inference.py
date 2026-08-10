@@ -3147,9 +3147,8 @@ class ImageGenerationResponse(BaseModel):
 class AudioSpeechRequest(BaseModel):
     """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
 
-    ``input`` is the text to speak. ``voice`` and ``speed`` are accepted for
-    client compatibility but unused: no loaded TTS backend has voice or rate
-    plumbing (CSM is fixed to speaker 0)."""
+    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
+    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
 
     input: str = Field(..., min_length = 1, description = "The text to synthesize.")
     model: Optional[str] = Field(

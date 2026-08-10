@@ -61,9 +61,8 @@ _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_ST
 def is_curated_stt_repo_id(value: str | None) -> bool:
     """True only for Studio's exact curated STT Hub repositories.
 
-    They remain hidden from chat, but task-scoped inventory consumers need the
-    real cache rows so size, format, variants and lifecycle actions do not have
-    to be reimplemented by the Audio page.
+    Still hidden from chat, but task-scoped inventory consumers need the real cache rows
+    so the Audio page need not reimplement size, format, variants and lifecycle.
     """
     return bool(value and value.strip().lower() in _HIDDEN_STT_REPO_IDS_LOWER)
 

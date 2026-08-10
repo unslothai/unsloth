@@ -47,14 +47,11 @@ def load(
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
 
-    Dictation is one user-visible choice, so the engines are alternatives rather
-    than slots: a Transformers Whisper and a llama.cpp Qwen3-ASR held at once
-    doubles VRAM for the whole keep-alive window. An engine serving a request
-    keeps its model and releases it on its own idle timer, since waiting for a
-    transcription that may run for minutes would stall this load. Raises what
-    the sidecar raises, before anything is released: a 409 for a model that is not
-    downloaded must not cost the user the engine they were already using, which is the
-    order `_load_locked` keeps for an in-engine switch.
+    Dictation is one user-visible choice, so engines are alternatives, not slots:
+    holding two at once doubles VRAM for the whole keep-alive window. An engine serving
+    a request keeps its model and releases it on its own idle timer. Raises what the
+    sidecar raises, before anything is released: a 409 for a model that is not
+    downloaded must not cost the user the engine they were already using.
     """
     with _load_lock:
         sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)

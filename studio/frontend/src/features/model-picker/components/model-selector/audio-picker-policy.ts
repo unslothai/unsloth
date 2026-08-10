@@ -18,9 +18,9 @@ export function shouldRecommendCommunityModels(
   return policy === "recommended";
 }
 
-/** Community ASR currently runs through the Transformers Whisper sidecar.
- * Curated GGUF/MTMD artifacts are handled by the catalog before this gate; an
- * uncurated row must therefore identify a non-GGUF Whisper checkpoint. */
+/** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
+ * artifacts are handled by the catalog before this gate, so an uncurated row must
+ * identify a non-GGUF Whisper checkpoint. */
 export function communityAudioRowIsRunnable({
   isStt,
   isTts,
@@ -66,11 +66,10 @@ export function communityAudioRowIsRunnable({
 
 /** Whether an audio pick from the chat picker may be routed to the Audio page.
  *
- * The page's own lists apply `communityAudioRowIsRunnable`, so a repo that fails it
- * is not listed there. Routing one anyway sends the user to a page that cannot show
- * the row, and its `?model=` handoff loads it into the main slot, evicting the chat
- * model before reporting the repo is unsupported. Curated ids always route: the
- * catalog, not the tag, is their runtime contract. */
+ * The page's own lists apply `communityAudioRowIsRunnable`, so routing a repo that fails
+ * it lands on a page that cannot show the row, and its `?model=` handoff evicts the chat
+ * model before reporting the repo unsupported. Curated ids always route: the catalog,
+ * not the tag, is their runtime contract. */
 export function audioPickIsRoutable({
   id,
   task,
@@ -104,8 +103,8 @@ export function audioPickIsRoutable({
 }
 
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated
- * families may expose a non-GGUF canonical row because Audio resolves that row
- * to its published GGUF sibling before loading. */
+ * families may expose a non-GGUF canonical row because Audio resolves it to a published
+ * GGUF sibling before loading. */
 export function macTtsHubRowIsRunnable({
   isMac,
   isTts,
@@ -154,10 +153,9 @@ export function taskPickerRowMatches({
   return format === "all" ? isRecommendable : matchesFormat;
 }
 
-/** A downloaded GGUF often exposes only its base architecture (for example,
- * Orpheus reports `llama`), so generic inventory correctly calls it chat. An
- * exact curated Audio artifact is a stronger page/runtime contract, but only
- * for its own active Audio mode. */
+/** A downloaded GGUF often exposes only its base architecture (Orpheus reports
+ * `llama`), so generic inventory correctly calls it chat. An exact curated Audio
+ * artifact is a stronger contract, but only for its own active Audio mode. */
 export function curatedAudioInventoryMatches({
   isActiveCatalogArtifact,
   catalogScope,
@@ -183,9 +181,9 @@ export function curatedAudioInventoryMatches({
     : pickerTask === expected;
 }
 
-/** A cached/local Audio GGUF can be classified from its base architecture as
- * text-generation. Only an exact catalog artifact is allowed to replace that
- * generic fallback when Chat decides which task page should own the pick. */
+/** A cached Audio GGUF can be classified from its base architecture as text-generation.
+ * Only an exact catalog artifact may replace that fallback when Chat decides which task
+ * page owns the pick. */
 export function curatedAudioInventoryTask({
   inventoryTask,
   isExactCatalogArtifact,
@@ -236,9 +234,9 @@ export function taskForMediaPick(
     : (inventoryTask ?? pipelineTag ?? null);
 }
 
-/** Filesystem checkpoints cannot be served by the STT sidecars yet. Keep
- * cached Hub snapshots and curated artifacts visible, but do not advertise
- * local-directory rows that would send an absolute path to the Hub-only API. */
+/** Filesystem checkpoints cannot be served by the STT sidecars yet. Keep cached Hub
+ * snapshots and curated artifacts visible, but not local-directory rows that would send
+ * an absolute path to the Hub-only API. */
 export function filesystemRowsSupportedForTask(
   pickerTask: string | readonly string[] | null | undefined,
   rowTask?: string | null,

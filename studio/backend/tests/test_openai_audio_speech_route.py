@@ -3,9 +3,8 @@
 
 """FastAPI round-trip tests for the OpenAI-compatible POST /v1/audio/speech.
 
-The TTS core (_generate_tts_wav) is replaced with a light fake, so these
-exercise the route wiring, validation, gallery persistence, and the raw-WAV
-response shape without torch, llama.cpp, weights, or a GPU."""
+The TTS core (_generate_tts_wav) is faked, so these cover route wiring, validation,
+gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 

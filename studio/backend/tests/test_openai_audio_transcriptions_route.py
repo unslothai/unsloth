@@ -3,9 +3,8 @@
 
 """FastAPI round-trip tests for the OpenAI-compatible POST /v1/audio/transcriptions.
 
-The STT sidecar call (_transcribe_audio_result) is replaced with a light fake,
-so these exercise the multipart wiring, model-id mapping, response formats, and
-error propagation without whisper, llama.cpp, or a GPU."""
+The sidecar call (_transcribe_audio_result) is faked, so these cover multipart wiring,
+model-id mapping, response formats and error propagation without whisper or a GPU."""
 
 from __future__ import annotations
 
@@ -131,8 +130,8 @@ def test_sidecar_errors_keep_their_status(monkeypatch):
 def test_an_mtmd_only_model_forces_its_engine():
     """Qwen3-ASR only runs on the mtmd sidecar.
 
-    The route passed no engine, so _resolve_stt_engine defaulted to Transformers
-    and the Whisper sidecar rejected the model.
+    The route passed no engine, so _resolve_stt_engine defaulted to Transformers and the
+    Whisper sidecar rejected the model.
     """
     from routes.inference import _stt_engine_for_model
 
@@ -148,10 +147,8 @@ def test_whisper_ids_keep_the_default_engine():
 
 
 def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
-    """Without it a client that goes away leaves the sidecar transcribing under its lock.
-
-    The raw and OpenAI routes always passed the request; the base64 JSON route did not.
-    """
+    """The raw and OpenAI routes always passed the request; the base64 JSON route did not,
+    so a client that goes away left the sidecar transcribing under its lock."""
     import base64
 
     from fastapi import FastAPI

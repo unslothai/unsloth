@@ -3,10 +3,9 @@
 
 """A backend without a TTS path must say so, not "an internal error occurred".
 
-The MLX worker has no text-to-speech branch, so generating on a safetensors
-Orpheus (which is what loads on Apple Silicon) always fails. The message was
-flattened by ``safe_error_detail``, so the Audio page reported an internal error
-for a model that had loaded fine and simply cannot generate on that backend.
+The MLX worker has no text-to-speech branch, so a safetensors Orpheus (what loads on
+Apple Silicon) always fails. ``safe_error_detail`` flattened the message, so the Audio
+page reported an internal error for a model that had loaded fine.
 """
 
 from __future__ import annotations

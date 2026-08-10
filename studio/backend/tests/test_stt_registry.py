@@ -189,8 +189,8 @@ def test_load_never_blocks_on_an_engine_that_is_serving_a_request(monkeypatch):
 def test_a_busy_sidecar_keeps_its_model_and_an_idle_one_releases_it():
     """Against the real sidecars: `wait=False` must decline a live request, not block.
 
-    RLock.locked() only exists on 3.14, and the mtmd sidecar drops _lock before its HTTP
-    call, so the busy probe cannot be either of those.
+    RLock.locked() is 3.14-only and the mtmd sidecar drops _lock before its HTTP call, so
+    the busy probe cannot be either.
     """
     from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
     from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar

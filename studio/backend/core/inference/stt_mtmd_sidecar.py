@@ -622,9 +622,8 @@ class MtmdSttSidecar:
     def unload(self, wait: bool = True) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
-        `transcribe` runs `_post_transcribe` outside ``_lock`` and counts itself in
-        ``_active_requests`` instead, so that, not the lock, is what says busy here. A
-        caller releasing engines it does not own must leave a busy one alone.
+        `transcribe` runs outside ``_lock`` and counts itself in ``_active_requests``, so
+        that, not the lock, is what says busy here.
         """
         if not wait and (self.is_loading() or self._active_requests):
             return

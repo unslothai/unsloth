@@ -13,9 +13,8 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-/** The link out to another page's workspace (Images, Video, Audio, image training). Kept out
- *  of the page's mode strip, which switches modes within a page, and parked at the far right
- *  past a divider so it reads as leaving rather than as another mode. */
+/** The link out to another page's workspace (Images, Video, Audio, image training).
+ *  Kept out of the mode strip and parked past a divider so it reads as leaving. */
 export function MediaPageLink({
   to,
   label,

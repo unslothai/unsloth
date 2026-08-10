@@ -1975,9 +1975,9 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, with its published formats as the second level. */
   catalog?: CatalogGroup[];
-  /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags,
-   *  below the unsloth rows and in search. Opt-in: the runtime has to load an
-   *  arbitrary publisher's checkpoint, true of audio, not of the curated pages. */
+  /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags, below
+   *  the unsloth rows and in search. Opt-in, since the runtime has to load an arbitrary
+   *  publisher's checkpoint: true of audio, not of the curated pages. */
   communityModelPolicy?: CommunityModelPolicy;
 }) {
   const gpu = useGpuInfo();
@@ -2611,9 +2611,9 @@ export function HubModelPicker({
     [],
   );
 
-  /** Pipeline tag is the only signal the Hub gives us, since the real test is the
-   *  checkpoint's tokenizer and that needs the download first. Exports in another
-   *  serialization are never loadable, so drop those by name (as FP8 does above). */
+  /** Pipeline tag is the Hub's only signal, since the real test is the checkpoint's
+   *  tokenizer and that needs the download first. Exports in another serialization are
+   *  never loadable, so drop those by name (as FP8 does above). */
   const isLoadableCommunityRepo = useCallback(
     (id: string) =>
       !/(^|[-_/.])(onnx|openvino|tflite|coreml)([-_./]|$)/i.test(id),

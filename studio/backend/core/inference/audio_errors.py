@@ -3,11 +3,9 @@
 
 """Audio errors that are safe to show a client verbatim.
 
-``safe_error_detail`` flattens every exception to "An internal error occurred" so a
-raw ``str(e)`` cannot leak a path. Right for a failure, wrong for a capability
-answer, where the reason is the whole reply: the Audio page reported an internal
-error for a model that had loaded fine and simply cannot generate on this host.
-These carry no path or user input, so the route passes them straight through.
+``safe_error_detail`` flattens everything to "An internal error occurred", right for a
+failure but wrong for a capability answer, where the reason is the whole reply. These
+carry no path or user input, so the route passes them straight through.
 """
 
 from __future__ import annotations
@@ -21,16 +19,15 @@ AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 class AudioGenerationCancelledError(RuntimeError):
     """The generation was stopped rather than failing.
 
-    A bare RuntimeError here reached the route's generic handler, which flattens every
-    message, so an idle auto-unload interrupting a Speak reported HTTP 500 "An internal
-    error occurred" instead of a cancellation the client can retry.
+    A bare RuntimeError hit the route's generic handler, so an idle auto-unload
+    interrupting a Speak reported HTTP 500 instead of a retryable cancellation.
     """
 
 
 class AudioBackendUnsupportedError(RuntimeError):
     """The model loaded fine; this backend cannot do this audio task.
 
-    Unlike a generation failure, no retry, shorter input or freed memory helps.
+    No retry, shorter input or freed memory helps.
     """
 
     def __init__(

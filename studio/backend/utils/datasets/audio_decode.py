@@ -3,13 +3,11 @@
 
 """Decode `datasets` Audio columns with soundfile when torchcodec cannot load.
 
-`datasets` 4.x decodes audio only through torchcodec, and torchcodec needs an
-FFmpeg full-shared install to dlopen its native libraries. Windows has none by
-default, so `unsloth.import_fixes.disable_torchcodec_if_broken` clears
-`datasets.config.TORCHCODEC_AVAILABLE` and every audio column then raises
-"To support decoding audio data, please install 'torchcodec'." That blocks the
-dataset format check and all six audio trainer paths on an otherwise working
-host. Installing a soundfile decoder restores the pre-4.0 output contract,
+`datasets` 4.x decodes audio only through torchcodec, which needs an FFmpeg full-shared
+install to dlopen its native libraries. Windows has none by default, so
+`disable_torchcodec_if_broken` clears `datasets.config.TORCHCODEC_AVAILABLE` and every
+audio column raises, blocking the dataset format check and all six audio trainer paths
+on an otherwise working host. A soundfile decoder restores the pre-4.0 output contract,
 `{"path", "array", "sampling_rate"}`, which is what those callers already read.
 """
 
@@ -80,8 +78,8 @@ def _encode_with_soundfile(self, value) -> dict:
     """Stand-in for `datasets.Audio.encode_example`, for the array form only.
 
     The audio VLM path maps without `remove_columns`, so reading `["array"]` writes the
-    decoded value back and `cast_storage` re-encodes it. torchcodec's encoder is a hard
-    requirement there, which would fail a run the decoder above had just unblocked.
+    decoded value back and `cast_storage` re-encodes it through torchcodec's encoder,
+    failing a run the decoder above had just unblocked.
     """
     import io
 
@@ -99,9 +97,8 @@ def _encode_with_soundfile(self, value) -> dict:
 def ensure_audio_decoding() -> bool:
     """Install the soundfile decoder when torchcodec is unusable. Idempotent.
 
-    Returns True when audio columns can be decoded, either natively or through
-    the replacement. False means neither backend is importable, and the caller
-    should report that rather than let a decode raise deep inside `datasets`.
+    False means neither backend is importable, and the caller should report that rather
+    than let a decode raise deep inside `datasets`.
     """
     global _installed
     try:

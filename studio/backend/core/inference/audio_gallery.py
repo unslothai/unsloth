@@ -3,10 +3,9 @@
 
 """Disk-backed persistence for generated TTS audio clips.
 
-Each clip is a pair under ``studio_root()/audio``: ``{id}.wav`` holds the bytes,
-``{id}.json`` holds the recipe (a WAV has no portable text chunk like a PNG).
-The pair travels together; a lone file is not a valid record. Dumb storage: the
-route owns the schema; this only reads, writes and sorts.
+Each clip is a pair under ``studio_root()/audio``: ``{id}.wav`` holds the bytes and
+``{id}.json`` the recipe (a WAV has no portable text chunk). A lone file is not a
+valid record. Dumb storage: the route owns the schema, this reads, writes and sorts.
 """
 
 from __future__ import annotations
@@ -35,9 +34,8 @@ def gallery_dir() -> Path:
 def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     """Persist WAV bytes plus their recipe sidecar; return the record.
 
-    Both files are staged then renamed in, wav first: the sidecar is the pair's
-    commit marker (list_audio skips a wav without a readable sidecar). On any
-    failure every artifact is removed so no invisible orphan wav is left behind.
+    Staged then renamed in, wav first: the sidecar is the pair's commit marker. On any
+    failure every artifact is removed, so no invisible orphan wav is left behind.
     """
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
@@ -112,10 +110,10 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
 
 
 def owned_audio_path(audio_id: str) -> Optional[Path]:
-    """Resolve an id to its WAV only when it is a Studio-owned clip (a readable
-    sidecar), else None. The serve route uses this instead of audio_path() so a
-    guessed stem for a hand-dropped or orphan WAV cannot be streamed out.
-    Mirrors the delete/clear ownership guard."""
+    """Resolve an id to its WAV only for a Studio-owned clip (readable sidecar).
+
+    The serve route uses this rather than audio_path() so a guessed stem for a
+    hand-dropped or orphan WAV cannot be streamed out."""
     path = audio_path(audio_id)
     if path is None or _read_meta(_sidecar_path(audio_id)) is None:
         return None
@@ -171,13 +169,10 @@ def list_audio(
 ) -> list[dict[str, Any]]:
     """A newest-first window of clips for infinite scroll.
 
-    Ordered by WAV mtime (a cheap stat close to generation order); only the
-    window's sidecars are read. limit=None returns everything from ``offset``
-    on. A file without its pair is skipped. ``valid`` filters records BEFORE
-    pagination so offset, limit and has_more all count over the accepted-record
-    domain; pass the route's schema validator. ``before`` is an exclusive,
-    stable continuation cursor for callers that must tolerate deletions between
-    pages."""
+    Ordered by WAV mtime; only the window's sidecars are read, and a file without its
+    pair is skipped. ``valid`` filters BEFORE pagination, so offset, limit and has_more
+    all count over the accepted-record domain. ``before`` is an exclusive, stable cursor
+    for callers that must tolerate deletions between pages."""
     return [record for record, _ in _list_audio_entries(limit, offset, before = before, valid = valid)]
 
 
@@ -195,9 +190,8 @@ def list_audio_page(
 def delete(audio_id: str) -> bool:
     """Remove both files of an owned pair; True if the WAV existed and was ours.
 
-    The WAV is unlinked first: dropping the sidecar first and failing on the wav
-    would leave a clip that vanished from the gallery with no retry, while
-    wav-first leaves at worst an orphan sidecar list_audio ignores."""
+    WAV first: sidecar-first then failing would lose a clip with no retry, while this
+    leaves at worst an orphan sidecar list_audio ignores."""
     path = audio_path(audio_id)
     if path is None:
         return False
@@ -217,9 +211,8 @@ def delete(audio_id: str) -> bool:
 
 
 def clear() -> int:
-    """Delete every Studio-owned gallery pair (readable sidecar); return the
-    count removed. Foreign and orphan WAVs are preserved: list_audio already
-    hides them, so clear must not destroy them."""
+    """Delete every Studio-owned pair (readable sidecar); return the count removed.
+    Foreign and orphan WAVs are preserved, since list_audio already hides them."""
     removed = 0
     try:
         paths = list(gallery_dir().glob("*.wav"))

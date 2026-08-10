@@ -9063,9 +9063,8 @@ _GGUF_TTS_AUDIO_TYPES = frozenset(("snac", "bicodec", "dac"))
 async def _generate_tts_wav(
     text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
 ) -> tuple[bytes, int, str, Optional[str]]:
-    """Run the loaded TTS backend on ``text``: the shared core of /audio/generate
-    and the OpenAI-shaped /audio/speech. Returns (wav_bytes, sample_rate,
-    model_name, audio_type)."""
+    """Shared core of /audio/generate and /audio/speech. Returns
+    (wav_bytes, sample_rate, model_name, audio_type)."""
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
     # unload an audio GGUF the next request then failed to restore. Validation
@@ -9219,11 +9218,8 @@ async def generate_audio(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """
-    Generate audio (TTS) from the latest user message.
-    Returns JSON with base64-encoded WAV audio.
-    Works with both GGUF (llama-server) and Unsloth/transformers backends.
-    """
+    """Generate audio (TTS) from the latest user message, as base64 WAV.
+    Works with both GGUF (llama-server) and Unsloth/transformers backends."""
     import base64
 
     # Extract text from the last user message
@@ -9273,10 +9269,9 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    ``model`` is informational (the loaded audio model is used, mirroring
-    /v1/images/generations); ``voice`` and ``speed`` are accepted and ignored.
-    Only WAV output exists, so any other ``response_format`` is a 400 rather
-    than a silent container mismatch."""
+    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
+    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
+    silent container mismatch."""
     fmt = (body.response_format or "wav").strip().lower()
     if fmt != "wav":
         raise HTTPException(
@@ -9306,9 +9301,8 @@ async def openai_audio_transcriptions(
 ):
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
 
-    ``model`` maps to a sidecar model id; OpenAI's ``whisper-1`` (or omitting
-    the field) selects the sidecar default. ``response_format`` supports
-    ``json`` ({"text": ...}) and ``text`` (plain body)."""
+    ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing selecting the
+    default. ``response_format`` supports ``json`` and ``text``."""
     fmt = (response_format or "json").strip().lower()
     if fmt not in ("json", "text"):
         raise HTTPException(
@@ -9341,8 +9335,8 @@ async def openai_audio_transcriptions(
 def _stt_engine_for_model(model: Optional[str]) -> Optional[str]:
     """The engine an STT id *requires*, or None to leave the default alone.
 
-    Qwen3-ASR only runs on the mtmd sidecar; without this an explicit id fell
-    through to the Transformers Whisper sidecar, which rejects it.
+    Qwen3-ASR only runs on the mtmd sidecar; without this an explicit id fell through to
+    the Transformers Whisper sidecar, which rejects it.
     """
     if not model:
         return None

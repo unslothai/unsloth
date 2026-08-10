@@ -46,9 +46,8 @@ def test_non_audio_tokens_classify_none():
 def test_orpheus_snac_codebook_beats_a_stray_audio_marker():
     """Orpheus ships 28k <custom_token_N> SNAC codes AND a lone <|audio|>.
 
-    audio_vlm used to be tested first and won, so the TTS model came back as an
-    audio-INPUT model: is_audio stayed False (mlx_inference excludes audio_vlm)
-    and the Audio page refused it with "not a TTS audio model".
+    audio_vlm was tested first and won, so a TTS model came back as audio-INPUT:
+    is_audio stayed False and the Audio page refused it.
     """
     tokens = ["<|audio|>"] + [f"<custom_token_{i}>" for i in range(28683)]
     assert _classify(tokens) == "snac"

@@ -42,9 +42,9 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every checkpoint the sidecars can
- * load locally. Whisper uses the same short key for distinct Transformers and
- * whisper.cpp downloads, so engine provenance must survive this boundary. */
+/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper
+ * uses one short key for distinct Transformers and whisper.cpp downloads, so engine
+ * provenance must survive this boundary. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -69,9 +69,9 @@ export function sttDownloadedArtifacts(
   return artifacts;
 }
 
-/** Catalog contracts win; uncurated on-device/community ASR rows route from
- * the inventory task preserved in picker metadata. Unknown and TTS-tagged
- * community repos keep the main-slot path for load-time capability validation. */
+/** Catalog contracts win; uncurated ASR rows route from the inventory task in picker
+ * metadata. Unknown and TTS-tagged community repos keep the main-slot path for
+ * load-time capability validation. */
 export function resolveAudioPickTask(
   catalogTask: AudioPickTask,
   pipelineTag?: string | null,
@@ -88,9 +88,9 @@ export function canTransitionAudioMode(busy: AudioBusy): boolean {
   return busy === null || busy === "generating";
 }
 
-/** A managed TTS completion still owns auto-load only while the same staging
- * generation remains selected in Speak. Downloads may continue globally after
- * ownership changes, but their completion must not mutate the main slot. */
+/** A managed TTS completion owns auto-load only while the same staging generation is
+ * selected in Speak. Downloads continue globally after ownership changes, but their
+ * completion must not mutate the main slot. */
 export function stagedTtsLoadIsOwned(
   pendingGeneration: number | null,
   currentGeneration: number,
@@ -137,9 +137,9 @@ export interface AutoGgufVariant {
   partial?: boolean;
 }
 
-/** Prefer a complete cached quant, then the repo's declared default, then the
- * first exact file. This keeps Mac fallback instant when any runnable sibling
- * is already present while still making an uncached choice deterministic. */
+/** Prefer a complete cached quant, then the repo's declared default, then the first
+ * exact file: instant Mac fallback when a runnable sibling is present, deterministic
+ * otherwise. */
 export function selectAutoGgufVariant<T extends AutoGgufVariant>(
   variants: readonly T[],
   defaultVariant: string | null | undefined,
@@ -175,11 +175,10 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
 
 /** Fold a freshly fetched first page into the list already on screen.
  *
- * The page is authoritative for the newest `page.length` clips, so it replaces those
- * and any scrollback the user loaded below it is kept. Replacing outright collapsed a
- * paginated History back to one page on every delete and generate, and reselected a
- * different clip because the playing one was no longer in the list. `removedId` drops
- * a clip this client just deleted, which the page can no longer report. */
+ * The page is authoritative for the newest `page.length` clips and any scrollback below
+ * it is kept; replacing outright collapsed a paginated History on every delete and
+ * generate, and reselected a different clip. `removedId` drops a clip this client just
+ * deleted, which the page can no longer report. */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
@@ -242,10 +241,10 @@ type SttResidencyStatus = SttEngineResidency & {
   mtmd?: SttEngineResidency;
 };
 
-/** Resolve the resident model from the engine-aware status shape. The legacy
- * top-level fields mirror Transformers only, so reading them for Qwen3-ASR or
- * whisper.cpp clears a model that is actually ready. While the selected engine
- * is pending, do not let an older model on another engine steal the selector. */
+/** Resolve the resident model from the engine-aware status shape. The legacy top-level
+ * fields mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a
+ * model that is actually ready. While the selected engine is pending, do not let an
+ * older model on another engine steal the selector. */
 export function resolveSttLoadedModel(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,

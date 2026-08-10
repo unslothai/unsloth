@@ -172,9 +172,8 @@ def test_a_concurrent_first_install_captures_the_original_encode_once(
 ):
     """Two first-time callers must not both capture Audio.encode_example.
 
-    The loser used to capture the already-installed shim as _ORIGINAL_ENCODE, so
-    its fallback branch recursed into itself until RecursionError, breaking
-    dataset encoding for the whole process.
+    The loser captured the already-installed shim as _ORIGINAL_ENCODE, so its fallback
+    branch recursed into itself until RecursionError.
     """
     import threading
 

@@ -401,9 +401,8 @@ def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
 
 
 def test_cached_model_scan_surfaces_custom_whisper_repo_as_asr(monkeypatch, tmp_path):
-    """The Audio page manages STT downloads off the same inventory, so a cached Whisper
-    repo is emitted as an ASR row instead of being dropped. Chat never offers it: the
-    row carries the ASR task and can_chat False."""
+    """The Audio page manages STT downloads off the same inventory, so a cached Whisper repo
+    is emitted as an ASR row. Chat never offers it: the row carries can_chat False."""
     repo_path = tmp_path / "models--Org--CustomWhisper"
     snapshot = repo_path / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)

@@ -769,8 +769,8 @@ class GgmlSttSidecar:
     def unload(self, wait: bool = True) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
-        `transcribe` holds ``_lock`` across the whole whisper-server round trip, so a
-        caller releasing engines it does not own must not block behind one.
+        `transcribe` holds ``_lock`` across the whole round trip, so a caller releasing
+        engines it does not own must not block behind one.
         """
         if not self._lock.acquire(blocking = wait):
             return
