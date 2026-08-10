@@ -178,12 +178,15 @@ class _CaptureLoadReport(logging.Filter):
     BertModel does not expect, which is benign and identical every time.
 
     Nothing is lost: the caller re-emits the report (see ``_quiet_transformers_load``)
-    at debug when it only reports UNEXPECTED keys, and at warning when it mentions
-    anything that could change the model's behaviour.
+    at debug when it only reports that known legacy key, and at warning when it
+    mentions anything that could change the model's behaviour.
     """
 
-    _BENIGN = ("UNEXPECTED",)
     _SERIOUS = ("MISSING", "MISMATCH", "CONVERSION")
+    # The only UNEXPECTED key worth downgrading is the legacy buffer every BERT-era
+    # sentence-transformer ships. Any other discarded weight can genuinely change
+    # retrieval quality, so it stays a warning.
+    _KNOWN_BENIGN_UNEXPECTED = "position_ids"
 
     def __init__(self) -> None:
         super().__init__()
@@ -206,12 +209,20 @@ class _CaptureLoadReport(logging.Filter):
         return False
 
     def is_serious(self) -> bool:
-        return any(tag in r for r in self.reports for tag in self._SERIOUS)
+        for report in self.reports:
+            if any(tag in report for tag in self._SERIOUS):
+                return True
+            if "UNEXPECTED" in report and self._KNOWN_BENIGN_UNEXPECTED not in report:
+                return True
+        return False
 
 
 _LOAD_REPORT_LOGGERS = (
     "transformers.utils.loading_report",
     "transformers.modeling_utils",
+    # An adapter-backed embedding model reports through the PEFT integration's own
+    # logger, which is not a descendant of either of the above.
+    "transformers.integrations.peft",
 )
 
 

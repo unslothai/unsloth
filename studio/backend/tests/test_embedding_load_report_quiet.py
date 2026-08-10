@@ -184,3 +184,45 @@ def test_a_hub_only_progress_disable_survives():
         assert are_progress_bars_disabled() is True
     finally:
         enable_progress_bars()
+
+
+def test_an_unexpected_key_other_than_the_legacy_one_stays_a_warning():
+    # A discarded encoder weight can genuinely degrade retrieval, so only the
+    # bge-style embeddings.position_ids report is quiet enough for debug.
+    log, sink = _attach_sink()
+    try:
+        with _quiet_transformers_load() as report:
+            log.warning("BertModel LOAD REPORT from: x\nencoder.layer.0.dense | UNEXPECTED")
+        assert report.is_serious() is True
+    finally:
+        log.removeHandler(sink)
+        log.propagate = True
+
+
+def test_the_legacy_position_ids_report_is_still_benign():
+    log, sink = _attach_sink()
+    try:
+        with _quiet_transformers_load() as report:
+            log.warning(_BENIGN)
+        assert report.is_serious() is False
+    finally:
+        log.removeHandler(sink)
+        log.propagate = True
+
+
+def test_the_peft_integration_logger_is_covered():
+    # An adapter-backed embedding model reports through transformers.integrations.peft,
+    # which is not a descendant of the other two loggers.
+    log = logging.getLogger("transformers.integrations.peft")
+    sink = _Sink()
+    log.addHandler(sink)
+    log.propagate = False
+    log.setLevel(logging.DEBUG)
+    try:
+        with _quiet_transformers_load() as report:
+            log.warning(_SERIOUS)
+        assert sink.messages == [], sink.messages
+        assert len(report.reports) == 1
+    finally:
+        log.removeHandler(sink)
+        log.propagate = True
