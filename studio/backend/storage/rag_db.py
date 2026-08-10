@@ -265,9 +265,7 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
     Also called for the metadata connection, which skips _ensure_schema so that scope
     retirement keeps working when the vector extension cannot load.
     """
-    job_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()
-    }
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
         conn.execute("ALTER TABLE linked_folder_sync_jobs ADD COLUMN successor_kind TEXT")

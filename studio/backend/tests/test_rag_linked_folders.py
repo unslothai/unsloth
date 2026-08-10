@@ -166,9 +166,7 @@ def test_failed_replacement_commit_keeps_the_prior_snapshot_readable(
 
 
 @requires_sqlite_vec
-def test_failed_deletion_commit_keeps_the_snapshot_readable(
-    rag_home, stub_embeddings, monkeypatch
-):
+def test_failed_deletion_commit_keeps_the_snapshot_readable(rag_home, stub_embeddings, monkeypatch):
     """An auto_sync=0 folder may not reconcile again for a long time."""
     source, folder = _folder(rag_home)
     path = source / "notes.txt"
@@ -2025,9 +2023,12 @@ def test_a_queued_rebuild_is_not_downgraded_by_a_later_sync_request(rag_home):
     folder_sync.request_sync(folder["id"], rebuild = True)
     folder_sync.request_sync(folder["id"])
 
-    assert _row(
-        "SELECT successor_kind FROM linked_folder_sync_jobs WHERE id=?", (running,)
-    )["successor_kind"] == "rebuild"
+    assert (
+        _row("SELECT successor_kind FROM linked_folder_sync_jobs WHERE id=?", (running,))[
+            "successor_kind"
+        ]
+        == "rebuild"
+    )
 
 
 def test_failure_summary_names_the_files_and_caps_the_list():
