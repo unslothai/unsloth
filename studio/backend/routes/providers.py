@@ -67,7 +67,6 @@ def _provider_response(row: dict, current_subject: str) -> ProviderResponse:
     )
 
 
-
 # ── Public key for API key encryption ─────────────────────────────
 
 
@@ -126,9 +125,7 @@ async def create_provider_config(
             f"Use GET /api/providers/registry to see available types.",
         )
 
-    api_key = resolve_provider_api_key_or_400(
-        current_subject, None, payload.encrypted_api_key
-    )
+    api_key = resolve_provider_api_key_or_400(current_subject, None, payload.encrypted_api_key)
     provider_id = uuid.uuid4().hex[:16]
     base_url = payload.base_url or info["base_url"]
 
@@ -169,9 +166,7 @@ async def update_provider_config(
             detail = "Cannot replace and clear an API key in the same request",
         )
 
-    metadata_fields = {
-        "display_name", "base_url", "is_enabled", "models", "available_models"
-    }
+    metadata_fields = {"display_name", "base_url", "is_enabled", "models", "available_models"}
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
     if metadata_requested:
         providers_db.update_provider(
@@ -208,7 +203,6 @@ async def delete_provider_config(
     providers_db.delete_provider(provider_id)
 
 
-
 def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id:
@@ -230,6 +224,7 @@ def _bind_saved_provider_target(payload):
             "base_url": config["base_url"],
         }
     )
+
 
 # ── Test connectivity ─────────────────────────────────────────────
 

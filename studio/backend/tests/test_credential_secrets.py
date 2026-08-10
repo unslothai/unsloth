@@ -19,7 +19,9 @@ def isolated_databases(tmp_path, monkeypatch):
     monkeypatch.setattr(auth_storage, "DB_PATH", auth_db)
     monkeypatch.setattr(auth_storage, "_credential_encryption_key_cache", None)
     monkeypatch.setattr(credential_secrets, "studio_db_path", lambda: studio_db)
-    monkeypatch.setattr(credential_secrets, "ensure_dir", lambda path: path.mkdir(parents = True, exist_ok = True))
+    monkeypatch.setattr(
+        credential_secrets, "ensure_dir", lambda path: path.mkdir(parents = True, exist_ok = True)
+    )
     monkeypatch.setattr(
         credential_secrets,
         "get_or_create_credential_encryption_key",
@@ -38,7 +40,6 @@ def test_round_trip_isolation_and_ciphertext(isolated_databases):
     assert credential_secrets.get_hf_token("alice") == secret
     assert credential_secrets.get_hf_token("bob") is None
     assert secret.encode() not in isolated_databases.read_bytes()
-
 
     credential_secrets.save_provider_api_key("alice", "provider-1", "sk-one")
     credential_secrets.save_provider_api_key("alice", "provider-2", "sk-two")
@@ -111,7 +112,6 @@ def test_credential_key_persists_independently_of_password_changes():
     assert before == after
 
 
-
 def test_credentials_survive_process_restart_simulation():
     credential_secrets.save_hf_token("alice", "hf_restart")
     credential_secrets.save_provider_api_key("alice", "provider-1", "sk_restart")
@@ -120,7 +120,4 @@ def test_credentials_survive_process_restart_simulation():
     credential_secrets._schema_ready = False
 
     assert credential_secrets.get_hf_token("alice") == "hf_restart"
-    assert (
-        credential_secrets.get_provider_api_key("alice", "provider-1")
-        == "sk_restart"
-    )
+    assert credential_secrets.get_provider_api_key("alice", "provider-1") == "sk_restart"

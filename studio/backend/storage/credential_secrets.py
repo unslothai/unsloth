@@ -84,12 +84,7 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def upsert_secret(
-    owner_subject: str,
-    credential_kind: str,
-    scope_id: str,
-    plaintext: str,
-) -> None:
+def upsert_secret(owner_subject: str, credential_kind: str, scope_id: str, plaintext: str) -> None:
     """Encrypt and atomically insert or replace one credential."""
     if not owner_subject or not credential_kind or not scope_id:
         raise ValueError("Credential owner, kind, and scope are required")
@@ -134,11 +129,7 @@ def upsert_secret(
         conn.close()
 
 
-def get_secret(
-    owner_subject: str,
-    credential_kind: str,
-    scope_id: str,
-) -> Optional[str]:
+def get_secret(owner_subject: str, credential_kind: str, scope_id: str) -> Optional[str]:
     """Return a decrypted credential, or ``None`` if absent or unreadable.
 
     Corrupt rows, unknown envelope versions, and a replaced auth.db key fail
@@ -220,14 +211,11 @@ def delete_provider_api_key(owner_subject: str, provider_id: str) -> bool:
 
 
 def resolve_provider_api_key(
-    owner_subject: str,
-    provider_id: Optional[str],
-    encrypted_api_key: Optional[str],
+    owner_subject: str, provider_id: Optional[str], encrypted_api_key: Optional[str]
 ) -> str:
     """Resolve explicit legacy/request key first, then an owner-scoped saved key."""
     if encrypted_api_key:
         from core.inference.key_exchange import decrypt_api_key
-
         return decrypt_api_key(encrypted_api_key)
     if provider_id:
         return get_provider_api_key(owner_subject, provider_id) or ""

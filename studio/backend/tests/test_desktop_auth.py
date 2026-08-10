@@ -582,7 +582,6 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
     nonce = os.urandom(12)
     encrypted = AESGCM(credential_key).encrypt(nonce, b"hf-survives-password-change", b"test")
 
-
     response = client.post(
         "/api/auth/change-password",
         headers = {"Authorization": f"Bearer {bearer}"},

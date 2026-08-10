@@ -40,9 +40,7 @@ try:
     providers_route = _load_route_module(
         "_credential_providers_route", _routes_dir / "providers.py"
     )
-    settings_route = _load_route_module(
-        "_credential_settings_route", _routes_dir / "settings.py"
-    )
+    settings_route = _load_route_module("_credential_settings_route", _routes_dir / "settings.py")
 finally:
     sys.modules.pop("routes.provider_credentials", None)
     if _previous_routes is None:
@@ -138,26 +136,23 @@ def test_provider_create_preserve_replace_clear_and_delete(monkeypatch):
 
 def test_shared_provider_resolver_uses_saved_and_explicit_precedence(monkeypatch):
     credential_secrets.save_provider_api_key("alice", "provider-1", "saved")
-    assert (
-        providers_route.resolve_provider_api_key_or_400("alice", "provider-1", None)
-        == "saved"
-    )
+    assert providers_route.resolve_provider_api_key_or_400("alice", "provider-1", None) == "saved"
 
     from core.inference import key_exchange
 
     monkeypatch.setattr(key_exchange, "decrypt_api_key", lambda value: f"explicit:{value}")
     assert (
-        providers_route.resolve_provider_api_key_or_400(
-            "alice", "provider-1", "ciphertext"
-        )
+        providers_route.resolve_provider_api_key_or_400("alice", "provider-1", "ciphertext")
         == "explicit:ciphertext"
     )
 
-    monkeypatch.setattr(key_exchange, "decrypt_api_key", lambda _value: (_ for _ in ()).throw(ValueError("secret detail")))
+    monkeypatch.setattr(
+        key_exchange,
+        "decrypt_api_key",
+        lambda _value: (_ for _ in ()).throw(ValueError("secret detail")),
+    )
     with pytest.raises(HTTPException) as error:
-        providers_route.resolve_provider_api_key_or_400(
-            "alice", "provider-1", "broken"
-        )
+        providers_route.resolve_provider_api_key_or_400("alice", "provider-1", "broken")
     assert error.value.status_code == 400
     assert "secret detail" not in str(error.value.detail)
 
@@ -167,9 +162,7 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
 
     class FakeProviderClient:
         def __init__(self, **kwargs):
-            seen_clients.append(
-                (kwargs["provider_type"], kwargs["base_url"], kwargs["api_key"])
-            )
+            seen_clients.append((kwargs["provider_type"], kwargs["base_url"], kwargs["api_key"]))
 
         async def list_models(self):
             return [{"id": "mistral-large-latest"}]
@@ -219,7 +212,6 @@ def test_provider_model_and_connection_routes_use_saved_key(monkeypatch):
         ("mistral", "https://api.mistral.ai/v1", "saved-key"),
         ("mistral", "https://api.mistral.ai/v1", "saved-key"),
     ]
-
 
 
 def test_hugging_face_routes_are_owner_scoped_and_idempotent():

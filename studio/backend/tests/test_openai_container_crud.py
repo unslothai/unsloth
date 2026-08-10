@@ -189,7 +189,6 @@ def test_external_chat_route_resolves_saved_provider_key(monkeypatch):
     assert reached.value.args == ("alice", "provider-1", None)
 
 
-
 def test_container_client_uses_saved_provider_key(monkeypatch):
     from routes import inference as inf_mod
     from models.inference import OpenAIContainerRequest
@@ -225,7 +224,6 @@ def test_container_client_uses_saved_provider_key(monkeypatch):
     assert client.base_url == "https://api.openai.com/v1"
     assert calls == [("alice", "provider-1", None)]
     _drive(client.close())
-
 
 
 def test_list_route_filters_expired_containers(monkeypatch):

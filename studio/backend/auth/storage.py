@@ -458,7 +458,6 @@ def get_or_create_credential_encryption_key() -> bytes:
     return secret
 
 
-
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof

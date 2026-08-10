@@ -138,8 +138,7 @@ def get_hugging_face_token(
 
 @router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
 def update_hugging_face_token(
-    payload: HuggingFaceTokenPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: HuggingFaceTokenPayload, current_subject: str = Depends(get_current_subject)
 ) -> HuggingFaceTokenResponse:
     credential_secrets.save_hf_token(current_subject, payload.token)
     return HuggingFaceTokenResponse(token = payload.token, has_token = True)
@@ -151,7 +150,6 @@ def clear_hugging_face_token(
 ) -> HuggingFaceTokenResponse:
     credential_secrets.delete_hf_token(current_subject)
     return HuggingFaceTokenResponse(token = None, has_token = False)
-
 
 
 class HelperPrecachePayload(BaseModel):
