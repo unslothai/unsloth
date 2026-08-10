@@ -145,6 +145,20 @@ function persistTokenToBackend(token: string): void {
 }
 
 
+/** Wait until the latest queued token edit is durable, or surface its save error. */
+export async function waitForHfTokenPersistence(): Promise<void> {
+  while (true) {
+    const revision = persistenceRevision;
+    await persistenceChain;
+    if (revision !== persistenceRevision) continue;
+    const state = useHfTokenStore.getState();
+    if (state.isPersisting) continue;
+    if (state.persistenceError) throw new Error(state.persistenceError);
+    return;
+  }
+}
+
+
 interface HfTokenStore {
   token: string;
   isPersisting: boolean;
@@ -200,6 +214,7 @@ export function stageLegacyHfTokenForMigration(value: string): void {
 
 
 let hydrationPromise: Promise<void> | null = null;
+let hydrationReplayRequested = false;
 
 /** Server-first, retry-safe migration and hydration after authentication. */
 export function hydrateHfTokenFromBackend(): Promise<void> {
@@ -254,10 +269,26 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
   return hydrationPromise;
 }
 
+
+/** Re-read after an active hydration when another tab reports a newer backend value. */
+export async function refreshHfTokenFromBackend(): Promise<void> {
+  if (!hydrationPromise) return hydrateHfTokenFromBackend();
+  hydrationReplayRequested = true;
+  try {
+    await hydrationPromise;
+  } catch {
+    // The replay is the authoritative retry for the cross-tab notification.
+  }
+  if (!hydrationReplayRequested) return;
+  hydrationReplayRequested = false;
+  return hydrateHfTokenFromBackend();
+}
+
 function resetHfCredentialSession(): void {
   authSessionRevision += 1;
   persistenceRevision += 1;
   hydrationPromise = null;
+  hydrationReplayRequested = false;
   serverCredentialHydrated = false;
 
   stagedLegacyToken = "";
@@ -274,7 +305,7 @@ if (typeof window !== "undefined") {
 
   window.addEventListener("storage", (event) => {
     if (event.key !== HF_TOKEN_SYNC_KEY || !event.newValue) return;
-    void hydrateHfTokenFromBackend().catch(() => undefined);
+    void refreshHfTokenFromBackend().catch(() => undefined);
   });
 }
 

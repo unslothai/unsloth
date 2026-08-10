@@ -16,6 +16,14 @@ export const AUTH_REFRESH_TOKEN_KEY = "unsloth_auth_refresh_token";
 export const ONBOARDING_DONE_KEY = "unsloth_onboarding_done";
 export const AUTH_MUST_CHANGE_PASSWORD_KEY = "unsloth_auth_must_change_password";
 
+
+let authSessionEpoch = 0;
+
+/** Stable across access-token refreshes; changes when an auth session starts or clears. */
+export function getAuthSessionEpoch(): number {
+  return authSessionEpoch;
+}
+
 type PostAuthRoute = "/change-password" | "/chat";
 
 function canUseStorage(): boolean {
@@ -54,12 +62,14 @@ export function storeAuthTokens(
   localStorage.setItem(AUTH_TOKEN_KEY, accessToken);
   localStorage.setItem(AUTH_REFRESH_TOKEN_KEY, refreshToken);
   if (sessionStarted) {
+    authSessionEpoch += 1;
     window.dispatchEvent(new Event(AUTH_SESSION_STORED_EVENT));
   }
 }
 
 export function clearAuthTokens(): void {
   if (!canUseStorage()) return;
+  authSessionEpoch += 1;
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(AUTH_REFRESH_TOKEN_KEY);
   localStorage.removeItem(AUTH_MUST_CHANGE_PASSWORD_KEY);

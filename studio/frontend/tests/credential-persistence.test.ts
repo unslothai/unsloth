@@ -414,6 +414,76 @@ test("HF hydration does not overwrite an in-flight user edit", async () => {
 });
 
 
+test("cross-tab refresh replays after an active HF hydration", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let resolveFirst!: (response: Response) => void;
+  let firstStarted!: () => void;
+  const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });
+  const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+  let reads = 0;
+  globalThis.fetch = (async () => {
+    reads += 1;
+    if (reads === 1) {
+      firstStarted();
+      return firstResponse;
+    }
+    return new Response(JSON.stringify({ token: "hf_new_tab", has_token: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    const hydration = hfStore.hydrateHfTokenFromBackend();
+    await started;
+    const refresh = hfStore.refreshHfTokenFromBackend();
+    resolveFirst(new Response(JSON.stringify({ token: "hf_old", has_token: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    await Promise.all([hydration, refresh]);
+    assert.equal(reads, 2);
+    assert.equal(hfStore.getHfToken(), "hf_new_tab");
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+test("pending HF edits can be drained before onboarding navigation", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let resolveSave!: (response: Response) => void;
+  let saveStarted!: () => void;
+  const response = new Promise<Response>((resolve) => { resolveSave = resolve; });
+  const started = new Promise<void>((resolve) => { saveStarted = resolve; });
+  globalThis.fetch = (async () => { saveStarted(); return response; }) as typeof fetch;
+
+  try {
+    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    hfStore.useHfTokenStore.getState().setToken("hf_before_exit");
+    await started;
+    let drained = false;
+    const drain = hfStore.waitForHfTokenPersistence().then(() => { drained = true; });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    resolveSave(new Response(JSON.stringify({ token: "hf_before_exit", has_token: true }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    await drain;
+    assert.equal(drained, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
 test("a superseded successful HF write advances the rollback baseline", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");
@@ -456,6 +526,18 @@ test("a superseded successful HF write advances the rollback baseline", async ()
     globalThis.fetch = originalFetch;
     Reflect.deleteProperty(globalThis, "window");
     Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+test("onboarding exits wait for the latest HF save", () => {
+  for (const relativePath of [
+    "../src/features/onboarding/components/wizard-footer.tsx",
+    "../src/features/onboarding/components/wizard-sidebar.tsx",
+    "../src/features/onboarding/components/wizard-layout.tsx",
+  ]) {
+    const source = readFileSync(new URL(relativePath, import.meta.url), "utf8");
+    assert.match(source, /await waitForHfTokenPersistence\(\)/);
   }
 });
 
@@ -528,7 +610,11 @@ test("credential gate follows authentication session transitions", () => {
     new URL("../src/features/credentials/bootstrap.ts", import.meta.url),
     "utf8",
   );
-  assert.match(bootstrapSource, /const isCurrent = hasAuthToken/);
-  assert.doesNotMatch(bootstrapSource, /getAuthToken\(\) === sessionToken/);
+  assert.match(sessionSource, /authSessionEpoch \+= 1/);
+  assert.match(bootstrapSource, /const sessionEpoch = getAuthSessionEpoch\(\)/);
+  assert.match(
+    bootstrapSource,
+    /hasAuthToken\(\) && getAuthSessionEpoch\(\) === sessionEpoch/,
+  );
 
 });

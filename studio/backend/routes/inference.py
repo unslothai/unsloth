@@ -2097,6 +2097,25 @@ from auth.authentication import API_KEY_PREFIX, get_current_subject
 from state import active_generations
 
 
+def _request_api_key_token(request: Any) -> Optional[str]:
+    """Return any sk-unsloth bearer used for authentication, including workflow keys."""
+    try:
+        header = request.headers.get("authorization")
+    except Exception:
+        return None
+    if not isinstance(header, str):
+        return None
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.startswith(API_KEY_PREFIX):
+        return None
+    return token
+
+
+def _request_has_api_key(request: Any) -> bool:
+    """Whether the request used any API key rather than an interactive session JWT."""
+    return _request_api_key_token(request) is not None
+
+
 def _request_used_api_key(request: Any) -> bool:
     """True when this request authenticated with a third party's sk-unsloth key.
 
@@ -2106,15 +2125,10 @@ def _request_used_api_key(request: Any) -> bool:
     itself and are excluded, or every research step would pop the API monitor open.
     """
     # Total by construction: this only decides a monitor label and must never fail a
-    # load. Only a real Request hands back a string; the load routes take stand-ins too.
-    try:
-        header = request.headers.get("authorization")
-    except Exception:
-        return False
-    if not isinstance(header, str):
-        return False
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.startswith(API_KEY_PREFIX):
+    # load. Saved-secret authorization uses _request_has_api_key instead, because
+    # internal workflow keys must remain programmatic callers for credential access.
+    token = _request_api_key_token(request)
+    if token is None:
         return False
     try:
         return not auth_storage.is_internal_api_key(token)
@@ -9929,7 +9943,7 @@ async def _proxy_to_external_provider(
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
 
-    if payload.provider_id:
+    if payload.provider_id and not payload.encrypted_api_key:
         config = providers_db.get_provider(payload.provider_id)
         if config is None:
             raise HTTPException(
@@ -9964,7 +9978,7 @@ async def _proxy_to_external_provider(
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
         payload.encrypted_api_key,
-        allow_saved_key = not _request_used_api_key(request),
+        allow_saved_key = not _request_has_api_key(request),
     )
 
     model = payload.external_model or payload.model
@@ -10113,7 +10127,7 @@ def _resolve_openai_cloud_client(
     custom presets.
     """
     base_url = body.provider_base_url or get_base_url("openai")
-    if body.provider_id:
+    if body.provider_id and not body.encrypted_api_key:
         config = providers_db.get_provider(body.provider_id)
         if config is None:
             raise HTTPException(
@@ -10187,7 +10201,7 @@ async def list_openai_containers(
     current_subject: str = Depends(get_current_subject),
 ) -> ListOpenAIContainersResponse:
     """List the user's OpenAI shell-tool containers."""
-    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.list_openai_containers()
@@ -10229,7 +10243,7 @@ async def create_openai_container(
     _current_subject: str = Depends(get_current_subject),
 ) -> OpenAIContainerSummary:
     """Create a named container with the user-chosen idle TTL."""
-    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             raw = await client.create_openai_container(
@@ -10273,7 +10287,7 @@ async def delete_openai_container(
         body.container_id,
         body.provider_base_url,
     )
-    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_used_api_key(request))
+    client = _resolve_openai_cloud_client(body, allow_saved_key = not _request_has_api_key(request))
     try:
         try:
             await client.delete_openai_container(body.container_id)
