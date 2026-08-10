@@ -285,9 +285,11 @@ def test_family_train_infos_drops_base_specs_on_a_dit_block(monkeypatch, dit_tra
     assert any(unblocked[n]["base_specs"] for n in _DIT_TRAIN_FAMILIES if n in unblocked)
 
     monkeypatch.setattr(common, "bf16_unsupported_reason", lambda name: "no bfloat16 on this GPU")
-    for name, info in ((n, i) for n, i in
-                       ((i["name"], i) for i in family_train_infos())
-                       if n in _DIT_TRAIN_FAMILIES):
+    for name, info in (
+        (n, i)
+        for n, i in ((i["name"], i) for i in family_train_infos())
+        if n in _DIT_TRAIN_FAMILIES
+    ):
         assert info["base_specs"] == {}, name
         # The reason survives, which is the whole point of dropping the chips.
         assert info["vram_note"] == "no bfloat16 on this GPU", name
