@@ -2367,6 +2367,50 @@ def _unsloth_grpo_hidden_states_signal(model):
     return None
 
 
+_GRPO_HIDDEN_STATES_WIDTH_DISPATCH = re.compile(
+    r"^(?P<indent>[ \t]*)if[ \t]+"
+    r"(?P<tensor>[_A-Za-z][_A-Za-z0-9]*)\.shape\[-1\][ \t]*"
+    r"(?P<operator>==|!=)[ \t]*lm_head\.shape\[1\][ \t]*:$",
+    flags = re.MULTILINE,
+)
+
+
+def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
+    """Give zoo's gradient path the same model-aware dispatch as the no-grad path.
+
+    ``grpo_accumulated_loss`` is embedded into the generated trainer with
+    ``inspect.getsource`` below. Zoo revisions with raw-logits support choose
+    between the two log-softmax helpers by comparing the forward output width
+    with ``lm_head.shape[1]``. That comparison is ambiguous for a square head,
+    so replace every such decision before embedding the function.
+
+    The expression is intentionally limited to a named tensor's last dimension
+    against the lm_head input dimension. If zoo changes that contract entirely,
+    fail at trainer generation instead of silently restoring the wrong dispatch.
+    """
+    source = function if isinstance(function, str) else inspect.getsource(function)
+    replacements = 0
+
+    def replace_width_dispatch(match):
+        nonlocal replacements
+        replacements += 1
+        decision = (
+            "_unsloth_grpo_returns_hidden_states("
+            f"unwrapped_model, {match.group('tensor')}, lm_head)"
+        )
+        if match.group("operator") == "!=":
+            decision = f"not {decision}"
+        return f"{match.group('indent')}if {decision}:"
+
+    source = _GRPO_HIDDEN_STATES_WIDTH_DISPATCH.sub(replace_width_dispatch, source)
+    if replacements == 0:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient hidden-state dispatches in "
+            "this unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    return source
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -2381,7 +2425,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+)
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
