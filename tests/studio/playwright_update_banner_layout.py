@@ -271,9 +271,7 @@ def main() -> int:
     # OLD is already NEW on a rerun, or when an earlier suite in the same job
     # rotated it, and that login fails before the rotation below can be skipped.
     try:
-        token = api("/api/auth/login", {"username": "unsloth", "password": OLD})[
-            "access_token"
-        ]
+        token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     except urllib.error.HTTPError as exc:
         if exc.code not in (400, 401, 403):
             raise
