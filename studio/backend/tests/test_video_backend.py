@@ -5156,7 +5156,11 @@ def test_an_in_place_binary_swap_stops_the_h3_run(monkeypatch, tmp_path):
 
     # A replacement that lands DURING the wait is caught the same way.
     @contextlib.contextmanager
-    def _install_lands_during_the_wait(_binary, _cancel = None, _msg = None):
+    def _install_lands_during_the_wait(
+        _binary,
+        _cancel = None,
+        _msg = None,
+    ):
         managed.write_bytes(b"yet another build")
         os.utime(managed, (2, 2))
         yield
