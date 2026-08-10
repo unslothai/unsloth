@@ -214,7 +214,7 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
     resolver.invalidate_index(additions_only = True)
-    assert resolver._scan[0] == 0.0
+    assert resolver._scan[0] == resolver._ADDITIONS_ONLY_STAMP
     assert resolver.index_is_built() is False
 
     def _resolve(name, **kwargs):
@@ -254,7 +254,6 @@ def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
     old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
     added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
-    resolver._additions_only_retained = None
     resolver.invalidate_index()
     assert resolver.index_is_built() is False
     monkeypatch.setattr(
@@ -280,7 +279,6 @@ def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
         "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
     )
     monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/b-gguf": removed}))
-    monkeypatch.setattr(resolver, "_additions_only_retained", None)
     scans = []
     calls = []
     monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
@@ -6436,11 +6434,10 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         == "complete"
     )
     stamp, entries = resolver._scan
-    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    assert stamp == resolver._ADDITIONS_ONLY_STAMP
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
-    assert resolver._additions_only_retained is entries
 
 
 def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
@@ -6463,9 +6460,13 @@ def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
     entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
     snapshot = (time.monotonic(), {"org/old": entry})
     monkeypatch.setattr(resolver, "_scan", snapshot)
+    invalidated = False
 
     def _invalidate_while_deciding_trust():
-        resolver._scan = (0.0, snapshot[1])
+        nonlocal invalidated
+        if not invalidated:
+            invalidated = True
+            resolver.invalidate_index()
         return snapshot[0]
 
     monkeypatch.setattr(resolver.time, "monotonic", _invalidate_while_deciding_trust)
@@ -6528,14 +6529,12 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
     )
 
     resolver._scan = (time.monotonic(), {"org/old": entry})
-    resolver._additions_only_retained = None
     resolver.invalidate_index(additions_only = True)
     assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
     asyncio.run(model_routes.remove_scan_folder_endpoint(7, current_subject = "tester"))
     assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
 
     resolver._scan = (time.monotonic(), {"org/old": entry})
-    resolver._additions_only_retained = None
     resolver.invalidate_index(additions_only = True)
     assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
     assert local_inventory.remove_scan_folder_response(8) == {"ok": True}

@@ -32,12 +32,11 @@ class _LocalGgufEntry:
 
 
 _CACHE_TTL_S = 5.0
+# Monotonic timestamps are nonnegative. This sentinel keeps additions-only trust
+# inside the atomically published _scan tuple instead of in a second global.
+_ADDITIONS_ONLY_STAMP = -1.0
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
-# The exact retained mapping that is safe to read after an additions-only
-# invalidation. Keeping the mapping identity ties the permission to one published
-# snapshot, so a concurrent refresh cannot make an older lookup look trustworthy.
-_additions_only_retained: Optional[dict[str, _LocalGgufEntry]] = None
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
 _warm_lock = threading.Lock()
 # Repos that finished downloading but are not in the published index yet: nothing
@@ -357,16 +356,17 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     Other invalidations retain the allocation but revoke that trust, since a scan
     root may have been removed. Ordinary TTL expiry is likewise not additions-only.
     """
-    global _scan, _additions_only_retained, _warm_pending
+    global _scan, _warm_pending
     with _lock:
         timestamp, retained = _scan
-        was_trusted = (bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S) or (
-            not timestamp and retained is _additions_only_retained
+        was_trusted = timestamp == _ADDITIONS_ONLY_STAMP or (
+            timestamp > 0.0 and time.monotonic() - timestamp < _CACHE_TTL_S
         )
-        # Revoke permission before publishing a config-invalidated snapshot. A
-        # lock-free reader can then fail safe if it runs between these assignments.
-        _additions_only_retained = retained if additions_only and was_trusted else None
-        _scan = (0.0, retained)
+        # Publish entries and their trust state together. A lock-free reader sees
+        # either the complete old snapshot or the complete invalidated one, never a
+        # fresh timestamp paired with already-revoked trust.
+        stamp = _ADDITIONS_ONLY_STAMP if additions_only and was_trusted else 0.0
+        _scan = (stamp, retained)
     # _index() holds _lock for the whole scan. If this invalidation waited for an
     # active warmer to publish, that worker may still own the warm slot even though
     # the snapshot it just built is stale again. Preserve a second pass before the
@@ -378,7 +378,7 @@ def invalidate_index(*, additions_only: bool = False) -> None:
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
-    global _scan, _additions_only_retained
+    global _scan
     # Build under the lock so concurrent callers with an expired cache don't all
     # run the (multi-dir) scan at once; the rest wait and reuse the fresh result.
     with _lock:
@@ -391,7 +391,6 @@ def _index() -> dict[str, _LocalGgufEntry]:
         # an install with many local models can itself exceed the TTL, which would
         # store the cache already expired and make every request rebuild the index.
         _scan = (time.monotonic(), fresh)
-        _additions_only_retained = None
         # The scan supersedes the notes: whatever landed is in the index now.
         _just_downloaded.clear()
         return fresh
@@ -404,7 +403,7 @@ def index_is_built() -> bool:
     park the request path on the scan it is trying to stay off. Safe because
     ``_scan`` is only ever rebound, never mutated.
     """
-    return bool(_scan[0])
+    return _scan[0] > 0.0
 
 
 def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
@@ -420,9 +419,9 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
     resolved = _resolve_from_index(requested, snapshot[1])
     if resolved is None or _scan is not snapshot:
         return None
-    timestamp, cached = snapshot
-    fresh = bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S
-    additions_only = not timestamp and cached is _additions_only_retained
+    timestamp, _ = snapshot
+    fresh = timestamp > 0.0 and time.monotonic() - timestamp < _CACHE_TTL_S
+    additions_only = timestamp == _ADDITIONS_ONLY_STAMP
     trusted = fresh or additions_only
     return resolved if trusted and _scan is snapshot else None
 
