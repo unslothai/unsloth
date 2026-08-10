@@ -20,6 +20,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -110,6 +111,149 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     assert "frequency_penalty" not in body
     assert "top_k" not in body
     assert "messages" not in body
+
+
+@pytest.mark.parametrize(
+    ("model", "requires_non_streaming"),
+    (
+        ("gpt-5.5-pro", True),
+        ("gpt-5.5-pro-2026-04-23", True),
+        ("GPT-5.5-PRO", True),
+        ("gpt-5.5-prod", False),
+        ("gpt-5.5", False),
+        ("gpt-5.4-pro", False),
+    ),
+)
+def test_responses_streaming_capability_detection(model, requires_non_streaming):
+    assert ep_mod._openai_responses_requires_non_streaming(model) is requires_non_streaming
+
+
+def test_gpt_5_5_pro_uses_non_streaming_upstream_and_translates_response(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json = {
+                "id": "resp_pro_123",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt-5.5-pro",
+                "output": [
+                    {
+                        "id": "rs_123",
+                        "type": "reasoning",
+                        "status": "completed",
+                        "summary": [{"type": "summary_text", "text": "Plan first."}],
+                    },
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Final answer.",
+                                "annotations": [],
+                            }
+                        ],
+                    },
+                ],
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "input_tokens_details": {"cached_tokens": 0},
+                },
+            },
+            headers = {"content-type": "application/json"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5-pro",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = "high",
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+
+    assert captured["body"]["stream"] is False
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
+    ]
+    combined = "".join(
+        payload["choices"][0]["delta"].get("content", "")
+        for payload in payloads
+        if payload.get("choices") and payload["choices"][0].get("delta")
+    )
+    assert combined == "<think>Plan first.</think>Final answer."
+    assert any(
+        payload.get("choices", [{}])[0].get("finish_reason") == "stop"
+        for payload in payloads
+        if payload.get("choices")
+    )
+    assert any(payload.get("usage", {}).get("total_tokens") == 15 for payload in payloads)
+    assert lines[-1] == "data: [DONE]"
+
+
+def test_responses_failed_without_details_has_actionable_fallback(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _responses_sse(
+                [
+                    {
+                        "type": "response.failed",
+                        "response": {
+                            "id": "resp_failed_123",
+                            "status": "failed",
+                            "error": None,
+                        },
+                    }
+                ]
+            ),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = None,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+        await client.close()
+        return lines
+
+    lines = _drive(run())
+    error_line = next(line for line in lines if '"error"' in line)
+    error = json.loads(error_line[len("data:") :].strip())["error"]
+    assert "Unknown error" not in error["message"]
+    assert "resp_failed_123" in error["message"]
 
 
 def test_responses_translates_image_parts(monkeypatch):

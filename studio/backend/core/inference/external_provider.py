@@ -45,10 +45,6 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 logger = structlog.get_logger(__name__)
 
 
-# Claude 4.7 (Opus/Sonnet/Haiku) removed temperature/top_p/top_k — the API
-# 400s "<param> is deprecated for this model" on a non-default value. 3.x and
-# 4.5/4.6 still accept them, so match the 4-7 line strictly. Ref:
-#   https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry.
 
@@ -70,9 +66,141 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     return host == "api.openai.com" or host.endswith(".openai.azure.com")
 
 
-_ANTHROPIC_4_7_SAMPLING_REMOVED = re.compile(r"^claude-(?:opus|sonnet|haiku)-4-7(?:[-.]|$)")
+# Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k;
+# Mythos Preview has the same restriction. The API 400s with "<param> is
+# deprecated for this model" on a non-default value. Ref:
+#   https://platform.claude.com/docs/en/about-claude/model-deprecations
+_ANTHROPIC_MODEL_VERSION = re.compile(
+    r"^claude-(?P<family>[a-z0-9]+)-(?P<major>\d+)(?:-(?P<minor>\d+))?(?:[-.]|$)",
+    re.IGNORECASE,
+)
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_RESPONSES_STREAMING_UNSUPPORTED = re.compile(
+    r"^gpt-5\.5-pro(?:[-.]|$)",
+    re.IGNORECASE,
+)
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
+
+
+def _anthropic_sampling_params_removed(model: str) -> bool:
+    """Whether Anthropic rejects non-default sampling params for ``model``."""
+    normalized = model.strip().lower()
+    if normalized == "claude-mythos-preview" or normalized.startswith(
+        "claude-mythos-preview-"
+    ):
+        return True
+
+    match = _ANTHROPIC_MODEL_VERSION.match(normalized)
+    if match is None:
+        return False
+
+    family = match.group("family")
+    version = (int(match.group("major")), int(match.group("minor") or 0))
+    return version[0] >= 5 or (family == "opus" and version >= (4, 7))
+
+
+def _openai_responses_requires_non_streaming(model: str) -> bool:
+    """Whether ``model`` rejects ``stream=true`` on the Responses API."""
+    return bool(_OPENAI_RESPONSES_STREAMING_UNSUPPORTED.match(model.strip()))
+
+
+def _openai_response_error_message(event: Any) -> str:
+    """Extract a useful message from a Responses failure event."""
+    if not isinstance(event, dict):
+        return "OpenAI response failed without error details."
+
+    response = event.get("response")
+    if not isinstance(response, dict):
+        response = {}
+    for candidate in (response.get("error"), event.get("error")):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        if isinstance(candidate, dict):
+            message = candidate.get("message")
+            code = candidate.get("code") or candidate.get("type")
+            if isinstance(message, str) and message.strip():
+                return f"{message.strip()} ({code})" if code else message.strip()
+
+    message = event.get("message")
+    code = event.get("code")
+    if isinstance(message, str) and message.strip():
+        return f"{message.strip()} ({code})" if code else message.strip()
+
+    details = response.get("incomplete_details")
+    if isinstance(details, dict):
+        reason = details.get("reason") or details.get("message")
+        if isinstance(reason, str) and reason.strip():
+            return f"OpenAI response failed: {reason.strip()}"
+
+    response_id = response.get("id")
+    suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
+    return f"OpenAI response failed without error details{suffix}."
+
+
+def _openai_non_streaming_response_sse_lines(response: dict[str, Any]) -> list[str]:
+    """Convert one non-streaming Responses object into synthetic SSE lines."""
+    response_id = response.get("id")
+    response_id = response_id if isinstance(response_id, str) else None
+    lines: list[str] = []
+
+    def add(event: dict[str, Any]) -> None:
+        if response_id:
+            event.setdefault("response_id", response_id)
+        lines.append(f"data: {_json.dumps(event)}")
+
+    output = response.get("output")
+    if isinstance(output, list):
+        for output_index, item in enumerate(output):
+            if not isinstance(item, dict):
+                continue
+            add({
+                "type": "response.output_item.added",
+                "output_index": output_index,
+                "item": item,
+            })
+            if item.get("type") == "message":
+                content = item.get("content")
+                if isinstance(content, list):
+                    for content_index, part in enumerate(content):
+                        if not isinstance(part, dict):
+                            continue
+                        part_type = part.get("type")
+                        text = (
+                            part.get("text")
+                            if part_type in ("output_text", "text")
+                            else part.get("refusal")
+                            if part_type == "refusal"
+                            else None
+                        )
+                        if isinstance(text, str) and text:
+                            add({
+                                "type": "response.output_text.delta",
+                                "output_index": output_index,
+                                "content_index": content_index,
+                                "delta": text,
+                                "annotations": part.get("annotations") or [],
+                            })
+            add({
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            })
+
+    status = response.get("status")
+    if status == "incomplete":
+        terminal_type = "response.incomplete"
+    elif status in ("failed", "cancelled") or response.get("error"):
+        terminal_type = "response.failed"
+    else:
+        terminal_type = "response.completed"
+    add({"type": terminal_type, "response": response})
+    lines.append("data: [DONE]")
+    return lines
+
+
+async def _aiter_static_lines(lines: list[str]) -> AsyncGenerator[str, None]:
+    for line in lines:
+        yield line
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -1951,10 +2079,10 @@ class ExternalProviderClient:
                     continue
                 filtered.append(msg)
 
-        # Claude 4.7 removed temperature/top_p/top_k entirely (400 "deprecated
-        # for this model"). Latch the match and reuse it wherever those are set,
-        # including the thinking-mode override below that used to force temp=1.
-        sampling_removed = bool(_ANTHROPIC_4_7_SAMPLING_REMOVED.match(model))
+        # Newer Claude models removed temperature/top_p/top_k entirely (400
+        # "deprecated for this model"). Reuse the capability wherever those
+        # fields are set, including the thinking-mode temperature override.
+        sampling_removed = _anthropic_sampling_params_removed(model)
 
         body: dict[str, Any] = {
             "model": model,
@@ -4845,10 +4973,11 @@ class ExternalProviderClient:
         # so never forward sampling knobs.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
+        upstream_stream = not _openai_responses_requires_non_streaming(model)
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "stream": True,
+            "stream": upstream_stream,
         }
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
@@ -5082,9 +5211,32 @@ class ExternalProviderClient:
                         yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
 
-                    # NOTE: same manual __anext__ loop as stream_chat_completion —
-                    # see comment there for the GeneratorExit / aclose ordering.
-                    lines_gen = response.aiter_lines().__aiter__()
+                    # GPT-5.5 Pro rejects Responses streaming. Convert its one
+                    # JSON object into synthetic events so the translator below
+                    # remains the single output path.
+                    if upstream_stream:
+                        lines_gen = response.aiter_lines().__aiter__()
+                    else:
+                        response_body = await response.aread()
+                        try:
+                            response_payload = _json.loads(response_body)
+                        except (_json.JSONDecodeError, UnicodeDecodeError):
+                            yield _error_sse_line(
+                                502,
+                                "OpenAI returned an invalid non-streaming response.",
+                                self.provider_type,
+                            )
+                            return
+                        if not isinstance(response_payload, dict):
+                            yield _error_sse_line(
+                                502,
+                                "OpenAI returned an invalid non-streaming response object.",
+                                self.provider_type,
+                            )
+                            return
+                        lines_gen = _aiter_static_lines(
+                            _openai_non_streaming_response_sse_lines(response_payload)
+                        ).__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
@@ -5920,13 +6072,9 @@ class ExternalProviderClient:
                             elif event_type in ("response.failed", "error"):
                                 # Surface the failure to the client; the outer
                                 # route emits [DONE] as part of its cleanup.
-                                error_payload = event.get("response", {}).get("error", {}) or {
-                                    "message": event.get("message", "Unknown error"),
-                                    "code": event.get("code"),
-                                }
                                 yield _error_sse_line(
                                     502,
-                                    _json.dumps(error_payload),
+                                    _openai_response_error_message(event),
                                     self.provider_type,
                                 )
                                 break

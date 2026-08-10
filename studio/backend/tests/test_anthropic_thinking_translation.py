@@ -17,6 +17,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -112,6 +113,59 @@ def test_adaptive_thinking_body_uses_output_config_effort_shape(monkeypatch):
     # Extended-thinking contract: temperature=1, no top_p / top_k.
     assert body["temperature"] == 1
     assert "top_p" not in body
+    assert "top_k" not in body
+
+
+@pytest.mark.parametrize(
+    ("model", "sampling_removed"),
+    (
+        ("claude-opus-4-7", True),
+        ("claude-opus-4-8", True),
+        ("claude-opus-5", True),
+        ("claude-sonnet-5", True),
+        ("claude-fable-5", True),
+        ("claude-mythos-5", True),
+        ("claude-mythos-preview", True),
+        ("claude-opus-4-6", False),
+        ("claude-sonnet-4-6", False),
+        ("claude-haiku-4-5-20251001", False),
+    ),
+)
+def test_sampling_parameter_capability_detection(model, sampling_removed):
+    assert ep_mod._anthropic_sampling_params_removed(model) is sampling_removed
+
+
+def test_claude_opus_5_request_omits_removed_sampling_parameters(monkeypatch):
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        async for _ in client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            top_k = 40,
+            enable_thinking = False,
+        ):
+            pass
+        await client.close()
+
+    _drive(run())
+
+    body = captured["body"]
+    assert "temperature" not in body
     assert "top_k" not in body
 
 
