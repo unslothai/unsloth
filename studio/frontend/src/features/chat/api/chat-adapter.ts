@@ -5345,10 +5345,9 @@ export function createOpenAIStreamAdapter(
                   );
                   if (idx !== -1) {
                     const rawEvent = (toolEvent.result as string) ?? "";
-                    // Pulled out first: it sits ahead of __IMAGES__ so the
-                    // image slice below is unchanged. Only from the tools that
-                    // emit it, as the backend does: an MCP tool or a fetched
-                    // page ending in that line is content, not an envelope.
+                    // Pulled out first, ahead of __IMAGES__, so the image
+                    // slice below is unchanged. Only from the tools that emit
+                    // it: elsewhere that line is content, not an envelope.
                     const { text: rawResult, files: createdFiles } =
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)

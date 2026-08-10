@@ -7113,10 +7113,9 @@ _workdirs: dict[str, str] = {}
 # Sessions with a tool call in flight. Deleting a chat unlinks its workdir, and
 # a process whose cwd has been removed fails every relative write with ENOENT.
 _active_sessions: "dict[str, int]" = {}
-# Deletions that arrived while a call was in flight. The thread is already gone
-# from history by then, so nothing would ever ask for this folder again. Keyed
-# like the above, holding every exact id that folded onto that key: on a
-# case-sensitive filesystem those are separate directories and both must go.
+# Deletions that arrived mid-call: the thread has gone from history, so nothing
+# would ask for the folder again. Keyed like the above and holding every exact
+# id that folded onto the key, since each can be its own directory.
 _pending_removals: "dict[str, dict[str, bool]]" = {}
 _active_sessions_lock = threading.Lock()
 # Sessions whose sandbox is being removed right now. A start for one of these
@@ -7160,10 +7159,9 @@ def _session_in_flight(session_id: "str | None"):
                 _active_sessions[key] -= 1
         if not pending:
             return
-        # Outside the lock: the removal walks the tree to decide whether it
-        # holds files, and on a slow volume that is seconds during which no
-        # tool call in any other chat could start. This session is held closed
-        # meanwhile, so nothing starts in the directory being removed.
+        # Outside the lock: deciding whether the tree holds files can take
+        # seconds, and no other chat could start a call meanwhile. This session
+        # stays closed, so nothing starts in the directory being removed.
         try:
             for pending_id, pending_files in pending.items():
                 _remove_session_sandbox_locked(pending_id, pending_files)
@@ -7445,11 +7443,9 @@ def _sandbox_name(session_id: str) -> str:
     if _usable_session_id(session_id) and not session_id.startswith(_DERIVED_PREFIX):
         return session_id
     # An id that already looks derived is derived too, or it would land on the
-    # directory of whichever unusable id hashes to it.
-    # surrogatepass: an API client can send a lone surrogate in JSON, and a
-    # POSIX directory name decoded with surrogateescape carries them too, so a
-    # strict encode raises here and the call, the read, or a whole migration
-    # pass fails on one id.
+    # directory of whichever unusable id hashes to it. surrogatepass because a
+    # lone surrogate reaches here both from JSON and from a directory name
+    # decoded with surrogateescape, and a strict encode raises on it.
     encoded = session_id.encode("utf-8", "surrogatepass")
     return _DERIVED_PREFIX + hashlib.sha256(encoded).hexdigest()[:16]
 
@@ -7633,13 +7629,10 @@ def _marked_sandbox_in(root: str, session_id: str) -> "str | None":
     user pointed us at can hold a lot of their own folders.
     """
     name = _sandbox_name(session_id)
-    # Only names derived from this id, and the staging name a migration of it
-    # would have used. The marker alone is not enough to adopt on: tool code
-    # runs inside a sandbox and can write any owner it likes into that file, so
-    # a scan for "whoever claims to be me" would hand one chat another chat's
-    # directory, and then its files.
-    # The plain name too: a migration that could not rename its staging tree
-    # into place left it beside that name.
+    # Only names derived from this id, the plain name a half-finished migration
+    # staged beside, and their staging names. The marker alone is not enough to
+    # adopt on: tool code can write any owner into that file, so a scan for
+    # "whoever claims to be me" would hand one chat another's files.
     candidates = [os.path.join(root, name), *_fallback_candidates(root, session_id)]
     for candidate in candidates:
         for path in [candidate, *_staging_variants(candidate)]:
@@ -7678,10 +7671,9 @@ def _free_fallback_dir(root: str, session_id: str) -> "str | None":
     return None
 
 
-# How many derived names a chat may try in a root the user pointed us at. Every
-# one is recomputable, so a later launch finds the folder again by name rather
-# than by scanning: a random name needed the scan, and a big enough root could
-# push it past the scan's bound.
+# How many derived names a chat may try in a root the user pointed us at. Each
+# is recomputable, so a later launch finds the folder by name; a random name
+# needed a scan, which a big enough root pushes past its bound.
 _MAX_FALLBACK_NAMES = 32
 
 
@@ -7763,10 +7755,9 @@ def _free_move_target(root: str, name: str) -> "str | None":
     if not os.path.exists(candidate):
         return candidate
     if _marker_owner(candidate) == _sandbox_name(name):
-        # This session's own folder is already at the destination, from a move
-        # that ran before. The whole-tree pass leaves a duplicate legacy copy
-        # alone rather than overwriting, and moving it somewhere random would
-        # take it off the path the user can still find it on.
+        # This session's folder is already at the destination from an earlier
+        # move. A duplicate legacy copy is left alone rather than overwritten,
+        # or moved somewhere the user could no longer find it.
         return None
     if _root_is_ours():
         return None  # ours and occupied is a real collision, not a borrowed name
@@ -7803,9 +7794,8 @@ def _staged_move(source: str, target: str, name: str) -> None:
         os.rename(staging, target)
     except OSError:
         # The move already took the legacy copy, so this tree is the only one
-        # there is and deleting it would lose the user's files. It is already
-        # marked, so _marked_sandbox_in finds it; put it back at the legacy root
-        # when that is possible, so the next pass simply retries.
+        # and deleting it would lose the files. It is marked, so
+        # _marked_sandbox_in finds it; put it back and let the next pass retry.
         try:
             os.rename(staging, source)
         except OSError:
@@ -7818,10 +7808,9 @@ def _staged_move(source: str, target: str, name: str) -> None:
 # the sweep. Anything that copies a tree takes that session's own lock below.
 _legacy_one_lock = threading.Lock()
 
-# One lock per session being moved. A single lock around every move meant a
-# first tool call in one chat waited out a multi-gigabyte copy belonging to
-# another, which is the whole thing the background pass exists to avoid. Bounded
-# by the number of chats that had a legacy folder, and only during the upgrade.
+# One lock per session being moved: a single lock made a first tool call wait
+# out another chat's multi-gigabyte copy, which is what the background pass
+# exists to avoid. Bounded by the chats that had a legacy folder.
 _legacy_session_locks: "dict[str, threading.Lock]" = {}
 _legacy_locks_guard = threading.Lock()
 
@@ -7853,10 +7842,9 @@ def _legacy_session_dir(session_id: str) -> "str | None":
             names.append(session_id)
     else:
         # Before this change an id the filesystem could not hold shared one
-        # bucket with every other such chat. Those files are read from where
-        # they are; nothing moves or deletes them, since they are not this
-        # chat's alone. Only for such an id: an ordinary chat reading that
-        # bucket would be reading somebody else's files.
+        # bucket with every other such chat. Read where they are, never moved
+        # or deleted since they are not this chat's alone, and only for such an
+        # id: any other chat would be reading somebody else's files.
         names.append(_LEGACY_SHARED_BUCKET)
     for name in names:
         candidate = os.path.join(legacy_root, name)
@@ -8096,10 +8084,9 @@ def _get_workdir(session_id: str | None = None) -> str:
         # renamed and replaced with a link to another chat's directory since,
         # and containment alone accepts that.
         root_now = sandbox_root()
-        # Tool code runs in this directory and can delete the marker in it. For
-        # one this run claimed, the marker is written again rather than the
-        # directory being read as somebody else's, which would strand the files
-        # already in it and start the chat somewhere new.
+        # Tool code runs in here and can delete the marker. For a directory
+        # this run claimed it is written again, rather than read as somebody
+        # else's, which would strand the files in it and start the chat anew.
         if (
             session_id
             and cached in _claimed_here
@@ -8127,10 +8114,9 @@ def _get_workdir(session_id: str | None = None) -> str:
         # Only this chat's, so a first tool call never waits on the whole tree:
         # across filesystems that is a copy of every session.
         if session_id:
-            # A chat from before the upgrade whose id already starts with the
-            # derived prefix kept its folder under the literal id, so that name
-            # is tried too. Only a usable one: an id the filesystem cannot hold
-            # never named a directory, and joining it could leave the root.
+            # A pre-upgrade chat whose id already starts with the derived
+            # prefix kept its folder under the literal id, so that name is
+            # tried too. Only a usable one: the rest never named a directory.
             derived = _sandbox_name(session_id)
             if derived != session_id and _usable_session_id(session_id):
                 _migrate_one_legacy_session(sandbox_root_path, session_id)
@@ -8209,9 +8195,8 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the
-        # move runs in the background and across filesystems takes minutes, and
-        # a pass that fails leaves them there. Read from where they are rather
-        # than 404 every card in the transcript until some later tool call.
+        # move runs in the background and can take minutes. Read where they are
+        # rather than 404 every card in the transcript until it finishes.
         legacy = _legacy_session_dir(session_id)
         if legacy:
             return legacy
@@ -8354,9 +8339,8 @@ def remove_session_sandbox(session_id: str, delete_files: bool = False) -> bool:
     if session_id.startswith(_PROJECT_SESSION_PREFIX) and _get_project_workdir(session_id):
         return False
     # The folder may still be at the legacy root right after an upgrade. This
-    # session only: the whole-tree pass is a cross-filesystem copy of every
-    # chat, and a delete would sit behind it for minutes. Outside the lock
-    # below, since it moves a tree and takes a lock of its own.
+    # session only, or a delete would sit behind a copy of every chat, and
+    # outside the lock below, since it moves a tree and takes its own.
     root_now = sandbox_root()
     _migrate_one_legacy_session(root_now, _sandbox_name(session_id))
     if _usable_session_id(session_id) and _sandbox_name(session_id) != session_id:
@@ -11886,18 +11870,16 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     return snapshot
 
 
-# Scratch scripts of calls running right now. Two calls can share a workdir
-# (chats in one project), and each snapshots the whole directory, so without
-# this the other call's studio_exec_*.py is reported as a file this call made
-# and its download 404s once that call cleans up.
+# Scratch scripts of calls running right now. Chats in one project share a
+# workdir and each snapshots all of it, so without this the other call's
+# studio_exec_*.py is offered as this call's file and 404s once it is gone.
 _active_scratch: "set[str]" = set()
 _scratch_lock = threading.Lock()
 
-# Tool calls running in each workdir. Chats in one project share a workdir and
-# each call diffs the whole tree, so a file the other call wrote would be named
-# on this card and downloaded from it. A call that was ever alongside another
-# claims nothing: no timestamp is involved, since a coarse or remote clock is
-# exactly what this cannot depend on.
+# Tool calls running in each workdir. Chats in one project share one and each
+# call diffs the whole tree, so the other call's file would land on this card.
+# A call ever alongside another claims nothing: no clock is involved, since a
+# coarse or remote one is exactly what this cannot depend on.
 _workdir_calls: "dict[str, list]" = {}
 _calls_lock = threading.Lock()
 

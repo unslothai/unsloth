@@ -673,10 +673,9 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
-    # The transaction is the only authority on membership, and it runs first: a
-    # chat moved in just before it is deleted by it, and one moved out just
-    # before survives. Cancelling or deleting from an earlier listing would stop
-    # a chat that is still there and remove the files it wrote.
+    # The transaction is the only authority on membership and it runs first, so
+    # a chat moved in just before is deleted and one moved out survives. An
+    # earlier listing would stop a chat that is still there.
     member_ids = list(project.get("memberIds") or [])
     # By run id: the rows are gone by now, so there is nothing left to look up.
     _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
@@ -696,11 +695,10 @@ async def delete_project(
             sandbox_is_referenced_elsewhere,
         )
 
-        # Cancelling only asks; a tool call already in the executor is still
-        # running with its cwd in there, and removing that cwd underneath it
-        # either kills the call or strands what it writes next. The shared id
-        # first: a tool call in a project runs as `project-<id>`, so waiting on
-        # the member ids alone returned at once.
+        # Cancelling only asks: a call already in the executor still has its
+        # cwd in there, and removing it kills the call or strands what it
+        # writes next. The shared id first, since a call in a project runs as
+        # `project-<id>` and waiting on the member ids alone returned at once.
         shared = project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
@@ -753,9 +751,8 @@ async def delete_project(
                 project.get("rootPath"),
             )
         elif delete_files:
-            # Written down so it can be resolved and, once nothing is using it,
-            # collected: the row that knew where it lives is gone.
-            # The root as well: the dialog offers the whole workspace, and a
+            # Written down so it can be resolved and later collected: the row
+            # that knew where it lives is gone. The root as well, since the
             # deferred delete has to remove what the immediate one would.
             await run_in_threadpool(
                 record_orphaned_project,

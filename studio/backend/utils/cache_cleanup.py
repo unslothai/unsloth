@@ -181,9 +181,8 @@ def register_compiled_cache_on_path() -> None:
     # Same ownership test as cleanup: a directory in the launch dir that merely
     # has the name would otherwise shadow real dependencies for every worker.
     # A directory in the launch dir needs a file only the compiler writes:
-    # Unsloth*Trainer.py is a name a user's own subclass can carry, and
-    # prepending that directory lets anything else in it shadow real modules for
-    # every worker. Where we were pointed, or where we put it, is ours anyway.
+    # Unsloth*Trainer.py is a name a user's own subclass can carry, and that
+    # directory goes on sys.path. Where we put it is ours anyway.
     trusted = _trusted_cache_paths()
     registrable = [
         d
@@ -251,9 +250,8 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
         # (setup_cache_env only writes it when it first sets the variable), so
         # the next cleanup would demote our own cache to "shared". Built-in
         # paths are recognised without one and stay deleted.
-        # A built-in path needs no marker, so it needs no restoring either,
-        # unless it is a link: the clear resolved it and removed the target,
-        # which leaves the link dangling and every later write failing.
+        # A built-in path needs no marker, so no restoring either, unless it
+        # is a link: the clear removed the target and left it dangling.
         if dedicated and (str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()):
             try:
                 restored = Path(os.path.realpath(cache_dir))
