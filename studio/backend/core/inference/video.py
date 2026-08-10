@@ -614,9 +614,7 @@ def _h3_dense_denoiser_resident_bytes(
         return None
 
 
-def _h3_dense_denoiser_fits(
-    sizes: Optional[tuple[int, int]], free_bytes: Optional[int]
-) -> bool:
+def _h3_dense_denoiser_fits(sizes: Optional[tuple[int, int]], free_bytes: Optional[int]) -> bool:
     """Whether the released denoiser can come OUT of the offload rotation and stay resident.
 
     Its own bytes plus everything that still has to run beside it, against the live free reading.
