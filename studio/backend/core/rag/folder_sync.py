@@ -719,6 +719,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
         }
     retired: list[str] = []
     deleted: list[str] = []
+    restored: list[str] = []
     for scope in sorted(project_scopes - retired_scopes):
         project_id = scope.removeprefix("project_")
         if not project_id or project_exists(project_id):
@@ -744,7 +745,12 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
                     owner_exists = store.get_kb(owner_conn, kb_id) is not None
             else:
                 continue
-            if not owner_exists and delete_retired_scope(scope):
+            if owner_exists:
+                # the id came back, so the scope has an owner again and its retirement,
+                # which only ever meant "ownerless", must not keep gating that owner
+                if unretire_scope(scope):
+                    restored.append(scope)
+            elif delete_retired_scope(scope):
                 deleted.append(scope)
         except Exception:
             logger.warning("failed to reconcile retired RAG scope %s", scope, exc_info = True)
@@ -752,7 +758,27 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
         logger.info("retired %s orphaned RAG scope(s)", len(retired))
     if deleted:
         logger.info("deleted %s retired RAG scope(s)", len(deleted))
-    return {"retired": retired, "deleted": deleted}
+    if restored:
+        logger.info("restored %s recreated RAG scope(s)", len(restored))
+    return {"retired": retired, "deleted": deleted, "restored": restored}
+
+
+def unretire_scope(scope: str) -> bool:
+    """Drop the tombstone of a scope whose owner exists again, so it can be used."""
+    with _scope_lock(scope):
+        conn = _retirement_connection()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            removed = conn.execute(
+                "DELETE FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+            ).rowcount
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+    return bool(removed)
 
 
 def scope_retired(scope: str) -> bool:

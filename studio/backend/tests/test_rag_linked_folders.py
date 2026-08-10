@@ -1494,7 +1494,7 @@ def test_startup_retires_and_deletes_an_orphaned_project_scope(rag_home, stub_em
 
     reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
 
-    assert reconciled == {"retired": [scope], "deleted": [scope]}
+    assert reconciled == {"retired": [scope], "deleted": [scope], "restored": []}
     assert folder_sync.get_folder(folder["id"]) is None
     assert folder_sync.scope_retired(scope) is True
     with _connection() as conn:
@@ -1833,7 +1833,11 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
 
     reconciled = folder_sync.reconcile_retired_scopes(lambda project_id: False)
 
-    assert reconciled == {"retired": [], "deleted": [store.kb_scope("knowledge")]}
+    assert reconciled == {
+            "retired": [],
+            "deleted": [store.kb_scope("knowledge")],
+            "restored": [],
+        }
     assert folder_sync.list_folders(store.kb_scope("knowledge")) == []
     assert folder_sync.scope_retired(store.kb_scope("knowledge")) is True
     assert not os.path.exists(stored_path)
@@ -2130,3 +2134,34 @@ def test_job_events_emits_a_keepalive_while_a_job_is_quiet(rag_home, monkeypatch
 
     assert events[0] is not None
     assert events[1:] == [None, None]
+
+
+@requires_sqlite_vec
+def test_a_project_recreated_during_delete_keeps_its_rag_scope(rag_home, monkeypatch):
+    from routes import chat_history
+
+    scope = store.project_scope("p1")
+    # the row delete has committed and another client has already created the id again
+    monkeypatch.setattr(
+        chat_history, "get_chat_project", lambda project_id: {"id": project_id}
+    )
+
+    chat_history._delete_project_rag_sources("p1")
+
+    assert folder_sync.scope_retired(scope) is False
+
+
+@requires_sqlite_vec
+def test_reconciliation_restores_a_scope_whose_project_came_back(rag_home):
+    scope = store.project_scope("p1")
+    source = rag_home / "recreated-project"
+    source.mkdir()
+    folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
+    folder_sync.retire_scope(scope)
+    assert folder_sync.scope_retired(scope) is True
+
+    result = folder_sync.reconcile_retired_scopes(lambda project_id: project_id == "p1")
+
+    assert result["restored"] == [scope]
+    assert result["deleted"] == []
+    assert folder_sync.scope_retired(scope) is False
