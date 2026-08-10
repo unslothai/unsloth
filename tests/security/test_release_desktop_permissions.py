@@ -281,6 +281,22 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
     assert 'startswith("Unsloth-Desktop-")' in steps["Remove standalone signature assets"]["run"]
 
 
+def test_the_updater_workflow_validates_the_target_before_deleting_its_assets():
+    """The tag is typed by hand, so a mistyped or mis-flagged one names a real
+    older release. Deleting release assets cannot be undone, so every check that
+    rejects the target has to run before the sweep, or the rejected release is
+    already missing its signatures by the time the run fails."""
+    job = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))["jobs"]["publish-updater"]
+    order = [step.get("name") for step in job["steps"]]
+
+    remove = order.index("Remove standalone signature assets")
+    for name in ("Validate updater metadata", "Prevent GitHub latest downgrade"):
+        assert order.index(name) < remove, name
+    # Still swept before the release becomes the pointer clients resolve, and
+    # still ahead of the promotion that reads the source-release.json it refreshes.
+    assert remove < order.index("Mark published release as GitHub latest")
+
+
 def test_the_updater_workflow_is_manual_dispatch_only():
     """It shares a concurrency group with release-desktop.yml, so an auto-fired
     run queues ahead of the desktop build dispatched right after it and stalls

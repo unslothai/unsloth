@@ -172,20 +172,6 @@ jobs:
           gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater"
           test -s "$RUNNER_TEMP/desktop-updater/latest.json"
 
-      - name: Remove standalone signature assets
-        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Scoped to the desktop bundles: the v... release carries other assets too.
-          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
-            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
-          while IFS= read -r asset_name; do
-            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
-          done <<< "$signature_assets"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
-
       - name: Validate updater metadata
         if: steps.gate.outputs.proceed == 'true'
         run: |
@@ -308,6 +294,25 @@ jobs:
               sys.exit(f'Refusing to replace GitHub latest {current} with older {candidate}')
           PY
 
+
+      # Deletion is permanent, and the tag is now typed by hand rather than
+      # supplied by the release event, so every check that can reject the target
+      # runs above this. Validation only asks whether each manifest bundle is
+      # present, so the .sig assets still being here does not change its verdict.
+      # The re-fetch keeps source-release.json current for the promotion below.
+      - name: Remove standalone signature assets
+        if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Scoped to the desktop bundles: the v... release carries other assets too.
+          signature_assets="$(gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))')"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/source-release.json"
 
       - name: Mark published release as GitHub latest
         if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
