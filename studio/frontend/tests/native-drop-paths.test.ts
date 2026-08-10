@@ -347,15 +347,14 @@ test("ownership recorded after a claim is still picked up", () => {
   assert.deepEqual(after.pendingImageAttachments["single:thread-9"], [intent]);
 });
 
-test("document and image drop extensions stay disjoint", () => {
-  // classifyDropPaths sums the two filters, so an overlap silently turns a
-  // perfectly good drop into "unsupported".
-  const docs = RAG_UPLOAD_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
-  const images = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
-    ext.trim().toLowerCase(),
-  );
+test("document, image and audio drop extensions stay disjoint", () => {
+  // classifyDropPaths sums the three filters, so an overlap double-counts and
+  // silently turns a perfectly good drop into "unsupported".
+  const exts = [RAG_UPLOAD_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_AUDIO_DROP_ACCEPT]
+    .flatMap((accept) => accept.split(","))
+    .map((ext) => ext.trim().toLowerCase());
   assert.deepEqual(
-    images.filter((ext) => docs.includes(ext)),
+    exts.filter((ext, index) => exts.indexOf(ext) !== index),
     [],
   );
 });
