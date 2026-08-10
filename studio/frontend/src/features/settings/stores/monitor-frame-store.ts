@@ -71,10 +71,9 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
-// Fallback for "how much room does the stack need under a box" before it has been
-// measured. Deliberately small: guessing high is what parked the loaded models card in
-// the middle of a short window, with the corner underneath it empty and big enough to
-// hold it. The real height arrives from the stack's own ResizeObserver on the next frame.
+// Room the stack asks for before it has been measured. Deliberately small: guessing
+// high is what parked the loaded models card mid-window with the corner underneath it
+// empty. The real height arrives from the stack's ResizeObserver on the next frame.
 const ASSUMED_STACK_HEIGHT = 56;
 // The monitor's own controls, measured from its top edge: 12px of panel
 // padding, a 24px control row (the drag handle and the size-6 Close button),
@@ -109,11 +108,10 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  * lifting over it there is what put the banners in the middle of the page with
  * the corner underneath them empty.
  *
- * Measured against what the stack actually is, not a fixed guess. A guess is
- * what put the loaded models card in the middle of a short window: the welcome
- * composer left 83px under it, the card is 80px tall and fits there, but the
- * constant said 120 so the stack lifted clear over the composer's top edge and
- * left the corner it was dodging empty. `neededRoom` comes from the stack's own
+ * Measured against what the stack actually is, not a fixed guess. In a short
+ * window the welcome composer left 83px under it and the 80px card fits, but the
+ * old constant said 120, so the stack lifted over the composer and left the very
+ * corner it was dodging empty. `neededRoom` comes from the stack's own
  * ResizeObserver (see useStackGeometry), so a taller stack still gets dodged.
  *
  * Asked against the inset in force, never a fixed one: lifting over one box
@@ -126,9 +124,8 @@ function reachesStack(
   bottomInset: number,
   neededRoom: number,
 ): boolean {
-  // At least a pixel, even for an empty stack. Zero would let the capped branch
-  // hand back a max-height of exactly 0, which is a valid value browsers keep,
-  // so the stack would be there and invisible rather than dodged.
+  // At least a pixel: a needed room of 0 lets the capped branch hand back a
+  // max-height of 0, which browsers honour, leaving the stack invisible.
   return roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, neededRoom);
 }
 
@@ -303,13 +300,11 @@ export type StackPlacement = StackGeometry & {
  * stack's own content grows.
  *
  * The measurement has to be taken with this hook's own `maxHeight` off. The
- * overlays are flex items with `min-h-0` and their own inner scrollers, so under
- * the cap they shrink to fit it rather than overflowing, and both `clientHeight`
- * and `scrollHeight` come back as the cap itself. Measured in a browser: a stack
- * whose content is 83px tall reports 83, and reports 40 the moment a 40px cap is
- * applied. Fed back in, that is the placement reading its own output: a stack
- * taller than the gap under an obstacle would measure as exactly the gap, never
- * ask to be lifted, and sit there clipped.
+ * overlays are `min-h-0` flex items with inner scrollers, so under the cap they
+ * shrink to it and `scrollHeight` reports the cap, not the content: 83px of
+ * content reads back as 40 under a 40px cap. Fed back in that is the placement
+ * reading its own output, so a stack taller than the gap under an obstacle would
+ * measure as exactly the gap, never ask to be lifted, and sit there clipped.
  */
 export function useStackGeometry(): StackPlacement {
   const frames = useMonitorFrameStore((state) => state.frames);
@@ -335,12 +330,9 @@ export function useStackGeometry(): StackPlacement {
         setNeededRoom((current) => (current === 0 ? current : 0));
         return;
       }
-      // Drop the cap for the read and put it straight back, in one synchronous
-      // block: reading scrollHeight in between forces the unconstrained layout,
-      // and restoring before yielding means no observer, paint or other reader
-      // ever sees the uncapped box. Written through style rather than state
-      // because React owns this property and will rewrite the same value on the
-      // next render anyway.
+      // Drop the cap and put it back in one synchronous block, so scrollHeight
+      // sees the unconstrained layout but nothing else ever sees the uncapped
+      // box. Through style, not state: React rewrites the same value next render.
       const capped = node.style.maxHeight;
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
@@ -350,8 +342,7 @@ export function useStackGeometry(): StackPlacement {
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(node);
-    // Overlays mount and unmount inside the stack without resizing it while it is
-    // empty (a 0-height box stays 0), so watch the child list too.
+    // A 0-height stack stays 0 as children come and go, so watch the child list too.
     const mutations = new MutationObserver(measure);
     mutations.observe(node, { childList: true, subtree: true });
     return () => {

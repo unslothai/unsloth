@@ -272,11 +272,9 @@ test("the welcome composer is left alone, and the stack stays in the corner", ()
   assert.equal(stackBottomInset(welcome, CHAT_W, CHAT_H), 16);
 });
 
-// A short window, where the welcome composer really does sit close to the
-// bottom: 921x534, the reported case. It leaves 83px under it, and the loaded
-// models card is 80px tall, so the corner it is being lifted out of is the one
-// place it fits. Asking for a fixed 120 lifted the card clear over the
-// composer's top edge and parked it in the middle of the screen.
+// The reported case: a 921x534 window, where the welcome composer leaves 83px
+// under it and the 80px card fits in the corner it was being lifted out of.
+// Asking for a fixed 120 parked it in the middle of the screen instead.
 const SHORT_W = 921;
 const SHORT_H = 534;
 const SHORT_WELCOME = { left: 316, top: 308, right: 877, bottom: 427 };
@@ -305,11 +303,10 @@ test("a docked composer is dodged whatever the stack measures", () => {
   }
 });
 
-// The measurement feeds the cap, and the cap is on the element being measured.
-// The overlays are flex items with min-h-0, so under the cap they shrink to it
-// and both clientHeight and scrollHeight come back as the cap: a stack taller
-// than the gap would measure as exactly the gap, never ask for a lift, and sit
-// there clipped. The read has to be taken with the cap off.
+// The measurement feeds the cap, and the cap is on the element measured. The
+// overlays are min-h-0 flex items, so under the cap they shrink to it and
+// scrollHeight reports the cap: a stack taller than the gap would measure as
+// the gap, never ask for a lift, and sit clipped. So read with the cap off.
 test("the height is measured with the hook's own cap lifted", async () => {
   const source = await readFile(
     new URL(
@@ -335,8 +332,7 @@ test("the height is measured with the hook's own cap lifted", async () => {
   );
 });
 
-// The sweep above, re-run at the heights the stack actually takes, since the
-// dodge test is now driven by them.
+// The sweep above, re-run at the heights the stack actually takes.
 test("no measured height leaves the stack overlapping a box", () => {
   const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
   for (const needed of [0, 40, 80, 120, 200, 320]) {
