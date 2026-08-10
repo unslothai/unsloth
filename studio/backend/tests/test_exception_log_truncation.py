@@ -98,3 +98,12 @@ def test_the_event_field_is_capped_too():
 def test_a_normal_event_name_is_untouched():
     ev = {"event": "request_failed", "error": "boom"}
     assert log_config.truncate_exception(dict(ev)) == ev
+
+
+def test_positional_arguments_are_capped():
+    # logger.error("stream error: %s", exc) keeps the exception under positional_args,
+    # which the renderer stringifies with nothing in the chain to bound it.
+    out = log_config.truncate_exception(
+        {"event": "stream error: %s", "positional_args": (Exception("x" * 4_000_000),)}
+    )
+    assert len(str(out["positional_args"][0])) < log_config._MAX_ERROR_CHARS + 200

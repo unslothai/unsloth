@@ -201,3 +201,29 @@ def test_a_long_loc_element_is_truncated():
     errors = [{"type": "x", "loc": ("body", "budgets", "k" * 2_000_000), "msg": "bad", "input": 1}]
     out = safe_validation_errors(errors)[0]["loc"]
     assert all(not isinstance(p, str) or len(p) < 300 for p in out), [len(str(p)) for p in out]
+
+
+def test_an_enormous_integer_is_summarized():
+    # str() on an int past sys.get_int_max_str_digits() raises, and json.dumps would
+    # otherwise emit every digit.
+    import json
+
+    errors = [{"type": "x", "loc": ("body", "audio"), "msg": "bad", "input": 10**20_000}]
+    safe = safe_validation_errors(errors)
+    assert "integer with about" in str(safe[0]["input"])
+    json.dumps(jsonable_encoder(safe))
+
+
+def test_an_ordinary_integer_is_left_alone():
+    errors = [{"type": "x", "loc": ("body", "batch_size"), "msg": "bad", "input": 4096}]
+    assert safe_validation_errors(errors)[0]["input"] == 4096
+
+
+def test_a_lone_surrogate_can_still_be_encoded():
+    # Starlette encodes the response as UTF-8 with ensure_ascii = False, and a lone
+    # surrogate survives JSON parsing but cannot be encoded.
+    errors = [{"type": "x", "loc": ("body", "batch_size"), "msg": "bad", "input": "\ud800bad"}]
+    safe = safe_validation_errors(errors)
+    import json
+
+    json.dumps(jsonable_encoder(safe), ensure_ascii = False).encode("utf-8")

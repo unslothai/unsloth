@@ -82,6 +82,17 @@ def truncate_exception(event_dict: dict) -> dict:
     event = event_dict.get("event")
     if isinstance(event, str):
         event_dict["event"] = _truncate_middle(event, message_cap, _EXC_TAIL_CHARS)
+    # logger.error("stream error: %s", exc) keeps the exception under positional_args,
+    # and the chain has no PositionalArgumentsFormatter, so the renderer stringifies it
+    # untouched. Render and cap it here instead.
+    args = event_dict.get("positional_args")
+    if isinstance(args, (list, tuple)) and args:
+        event_dict["positional_args"] = [
+            _truncate_middle(a, message_cap, _EXC_TAIL_CHARS)
+            if isinstance(a, str)
+            else _truncate_middle(str(a), message_cap, _EXC_TAIL_CHARS)
+            for a in args
+        ]
     return event_dict
 
 

@@ -34,6 +34,7 @@ Public contract (other modules depend on these):
 """
 
 import math
+import re
 from itertools import islice
 
 from fastapi.encoders import jsonable_encoder
@@ -207,9 +208,27 @@ _MAX_ECHOED_DEPTH = 4
 
 
 def _truncate_text(value: str) -> str:
-    if len(value) <= _MAX_ECHOED_INPUT_CHARS:
+    if len(value) > _MAX_ECHOED_INPUT_CHARS:
+        value = value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
+    # A JSON body may legally contain a lone surrogate ("\ud800"), which survives
+    # parsing but cannot be UTF-8 encoded; Starlette's JSONResponse encodes with
+    # ensure_ascii = False, so echoing one turns the 422 back into a 500.
+    if _LONE_SURROGATE_RE.search(value):
+        value = _LONE_SURROGATE_RE.sub(lambda m: f"\\u{ord(m.group()):04x}", value)
+    return value
+
+
+# Digits, not characters: str() on a very large int raises above sys.get_int_max_str_digits(),
+# and json.dumps would emit every digit otherwise.
+_MAX_ECHOED_INT_DIGITS = 100
+_LONE_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+def _summarize_int(value: int) -> object:
+    if -(10**_MAX_ECHOED_INT_DIGITS) < value < 10**_MAX_ECHOED_INT_DIGITS:
         return value
-    return value[:_MAX_ECHOED_INPUT_CHARS] + f"... (truncated, {len(value)} chars)"
+    # bit_length, not str(): str() is what raises above the digit limit.
+    return f"<integer with about {value.bit_length() * 3 // 10} digits>"
 
 
 def _summarize_error_input(value, depth: int = 0):
@@ -218,6 +237,8 @@ def _summarize_error_input(value, depth: int = 0):
         return f"<{len(bytes(value))} bytes of binary data>"
     if isinstance(value, str):
         return _truncate_text(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return _summarize_int(value)
     if isinstance(value, float) and not math.isfinite(value):
         # NaN and Infinity survive jsonable_encoder but Starlette's JSONResponse
         # dumps with allow_nan = False, so echoing one turns the 422 into a 500.
