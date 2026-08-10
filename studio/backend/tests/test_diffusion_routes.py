@@ -1758,7 +1758,12 @@ def test_companion_sizes_lists_each_repo_once_for_the_whole_batch(client, monkey
     listed: list[str] = []
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             listed.append(repo_id)
             return types.SimpleNamespace(siblings = [], sha = "sha")
 

@@ -31,7 +31,13 @@ def shared_plan_metadata():
         _cache.reset(token)
 
 
-def plan_model_info(api: Any, repo_id: str, *, files_metadata: bool = True, token = None) -> Any:
+def plan_model_info(
+    api: Any,
+    repo_id: str,
+    *,
+    files_metadata: bool = True,
+    token = None,
+) -> Any:
     """``api.model_info(repo_id, ...)``, served from the batch's listings when one is active.
 
     Raises exactly what the underlying call raises: a failure is not cached, so one repo that was
