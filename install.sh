@@ -2643,12 +2643,18 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
 # A piped install (curl ... | sh) has $0 = "sh", so _REPO_ROOT is whatever directory the
-# user happened to be in, not a checkout. Only a run from the script file itself may
-# trust scripts sitting next to it, or an install from a writable/shared cwd would run
-# that directory's copy instead of ours.
+# user happened to be in, not a checkout. Only a real checkout may be trusted for the
+# scripts sitting next to it, or an install run from a writable or shared directory would
+# execute that directory's copy instead of ours. Run as a file AND surrounded by the repo
+# itself: install.sh downloaded on its own into such a directory is not a checkout.
 _REPO_IS_CHECKOUT=0
 case "$0" in
-    */install.sh|install.sh) [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
+    */install.sh|install.sh)
+        if [ -r "$0" ] && [ -f "$_REPO_ROOT/pyproject.toml" ] \
+           && [ -f "$_REPO_ROOT/unsloth/__init__.py" ]; then
+            _REPO_IS_CHECKOUT=1
+        fi
+        ;;
 esac
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
