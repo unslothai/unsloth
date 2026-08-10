@@ -9,9 +9,13 @@ machine plus the cache/marker inspection those workers depend on.
 
 Resume model
 ------------
-Only the HTTP transport supports true partial-file resume:
-huggingface_hub's HTTP resumer opens ``<etag>.incomplete`` in append mode
-and sends ``Range: bytes={resume_size}-`` to continue from disk.
+Up to huggingface_hub 1.17 the HTTP transport supported true partial-file
+resume: the resumer opened ``<etag>.incomplete`` in append mode and sent
+``Range: bytes={resume_size}-`` to continue from disk. 1.18 replaced that with
+a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on
+the way out, so no transport resumes within a file any more and a surviving
+partial is litter (see :func:`hf_partials_are_resumable`). Resume is now
+whole-file only: ``snapshot_download`` skips shards already materialized.
 
 The XET transport CANNOT resume from a ``.incomplete`` partial:
 ``hf_xet.download_files`` rewrites the destination from scratch.
@@ -69,6 +73,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
     target_dir_name,
     hf_cache_root,
+    hf_partials_are_resumable,
     incomplete_blob_hash,
 )
 
@@ -561,7 +566,10 @@ def prepare_cache_for_transport(
     - HTTP mode: a partial is trusted ONLY when its governing marker equals
       ``"http"``. Any other case (missing/unreadable/mismatched marker) purges,
       since the HTTP resumer would otherwise append to a sparse
-      XET/parallel-Range partial and silently produce a corrupt blob.
+      XET/parallel-Range partial and silently produce a corrupt blob. On
+      huggingface_hub >= 1.18 there is no resumer left to trust a partial for
+      (see ``hf_partials_are_resumable``), so the marker is bypassed and every
+      selected partial purges.
     - XET mode: incomplete blobs are purged (``hf_xet.download_files`` rewrites
       from scratch, so this only fixes UI accounting — bytes already in CAS are
       reused via the chunk-cache). Scoped to ``only_blob_hashes``: companion
@@ -617,9 +625,15 @@ def prepare_cache_for_transport(
         if mode == TRANSPORT_XET:
             main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
         else:
-            if _read_marker(entry, variant) != mode:
+            # A trusted marker only buys something if the next attempt can append to the
+            # partial it vouches for, and since huggingface_hub 1.18 nothing can. What
+            # survives is dead weight that holds the disk the refetch needs and, carrying the
+            # etag of the blob being refetched, pins the bar to its own stale high-water mark
+            # until the new attempt overtakes it. Peers writing right now are still protected.
+            resumable = hf_partials_are_resumable()
+            if not resumable or _read_marker(entry, variant) != mode:
                 main_purge = _purge_incomplete_blobs(entry, only_blob_hashes, protected)
-            if companion_blob_hashes and _read_companion_marker(entry) != mode:
+            if companion_blob_hashes and (not resumable or _read_companion_marker(entry) != mode):
                 companion_purge = _purge_incomplete_blobs(
                     entry,
                     companion_blob_hashes,

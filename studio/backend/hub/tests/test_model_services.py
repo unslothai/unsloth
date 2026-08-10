@@ -1371,9 +1371,9 @@ def test_cached_gguf_scan_degrades_when_the_shared_index_cannot_be_built(monkeyp
         )
 
     rows = cache_inventory._scan_cached_gguf()
-    assert "Org/Good" in {
-        row["repo_id"] for row in rows
-    }, "one unhashable repo identity emptied the whole GGUF inventory"
+    assert "Org/Good" in {row["repo_id"] for row in rows}, (
+        "one unhashable repo identity emptied the whole GGUF inventory"
+    )
 
 
 def test_state_scan_survives_a_state_filename_with_an_undecodable_byte(monkeypatch, tmp_path):
@@ -4849,6 +4849,8 @@ def test_prepare_cache_for_transport_purges_cross_transport_companion(monkeypatc
 
 
 def test_prepare_cache_for_transport_preserves_same_transport_companion(monkeypatch, tmp_path):
+    """Only a hub that can still append to the partial earns the same-transport reprieve."""
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: True)
     blobs = _vision_cache_root(monkeypatch, tmp_path)
     companion = frozenset({"shared-mmproj"})
 
@@ -5722,9 +5724,9 @@ def test_a_root_that_will_not_resolve_is_a_scan_error(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "resolve", _boom)
     errors: list = []
     assert state.hf_cache_roots(errors) == []
-    assert any(
-        "network mount unavailable" in str(e) for e in errors
-    ), "the unreadable root has to be reported, not silently dropped"
+    assert any("network mount unavailable" in str(e) for e in errors), (
+        "the unreadable root has to be reported, not silently dropped"
+    )
 
 
 def test_a_partial_scan_cannot_report_the_target_as_gone(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@ import re
 import shutil
 import stat as stat_module
 import sys
+from functools import lru_cache
 from pathlib import Path, PureWindowsPath
 from typing import Iterable, Iterator, Optional
 
@@ -46,6 +47,40 @@ def incomplete_blob_hash(name: str) -> Optional[str]:
         return None
     process_unique = _PROCESS_UNIQUE_PARTIAL_RE.fullmatch(stem)
     return process_unique.group("blob_hash") if process_unique else stem
+
+
+# The last huggingface_hub line whose partials a later attempt can append to.
+_LAST_RESUMABLE_PARTIAL_VERSION = (1, 17)
+
+
+@lru_cache(maxsize = 1)
+def hf_partials_are_resumable() -> bool:
+    """Whether an interrupted download leaves bytes the next attempt can reuse.
+
+    Up to 1.17 huggingface_hub appended to a shared ``<etag>.incomplete`` and restarted from
+    its length over a Range request. 1.18 moved the writer to a process-unique
+    ``<etag>.<nonce>.incomplete``, opened ``"wb"`` and unlinked in a ``finally``
+    (huggingface/huggingface_hub#4228), so an interrupted file is refetched from zero and
+    whatever partial survives a hard kill can never be read again.
+
+    An unreadable version answers True: not knowing which writer is installed is not grounds
+    for deleting bytes that may still be resumable.
+    """
+    try:
+        from huggingface_hub import __version__ as hf_version
+    except Exception:  # noqa: BLE001 - an unimportable hub is the caller's problem, not ours
+        return True
+    release = []
+    for chunk in str(hf_version).split(".")[:2]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            return True
+        release.append(int(digits))
+    return tuple(release) <= _LAST_RESUMABLE_PARTIAL_VERSION
 
 
 def _safe_is_dir(path: Path, scan_errors: Optional[list] = None) -> bool:
