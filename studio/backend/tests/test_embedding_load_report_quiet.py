@@ -127,7 +127,6 @@ def test_a_concurrent_thread_is_not_captured():
     # The filters sit on process-global loggers; another in-process load must keep
     # its own report rather than have it swallowed and attributed to the embedder.
     import threading
-
     log, sink = _attach_sink()
     try:
         with _quiet_transformers_load() as report:
@@ -177,7 +176,7 @@ def test_a_hub_only_progress_disable_survives():
     )
     from transformers.utils import logging as hf_logging
 
-    hf_logging.enable_progress_bar()   # transformers on, Hub-only disable after it
+    hf_logging.enable_progress_bar()  # transformers on, Hub-only disable after it
     disable_progress_bars()
     try:
         with _quiet_transformers_load():
