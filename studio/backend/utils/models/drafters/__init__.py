@@ -24,6 +24,7 @@ from utils.models.drafters.preference import (
     dspark_precision_rank,
     dspark_preference_key,
 )
+from utils.models.drafters.budget import dflash_budget_bytes
 from utils.models.drafters.dflash import (
     detect_dflash_file,
     is_dflash_architecture,
@@ -38,6 +39,7 @@ __all__ = [
     "_drafter_stem_rank",
     "_drafter_total_size",
     "detect_dflash_file",
+    "dflash_budget_bytes",
     "dflash_precision_rank",
     "dflash_preference_key",
     "dflash_repo_preference_key",

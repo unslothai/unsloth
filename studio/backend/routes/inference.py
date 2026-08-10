@@ -5345,6 +5345,7 @@ def _remote_gguf_companion_bytes(
             _is_root_dflash_drafter_path,
         )
         from huggingface_hub import model_info
+        from utils.models.drafters import dflash_budget_bytes
         from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
@@ -5380,29 +5381,9 @@ def _remote_gguf_companion_bytes(
             if dspark_candidates
             else 0
         )
-        # The largest candidate the fetch could end up on, not the best-ranked
-        # one. _download_dflash can only read a candidate's header once it has
-        # paid for the bytes, and a rejection falls through to the next name in
-        # the ranking, so any candidate can be the file that lands -- and the
-        # whole point of the fallback is the case where it is a different, bigger
-        # one. Headers are unreadable from a listing, so the ranking cannot
-        # narrow that down here, and over-estimating is the established safe
-        # direction for a guard protecting a running training job.
-        # Each entry summed is a whole shard SET, not one file: a split sidecar
-        # is picked as its first shard and _download_companion_gguf then fetches
-        # every sibling, all of which llama-server keeps resident. Sizing one
-        # shard would halve a two-shard sidecar, and under-estimating is the
-        # direction that waves a load through and then exhausts VRAM.
-        dflash_bytes = max(
-            (
-                size
-                + sum(
-                    dflash_sizes.get(shard, 0) for shard in _gguf_extra_shards(dflash_sizes, name)
-                )
-                for name, size in dflash_sizes.items()
-            ),
-            default = 0,
-        )
+        # Bounded rather than picked: see dflash_budget_bytes for why the max
+        # over whole shard sets is the answer a listing can give.
+        dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_candidates:
