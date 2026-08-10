@@ -263,8 +263,14 @@ def test_the_joint_losses_reach_status_and_history():
     against the same x axis as the loss."""
     svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
     svc._apply_event(
-        {"type": "progress", "step": 1, "total_steps": 2, "loss": 0.5,
-         "video_loss": 0.4, "audio_loss": 0.1}
+        {
+            "type": "progress",
+            "step": 1,
+            "total_steps": 2,
+            "loss": 0.5,
+            "video_loss": 0.4,
+            "audio_loss": 0.1,
+        }
     )
     st = svc.status()
     assert st["video_loss"] == 0.4 and st["audio_loss"] == 0.1
