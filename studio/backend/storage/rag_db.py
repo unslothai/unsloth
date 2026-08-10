@@ -19,6 +19,7 @@ import logging
 import re
 import sqlite3
 import threading
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -373,8 +374,9 @@ def _delete_document_chunks(conn, document_id: str) -> None:
 
 def reconcile_orphaned_ingestion_jobs() -> int:
     """Fail ingestion jobs/documents left mid-flight by a crash so they stop
-    showing as stuck "processing" and become re-ingestible. Run at startup.
-    No-op without RAG. Returns the number of jobs reset.
+    showing as stuck "processing" and become re-ingestible. Work owned by another
+    live backend is left alone until its lease expires. No-op without RAG. Returns
+    the number of jobs reset.
     """
     # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary
     # would otherwise raise out of startup and be logged as a reconcile failure, when
@@ -383,9 +385,14 @@ def reconcile_orphaned_ingestion_jobs() -> int:
         return 0
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        now = datetime.now(timezone.utc).isoformat()
         rows = conn.execute(
-            "SELECT id, document_id FROM ingestion_jobs "
-            "WHERE status NOT IN ('completed', 'failed')"
+            "SELECT j.id, j.document_id FROM ingestion_jobs j "
+            "WHERE j.status NOT IN ('completed', 'failed') AND NOT EXISTS ("
+            "SELECT 1 FROM rag_job_leases l WHERE l.kind='ingestion' "
+            "AND l.job_id=j.id AND l.expires_at>?)",
+            (now,),
         ).fetchall()
         for row in rows:
             doc = conn.execute(
@@ -401,21 +408,25 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                     "progress=1.0, error=NULL WHERE id=?",
                     (row["id"],),
                 )
-                continue
+            else:
+                conn.execute(
+                    "UPDATE ingestion_jobs SET status='failed', stage='error', "
+                    "error='Server restarted during ingestion' WHERE id=?",
+                    (row["id"],),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='failed' "
+                    "WHERE id=? AND status NOT IN ('completed', 'failed')",
+                    (row["document_id"],),
+                )
+                # A failed or still-in-flight doc must not leave citable chunks
+                # (retrieval filters by scope, not status); also drops any chunks of a
+                # doc already 'failed' before the crash.
+                _delete_document_chunks(conn, row["document_id"])
             conn.execute(
-                "UPDATE ingestion_jobs SET status='failed', stage='error', "
-                "error='Server restarted during ingestion' WHERE id=?",
+                "DELETE FROM rag_job_leases WHERE kind='ingestion' AND job_id=?",
                 (row["id"],),
             )
-            conn.execute(
-                "UPDATE documents SET status='failed' "
-                "WHERE id=? AND status NOT IN ('completed', 'failed')",
-                (row["document_id"],),
-            )
-            # A failed or still-in-flight doc must not leave citable chunks
-            # (retrieval filters by scope, not status); also drops any chunks of a
-            # doc already 'failed' before the crash.
-            _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)
     finally:

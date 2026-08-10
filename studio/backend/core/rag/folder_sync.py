@@ -38,6 +38,7 @@ _named_locks_lock = threading.Lock()
 _retirement_schema_lock = threading.Lock()
 _TERMINAL = {"completed", "failed"}
 _MAX_FOLDER_DEPTH = 64
+_SQLITE_INTEGER_MAX = (1 << 63) - 1
 
 
 class _SyncStopped(Exception):
@@ -164,6 +165,19 @@ def _root_identity(root: str) -> tuple[int, int]:
     return root_stat.st_dev, root_stat.st_ino
 
 
+def _store_identity(identity: tuple[int, int]) -> tuple[int | str, int | str]:
+    return tuple(value if value <= _SQLITE_INTEGER_MAX else f"x{value:x}" for value in identity)
+
+
+def _load_identity(device_id: int | str, file_id: int | str) -> tuple[int, int]:
+    def load(value: int | str) -> int:
+        return (
+            int(value[1:], 16) if isinstance(value, str) and value.startswith("x") else int(value)
+        )
+
+    return load(device_id), load(file_id)
+
+
 def _mount_points() -> frozenset[str]:
     """Return known mount boundaries without assuming directory identities are unique."""
     if os.name != "posix" or not os.path.exists("/proc/self/mountinfo"):
@@ -250,8 +264,7 @@ def create_folder(
                     scope,
                     normalized,
                     (name or Path(normalized).name or normalized).strip(),
-                    root_device,
-                    root_inode,
+                    *_store_identity((root_device, root_inode)),
                     int(auto_sync),
                     "pending",
                     now,
@@ -289,7 +302,7 @@ def _reauthorize_folder(
                 raise ValueError("Linked folder changed after it was selected")
             conn.execute(
                 "UPDATE linked_folders SET root_device=?, root_inode=?, updated_at=? WHERE id=?",
-                (*identity, _now(), folder_id),
+                (*_store_identity(identity), _now(), folder_id),
             )
             conn.commit()
             return dict(
@@ -1194,7 +1207,7 @@ def _reconcile_folder(job_id: str) -> None:
         conn.commit()
     try:
         _check_running()
-        expected_identity = (folder["root_device"], folder["root_inode"])
+        expected_identity = _load_identity(folder["root_device"], folder["root_inode"])
         current, scanned_identity = _scan(folder["path"], expected_identity)
         _check_running()
     except (_SyncStopped, _LeaseLost):
@@ -1485,6 +1498,7 @@ def reconcile_folder(job_id: str) -> None:
 
 
 def _enqueue_periodic() -> None:
+    rag_db.reconcile_orphaned_ingestion_jobs()
     _reconcile_retired_folder_deletions()
     with closing(rag_db.get_connection()) as conn:
         now = _now()

@@ -198,6 +198,8 @@ fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
     if ok == 0 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         return Err("Path is no longer available.".to_string());
     }
+    let legacy_device_id = info.dwVolumeSerialNumber as u64;
+    let legacy_file_id = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
     let mut identity: FILE_ID_INFO = unsafe { zeroed() };
     let extended_ok = unsafe {
         GetFileInformationByHandleEx(
@@ -209,15 +211,21 @@ fn stable_path_identity(path: &Path) -> Result<(String, String), String> {
     };
     if extended_ok != 0 {
         let file_id = u128::from_le_bytes(identity.FileId.Identifier);
+        if identity.VolumeSerialNumber == legacy_device_id && file_id == legacy_file_id as u128 {
+            return Ok((
+                format!("{legacy_device_id:x}"),
+                format!("{legacy_file_id:x}"),
+            ));
+        }
+        // Python <=3.11 exposes the legacy pair; Python >=3.12 exposes FILE_ID_INFO.
         return Ok((
-            format!("{:x}", identity.VolumeSerialNumber),
-            format!("{file_id:x}"),
+            format!("{legacy_device_id:x}:{:x}", identity.VolumeSerialNumber),
+            format!("{legacy_file_id:x}:{file_id:x}"),
         ));
     }
-    let file_id = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
     Ok((
-        format!("{:x}", info.dwVolumeSerialNumber),
-        format!("{file_id:x}"),
+        format!("{legacy_device_id:x}"),
+        format!("{legacy_file_id:x}"),
     ))
 }
 

@@ -603,6 +603,23 @@ def test_registration_rechecks_the_signed_folder_identity(rag_home, monkeypatch)
     assert folder_sync.list_folders(store.project_scope("identity-race")) == []
 
 
+@requires_sqlite_vec
+def test_large_windows_root_identity_round_trips_through_sqlite(rag_home, monkeypatch):
+    source = rag_home / "large-identity"
+    source.mkdir()
+    identity = (1 << 63, 1 << 127)
+    monkeypatch.setattr(folder_sync, "_root_identity", lambda path: identity)
+
+    folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "large-identity",
+        path = str(source),
+        expected_identity = identity,
+    )
+
+    assert folder_sync._load_identity(folder["root_device"], folder["root_inode"]) == identity
+
+
 def test_validate_folder_rejects_symlink_root(rag_home):
     source = rag_home / "source"
     source.mkdir()

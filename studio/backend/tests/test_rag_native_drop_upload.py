@@ -41,6 +41,7 @@ def _sign(
     *,
     operation = "attach",
     path_kind = "attachment",
+    identity_options = None,
     nonce = None,
     secret = SECRET,
 ):
@@ -48,6 +49,7 @@ def _sign(
     st = os.stat(path)
     path_type = "directory" if os.path.isdir(path) else "file"
     now_ms = int(time.time() * 1000)
+    identities = identity_options or ((st.st_dev, st.st_ino),)
     payload = {
         "version": 1,
         "operation": operation,
@@ -62,8 +64,8 @@ def _sign(
         "display_label": os.path.basename(path),
         "size_bytes": st.st_size if path_type == "file" else None,
         "modified_ms": int(st.st_mtime_ns // 1_000_000) if path_type == "file" else None,
-        "device_id": format(st.st_dev, "x"),
-        "file_id": format(st.st_ino, "x"),
+        "device_id": ":".join(format(identity[0], "x") for identity in identities),
+        "file_id": ":".join(format(identity[1], "x") for identity in identities),
     }
     payload_b64 = _b64(json.dumps(payload).encode("utf-8"))
     signature = hmac.new(secret, payload_b64.encode("ascii"), hashlib.sha256).digest()
@@ -166,6 +168,49 @@ def test_document_folder_grant_binds_identity_but_allows_content_changes(tmp_pat
     with pytest.raises(leases.NativePathLeaseError, match = "changed"):
         leases.verify_native_path_lease(
             replaced_lease,
+            operation = "link-documents",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+
+
+@pytest.mark.parametrize(("uses_extended_identity", "matching_index"), [(False, 0), (True, 1)])
+def test_grant_uses_the_identity_exposed_by_its_python_runtime(
+    tmp_path, monkeypatch, uses_extended_identity, matching_index
+):
+    folder = tmp_path / "documents"
+    folder.mkdir()
+    current = (folder.stat().st_dev, folder.stat().st_ino)
+    other = (current[0] + 1, current[1] + 1)
+    accepted = [other, other]
+    accepted[matching_index] = current
+    lease = _sign(
+        folder,
+        operation = "link-documents",
+        path_kind = "document-folder",
+        identity_options = accepted,
+    )
+    rejected = [other, other]
+    rejected[1 - matching_index] = current
+    rejected_lease = _sign(
+        folder,
+        operation = "link-documents",
+        path_kind = "document-folder",
+        identity_options = rejected,
+    )
+    monkeypatch.setattr(leases, "_WINDOWS_STAT_USES_FILE_ID_INFO", uses_extended_identity)
+
+    grant = leases.verify_native_path_lease(
+        lease,
+        operation = "link-documents",
+        expected_kind = "document-folder",
+        expected_path_type = "directory",
+    )
+
+    assert (grant.device_id, grant.file_id) == current
+    with pytest.raises(leases.NativePathLeaseError, match = "changed"):
+        leases.verify_native_path_lease(
+            rejected_lease,
             operation = "link-documents",
             expected_kind = "document-folder",
             expected_path_type = "directory",
