@@ -321,9 +321,7 @@ def boot(page, path: str) -> None:
     # job it shares has minutes, not tens of minutes, to spare.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
-            page.wait_for_selector(
-                f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS
-            )
+            page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
         except PlaywrightTimeoutError:
             # Let the caller's own checks report the missing card; a bare
             # timeout here would say nothing about which one or where.
