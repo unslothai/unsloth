@@ -2240,8 +2240,16 @@ class InferenceBackend:
         for msg in messages:
             role = msg.get("role", "")
             content = content_to_text(msg.get("content", ""))
+            reasoning_content = msg.get("reasoning_content")
+            has_reasoning_content = (
+                role == "assistant"
+                and isinstance(reasoning_content, str)
+                and bool(reasoning_content.strip())
+            )
 
-            if role in ["system", "user", "assistant"] and content.strip():
+            if role in ["system", "user", "assistant"] and (
+                content.strip() or has_reasoning_content
+            ):
                 if role == last_role:
                     logger.debug(f"Skipping consecutive {role} message to maintain alternation")
                     continue
@@ -2252,8 +2260,11 @@ class InferenceBackend:
                     if clean_content:
                         chat_messages.append({"role": role, "content": clean_content})
                         last_role = role
-                elif role == "assistant" and content.strip():
-                    chat_messages.append({"role": role, "content": content})
+                elif role == "assistant":
+                    assistant_message = {"role": role, "content": content}
+                    if has_reasoning_content:
+                        assistant_message["reasoning_content"] = reasoning_content
+                    chat_messages.append(assistant_message)
                     last_role = role
                 elif role == "system":
                     continue

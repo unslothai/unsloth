@@ -562,6 +562,17 @@ def _estimate_message_tokens(msg: dict) -> int:
         return 1
 
 
+def _estimate_messages_tokens(messages: list) -> int:
+    """Conservatively estimate a complete message list.
+
+    Templates disagree about when historical ``reasoning_content`` renders,
+    and arbitrary GGUFs can carry custom templates. Counting the serialized
+    field avoids a retry that still exceeds context. The overflow recovery path
+    clips large reasoning traces before it evicts conversation turns.
+    """
+    return sum(_estimate_message_tokens(msg) for msg in messages)
+
+
 def _truncate_middle_messages(messages: list, keep_ratio: float):
     """Drop whole turn-groups from the middle of an OpenAI message list.
 
@@ -595,7 +606,8 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     if len(groups) <= 1 + protected_tail:
         return messages, 0
 
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    estimates = {id(msg): _estimate_message_tokens(msg) for msg in messages}
+    total_est = sum(estimates[id(msg)] for msg in messages)
     target_est = int(total_est * keep_ratio)
 
     anchor = groups[0]
@@ -609,7 +621,7 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
     while kept_middle and current_est > target_est:
         victim = kept_middle.pop(0)
         dropped += len(victim)
-        current_est -= sum(_estimate_message_tokens(m) for m in victim)
+        current_est -= sum(estimates[id(msg)] for msg in victim)
 
     if dropped == 0:
         return messages, 0
@@ -625,6 +637,26 @@ def _truncate_middle_messages(messages: list, keep_ratio: float):
 _CLIP_MARKER = "\n[... truncated by context_overflow=truncate_middle ...]\n"
 # Generous head+tail first; cut harder if the estimate still misses the target.
 _CLIP_KEEP_CHARS = (1500, 400)
+
+
+def _clip_reasoning_contents(messages: list, keep: int = _CLIP_KEEP_CHARS[-1]) -> int:
+    """Clip oversized assistant reasoning before sizing an overflow retry.
+
+    Reasoning can live in the protected anchor or tail where group eviction
+    cannot reach it. It is also the least useful history to preserve after the
+    server has already reported an overflow, so shrink it before dropping whole
+    conversation turns.
+    """
+    clipped = 0
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        reasoning = msg.get("reasoning_content")
+        if not isinstance(reasoning, str) or len(reasoning) <= 2 * keep + len(_CLIP_MARKER):
+            continue
+        msg["reasoning_content"] = reasoning[:keep] + _CLIP_MARKER + reasoning[-keep:]
+        clipped += 1
+    return clipped
 
 
 def _clip_long_contents(messages: list, target_est: int) -> int:
@@ -644,7 +676,7 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     clipped = 0
     for keep in _CLIP_KEEP_CHARS:
         for msg in _candidates():
-            if sum(_estimate_message_tokens(m) for m in messages) <= target_est:
+            if _estimate_messages_tokens(messages) <= target_est:
                 return clipped
             content = msg.get("content")
             if not isinstance(content, str) or len(content) <= 2 * keep + len(_CLIP_MARKER):
@@ -660,10 +692,21 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
-    total_est = sum(_estimate_message_tokens(m) for m in messages)
+    pre_clip_est = _estimate_messages_tokens(messages)
+    clipped = _clip_reasoning_contents(messages)
+    total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
-        keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
+        prompt_target = _OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx
+        if clipped:
+            # The server counted the body before the retry-only clip. Rescale
+            # using this estimator's pre/post ratio so the removed trace is not
+            # charged again by middle eviction.
+            n_prompt = n_prompt * total_est / max(1, pre_clip_est)
+        if clipped and n_prompt <= prompt_target:
+            keep_ratio = 1.0
+        else:
+            keep_ratio = min(0.95, prompt_target / max(1.0, n_prompt))
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
@@ -673,9 +716,8 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    clipped = 0
-    if sum(_estimate_message_tokens(m) for m in body.get("messages") or []) > target_est:
-        clipped = _clip_long_contents(body.get("messages") or [], target_est)
+    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+        clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
     if n_ctx:
@@ -9580,7 +9622,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 
     Returns:
         system_prompt:  System message text (empty string if none).
-        chat_messages:  Non-system messages with content flattened to strings.
+        chat_messages:  Non-system messages with content flattened to strings and
+                        assistant reasoning_content preserved.
         image_base64:   Base64 of the *first* image found, or ``None``.
     """
     system_parts: list[str] = []
@@ -9598,9 +9641,10 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             continue
 
         # ── User / assistant messages ─────────────────────────
+        combined_text: Optional[str] = None
         if isinstance(msg.content, str):
             # Plain string content — pass through
-            chat_messages.append({"role": msg.role, "content": msg.content})
+            combined_text = msg.content
         elif isinstance(msg.content, list):
             # Multimodal content parts
             text_parts: list[str] = []
@@ -9615,7 +9659,17 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
                     else:
                         logger.warning(f"Remote image URLs not yet supported: {url[:80]}...")
             combined_text = "\n".join(text_parts) if text_parts else ""
-            chat_messages.append({"role": msg.role, "content": combined_text})
+        elif msg.role == "assistant" and msg.reasoning_content:
+            # A reasoning-only turn has no visible content, but still needs a
+            # message for templates that consume reasoning_content.
+            combined_text = ""
+
+        if combined_text is None:
+            continue
+        chat_message = {"role": msg.role, "content": combined_text}
+        if msg.role == "assistant" and msg.reasoning_content:
+            chat_message["reasoning_content"] = msg.reasoning_content
+        chat_messages.append(chat_message)
 
     return "\n\n".join(p for p in system_parts if p), chat_messages, first_image_b64
 
@@ -18642,16 +18696,32 @@ async def _anthropic_passthrough_non_streaming(
 # =====================================================================
 
 
+def _normalize_local_assistant_message(message: dict) -> Optional[dict]:
+    """Enforce the local backend's assistant-message wire contract.
+
+    Bare assistant messages are Stop-button sentinels and must disappear.
+    A reasoning-only completed turn is real history, but llama.cpp checks for a
+    ``content`` or ``tool_calls`` key before reading ``reasoning_content``. Give
+    that turn an empty content key without mutating the caller's dictionary.
+    """
+    if message.get("role") != "assistant":
+        return message
+    if message.get("content") or message.get("tool_calls"):
+        return message
+    if message.get("reasoning_content"):
+        if message.get("content") == "":
+            return message
+        return {**message, "content": ""}
+    return None
+
+
 def _drop_empty_assistant_sentinels(messages: list[dict]) -> list[dict]:
-    """Drop bare ``{"role":"assistant"}`` Stop-button sentinels; passthrough backends reject them."""
+    """Drop Stop-button sentinels and normalize reasoning-only turns."""
     out: list[dict] = []
-    for m in messages:
-        if m.get("role") == "assistant":
-            has_content = bool(m.get("content"))
-            has_tool_calls = bool(m.get("tool_calls"))
-            if not has_content and not has_tool_calls:
-                continue
-        out.append(m)
+    for message in messages:
+        normalized = _normalize_local_assistant_message(message)
+        if normalized is not None:
+            out.append(normalized)
     return out
 
 
@@ -18701,6 +18771,57 @@ _LOCAL_SERVER_BUILTIN_TOOL_NAMES = frozenset(
 )
 
 
+def _merge_stranded_local_assistant_turns(messages: list[tuple[dict, bool]]) -> list[dict]:
+    """Fold scrubbed provider-tool fragments into their visible answer.
+
+    Removing a provider-synthetic call and its tool result can expose adjacent
+    assistant messages that were one logical response. Strict local templates
+    reject that role sequence. A small state machine carries a stranded fragment
+    through any number of synthetic rounds, preserving text-part lists and
+    reasoning oldest-first, until the next assistant message completes it.
+    """
+    out: list[dict] = []
+    pending: Optional[dict] = None
+
+    for message, message_is_stranded in messages:
+        if pending is None:
+            if message_is_stranded:
+                pending = message
+            else:
+                out.append(message)
+            continue
+
+        if message.get("role") != "assistant":
+            out.append(pending)
+            pending = None
+            out.append(message)
+            continue
+
+        merged = dict(message)
+        old_content = pending.get("content")
+        new_content = merged.get("content")
+        if old_content or new_content:
+            merged["content"] = _merge_user_content(old_content, new_content)
+
+        old_reasoning = pending.get("reasoning_content")
+        new_reasoning = merged.get("reasoning_content")
+        reasoning_parts = [
+            value for value in (old_reasoning, new_reasoning) if isinstance(value, str) and value
+        ]
+        if reasoning_parts:
+            merged["reasoning_content"] = "\n\n".join(reasoning_parts)
+
+        if message_is_stranded:
+            pending = merged
+        else:
+            out.append(merged)
+            pending = None
+
+    if pending is not None:
+        out.append(pending)
+    return out
+
+
 def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     """Drop synthetic provider-side tool_calls + matching role=tool replies on
     the local-backend (llama-server / GGUF) dispatch path.
@@ -18716,10 +18837,10 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     sees an orphan tool_call_id.
     """
     dropped_ids: set[str] = set()
-    sanitized_assistant: list[dict] = []
+    sanitized_assistant: list[tuple[dict, bool]] = []
     for m in messages:
         if m.get("role") != "assistant":
-            sanitized_assistant.append(m)
+            sanitized_assistant.append((m, False))
             continue
         tool_calls = m.get("tool_calls")
         if not isinstance(tool_calls, list) or not tool_calls:
@@ -18731,7 +18852,7 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             # dropped); round-22 added it, which made this leak possible.
             if "extra_content" in m:
                 m = {k: v for k, v in m.items() if k != "extra_content"}
-            sanitized_assistant.append(m)
+            sanitized_assistant.append((m, False))
             continue
         cleaned: list[dict] = []
         for tc in tool_calls:
@@ -18777,22 +18898,26 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
             m_clean["tool_calls"] = cleaned
         else:
             m_clean.pop("tool_calls", None)
-        if not m_clean.get("content") and not m_clean.get("tool_calls"):
+        is_stranded = bool(m.get("tool_calls")) and not cleaned
+        if (
+            not m_clean.get("content")
+            and not m_clean.get("reasoning_content")
+            and not m_clean.get("tool_calls")
+        ):
             continue  # assistant turn now empty, drop
-        sanitized_assistant.append(m_clean)
+        sanitized_assistant.append((m_clean, is_stranded))
 
-    if not dropped_ids:
-        return sanitized_assistant
-    out: list[dict] = []
-    for m in sanitized_assistant:
+    out: list[tuple[dict, bool]] = []
+    for m, is_stranded in sanitized_assistant:
         if (
             m.get("role") == "tool"
             and isinstance(m.get("tool_call_id"), str)
             and m["tool_call_id"] in dropped_ids
         ):
             continue
-        out.append(m)
-    return out
+        out.append((m, is_stranded))
+    merged = _merge_stranded_local_assistant_turns(out)
+    return _drop_empty_assistant_sentinels(merged)
 
 
 def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None:
