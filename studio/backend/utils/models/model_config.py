@@ -1678,6 +1678,7 @@ from utils.models.drafters import (  # noqa: E402
     is_dflash_architecture,
 )
 
+
 def detect_mtp_file(
     path: str,
     search_root: Optional[str] = None,

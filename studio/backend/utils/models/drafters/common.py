@@ -112,13 +112,11 @@ def _drafter_total_size(candidate: Path) -> int:
     """Bytes across every shard. Candidates are collapsed to shard 1, so a split
     copy must be summed or it would outrank a smaller single file."""
     from utils.models.model_config import colocated_split_shards
-
     try:
         shards, _ = colocated_split_shards(candidate)
         return sum(shard.stat().st_size for shard in shards)
     except OSError:
         return sys.maxsize
-
 
 
 def _drafter_names_other_weight(
@@ -144,5 +142,3 @@ def _drafter_names_other_weight(
     return any(
         _drafter_matches_weight(candidate_name, other, kind = kind) for other in other_weight_names
     )
-
-

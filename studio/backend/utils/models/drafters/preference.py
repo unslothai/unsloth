@@ -48,7 +48,6 @@ def dflash_preference_key(name: str) -> tuple[int, str]:
     return dflash_precision_rank(name), Path(name).name.lower()
 
 
-
 def dflash_repo_preference_key(
     name: str,
     weight_name: Optional[str] = None,
@@ -76,5 +75,3 @@ def dflash_repo_preference_key(
         return 0, _drafter_stem_rank(name, kind = "dflash"), precision, sort_name
     foreign = _drafter_names_other_weight(name, weight_name, other_weight_names)
     return 2 if foreign else 1, 0, precision, sort_name
-
-

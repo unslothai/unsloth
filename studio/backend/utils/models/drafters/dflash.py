@@ -54,7 +54,6 @@ def is_dflash_architecture(path: str) -> bool:
     return (meta.get("general.architecture") or "").strip().lower() == "dflash"
 
 
-
 def detect_dflash_file(
     path: str,
     search_root: Optional[str] = None,
@@ -212,5 +211,3 @@ def detect_dflash_file(
         logger.info("Detected DFlash drafter: %s", launch)
         return launch
     return None
-
-

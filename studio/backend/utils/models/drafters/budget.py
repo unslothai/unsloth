@@ -14,8 +14,7 @@ from typing import Callable, Mapping
 
 
 def dflash_budget_bytes(
-    sizes: Mapping[str, int],
-    extra_shards: Callable[[Mapping[str, int], str], list],
+    sizes: Mapping[str, int], extra_shards: Callable[[Mapping[str, int], str], list]
 ) -> int:
     """A safe bound on the DFlash sidecar a load may end up resident on.
 
