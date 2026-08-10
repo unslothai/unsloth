@@ -148,9 +148,7 @@ def test_dmg_background_art_is_what_its_renderer_produces() -> None:
     # exact equality would tie the suite to one Pillow resampling build, while a
     # stale asset is off by far more than a couple of levels
     for page, reference in zip(pages, expected):
-        drift = np.abs(
-            np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16)
-        )
+        drift = np.abs(np.asarray(page, dtype = np.int16) - np.asarray(reference, dtype = np.int16))
         assert drift.max() <= 2
 
 
