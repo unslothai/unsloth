@@ -2160,9 +2160,7 @@ def detect_dflash_file(
     if weight_name is not None and other_weights:
         kept: list[Path] = []
         for candidate in candidates:
-            if not _drafter_matches_weight(
-                candidate.name, weight_name, kind = "dflash"
-            ) and any(
+            if not _drafter_matches_weight(candidate.name, weight_name, kind = "dflash") and any(
                 _drafter_matches_weight(candidate.name, other, kind = "dflash")
                 for other in other_weights
             ):
