@@ -1107,6 +1107,10 @@ class TrainingBackend:
         # Throttled training-status logging to the server log (not one line/step).
         self._last_progress_log_ts: float = 0.0
         self._last_progress_log_step: int = -1
+        # (elapsed_seconds, num_tokens) at the previous logged line, so the next one
+        # can report throughput over the interval between them.
+        self._last_progress_log_elapsed: Optional[float] = None
+        self._last_progress_log_tokens: Optional[int] = None
 
         # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
@@ -1766,6 +1770,8 @@ class TrainingBackend:
             # Reset the throttle so the new run logs its first step even within 30s of a prior run.
             self._last_progress_log_ts = 0.0
             self._last_progress_log_step = -1
+            self._last_progress_log_elapsed = None
+            self._last_progress_log_tokens = None
             self.loss_history.clear()
             self.lr_history.clear()
             self.step_history.clear()
@@ -3092,8 +3098,33 @@ class TrainingBackend:
         now = time.monotonic()
         if prev >= 0 and step > prev and not is_final and (now - self._last_progress_log_ts) < 30.0:
             return
+        # Throughput over the interval since the previous logged line. Trainer speed is
+        # the number people watch a training run for, and the only place it used to
+        # appear was HF's own tqdm bar ("1.84s/it") and its per-step print
+        # ("train_tokens_per_second"), both of which are raw stdout rather than
+        # structured. Carry it here instead, so the structured line is not a downgrade.
+        elapsed = p.elapsed_seconds
+        tokens = p.num_tokens
+        s_per_step = tok_per_s = None
+        prev_elapsed = self._last_progress_log_elapsed
+        prev_tokens = self._last_progress_log_tokens
+        if elapsed is not None and prev_elapsed is not None and prev >= 0:
+            d_time = elapsed - prev_elapsed
+            d_steps = step - prev
+            if d_time > 0 and d_steps > 0:
+                s_per_step = round(d_time / d_steps, 3)
+                if tokens is not None and prev_tokens is not None and tokens > prev_tokens:
+                    tok_per_s = round((tokens - prev_tokens) / d_time, 1)
+        # The first logged line reports no throughput on purpose: elapsed_seconds is
+        # wall time since the worker started, which includes imports, the model
+        # download and load and the dataset build, and on a resumed run the step and
+        # token counters predate this process entirely. Dividing by it would report a
+        # number nobody wants. The next line has a real in-training interval.
+
         self._last_progress_log_ts = now
         self._last_progress_log_step = step
+        self._last_progress_log_elapsed = elapsed
+        self._last_progress_log_tokens = tokens
         logger.info(
             "training_progress",
             step = step,
@@ -3102,6 +3133,8 @@ class TrainingBackend:
             loss = round(p.loss, 4) if p.loss is not None else None,
             epoch = round(p.epoch, 2) if p.epoch is not None else None,
             eta_s = int(p.eta_seconds) if p.eta_seconds else None,
+            s_per_step = s_per_step,
+            tok_per_s = tok_per_s,
         )
 
     def _ensure_db_run_created(self) -> None:
