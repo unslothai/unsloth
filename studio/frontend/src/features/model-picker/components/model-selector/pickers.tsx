@@ -2718,7 +2718,6 @@ export function HubModelPicker({
       ...recommendedSearch.results,
       ...catalogSeedRows,
       ...communityBrowse.results,
-      ...catalogSeedRows,
     ]) {
       if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);

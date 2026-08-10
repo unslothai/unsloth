@@ -184,12 +184,9 @@ test("the search list is built from the seeds as well as the listing pool", () =
 
 test("row meta falls back to the curated seeds", () => {
   const text = declarationText("recommendedMeta");
-  // Community rows sit between the listing and the seeds; without them a community
-  // row renders with no size or VRAM chip.
-  assert.match(
-    text,
-    /recommendedSearch\.results\s*,\s*\.\.\.communityBrowse\.results\s*,\s*\.\.\.catalogSeedRows/,
-  );
+  assert.match(text, /recommendedSearch\.results\s*,\s*\.\.\.catalogSeedRows/);
+  // Community rows last; without them a community row renders with no size or VRAM chip.
+  assert.match(text, /\.\.\.communityBrowse\.results/);
   // Listing first, and the first entry per id wins.
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
 });
