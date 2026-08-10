@@ -143,7 +143,11 @@ def info(s: str) -> None:
     print(f"[banner] {s}", flush = True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
+def check(
+    name: str,
+    ok: bool,
+    detail: str = "",
+) -> None:
     checks[0] += 1
     if ok:
         info(f"PASS {name}")
@@ -152,7 +156,11 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     info(f"FAIL {name} {detail}")
 
 
-def api(path: str, payload: dict | None = None, token: str | None = None) -> dict:
+def api(
+    path: str,
+    payload: dict | None = None,
+    token: str | None = None,
+) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         f"{BASE}{path}",
@@ -262,9 +270,7 @@ def boot(page, path: str) -> None:
 
 def main() -> int:
     wait_for_health(BASE, timeout = 60.0, info = info)
-    token = api("/api/auth/login", {"username": "unsloth", "password": OLD})[
-        "access_token"
-    ]
+    token = api("/api/auth/login", {"username": "unsloth", "password": OLD})["access_token"]
     try:
         api(
             "/api/auth/change-password",
@@ -348,9 +354,7 @@ def main() -> int:
                 measure(page, f"{size} {name} collapsed")
                 page.screenshot(path = str(ART / f"{size}-{path.strip('/') or 'new-chat'}.png"))
 
-                toggle = page.locator(
-                    '[data-testid="web-update-release-notes-toggle"]'
-                )
+                toggle = page.locator('[data-testid="web-update-release-notes-toggle"]')
                 if toggle.count() == 1:
                     toggle.click()
                     page.wait_for_timeout(1500)
