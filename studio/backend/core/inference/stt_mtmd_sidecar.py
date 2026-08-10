@@ -58,6 +58,10 @@ from core.inference.stt_sidecar import (
 
 logger = get_logger(__name__)
 
+# A blocking unload comes from training claiming the VRAM. Bounded so training is not
+# stalled by a long recording, but long enough that a normal transcription finishes.
+_ACTIVE_REQUEST_DRAIN_TIMEOUT = 30.0
+
 
 @dataclass(frozen = True)
 class MtmdSttModel:
@@ -631,6 +635,18 @@ class MtmdSttSidecar:
         """
         if not wait and (self.is_loading() or self._active_requests):
             return
+        if wait and self._active_requests:
+            # A blocking caller is training claiming the VRAM, so this cannot wait forever,
+            # but `wait=True` still must not kill llama-server under a live transcription and
+            # throw the recording away. Bounded window, then proceed.
+            drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
+            while self._active_requests and time.monotonic() < drain_deadline:
+                time.sleep(0.1)
+            if self._active_requests:
+                logger.warning(
+                    "mtmd STT still had %d active request(s) after %.0fs; releasing anyway",
+                    self._active_requests, _ACTIVE_REQUEST_DRAIN_TIMEOUT,
+                )
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
         # settle outside _lock: load() holds _start_lock across startup and

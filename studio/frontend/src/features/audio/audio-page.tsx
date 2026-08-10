@@ -1498,6 +1498,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // Drop the cached list first: refreshGallery merges the fetched page into it, so an
       // empty page would otherwise leave every cleared row on screen.
       galleryCache.clips = [];
+      // React state too, not just the cache: refreshGallery swallows a failed GET and
+      // returns the cache without calling setClips, which left every cleared row rendered
+      // against a revoked object URL until some later refresh.
+      setClips([]);
       setSrcById({});
       setSelectedId(null);
       await refreshGallery();

@@ -8,6 +8,8 @@ gallery persistence and the raw-WAV response without torch, weights or a GPU."""
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -184,3 +186,17 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
     assert len(remaining) == 3
     # Newest kept, oldest dropped.
     assert set(ids[-3:]) == remaining
+
+
+def test_an_over_context_prompt_is_a_client_error(monkeypatch):
+    """Flooring at one token forwarded the whole over-context prompt anyway and failed deep
+    in generation; say so while the caller can still shorten the input."""
+    cli, calls, _saved = _make_client(monkeypatch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+
+    resp = cli.post("/v1/audio/speech", json = {"input": "x" * 8000})
+
+    assert resp.status_code == 400
+    # install_api_error_handlers reshapes HTTPException into the OpenAI error envelope.
+    assert "too long" in json.dumps(resp.json()).lower()
+    assert calls == []

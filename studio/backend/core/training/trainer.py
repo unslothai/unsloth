@@ -184,7 +184,15 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     if audio_type != "bicodec":
         return {}
     name = str(lookup_name).replace("\\", "/").rstrip("/")
-    if name.endswith("/LLM") or os.path.isdir(os.path.join(lookup_name, "LLM")):
+    if name.endswith("/LLM"):
+        return {}
+    # An LLM/ child is the canonical layout, and a cache-pinned or offline snapshot root has
+    # one too. Treating that as "already at the tokenizer" sent AutoTokenizer at the root,
+    # which holds no tokenizer, and failed the very case this helper exists for.
+    if os.path.isdir(os.path.join(lookup_name, "LLM")):
+        return {"subfolder": "LLM"}
+    # A local checkpoint that carries its own tokenizer is already the right directory.
+    if os.path.isfile(os.path.join(lookup_name, "tokenizer_config.json")):
         return {}
     return {"subfolder": "LLM"}
 

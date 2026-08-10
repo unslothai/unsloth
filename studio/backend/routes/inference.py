@@ -377,6 +377,11 @@ def _effective_max_tokens(payload):
     )
 
 
+# Below this there is no room for speech worth returning, so an over-context prompt is a
+# client error rather than a one-token generation.
+_MIN_SPEECH_OUTPUT_TOKENS = 64
+
+
 def _tts_max_new_tokens(payload) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends."""
     return min(
@@ -9294,7 +9299,18 @@ async def openai_audio_speech(
     context_length = _monitor_context_length()
     if context_length:
         prompt_tokens = max(1, len(body.input) // 3)
-        budget = max(1, min(budget, context_length - prompt_tokens))
+        remaining = context_length - prompt_tokens
+        # Flooring at 1 here would forward an over-context prompt anyway and fail deep in
+        # generation. Say so instead, while the caller can still shorten the input.
+        if remaining < _MIN_SPEECH_OUTPUT_TOKENS:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Input is too long for the loaded model's {context_length}-token context. "
+                    "Shorten it, or load the model with a larger context."
+                ),
+            )
+        budget = min(budget, remaining)
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = budget,
