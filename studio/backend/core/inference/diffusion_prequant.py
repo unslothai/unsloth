@@ -137,12 +137,18 @@ def resolve_prequant_source(
     *,
     path_override: Optional[str] = None,
     base_repo: Optional[str] = None,
+    task: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
 
     Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
     ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
     checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
+
+    ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families
+    that host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
+    denoisers). It only ever selects a more specific filename: unset, or set to a task the family
+    declares nothing for, resolves exactly what it resolved before.
 
     Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
     checkpoints at the root, so there is no directory to prepend; a repo that nested them would
@@ -152,10 +158,16 @@ def resolve_prequant_source(
     if override:
         return PrequantSource(kind = "path", location = override, filename = None)
     preferred = None
+    agnostic = None
     try:
         from .diffusion_families import family_prequant_filename, family_prequant_repo
+
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
-        preferred = family_prequant_filename(fam, scheme)
+        preferred = family_prequant_filename(fam, scheme, task = task)
+        # What the same call would have resolved WITHOUT a task, which is what decides whether a
+        # fallback is safe below. Skipped when no task was asked for, since then the two are the
+        # same lookup.
+        agnostic = family_prequant_filename(fam, scheme) if task else preferred
     except Exception:  # noqa: BLE001 — a bad family object must not break the load
         repo_id = None
     if repo_id:
@@ -165,11 +177,20 @@ def resolve_prequant_source(
         # fallback, so a build that knows the new name gets it and every older build keeps
         # resolving the artifact it already understands. Without an override nothing changes: the
         # derived name is primary and the legacy transformer_<scheme>.pt is the fallback.
+        #
+        # A TASK-SPECIFIC name gets NO fallback. The other artifacts in the repo are the same
+        # family, the same scheme and the same base, so every check the loader makes would pass
+        # on them -- the fallback would quietly install another partition's denoiser and generate
+        # from the wrong weights, which is precisely what naming the artifact per task prevents.
+        # Absent is better than wrong here: no artifact means the released bfloat16 denoiser.
+        task_specific = preferred is not None and preferred != agnostic
         return PrequantSource(
             kind = "repo",
             location = repo_id,
             filename = preferred or derived,
-            fallback_filename = derived if preferred else prequant_filename(scheme),
+            fallback_filename = (
+                None if task_specific else (derived if preferred else prequant_filename(scheme))
+            ),
         )
     return None
 
@@ -339,6 +360,7 @@ def load_prequantized_transformer(
     fast_accum: Optional[bool] = None,
     cache_dir: Optional[str] = None,
     prepare_model: Optional[Any] = None,
+    config_subfolder: str = "transformer",
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -346,6 +368,12 @@ def load_prequantized_transformer(
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Studio no longer reads.
+
+    ``config_subfolder`` is where the DENOISER CONFIG lives inside ``base``, defaulting to the
+    universal ``transformer``. A family hosting several denoiser partitions in one repo overrides
+    it with the one this checkpoint belongs to (MiniMax-H3's ``transformer_ref``): the scoped
+    download stages only that partition, so reading the config from the other one would send an
+    otherwise fully staged load back to the Hub.
 
     ``prepare_model`` (optional) is called as ``prepare_model(transformer, metadata)`` on the
     freshly built skeleton, AFTER ``from_config`` and BEFORE ``load_state_dict``. That window is
@@ -398,7 +426,9 @@ def load_prequantized_transformer(
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change
         # the pinned root may be gone or read-only, and load_config's raise is swallowed below into
         # a None return, silently dropping a prequant whose checkpoint is cached and already loaded.
-        config = _load_transformer_config(transformer_cls, base, hf_token, cache_dir, path)
+        config = _load_transformer_config(
+            transformer_cls, base, hf_token, cache_dir, path, config_subfolder
+        )
         from accelerate import init_empty_weights
 
         metadata = ckpt.get("metadata") or {}
@@ -599,13 +629,14 @@ def _load_transformer_config(
     hf_token: Optional[str],
     cache_dir: Optional[str],
     checkpoint_path: str,
+    subfolder: str = "transformer",
 ) -> Any:
     """``transformer_cls.load_config`` against the checkpoint's cache root, then the other one."""
     last: Optional[BaseException] = None
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
             return transformer_cls.load_config(
-                base, subfolder = "transformer", token = hf_token, cache_dir = root
+                base, subfolder = subfolder, token = hf_token, cache_dir = root
             )
         except Exception as exc:  # noqa: BLE001 — try the other root before giving up
             last = exc

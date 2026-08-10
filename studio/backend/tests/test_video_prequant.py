@@ -21,6 +21,7 @@ from core.inference.video import VideoBackend
 from core.inference.video_families import (
     VideoFamily,
     detect_video_family,
+    video_family_prequant_available,
     video_family_prequant_repo,
     video_family_prequant_schemes,
 )
@@ -164,6 +165,167 @@ def test_the_names_are_built_from_the_repo_and_the_scheme():
     assert resolve_prequant_source(fam, "fp8").filename == "Test-FP8.pt"
     # The legacy per-scheme name stays available for repos that have not been renamed.
     assert resolve_prequant_source(fam, "int8").fallback_filename == "transformer_int8.pt"
+
+
+# ── task-keyed artifacts: one repo, one scheme, two denoiser partitions ──────────
+#
+# MiniMax-H3 hosts a keyframe (fl2va, which also covers text-only) and a reference (ref2va)
+# denoiser. They share a class, a config, a 635-key state dict and a base_model_id, so no check
+# downstream can tell them apart: the TASK is the only thing standing between a reference load and
+# the keyframe weights, and getting it wrong renders plausibly rather than failing.
+
+
+def test_a_task_specific_row_beats_the_task_agnostic_one():
+    fam = _fam(
+        prequant_repos = (("int8", "unsloth/Test-FP8"),),
+        prequant_filenames = (
+            ("int8", "Test-INT8-ConvRot.pt"),
+            ("int8", "ref2va", "Test-Ref2VA-INT8-ConvRot.pt"),
+        ),
+        prequant_partition_tasks = ("ref2va",),
+    )
+    assert resolve_prequant_source(fam, "int8", task = "ref2va").filename == (
+        "Test-Ref2VA-INT8-ConvRot.pt"
+    )
+    # Case and whitespace must not change which partition is picked.
+    assert resolve_prequant_source(fam, "int8", task = " Ref2VA ").filename == (
+        "Test-Ref2VA-INT8-ConvRot.pt"
+    )
+
+
+def test_a_task_specific_artifact_gets_no_filename_fallback():
+    # The fallback exists so an older name still resolves when the preferred one is absent. Here
+    # every other file in the repo is the same family, scheme and base, so a fallback would install
+    # ANOTHER PARTITION's denoiser -- it would pass every check and generate the wrong thing. No
+    # artifact is the correct outcome: the load keeps the released bfloat16 denoiser.
+    fam = _fam(
+        prequant_repos = (("int8", "unsloth/Test-FP8"),),
+        prequant_filenames = (
+            ("int8", "Test-INT8-ConvRot.pt"),
+            ("int8", "ref2va", "Test-Ref2VA-INT8-ConvRot.pt"),
+        ),
+        prequant_partition_tasks = ("ref2va",),
+    )
+    assert resolve_prequant_source(fam, "int8", task = "ref2va").fallback_filename is None
+    # The task-agnostic pick keeps its fallback, unchanged.
+    assert resolve_prequant_source(fam, "int8").fallback_filename == "Test-INT8.pt"
+
+
+def test_a_scheme_without_a_task_row_resolves_exactly_what_it_did_before():
+    # Back-compat, stated as an equality rather than a literal: whatever the task-agnostic lookup
+    # gives, a task the table says nothing about must give the same thing.
+    fam = _fam(
+        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames = (("int8", "Test-INT8-ConvRot.pt"),),
+    )
+    for scheme in ("int8", "fp8"):
+        plain = resolve_prequant_source(fam, scheme)
+        for task in ("fl2va", "t2va", "anything-at-all"):
+            assert resolve_prequant_source(fam, scheme, task = task) == plain
+
+
+def test_a_family_predating_the_task_shape_is_unaffected_by_a_task():
+    # A table written entirely as 2-tuples, asked with a task. It must not raise and must not
+    # change its answer -- the field is free to ignore for every family with one denoiser.
+    import types
+
+    fam = _fam(prequant_repos = (("fp8", "unsloth/Test-FP8"),))
+    assert resolve_prequant_source(fam, "fp8", task = "ref2va") == resolve_prequant_source(fam, "fp8")
+    assert resolve_prequant_source(types.SimpleNamespace(), "fp8", task = "ref2va") is None
+
+
+def test_a_partition_task_with_no_artifact_of_its_own_is_unavailable():
+    # The refusal's whole condition. The scheme HAS a hosted repo, so the old per-scheme question
+    # answers yes; the pair (scheme, task) has nothing, and serving the keyframe file instead is
+    # the failure mode this replaced.
+    fam = _fam(
+        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
+        prequant_partition_tasks = ("ref2va",),
+    )
+    assert video_family_prequant_repo(fam, "int8") == "unsloth/Test-FP8"
+    assert video_family_prequant_available(fam, "int8", task = "ref2va") is False
+    assert video_family_prequant_available(fam, "fp8", task = "ref2va") is True
+    # Not a partition task, so the artifact-per-task rule does not apply.
+    assert video_family_prequant_available(fam, "int8", task = "fl2va") is True
+    assert video_family_prequant_available(fam, "int8") is True
+    # And the refusal message names only what actually works for that task.
+    assert video_family_prequant_schemes(fam, task = "ref2va") == ("fp8",)
+    assert video_family_prequant_schemes(fam) == ("int8", "fp8")
+
+
+@pytest.mark.parametrize(
+    "scheme, expected",
+    [("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"), ("fp8", "MiniMax-H3-Ref2VA-FP8.pt")],
+)
+def test_h3_reference_video_resolves_its_own_hosted_denoiser(scheme, expected):
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    src = resolve_prequant_source(fam, scheme, task = "ref2va")
+    assert src.filename == expected
+    assert src.fallback_filename is None
+    assert "/" not in src.filename and "\\" not in src.filename
+
+
+@pytest.mark.parametrize("task", [None, "fl2va", "t2va"])
+def test_h3_keyframe_and_text_only_resolve_exactly_what_they_resolved_before(task):
+    # The published fl2va artifacts must not move: the rotated INT8 by name (with the plain one
+    # still its fallback for older installs) and FP8 by the derived repo-root name.
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    int8 = resolve_prequant_source(fam, "int8", task = task)
+    assert int8.filename == "MiniMax-H3-INT8-ConvRot.pt"
+    assert int8.fallback_filename == "MiniMax-H3-INT8.pt"
+    fp8 = resolve_prequant_source(fam, "fp8", task = task)
+    assert fp8.filename == "MiniMax-H3-FP8.pt"
+
+
+def test_the_h3_partition_task_matches_the_reference_workflow_name():
+    # The registry spells the task as a literal to stay import-free; pin it to the constant the
+    # loader and the download planner branch on, so the two cannot drift apart silently.
+    from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam.prequant_partition_tasks == (H3_TASK_REFERENCES,)
+
+
+def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(monkeypatch):
+    # The refusal is now conditional, not blanket, so it needs a family where the pair genuinely
+    # does not exist. int8 here has the repo but only a keyframe artifact.
+    fam = _fam(
+        name = "partitioned",
+        modular_workflow = "fl2va",
+        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
+        prequant_partition_tasks = ("ref2va",),
+    )
+    monkeypatch.setattr("core.inference.video._detect_load_family", lambda *a, **k: fam)
+    monkeypatch.setattr("core.inference.video._is_trusted_video_repo", lambda repo: True)
+    backend = VideoBackend()
+    with pytest.raises(ValueError) as excinfo:
+        backend.validate_load_request(
+            "org/test-video",
+            model_kind = "pipeline",
+            transformer_quant = "int8",
+            h3_task = "ref2va",
+        )
+    message = str(excinfo.value)
+    assert "int8" in message and "ref2va" in message
+    # It says what to use instead, and does NOT advertise the scheme that only covers the other
+    # partition.
+    assert "fp8" in message
+    # The pair that DOES exist is not refused. Asserted on the message rather than on success:
+    # this synthetic family names a pipeline class the diffusers probe further down cannot find,
+    # and that unrelated failure must neither mask a regression nor pass this test for the wrong
+    # reason.
+    try:
+        backend.validate_load_request(
+            "org/test-video",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            h3_task = "ref2va",
+        )
+    except Exception as exc:  # noqa: BLE001
+        assert "transformer_quant" not in str(
+            exc
+        ), f"fp8 ref2va should be loadable but was refused: {exc}"
 
 
 # ── validate_load_request: refuse BEFORE the download ────────────────────────────
