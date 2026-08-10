@@ -1327,11 +1327,15 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
-    # One of the quant-keyed refusals is task-keyed: the hosted pre-quantized H3 checkpoints are
-    # fl2va denoisers, so a quantized ref2va would seed the wrong partition. Validation only sees
-    # that when the route forwards h3_task, and this is the route that stages the download -- so
-    # without it the plan pulls the 66 GB dense transformer_ref/ AND the incompatible fl2va quant
-    # before /video/load rejects the identical request.
+    # One of the quant-keyed refusals is task-keyed: a pre-quantized H3 denoiser belongs to ONE
+    # partition, so a scheme whose only artifact is the keyframe one must not be seeded into the
+    # reference workflow. Validation only sees the task when the route forwards h3_task, and this
+    # is the route that stages the download -- so without it the plan pulls the 66 GB dense
+    # transformer_ref/ AND the wrong-partition quant before /video/load rejects the same request.
+    # nvfp4 stands in for that pair here: int8 and fp8 both ship a reference artifact now, so
+    # neither is refused any more (test_a_quantized_reference_load_resolves_the_reference_denoiser
+    # in test_video_backend.py pins that), and the per-scheme table in test_video_prequant.py
+    # covers a family where the pair itself is missing.
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
         backend,
@@ -1351,16 +1355,16 @@ def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypa
         json = {
             "model_path": "MiniMaxAI/MiniMax-H3",
             "model_kind": "pipeline",
-            "transformer_quant": "fp8",
+            "transformer_quant": "nvfp4",
             "h3_task": "ref2va",
         },
     )
 
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert "fp8" in detail
+    assert "nvfp4" in detail
     # Naming the way out, not just the dead end.
-    assert "keyframe" in detail
+    assert "int8" in detail and "fp8" in detail
 
 
 def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch):

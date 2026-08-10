@@ -1980,6 +1980,72 @@ def test_base_download_files_stages_the_h3_partition_the_load_will_open():
         assert shared in keyframes and shared in references
 
 
+def test_base_download_files_skips_the_partition_the_prequant_checkpoint_replaces():
+    """``skip_transformer_weights`` has to drop the shards of the partition THIS load opens.
+
+    The skip named the literal ``transformer/``, which a reference load never stages in the first
+    place, so a ref2va pre-quantized pick dropped nothing: the plan carried the full 66.28 GB of
+    ``transformer_ref/`` that the checkpoint exists to replace, and the disk preflight sized a
+    download the load never opens. Both partitions' configs must survive their own skip, since
+    the pre-quant loader meta-inits the DiT from one of them.
+    """
+    info = types.SimpleNamespace(siblings = _H3_SIBLINGS)
+
+    keyframes = dict(
+        VideoBackend._base_download_files(info, "pipeline", skip_transformer_weights = True)
+    )
+    assert not any(n.startswith("transformer/diffusion_pytorch_model") for n in keyframes)
+    assert "transformer/config.json" in keyframes
+
+    references = dict(
+        VideoBackend._base_download_files(
+            info, "pipeline", skip_transformer_weights = True, h3_task = "ref2va"
+        )
+    )
+    assert not any(n.startswith("transformer_ref/diffusion_pytorch_model") for n in references)
+    assert "transformer_ref/config.json" in references
+    # And the other partition is still absent entirely, so the skip cannot have swapped which one
+    # is staged instead of dropping its weights.
+    assert not any(n.startswith("transformer/") for n in references)
+    # 66 of the 68 units in the reference plan were the dense denoiser; without the fix the totals
+    # are identical with and without the skip.
+    assert sum(references.values()) < sum(
+        size
+        for _n, size in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")
+    )
+
+
+def test_a_quantized_reference_load_resolves_the_reference_denoiser():
+    # This pairing used to be refused outright: the only hosted checkpoints were fl2va denoisers,
+    # and one seeded into the reference workflow would have installed cleanly, passed every
+    # metadata check and generated from the keyframe partition. Now that a ref2va artifact exists
+    # for both schemes the refusal must be gone -- and must resolve the REFERENCE file, since
+    # picking the keyframe one is the exact failure the refusal was standing in for.
+    from core.inference.diffusion_prequant import resolve_prequant_source
+
+    backend = VideoBackend()
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    for scheme, expected in (
+        ("int8", "MiniMax-H3-Ref2VA-INT8-ConvRot.pt"),
+        ("fp8", "MiniMax-H3-Ref2VA-FP8.pt"),
+    ):
+        try:
+            backend.validate_load_request(
+                "MiniMaxAI/MiniMax-H3",
+                family_override = "minimax-h3",
+                model_kind = "pipeline",
+                transformer_quant = scheme,
+                h3_task = "ref2va",
+            )
+        except ValueError as exc:  # pragma: no cover - only on a regression
+            pytest.fail(f"ref2va {scheme} should be loadable but was refused: {exc}")
+        except Exception:
+            # Anything past the quant check (the diffusers probe) is not this test's business.
+            pass
+        source = resolve_prequant_source(fam, scheme, task = "ref2va")
+        assert source.filename == expected
+
+
 def test_load_progress_clamps_overshoot(fake_runtime, monkeypatch):
     # The cache scan counts blobs a broader previous pull left behind, so the counter must never exceed the scoped estimate.
     backend = VideoBackend()
@@ -2611,22 +2677,6 @@ def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
         f.startswith("transformer/diffusion_pytorch_model")
         for f in by_repo["MiniMaxAI/MiniMax-H3"]["files"]
     )
-
-
-def test_a_quantized_reference_load_is_refused_rather_than_run_on_the_wrong_partition():
-    # The hosted checkpoints are FL2VA denoisers. Ref2VA shares their module shapes and base
-    # model, so one installs cleanly, passes every metadata check, and makes load_components skip
-    # the real Ref2VA transformer: the request generates from the keyframe partition instead of
-    # failing. There is no in-place quantise seam to fall back on, so this has to be a refusal.
-    backend = VideoBackend()
-    with pytest.raises(ValueError, match = "reference video"):
-        backend.validate_load_request(
-            "MiniMaxAI/MiniMax-H3",
-            family_override = "minimax-h3",
-            model_kind = "pipeline",
-            transformer_quant = "int8",
-            h3_task = "ref2va",
-        )
 
 
 def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
@@ -4494,6 +4544,117 @@ def test_h3_modular_load_pins_a_hosted_prequant_denoiser_out_of_the_offload_rota
     status = load(None)
     assert status["transformer_quant"] is None
     assert "pinned" not in calls
+
+
+def test_h3_modular_load_seeds_the_partition_its_workflow_denoises_against(monkeypatch):
+    """One repo, two partitions, two component names.
+
+    ref2va's denoise step reads ``transformer_ref``; fl2va (and text-only through it) reads
+    ``transformer``. Seeding the wrong attribute is silent in both directions: the block finds no
+    denoiser where it looks, and ``load_components`` then fetches the dense 66.28 GB partition the
+    seed existed to replace. The offload pin has to follow the same name, or a pre-quantized
+    denoiser stays in the rotation and dies mid-block on its first move.
+    """
+    import types
+
+    from core.inference.video import VideoBackend
+
+    calls: dict = {}
+
+    class _FakeModularPipeline:
+        @classmethod
+        def from_pretrained(cls, repo, **kwargs):
+            return cls()
+
+        def load_components(self, **kwargs):
+            calls["workflow"] = kwargs.get("workflow")
+
+        def update_components(self, **kwargs):
+            calls.setdefault("seeded", {}).update(kwargs)
+            for name, value in kwargs.items():
+                setattr(self, name, value)
+
+        def to(self, device):
+            return self
+
+    manager = types.SimpleNamespace(enable_auto_cpu_offload = lambda **kwargs: None)
+    diffusers = types.SimpleNamespace(
+        ComponentsManager = lambda: manager,
+        ModularPipeline = _FakeModularPipeline,
+        MiniMaxH3Transformer3DModel = object,
+    )
+    torch = types.SimpleNamespace(bfloat16 = "bf16")
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+
+    seeded = object()
+    import core.inference.diffusion_prequant as prequant_module
+
+    monkeypatch.setattr(
+        prequant_module,
+        "load_prequantized_transformer",
+        lambda *args, **kwargs: calls.setdefault("loader_kwargs", kwargs) and seeded or seeded,
+    )
+    monkeypatch.setattr(
+        prequant_module,
+        "pin_prequantized_module",
+        lambda mgr, module, device, **kwargs: calls.setdefault("pinned", module) is not None,
+    )
+
+    def load(task):
+        calls.clear()
+        return VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "cuda",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = "int8",
+            h3_task = task,
+            _load_token = None,
+            _base_local_dir = None,
+        )
+
+    status = load("ref2va")
+    assert status["transformer_quant"] == "int8"
+    assert calls["workflow"] == "ref2va"
+    assert calls["seeded"] == {"transformer_ref": seeded}
+    assert calls["pinned"] is seeded
+    # The config comes from the same partition, because that is the only one the scoped download
+    # stages for this task.
+    assert calls["loader_kwargs"]["config_subfolder"] == "transformer_ref"
+
+    status = load("fl2va")
+    assert status["transformer_quant"] == "int8"
+    assert calls["seeded"] == {"transformer": seeded}
+    assert calls["loader_kwargs"]["config_subfolder"] == "transformer"
+
+
+def test_denoiser_prequant_coverage_is_asked_per_partition():
+    # The dense-shard skip is only safe when a checkpoint really covers THIS task. A scheme whose
+    # only hosted artifact belongs to the other partition covers nothing, and answering yes would
+    # drop the very shards the load then has to open.
+    from core.inference.video_families import VideoFamily
+
+    fam = VideoFamily(
+        name = "partitioned",
+        pipeline_class = "P",
+        transformer_class = "T",
+        base_repo = "org/partitioned",
+        modular_workflow = "fl2va",
+        prequant_repos = (("int8", "unsloth/Test-FP8"), ("fp8", "unsloth/Test-FP8")),
+        prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
+        prequant_partition_tasks = ("ref2va",),
+    )
+    assert VideoBackend._denoiser_prequant_covered(fam, "int8", None, "fl2va") is True
+    assert VideoBackend._denoiser_prequant_covered(fam, "int8", None, "ref2va") is False
+    assert VideoBackend._denoiser_prequant_covered(fam, "fp8", None, "ref2va") is True
+    # No task named at all keeps the historical per-scheme answer.
+    assert VideoBackend._denoiser_prequant_covered(fam, "int8", None) is True
 
 
 def test_h3_native_progress_reads_only_the_denoise_bar(monkeypatch):

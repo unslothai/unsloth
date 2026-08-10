@@ -117,6 +117,7 @@ from .video_families import (
     snap_video_size,
     supported_video_family_names,
     validate_video_request_shape,
+    video_family_prequant_available,
     video_family_prequant_repo,
     video_family_prequant_schemes,
 )
@@ -132,6 +133,7 @@ from .video_minimax_h3 import (
     fit_h3_reference_image,
     h3_canvas_for_aspect,
     h3_conditioning_mode,
+    h3_denoiser_component,
     h3_transformer_resident_gb,
     h3_transformer_task,
 )
@@ -715,36 +717,34 @@ class VideoBackend:
             # "auto" is a request for the backend's own choice, not for a specific scheme, so it is
             # never refused: it simply stays on the released bfloat16 components.
             if requested_scheme is not None and requested_scheme != TQ_AUTO:
-                # The hosted checkpoints are FL2VA denoisers. The two partitions share module
-                # shapes and the same base model, so a Ref2VA load would install one, pass every
-                # metadata check, and have load_components skip the real Ref2VA transformer --
-                # generating from the wrong partition instead of failing. Refuse until a matching
-                # checkpoint exists; there is no in-place quantise seam to fall back on.
-                from .video_minimax_h3 import H3_TASK_REFERENCES
-                if (h3_task or "").strip().lower() == H3_TASK_REFERENCES:
-                    raise ValueError(
-                        f"transformer_quant '{requested_scheme}' is unavailable for "
-                        f"'{fam.name}' reference video: the hosted pre-quantized checkpoints are "
-                        f"keyframe (fl2va) denoisers, and seeding one into the reference workflow "
-                        f"would generate from the wrong partition. Load reference video without "
-                        f"transformer_quant, or pick a keyframe task."
-                    )
-                if video_family_prequant_repo(fam, requested_scheme, quant_base) is None:
-                    # There is no in-place quantise seam here: the workflow's own component loader
-                    # builds the denoiser, so a scheme without a hosted pre-quantized checkpoint
-                    # cannot be served at all, and letting it through would download ~98.7 GB of
-                    # dense weights and then silently ignore the request.
-                    available = video_family_prequant_schemes(fam)
+                # Asked per (scheme, TASK), not per scheme. A family can host one denoiser per
+                # workflow partition in the same repo -- MiniMax-H3 hosts a keyframe (fl2va, which
+                # also covers text-only) and a reference (ref2va) checkpoint -- and the two share
+                # module shapes, config and base model, so a mismatched one would install, pass
+                # every metadata check, and have load_components skip the real denoiser,
+                # generating from the wrong partition instead of failing. A pair with no hosted
+                # checkpoint is refused here; there is no in-place quantise seam to fall back on,
+                # because the workflow's own component loader builds the denoiser and letting the
+                # request through would download ~98.7 GB of dense weights and then silently
+                # ignore it.
+                if not video_family_prequant_available(
+                    fam, requested_scheme, task = h3_task, base_repo = quant_base
+                ):
+                    available = video_family_prequant_schemes(fam, task = h3_task)
                     hint = (
                         f"Use one of: {', '.join(available)}."
                         if available
                         else "Leave transformer_quant unset for this model."
                     )
+                    # Name the partition when one was asked for, so "fp8 is unavailable" does not
+                    # read as a claim about the whole family when it is only true of this task.
+                    task_label = f" {h3_task}" if h3_task else ""
                     raise ValueError(
                         f"transformer_quant '{requested_scheme}' is unavailable for "
-                        f"'{fam.name}': its Modular Diffusers workflow builds the denoiser itself, "
-                        f"so only schemes with a hosted pre-quantized checkpoint can be applied "
-                        f"and the dense weights cannot be quantized in place. {hint}"
+                        f"'{fam.name}'{task_label}: its Modular Diffusers workflow builds the "
+                        f"denoiser itself, so only schemes with a hosted pre-quantized checkpoint "
+                        f"can be applied and the dense weights cannot be quantized in place. "
+                        f"{hint}"
                     )
         from .video_minimax_h3 import is_h3_native, validate_h3_transformer_filename
 
@@ -966,7 +966,7 @@ class VideoBackend:
             # The same deal for the denoiser: a hosted pre-quantized checkpoint replaces the dense
             # DiT shards, so the estimate and the scoped pull below both drop them.
             skip_transformer_weights = self._denoiser_prequant_covered(
-                fam, kwargs.get("transformer_quant"), base
+                fam, kwargs.get("transformer_quant"), base, kwargs.get("h3_task")
             )
             # And for MiniMax-H3's conditioner, whose hosted quantized artifact replaces the base
             # repo's 62 GB dense text_encoder/ shards outright.
@@ -1529,13 +1529,20 @@ class VideoBackend:
 
     @staticmethod
     def _denoiser_prequant_covered(
-        fam: Any, transformer_quant: Optional[str], base: Optional[str]
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        h3_task: Optional[str] = None,
     ) -> bool:
         """True when a hosted PRE-QUANTIZED denoiser checkpoint replaces the dense DiT shards.
 
         The one place the plan, the byte estimate and the scoped pull all ask, so none of them can
         stage weights another one skipped. Only a modular-workflow family qualifies: every other
         family quantises its own dense transformer on device and still needs those shards.
+
+        ``h3_task`` names the partition, because coverage is per (scheme, task): a scheme whose
+        hosted checkpoint is the OTHER partition covers nothing here, and answering True for it
+        would drop the very shards that load then has to open.
 
         Never raises and never touches the network -- a pure registry lookup -- because it runs on
         the download-planning path, where a failure would cost the whole plan."""
@@ -1547,13 +1554,19 @@ class VideoBackend:
             # for a modular workflow, so it must NOT drop the dense shards that load then wants.
             if scheme is None or scheme == TQ_AUTO:
                 return False
-            return video_family_prequant_repo(fam, scheme, base) is not None
+            return video_family_prequant_available(
+                fam, scheme, task = h3_task, base_repo = base
+            )
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return False
 
     @staticmethod
     def _denoiser_prequant_hub_files(
-        fam: Any, transformer_quant: Optional[str], base: Optional[str], api: Any
+        fam: Any,
+        transformer_quant: Optional[str],
+        base: Optional[str],
+        api: Any,
+        h3_task: Optional[str] = None,
     ) -> tuple[Optional[str], list[tuple[str, int]]]:
         """``(repo_id, [(rfilename, size)])`` for the hosted pre-quantized denoiser, or
         ``(None, [])``.
@@ -1571,7 +1584,9 @@ class VideoBackend:
             return None, []
         try:
             from .diffusion_prequant import resolve_prequant_source
-            source = resolve_prequant_source(fam, scheme, base_repo = base)
+            # Task-keyed, like the coverage probe: staging the other partition's checkpoint would
+            # advertise the right byte count for the wrong file.
+            source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
         except Exception as exc:  # noqa: BLE001 -- a bad registry entry must not sink the plan
             logger.warning("video.denoiser_prequant_unresolved: %s", exc)
             return None, []
@@ -1656,12 +1671,15 @@ class VideoBackend:
           instead by a hosted pre-cast fp8 checkpoint (LTX-2's Gemma3 encoder is
           ~49 GB of the base repo). Their configs stay: the pre-cast loader
           meta-inits the encoder from the base repo's component config;
-        - the dense ``transformer/`` weight shards under
+        - the dense weight shards of the denoiser partition this load opens, under
           ``skip_transformer_weights``, supplied instead by a hosted PRE-QUANTIZED
-          denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
-          ``transformer/config.json`` is kept for the same reason the pre-cast
-          encoders keep theirs: the pre-quant loader meta-inits the DiT from it,
-          so dropping it would break the very load that made the skip safe.
+          denoiser checkpoint (H3's transformer is 66.3 GB of its base repo). The
+          partition, not the literal ``transformer/``: a reference load stages
+          ``transformer_ref/``, so skipping the other name would skip nothing and
+          leave 66.28 GB in a plan the load never opens. The partition's
+          ``config.json`` is kept for the same reason the pre-cast encoders keep
+          theirs: the pre-quant loader meta-inits the DiT from it, so dropping it
+          would break the very load that made the skip safe.
 
         ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
         brings up one: ``transformer/`` for fl2va (which also covers text-only) and
@@ -1672,11 +1690,15 @@ class VideoBackend:
 
         siblings = list(info.siblings or [])
         is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
-        h3_denoiser_prefix = (
-            "transformer_ref/"
-            if (h3_task or "").strip().lower() == H3_TASK_REFERENCES
-            else "transformer/"
+        h3_is_references = (
+            is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         )
+        h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
+        # Which component's dense weight shards ``skip_transformer_weights`` drops. It has to be
+        # the partition this load will actually open: a reference load stages transformer_ref/ and
+        # nothing else, so dropping "transformer/" drops nothing and the plan carries the full
+        # 66.28 GB the pre-quantized checkpoint exists to replace.
+        h3_skip_component = h3_denoiser_prefix.rstrip("/")
         h3_prefixes = (
             "audio_scheduler/",
             "audio_vae/",
@@ -1704,7 +1726,9 @@ class VideoBackend:
                 continue
             # is_prequant_covered_weight is component-agnostic (it matches "<component>/" against a
             # weight suffix), so the encoder helper serves the denoiser verbatim.
-            if skip_transformer_weights and is_prequant_covered_weight(name, ("transformer",)):
+            if skip_transformer_weights and is_prequant_covered_weight(
+                name, (h3_skip_component,)
+            ):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
                 continue
@@ -1911,7 +1935,9 @@ class VideoBackend:
                 total += add(te_sources[component].location, files)
             # The denoiser's replacement artifact, for the same reason: the base entry below drops
             # the dense DiT shards whenever this resolves, so it has to be staged in their place.
-            dq_repo, dq_files = self._denoiser_prequant_hub_files(fam, transformer_quant, base, api)
+            dq_repo, dq_files = self._denoiser_prequant_hub_files(
+                fam, transformer_quant, base, api, h3_task
+            )
             if dq_repo:
                 total += add(dq_repo, dq_files)
             # And H3's quantized conditioner, which replaces the base repo's dense text_encoder/.
@@ -1938,7 +1964,7 @@ class VideoBackend:
                             tuple(te_files) + (("text_encoder",) if h3_te_repo else ())
                         ),
                         skip_transformer_weights = self._denoiser_prequant_covered(
-                            fam, transformer_quant, base
+                            fam, transformer_quant, base, h3_task
                         ),
                         h3_task = h3_task,
                     ),
@@ -3117,6 +3143,10 @@ class VideoBackend:
             raise ValueError("MiniMax-H3 Diffusers loading requires the pipeline artifact.")
         # Load one denoiser partition. fl2va also covers text-only generation.
         workflow = h3_task or fam.modular_workflow
+        # Which component this workflow's denoise step reads. One repo, two partitions: seeding
+        # the wrong attribute leaves the block with no denoiser AND has load_components fetch the
+        # dense 66.28 GB partition the seed was meant to replace.
+        denoiser_component = h3_denoiser_component(workflow)
         manager = diffusers.ComponentsManager()
         load_kwargs: dict[str, Any] = {
             "components_manager": manager,
@@ -3132,12 +3162,16 @@ class VideoBackend:
         # -- something this workflow never materialises -- so it stays on the released components.
         # Only an explicitly requested scheme takes the hosted path.
         scheme = transformer_quant if transformer_quant not in (None, TQ_AUTO) else None
-        # The hosted checkpoints are keyframe (fl2va) denoisers. validate_load_request refuses this
-        # pairing on the route; a direct call lands here, and seeding one would silently generate
-        # the wrong partition rather than fail, so drop to the released components instead.
-        if scheme is not None and workflow == H3_TASK_REFERENCES:
+        # Per (scheme, PARTITION), not per scheme: each workflow denoises against its own
+        # checkpoint partition and they are indistinguishable once loaded, so a scheme that has an
+        # artifact for the other one has none for this. validate_load_request refuses that pairing
+        # on the route; a direct call lands here and drops to the released components instead of
+        # silently generating from the wrong partition.
+        if scheme is not None and not video_family_prequant_available(
+            fam, scheme, task = workflow, base_repo = base
+        ):
             transformer_quant_reason = (
-                f"no hosted pre-quantized {scheme} checkpoint for {fam.name} reference video"
+                f"no hosted pre-quantized {scheme} checkpoint for {fam.name} {workflow}"
             )
             scheme = None
         # The conventional loader refuses an oversized unified-memory load before any weight is
@@ -3161,7 +3195,7 @@ class VideoBackend:
             from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
             from .video_minimax_h3_adaln import h3_prepare_prequant_model
 
-            source = resolve_prequant_source(fam, scheme, base_repo = base)
+            source = resolve_prequant_source(fam, scheme, base_repo = base, task = workflow)
             if source is None:
                 # validate_load_request already refused this on the route; a direct call lands here.
                 transformer_quant_reason = (
@@ -3194,6 +3228,13 @@ class VideoBackend:
                     # without this reshape the strict load fails and every hosted checkpoint falls
                     # back to the dense download it exists to avoid.
                     prepare_model = h3_prepare_prequant_model(logger),
+                    # Read the DENOISER CONFIG from this workflow's own partition. The two H3
+                    # partitions ship byte-identical configs today, so this changes no shape; it
+                    # changes which file has to exist. A reference load stages transformer_ref/
+                    # and nothing under transformer/, so defaulting to "transformer" would send a
+                    # fully staged, offline-ready load back to the Hub for a config it never
+                    # planned for -- and on failure straight to the dense fallback it cannot pull.
+                    config_subfolder = denoiser_component,
                     logger = logger,
                 )
                 if transformer is None:
@@ -3208,7 +3249,7 @@ class VideoBackend:
                     # every component whose attribute is already set, so the dense 66.3 GB
                     # transformer is never fetched. It must happen BEFORE load_components -- after,
                     # the dense one has already been pulled and built.
-                    pipe.update_components(transformer = transformer)
+                    pipe.update_components(**{denoiser_component: transformer})
                     transformer_quant_engaged = scheme
                     transformer_quant_reason = (
                         f"hosted pre-quantized {scheme} denoiser checkpoint ({source.location})"
@@ -3401,7 +3442,7 @@ class VideoBackend:
                 # keep their hooks and still offload around it.
                 from .diffusion_prequant import pin_prequantized_module
                 denoiser_pinned = pin_prequantized_module(
-                    manager, getattr(pipe, "transformer", None), device, logger = logger
+                    manager, getattr(pipe, denoiser_component, None), device, logger = logger
                 )
 
         resolved = build_resolved_record(
