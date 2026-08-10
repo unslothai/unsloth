@@ -76,6 +76,28 @@ _QUIET_POLL_PATHS = {
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
 }
+# The pure-liveness subset of _QUIET_POLL_PATHS. Every one of these answers the same
+# question ("the server is up and answering"), and the SPA fires them together in one
+# burst, so heartbeating them independently emits one line per path per window instead
+# of one line per window. They share a single bucket: the first of the burst logs with
+# its real path, the rest of that window is dropped. Measured over four Studio sessions
+# these were 39-69% of the access log and the shared bucket removed 25-47% of it.
+#
+# Only this group is shared. The other _QUIET_POLL_PATHS entries (/api/train/runs,
+# /api/models/checkpoints, /api/models/local, /api/rag/knowledge-bases, the download
+# polls) each report on a different subsystem, so they keep their own heartbeat.
+_LIVENESS_POLL_PATHS = frozenset({
+    "/api/health",
+    "/api/auth/status",
+    "/api/inference/status",
+    "/api/inference/monitor",
+    "/api/inference/images/status",
+    "/api/inference/video/status",
+    "/api/inference/audio/stt/status",
+})
+# Bucket key for the group above. Not a real (method, path, query, status), so it can
+# never collide with one.
+_LIVENESS_DEDUP_KEY = ("GET", "\x00liveness", b"", 200)
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
@@ -219,10 +241,18 @@ class LoggingMiddleware:
         heartbeat. Stamps only on emit, so steady polls still log."""
         if method != "GET" or not (200 <= status_code < 300):
             return False
-        window_ms = _QUIET_POLL_DEDUP_MS if path in _QUIET_POLL_PATHS else _ACCESS_LOG_DEDUP_MS
+        is_liveness = path in _LIVENESS_POLL_PATHS
+        window_ms = (
+            _QUIET_POLL_DEDUP_MS
+            if is_liveness or path in _QUIET_POLL_PATHS
+            else _ACCESS_LOG_DEDUP_MS
+        )
         if window_ms <= 0:
             return False
-        key = (method, path, query, status_code)
+        # The liveness group shares one bucket, so a burst of them logs once, not once
+        # per path. The query string is dropped from that key on purpose: these polls
+        # carry no meaningful query, and keeping it would split the bucket again.
+        key = _LIVENESS_DEDUP_KEY if is_liveness else (method, path, query, status_code)
         last = self._last_log.get(key)
         if last is not None and (now - last) * 1000.0 < window_ms:
             return True

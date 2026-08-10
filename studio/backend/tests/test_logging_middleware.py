@@ -418,11 +418,12 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
     ]
 
 
-def test_indicator_status_polls_collapse_to_a_heartbeat(logs, monkeypatch):
-    # The loaded-models indicator reads all four runtimes every 5s for as long
-    # as the app is open, and on the desktop every line is mirrored into
-    # tauri.log. /api/inference/status was already quiet; its three siblings
-    # arrived with the indicator and have to be quiet for the same reason.
+def test_indicator_status_polls_collapse_to_one_shared_heartbeat(logs, monkeypatch):
+    # The loaded-models indicator reads all four runtimes every 5s for as long as the
+    # app is open, and on the desktop every line is mirrored into tauri.log. They all
+    # answer the same question, so the whole burst shares one heartbeat bucket: one
+    # line per window in total, not one per path. Previously each path heartbeated
+    # separately, which still meant four lines per window.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
 
@@ -438,8 +439,69 @@ def test_indicator_status_polls_collapse_to_a_heartbeat(logs, monkeypatch):
             _run(mw(_http_scope(path), _noop_receive, _drop))
 
     paths = _paths_logged(logs)
-    for path in polled:
+    assert len(paths) == 1, paths
+    assert paths[0] in polled
+
+
+def test_health_and_auth_status_share_the_liveness_bucket(logs, monkeypatch):
+    # /api/health and /api/auth/status are the same "still up" signal as the
+    # inference status polls, so they must not each add a line of their own.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for path in ("/api/health", "/api/auth/status", "/api/inference/monitor"):
+        _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 1, _paths_logged(logs)
+
+
+def test_non_liveness_quiet_polls_keep_their_own_heartbeat(logs, monkeypatch):
+    # Only the liveness group is shared. These report on different subsystems, so
+    # collapsing them together would genuinely lose information.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    mw = LoggingMiddleware(_status_app(200))
+    others = ("/api/train/runs", "/api/models/checkpoints", "/api/models/local",
+              "/api/rag/knowledge-bases")
+    for _ in range(3):
+        for path in others:
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    paths = _paths_logged(logs)
+    for path in others:
         assert paths.count(path) == 1, f"{path} logged {paths.count(path)} times"
+
+
+def test_a_failing_liveness_poll_always_logs(logs, monkeypatch):
+    # Sharing a bucket must not hide a health check that starts failing: non-2xx
+    # never dedups, so every failure logs even mid-burst.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
+
+    ok = LoggingMiddleware(_status_app(200))
+    bad = LoggingMiddleware(_status_app(503))
+    bad._last_log = ok._last_log  # same middleware instance state
+    for _ in range(3):
+        _run(ok(_http_scope("/api/health"), _noop_receive, _drop))
+        _run(bad(_http_scope("/api/inference/status"), _noop_receive, _drop))
+
+    statuses = [e[2]["status_code"] for e in logs.events]
+    assert statuses.count(503) == 3, statuses
+    assert statuses.count(200) == 1, statuses
+
+
+def test_verbose_restores_every_liveness_line(logs, monkeypatch):
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+
+    mw = LoggingMiddleware(_status_app(200))
+    for _ in range(3):
+        for path in ("/api/health", "/api/inference/status"):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+
+    assert len(_paths_logged(logs)) == 6, _paths_logged(logs)
 
 
 def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
