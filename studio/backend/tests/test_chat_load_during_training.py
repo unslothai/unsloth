@@ -1759,12 +1759,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             os.symlink(target, escape)
 
             accept = self.route._native_drafter_accept
-            self.assertTrue(
-                accept(str(inside), str(weight), "dflash", str(leased))
-            )
-            self.assertFalse(
-                accept(str(target.resolve()), str(weight), "dflash", str(leased))
-            )
+            self.assertTrue(accept(str(inside), str(weight), "dflash", str(leased)))
+            self.assertFalse(accept(str(target.resolve()), str(weight), "dflash", str(leased)))
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc

@@ -2666,7 +2666,12 @@ def test_from_identifier_hands_the_boundary_to_every_drafter_kind(tmp_path, monk
     seen: dict[str, tuple] = {}
 
     def _recorder(kind):
-        def _detect(path, search_root = None, accept = None, **kwargs):
+        def _detect(
+            path,
+            search_root = None,
+            accept = None,
+            **kwargs,
+        ):
             seen[kind] = (path, search_root, accept)
             return None
 
@@ -2706,7 +2711,12 @@ def test_from_identifier_without_a_boundary_scans_exactly_as_before(tmp_path, mo
     weight = _write_gguf(tmp_path / "model-Q4_K_M.gguf", "llama")
     accepts: list = []
 
-    def _detect(path, search_root = None, accept = None, **kwargs):
+    def _detect(
+        path,
+        search_root = None,
+        accept = None,
+        **kwargs,
+    ):
         accepts.append(accept)
         return None
 
@@ -2775,7 +2785,6 @@ def test_from_identifier_never_reads_a_sidecar_outside_the_boundary(tmp_path, mo
 )
 def test_is_root_dflash_drafter_path(path, expected):
     from core.inference.llama_cpp import _is_root_dflash_drafter_path
-
     assert _is_root_dflash_drafter_path(path) is expected
 
 
@@ -2834,9 +2843,9 @@ def test_cached_dflash_lookup_ignores_a_nested_dflash_named_weight(tmp_path, mon
     )
 
     b = LlamaCppBackend()
-    assert b._cached_repo_dflash_drafter(
-        "org/repo", near_path = str(snap / "model-Q4_K_M.gguf")
-    ) is None
+    assert (
+        b._cached_repo_dflash_drafter("org/repo", near_path = str(snap / "model-Q4_K_M.gguf")) is None
+    )
 
 
 # ── A split companion is fetched as a whole set ──────────────────────
@@ -2854,13 +2863,18 @@ def _split_companion_download(tmp_path, monkeypatch, listing):
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-    monkeypatch.setattr(
-        "huggingface_hub.list_repo_files", lambda repo, token = None: list(listing)
-    )
+    monkeypatch.setattr("huggingface_hub.list_repo_files", lambda repo, token = None: list(listing))
     monkeypatch.setattr(llama_cpp_module, "_hub_download_in_flight", lambda hf_repo: False)
     fetched: list[str] = []
 
-    def _fake_download(repo, filename, token, *, cancel_event = None, cache_dir = None):
+    def _fake_download(
+        repo,
+        filename,
+        token,
+        *,
+        cancel_event = None,
+        cache_dir = None,
+    ):
         fetched.append(filename)
         path = tmp_path / filename
         path.parent.mkdir(parents = True, exist_ok = True)
@@ -2894,10 +2908,7 @@ def test_download_companion_gguf_fetches_every_shard_of_a_split_sidecar(tmp_path
 
     # The launch path is still shard 1, which is what llama-server is given.
     assert got == str(tmp_path / "dflash-kquant-00001-of-00002.gguf")
-    assert fetched == [
-        "dflash-kquant-00001-of-00002.gguf",
-        "dflash-kquant-00002-of-00002.gguf",
-    ]
+    assert fetched == ["dflash-kquant-00001-of-00002.gguf", "dflash-kquant-00002-of-00002.gguf"]
 
 
 def test_download_companion_gguf_leaves_a_single_file_sidecar_alone(tmp_path, monkeypatch):
@@ -2947,16 +2958,13 @@ def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeyp
     )
     first = tmp_path / "dflash-kquant-00001-of-00002.gguf"
     first.write_bytes(b"x")
-    monkeypatch.setattr(
-        llama_cpp_module, "_cached_hf_snapshot_file", lambda *a, **k: str(first)
-    )
+    monkeypatch.setattr(llama_cpp_module, "_cached_hf_snapshot_file", lambda *a, **k: str(first))
+
     def _offline_fetch(*_args, **_kwargs):
         # What the Hub raises offline, which the caller swallows to None.
         raise RuntimeError("offline mode is enabled")
 
-    monkeypatch.setattr(
-        llama_cpp_module, "hf_hub_download_with_xet_fallback", _offline_fetch
-    )
+    monkeypatch.setattr(llama_cpp_module, "hf_hub_download_with_xet_fallback", _offline_fetch)
 
     def _pick(names):
         return next((n for n in sorted(names) if Path(n).name.startswith("dflash-")), None)
@@ -2964,9 +2972,12 @@ def test_offline_companion_cache_hit_skips_an_incomplete_split(tmp_path, monkeyp
     b = LlamaCppBackend()
     # The half set is not reported as a cache hit, so the load ends with no
     # drafter rather than one llama-server cannot open.
-    assert b._download_companion_gguf(
-        hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
-    ) is None
+    assert (
+        b._download_companion_gguf(
+            hf_repo = "org/repo", hf_token = None, pick = _pick, label = "DFlash drafter"
+        )
+        is None
+    )
 
     (tmp_path / "dflash-kquant-00002-of-00002.gguf").write_bytes(b"y")
     assert b._download_companion_gguf(
