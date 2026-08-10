@@ -26,6 +26,12 @@ const BLOCKED_URI_MAX_CHARS = 2048;
 // the two policies stop differing exactly outside this set.
 const GRANT_CANNOT_FIX = new Set(["object-src", "base-uri", "form-action"]);
 
+// A hostless blockedURI is a bare scheme, and the permissive policy widens every
+// one of them but this: its worker-src is `http: https: blob:`, with no data:,
+// so a data: Worker stays blocked after the grant. Kept in step by
+// test_the_permissive_policy_widens_every_hostless_scheme_but_one.
+const GRANT_CANNOT_FIX_SCHEME: Record<string, string> = { "worker-src": "data" };
+
 type BlockedState = { code: string; uris: string[]; hosts: string[] };
 
 const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
@@ -166,6 +172,11 @@ export function ArtifactHtmlFrame({
         // policy for nothing, then hides the banner because the grant is on,
         // leaving a broken canvas and no way back to the prompt.
         if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
+        // Same dead end one scheme down: the grant widens worker-src to blob:
+        // but not data:, so a data: Worker reports under both policies.
+        if (GRANT_CANNOT_FIX_SCHEME[event.data.effectiveDirective] === uri) {
+          return;
+        }
         const host = blockedHost(uri);
         if (!host) return;
         setBlocked((current) => appendBlocked(current, code, uri, host));

@@ -104,3 +104,21 @@ def test_the_grant_widens_everything_but_the_locked_directives():
     assert unchanged == {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
     for locked in ("object-src", "base-uri", "form-action"):
         assert network[locked] == "'none'"
+
+
+def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
+    # Pins GRANT_CANNOT_FIX_SCHEME in html-frame.tsx. A non-HTTP(S) violation
+    # reports a bare scheme, so the banner may only offer the grant where the
+    # permissive policy actually allows that scheme for that directive. Verified
+    # in Chromium: a data: Worker reports worker-src/data under both policies.
+    network = _directives(inf_mod._ARTIFACT_PREVIEW_FRAME_NETWORK_CSP)
+    # Locked or not a resource load, so they never reach the scheme check.
+    skip = {"object-src", "base-uri", "form-action", "frame-ancestors", "sandbox"}
+    gaps = {
+        name: scheme
+        for name, value in network.items()
+        if name not in skip
+        for scheme in ("data:", "blob:")
+        if scheme not in value.split()
+    }
+    assert gaps == {"worker-src": "data:"}

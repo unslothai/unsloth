@@ -221,6 +221,8 @@ test("no effect resets the grant, which would leave a stale render", () => {
 
 const DIRECTIVE_FILTER =
   /GRANT_CANNOT_FIX\.has\(event\.data\.effectiveDirective\)/;
+const SCHEME_FILTER =
+  /GRANT_CANNOT_FIX_SCHEME\[event\.data\.effectiveDirective\] === uri/;
 const URI_LENGTH_GUARD = /uri\.length > BLOCKED_URI_MAX_CHARS/;
 const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
 const URI_DUPLICATE = /\buris\.includes\(uri\)/;
@@ -293,6 +295,31 @@ test("oversized blocked URIs are dropped before anything is stored", () => {
 test("a hostless blocked URI still reaches the banner", () => {
   assert.match(readFunctionBody("blockedHost"), /BLOCKED_KEYWORD\.test\(uri\)/);
   assert.equal(readConst("BLOCKED_KEYWORD"), "/^[a-z-]+$/");
+});
+
+// ...but only where the grant widens that scheme for that directive. The
+// permissive worker-src is `http: https: blob:`, so a data: Worker reports under
+// both policies (verified in Chromium) and the grant is a dead end: it widens
+// the policy for nothing, then hides the banner because networkAllowed is true.
+test("the grant is not offered for a scheme it cannot widen", () => {
+  assert.equal(
+    readConst("GRANT_CANNOT_FIX_SCHEME"),
+    '{ "worker-src": "data" }',
+  );
+  const source = sourceFile(FRAME);
+  let filtered = false;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      SCHEME_FILTER.test(node.expression.getText()) &&
+      node.thenStatement.getText().includes("return")
+    ) {
+      filtered = true;
+    }
+    node.forEachChild(visit);
+  };
+  source.forEachChild(visit);
+  assert.ok(filtered, "reports are not filtered by blocked scheme");
 });
 
 // These three stay at 'none' in the permissive policy, so the grant cannot fix
