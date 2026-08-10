@@ -1540,13 +1540,17 @@ def test_route_start_still_runs_when_the_install_does_have_the_pipeline(
     assert client._fake.started_with["base_model"] == "krea/Krea-2-Raw"
 
 
-def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(client, monkeypatch):
+def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(
+    client, monkeypatch, dit_train_host
+):
     # diffusers' top level is lazy, so the guard's attribute probe is what actually imports the
     # pipeline's submodule, and a partially usable install raises RuntimeError("Failed to import
     # diffusers.pipelines...") there. Inference absorbs that (the native sd.cpp engine needs no
     # diffusers), but the trainer child is a spawn of THIS interpreter and would hit the same
     # broken import -- after the GPU residents were gone. So training refuses, as a 400 with the
     # underlying reason intact rather than the bare 500 a RuntimeError would have produced.
+    # dit_train_host because the accelerator gate runs first and would answer "needs a GPU" on a
+    # GPU-less runner, so without it this asserts nothing about the import guard on CI.
     import sys
     import types
 
@@ -1572,10 +1576,11 @@ def test_route_start_refuses_a_diffusers_whose_lazy_submodule_cannot_import(clie
     assert client._fake.started_with is None
 
 
-def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch):
+def test_route_start_refuses_training_when_diffusers_is_absent(client, monkeypatch, dit_train_host):
     # There is no "the child will install it" here: the trainer runs in a spawned process in the
     # SAME environment, so an absent diffusers is absent there too. Refusing before the teardown
-    # is the whole point of this preflight.
+    # is the whole point of this preflight. dit_train_host for the same reason as above: the
+    # accelerator gate is earlier and would swallow this on a GPU-less runner.
     import builtins
     import sys
 

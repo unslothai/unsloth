@@ -3714,6 +3714,102 @@ def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, mon
         assert "hunyuan_attn_trim" not in status["speed_optims"], mode
 
 
+# ── unified-memory oversize refusal, at the video load seam ───────────────────
+
+
+def _unified_snapshot(total_gib):
+    """Stand in for a Mac's memory snapshot: unified pool, 80% of RAM free."""
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = total_gib * 1024
+    return lambda target: DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+
+
+def test_unified_memory_refuses_an_oversized_video_load(fake_runtime, monkeypatch):
+    """A 16 GiB Mac loading LTX-2 (about 65 GiB of weights): the planner has no offload tier to
+    fall back to on unified memory and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 removes the
+    allocator's limit, so without this refusal the OS kills Studio with no Python exception.
+    _run_load stringifies this onto load_progress, so the text is what the UI toasts."""
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(16))
+
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    message = str(excinfo.value)
+    assert "ltx-2" in message  # names the family
+    assert "unified memory" in message
+    assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
+    # Refused BEFORE the pipeline was built: nothing was allocated and nothing is loaded.
+    assert backend.status()["loaded"] is False
+
+
+def test_unified_memory_allows_a_video_load_that_fits(fake_runtime, monkeypatch):
+    # The same family on a 128 GiB Mac fits, so the refusal must stay out of the way.
+    import core.inference.video as video_mod
+
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
+
+    backend = VideoBackend()
+    status = backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    assert status["loaded"] is True
+
+
+def test_unified_memory_refusal_is_overridable_at_the_video_load_seam(fake_runtime, monkeypatch):
+    import core.inference.video as video_mod
+    from core.inference.diffusion_memory import UNIFIED_OVERSIZE_ENV
+
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(16))
+    monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "1")
+
+    backend = VideoBackend()
+    assert backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")["loaded"] is True
+
+
+def test_discrete_vram_video_load_is_unaffected_by_the_refusal(fake_runtime, monkeypatch):
+    """The same impossible-looking numbers on a discrete card still load: offload streams the
+    weights from host RAM, so refusing there would break a path that works today. (The fake
+    runtime resolves a CPU target, so the policy itself is not meaningful here; what this pins
+    is that a discrete-VRAM snapshot never reaches the refusal.)"""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 13_107, 16_384),
+    )
+
+    backend = VideoBackend()
+    assert backend.load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")["loaded"] is True
+
+
+def test_the_mps_allocator_cache_is_released_before_the_budget_is_read(monkeypatch):
+    """Dropping a pipeline leaves its buffers RESERVED in torch's MPS caching allocator. The
+    budget is a system-memory reading, which counts those bytes as used, so without emptying the
+    cache first a model swap that fits is refused. torch.mps.empty_cache "releases all unoccupied
+    cached memory currently held by the caching allocator"."""
+    import sys
+    import types
+
+    import core.inference.diffusion_memory as dm
+
+    calls: list = []
+    fake_torch = types.SimpleNamespace(
+        mps = types.SimpleNamespace(empty_cache = lambda: calls.append("mps"))
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda t: dm.DeviceMemory("mps", "mps", "unified_memory", 1, 2),
+    )
+
+    dm.settled_snapshot_device_memory(types.SimpleNamespace(device = "mps", backend = "mps"))
+    assert calls == ["mps"], "the MPS allocator must be emptied before the reading is taken"
+
+
 def _fake_h3_vae():
     """A stand-in with the shapes that matter: an encoder half, a decoder with both
     autocast-eligible and float32-only parameters, and a post_quant_conv."""
@@ -5259,3 +5355,305 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
         * _MIB_PER_GB
     )
+
+
+# ── the refusal reads the plan the load will actually take ────────────────────
+# Two ways the hard unified-memory refusal added in PR #8213 can read a number the load never
+# occupies, both of which turn it from a guard into a false rejection.
+
+
+def _fp32_promoted_cuda_target(monkeypatch):
+    """A CUDA target whose fp16 promotes to fp32, i.e. dtype_scale == 2 in the video planner."""
+    import torch
+
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    target = DiffusionDeviceTarget(
+        device = "cuda",
+        dtype = torch.float16,
+        backend = "cuda",
+        vendor = "nvidia",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = True,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    return target
+
+
+def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime, monkeypatch):
+    # A device without bf16 promotes the whole plan by 2. Wan's VAE term is recorded at fp32
+    # ALREADY (the family comment says so) and assembly pins that VAE to fp32 whatever the
+    # promotion does, so doubling it counts 2.8 GB twice on TI2V-5B. Against a hard refusal that
+    # is a load rejected over bytes it never allocates.
+    from core.inference.video_families import detect_video_family
+
+    _fp32_promoted_cuda_target(monkeypatch)
+    transformer_gb, te_gb, vae_gb = detect_video_family(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    ).bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    # bf16 terms doubled, the fp32 VAE term left exactly where the table put it.
+    assert calls[0]["model_dense_mib"] == int(
+        ((transformer_gb + te_gb) * 2.0 + vae_gb) * _MIB_PER_GB
+    )
+
+
+def test_the_fp32_promotion_still_doubles_a_bf16_vae(fake_runtime, monkeypatch):
+    # LTX-2 does not force fp32, so its VAE term IS a bf16 one and must keep scaling with the rest.
+    from core.inference.video_families import detect_video_family
+
+    _fp32_promoted_cuda_target(monkeypatch)
+    components = detect_video_family("Lightricks/LTX-2").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Lightricks/LTX-2", model_kind = "pipeline")
+    assert calls[0]["model_dense_mib"] == int(sum(components) * 2.0 * _MIB_PER_GB)
+
+
+def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested(
+    fake_runtime, monkeypatch
+):
+    """The quant re-plan prices the DiT's STEADY size, but the video path has no pre-quantised
+    artifact: the transformer is always built dense and quantize_transformer rewrites it in place,
+    so the build PEAK is the bf16 figure. On unified memory the peak is what the OS kills for, so
+    the refusal must keep reading the dense plan -- accepting the steady size here would wave
+    through exactly the load this guard exists to stop."""
+    import torch
+
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_memory import DeviceMemory
+
+    target = DiffusionDeviceTarget(
+        device = "cuda",
+        dtype = torch.bfloat16,
+        backend = "cuda",
+        vendor = "nvidia",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = True,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda t: True)
+    monkeypatch.setattr(
+        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
+    )
+    # An integrated CUDA device: 48 GiB shared, so LTX-2's ~65 GB of dense weights cannot fit even
+    # though the fp8 steady size would.
+    total = 48 * 1024
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "unified_memory", int(total * 0.80), total),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        VideoBackend().load_pipeline(
+            "Lightricks/LTX-2", model_kind = "pipeline", transformer_quant = "auto"
+        )
+    assert "unified memory" in str(excinfo.value)
+
+
+def test_unified_memory_refuses_the_h3_modular_load_before_load_components(
+    fake_runtime, monkeypatch
+):
+    """MiniMax-H3 returns into the modular workflow ABOVE load_pipeline's refusal, so the one
+    family the matrix says must be declined on every Mac it models was the only one that never
+    reached the check. load_components builds every component dense and the ComponentsManager's
+    CPU offload frees nothing on unified memory, so 144.2 GB of components is an OS kill with no
+    torch OOM to catch."""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    torch = sys.modules["torch"]
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    _FakeModularPipeline.instance = None
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(128))
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    backend = VideoBackend()
+    with pytest.raises(RuntimeError) as excinfo:
+        backend._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "mps",
+            hf_token = None,
+            memory_mode = None,
+            target = target,
+        )
+    message = str(excinfo.value)
+    assert "minimax-h3" in message and "unified memory" in message
+    # Refused BEFORE any component was built.
+    assert _FakeModularPipeline.instance is not None
+    assert _FakeModularPipeline.instance.load_kwargs is None
+    assert backend.status()["loaded"] is False
+
+
+def test_the_h3_modular_refusal_prices_a_seeded_prequant_denoiser(fake_runtime, monkeypatch):
+    """A hosted pre-quantized checkpoint replaces the dense 66.3 GB denoiser, so the refusal must
+    size that instead -- refusing it on the dense figure would reject a load that never builds
+    those weights. It is still the whole component set: the encoder and the VAEs load dense."""
+    import core.inference.video as video_mod
+    from core.inference.video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    transformer_gb, te_gb, vae_gb = fam.bf16_components_gb
+    seen: list[int] = []
+
+    def _capture(*, model_dense_mib = None, **kwargs):
+        seen.append(int(model_dense_mib or 0))
+        return types.SimpleNamespace(offload_policy = "none", estimates = {}, device_memory = None)
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _capture)
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", lambda t: None)
+    monkeypatch.setattr(video_mod, "raise_on_unified_memory_shortfall", lambda *a, **k: None)
+
+    # The MEASURED hosted size, not the generic 0.55 steady factor: H3's checkpoints are
+    # quantized AND structurally pruned, so the factor reads 36.5 GB against a real ~20.3 GB and
+    # the 16 GB gap refuses a supported prequant load that fits on a 128 GB Mac.
+    assert fam.prequant_resident_gb == 20.3
+    for scheme, expected_transformer in (
+        (None, transformer_gb),
+        ("fp8", fam.prequant_resident_gb),
+        ("int8", fam.prequant_resident_gb),
+        # An unknown scheme still takes the family's hosted size when it publishes one; the
+        # generic factor is only the fallback for a family that does not.
+        ("bogus", fam.prequant_resident_gb),
+    ):
+        VideoBackend._raise_on_modular_unified_shortfall(
+            fam,
+            target = None,
+            dtype = sys.modules["torch"].bfloat16,
+            device = "mps",
+            memory_mode = None,
+            scheme = scheme,
+        )
+        assert seen[-1] == int(
+            (expected_transformer + te_gb + vae_gb) * (1000.0**3 / (1024.0 * 1024.0))
+        ), scheme
+    # The whole point: on a unified-memory host big enough for the ~20.3 GB checkpoint but not
+    # for the 36.5 GB the generic factor invents, the fp8 pick must NOT be refused. 160 GiB at
+    # 80% free is inside that window (the dense set is refused there either way).
+    from core.inference.diffusion_memory import unified_memory_shortfall_message
+
+    from core.inference.diffusion_memory import (
+        DeviceMemory,
+        estimate_video_runtime_mib,
+        plan_diffusion_memory,
+    )
+
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    total = 160 * 1024
+    memory = DeviceMemory("mps", "mps", "unified_memory", int(total * 0.80), total)
+    device = type("T", (), {"supports_model_cpu_offload": True, "device": "mps"})()
+    headroom = estimate_video_runtime_mib(
+        width = fam.resolution_presets[0][0],
+        height = fam.resolution_presets[0][1],
+        num_frames = fam.default_num_frames,
+    )
+    for gb, refused in (
+        (fam.prequant_resident_gb + te_gb + vae_gb, False),
+        # What the generic 0.55 factor would have budgeted: refused, for 16 GB that do not exist.
+        (transformer_gb * 0.55 + te_gb + vae_gb, True),
+        (sum(fam.bf16_components_gb), True),
+    ):
+        plan = plan_diffusion_memory(
+            target = device,
+            device_memory = memory,
+            model_dense_mib = int(gb * mib_per_gb),
+            runtime_headroom_mib = headroom,
+        )
+        assert (unified_memory_shortfall_message(plan, family = fam.name) is not None) is refused, gb
+
+
+def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_land(
+    fake_runtime, monkeypatch
+):
+    """The hosted-denoiser load is best-effort by contract: a missing, corrupt, stale or
+    base-mismatched checkpoint drops to the released bfloat16 components. Sizing the load as
+    quantized and then building dense with no second check is the OS kill this guard exists to
+    prevent -- on a host whose budget fits the ~20.3 GB checkpoint but not the 66.3 GB dense one."""
+    import core.inference.video as video_mod
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+
+    torch = sys.modules["torch"]
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
+    _FakeModularPipeline.instance = None
+
+    target = DiffusionDeviceTarget(
+        device = "mps",
+        dtype = torch.bfloat16,
+        backend = "mps",
+        vendor = "apple",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = False,
+        supports_pinned_transfer = False,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
+    # 160 GiB: the prequant pick fits, the dense component set does not.
+    monkeypatch.setattr(video_mod, "settled_snapshot_device_memory", _unified_snapshot(160))
+
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    sized: list = []
+    real = VideoBackend._raise_on_modular_unified_shortfall
+
+    def _spy(family, **kwargs):
+        sized.append(kwargs["scheme"])
+        return real(family, **kwargs)
+
+    monkeypatch.setattr(VideoBackend, "_raise_on_modular_unified_shortfall", staticmethod(_spy))
+    # The checkpoint resolves but does not load: exactly the best-effort None contract.
+    import core.inference.diffusion_prequant as prequant_mod
+
+    monkeypatch.setattr(
+        prequant_mod,
+        "resolve_prequant_source",
+        lambda fam, scheme, base_repo = None: types.SimpleNamespace(location = "unsloth/H3-FP8"),
+    )
+    monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", lambda *a, **k: None)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        VideoBackend()._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = torch,
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = torch.bfloat16,
+            device = "mps",
+            hf_token = None,
+            memory_mode = None,
+            transformer_quant = "fp8",
+            target = target,
+        )
+    assert "minimax-h3" in str(excinfo.value) and "unified memory" in str(excinfo.value)
+    # Sized twice: once for the pick that was requested, once for what actually landed.
+    assert sized == ["fp8", None]
+    # ... and nothing was built.
+    assert _FakeModularPipeline.instance.load_kwargs is None

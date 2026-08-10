@@ -2243,11 +2243,24 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // Stamp the load this frame was served for. A report still in flight
+        // when the canvas is swapped would otherwise be read as the new one's.
+        const loadVersion = new URLSearchParams(location.search).get("v") || "";
+        const reportBlocked = (event) => {
+          parent.postMessage({
+            type: "unsloth:artifact-blocked",
+            blockedURI: event.blockedURI || "",
+            effectiveDirective: event.effectiveDirective || "",
+            v: loadVersion,
+          }, "*");
+        };
         const render = (html) => {
           installStorageFallbacks();
           document.open();
           document.write(html);
           document.close();
+          // document.open() drops listeners bound before it, so rebind here.
+          document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
         window.addEventListener("message", (event) => {
