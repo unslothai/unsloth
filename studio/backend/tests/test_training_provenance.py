@@ -1110,12 +1110,26 @@ def test_embedding_hf_loader_attests_first_remote_dataset_load(tmp_path):
 
 @pytest.mark.parametrize("status", ["pending", "incomplete"])
 def test_unattested_current_provenance_without_hub_resources_can_resume(status):
-    assert (
-        resource_provenance_allows_resume(
-            {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
-        )
-        is True
-    )
+    config = {RESOURCE_PROVENANCE_KEY: {"version": 1, "status": status}}
+
+    assert exact_resume_resource_requirements(config) == (False, False)
+    assert resource_provenance_allows_resume(config) is True
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"status": "pending"},
+        {"version": 2, "status": "pending"},
+    ],
+    ids = ["missing-version", "wrong-version"],
+)
+def test_malformed_pending_provenance_is_rejected_consistently(marker):
+    config = {RESOURCE_PROVENANCE_KEY: marker}
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "provenance is invalid"):
+        exact_resume_resource_requirements(config)
+    assert resource_provenance_allows_resume(config) is False
 
 
 def test_unattested_current_hub_dataset_cannot_resume_mutable_revision(tmp_path):

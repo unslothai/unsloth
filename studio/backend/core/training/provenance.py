@@ -912,8 +912,6 @@ def resource_provenance_resume_blocker(config: dict[str, Any]) -> Optional[str]:
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
         return None
-    if isinstance(marker, dict) and _provenance_awaiting_attestation(marker, config):
-        return None
     try:
         exact_resume_resource_requirements(config)
     except ExactResumeResourcesUnavailable as exc:
