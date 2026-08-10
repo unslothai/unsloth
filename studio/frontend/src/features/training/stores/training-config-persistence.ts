@@ -9,10 +9,7 @@ import {
   LR_DEFAULT_LORA,
 } from "@/config/training";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's unrelated React exports.
-import {
-  getHfToken,
-  useHfTokenStore,
-} from "@/features/hub/stores/hf-token-store";
+import { stageLegacyHfTokenForMigration } from "@/features/hub/stores/hf-token-store";
 import { isTrainingMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type {
@@ -130,8 +127,8 @@ function migrateThroughVersion12(
   if (version < 12) {
     const legacyToken =
       typeof state.hfToken === "string" ? state.hfToken.trim() : "";
-    if (legacyToken && !getHfToken()) {
-      useHfTokenStore.getState().setToken(legacyToken);
+    if (legacyToken) {
+      stageLegacyHfTokenForMigration(legacyToken);
     }
     state.hfToken = undefined;
   }

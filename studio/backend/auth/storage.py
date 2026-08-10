@@ -419,6 +419,46 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
+# Dedicated AES-256 key used to encrypt Studio credentials in studio.db.
+# It intentionally lives in auth.db so copying studio.db alone does not expose
+# provider or Hugging Face tokens, and survives password changes/resets.
+_CREDENTIAL_ENCRYPTION_KEY_DB_KEY = "credential_encryption_key_v1"
+_credential_encryption_key_cache: Optional[bytes] = None
+
+
+def get_or_create_credential_encryption_key() -> bytes:
+    """Return the install-local credential encryption key, creating it once."""
+    global _credential_encryption_key_cache
+    if _credential_encryption_key_cache is not None:
+        return _credential_encryption_key_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_CREDENTIAL_ENCRYPTION_KEY_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+        if len(secret) != 32:
+            raise ValueError("Invalid credential encryption key")
+    finally:
+        conn.close()
+
+    _credential_encryption_key_cache = secret
+    return secret
+
+
+
 def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
     bound to the loopback address and port the connection landed on. A proof

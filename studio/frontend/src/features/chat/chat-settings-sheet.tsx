@@ -730,9 +730,10 @@ export function ChatSettingsPanel({
       externalSelection?.modelId,
     );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const openAiApiKeyForSection = activeExternalProvider
-    ? getExternalProviderApiKey(activeExternalProvider.id) || null
-    : null;
+  const openAiApiKeyForSection =
+    activeExternalProvider && !activeExternalProvider.hasApiKey
+      ? getExternalProviderApiKey(activeExternalProvider.id) || null
+      : null;
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {

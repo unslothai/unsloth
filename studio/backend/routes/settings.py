@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from auth.storage import rotate_preview_link_secret
+
+from storage import credential_secrets
 from core.rag.config import default_gguf_repo, effective_gguf_repo
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
@@ -107,6 +109,49 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class HuggingFaceTokenPayload(BaseModel):
+    token: str = Field(..., min_length = 1, max_length = 512)
+
+    @field_validator("token")
+    @classmethod
+    def normalize_token(cls, value: str) -> str:
+        normalized = value.strip(" \t\r\n\"'")
+        if not normalized:
+            raise ValueError("Hugging Face token cannot be empty")
+        return normalized
+
+
+class HuggingFaceTokenResponse(BaseModel):
+    token: Optional[str] = None
+    has_token: bool = False
+
+
+@router.get("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def get_hugging_face_token(
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceTokenResponse:
+    token = credential_secrets.get_hf_token(current_subject)
+    return HuggingFaceTokenResponse(token = token, has_token = token is not None)
+
+
+@router.put("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def update_hugging_face_token(
+    payload: HuggingFaceTokenPayload,
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceTokenResponse:
+    credential_secrets.save_hf_token(current_subject, payload.token)
+    return HuggingFaceTokenResponse(token = payload.token, has_token = True)
+
+
+@router.delete("/hugging-face-token", response_model = HuggingFaceTokenResponse)
+def clear_hugging_face_token(
+    current_subject: str = Depends(get_current_subject),
+) -> HuggingFaceTokenResponse:
+    credential_secrets.delete_hf_token(current_subject)
+    return HuggingFaceTokenResponse(token = None, has_token = False)
+
 
 
 class HelperPrecachePayload(BaseModel):

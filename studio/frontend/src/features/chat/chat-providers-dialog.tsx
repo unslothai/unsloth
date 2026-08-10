@@ -46,6 +46,8 @@ import {
   testProviderConnection,
   updateProviderConfig,
 } from "./api/providers-api";
+
+import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -59,7 +61,6 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
-  setExternalProviderApiKey,
   supportsProviderPromptCaching,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
@@ -157,6 +158,8 @@ export function ChatProvidersSettings({
   const [providerType, setProviderType] = useState<string>("");
   const [apiKey, setApiKey] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+
+  const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
   const [editingProviderId, setEditingProviderId] = useState<string | null>(
     null,
@@ -221,8 +224,15 @@ export function ChatProvidersSettings({
     availableModels.length > 0;
   const missingModelCatalogBaseUrl =
     supportsRemoteModelCatalog(providerType) && baseUrlDraft.trim().length === 0;
+  const editingProviderHasSavedKey = Boolean(
+    editingProviderId &&
+      providers.find((provider) => provider.id === editingProviderId)?.hasApiKey,
+  );
   const missingModelCatalogApiKey =
-    !isCustomProvider && !isCuratedModelList && apiKey.trim().length === 0;
+    !isCustomProvider &&
+    !isCuratedModelList &&
+    apiKey.trim().length === 0 &&
+    !(editingProviderHasSavedKey && !clearApiKeyRequested);
   const loadModelsDisabled =
     modelsLoading ||
     mutatingProvider ||
@@ -359,6 +369,8 @@ export function ChatProvidersSettings({
   function resetForm() {
     setEditingProviderId(null);
     setApiKey("");
+
+    setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft("");
     setAvailableModels([]);
@@ -455,7 +467,7 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim()) {
+    if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
       toast.error("Add an API key first.");
       return;
     }
@@ -470,6 +482,8 @@ export function ChatProvidersSettings({
         toExternalBackendProviderType(providerType) ?? providerType;
       const models = await listProviderModels({
         providerType: backendProviderType,
+
+        providerId: editingProviderId,
         apiKey: apiKey.trim(),
         baseUrl,
       });
@@ -586,6 +600,8 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        apiKey: apiKey.trim(),
+
       });
       const createdAt = Number.isFinite(Date.parse(created.created_at))
         ? Date.parse(created.created_at)
@@ -605,15 +621,14 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+
+        hasApiKey: created.has_api_key,
         isReasoningModel: supportsProviderReasoningToggle(uiProviderType)
           ? isReasoningModel
           : undefined,
         createdAt,
         updatedAt,
       };
-      if (apiKey.trim()) {
-        setExternalProviderApiKey(created.id, apiKey.trim());
-      }
       onProvidersChange([
         ...providers.filter((p) => p.id !== created.id),
         provider,
@@ -640,7 +655,15 @@ export function ChatProvidersSettings({
     }
     const isEditingCustomProvider =
       isCustomProviderType(existing.providerType);
-    if (!isEditingCustomProvider && !apiKey.trim()) {
+    const credentialEdit = resolveProviderCredentialEdit(
+      Boolean(
+        existing.hasApiKey ||
+          (!existing.hasApiKey && getExternalProviderApiKey(existing.id).trim()),
+      ),
+      apiKey,
+      clearApiKeyRequested,
+    );
+    if (!isEditingCustomProvider && credentialEdit.action === "missing") {
       toast.error("API key is required.");
       return;
     }
@@ -705,12 +728,12 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
+        ...(credentialEdit.action === "replace"
+          ? { apiKey: credentialEdit.apiKey }
+          : credentialEdit.action === "clear"
+            ? { clearApiKey: true }
+            : {}),
       });
-      if (apiKey.trim()) {
-        setExternalProviderApiKey(editingProviderId, apiKey.trim());
-      } else if (isEditingCustomProvider) {
-        removeExternalProviderApiKey(editingProviderId);
-      }
       const updatedAt = Number.isFinite(Date.parse(updated.updated_at))
         ? Date.parse(updated.updated_at)
         : Date.now();
@@ -725,6 +748,8 @@ export function ChatProvidersSettings({
                 availableModels: manualOnly
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+
+                hasApiKey: updated.has_api_key,
                 isReasoningModel: supportsProviderReasoningToggle(
                   existing.providerType,
                 )
@@ -753,7 +778,11 @@ export function ChatProvidersSettings({
     setCustomProviderName(
       provider.name || customProviderDisplayName(provider.providerType),
     );
-    setApiKey(getExternalProviderApiKey(provider.id));
+    setApiKey(
+      provider.hasApiKey ? "" : getExternalProviderApiKey(provider.id),
+    );
+
+    setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setModelSearchQuery("");
@@ -833,11 +862,14 @@ export function ChatProvidersSettings({
   }
 
   async function testProvider(provider: ExternalProviderConfig) {
-    const savedKey = getExternalProviderApiKey(provider.id).trim();
+    const savedKey = provider.hasApiKey
+      ? ""
+      : getExternalProviderApiKey(provider.id).trim();
     // Hosted registry providers require keys. Local OpenAI-compatible presets
     // may be keyless.
     if (
       !savedKey &&
+      !provider.hasApiKey &&
       !supportsRemoteModelCatalog(provider.providerType)
     ) {
       if (isCustomProviderType(provider.providerType)) {
@@ -854,6 +886,8 @@ export function ChatProvidersSettings({
         providerType:
           toExternalBackendProviderType(provider.providerType) ??
           provider.providerType,
+
+        providerId: provider.id,
         apiKey: savedKey,
         baseUrl: provider.baseUrl || null,
         modelId:
@@ -1013,7 +1047,9 @@ export function ChatProvidersSettings({
                       API key {isCustomProvider ? "(optional)" : ""}
                     </Label>
                     <p className="text-xs leading-snug text-muted-foreground">
-                      Stored locally.
+                      {editingProviderHasSavedKey
+                        ? "Saved securely. Leave blank to keep it."
+                        : "Saved securely after you connect."}
                     </p>
                   </div>
                   <div className="relative min-w-0">
@@ -1021,8 +1057,15 @@ export function ChatProvidersSettings({
                       id="provider-api-key"
                       type={showApiKey ? "text" : "password"}
                       value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder="Enter API key"
+                      onChange={(event) => {
+                        setApiKey(event.target.value);
+                        if (event.target.value.trim()) setClearApiKeyRequested(false);
+                      }}
+                      placeholder={
+                        editingProviderHasSavedKey
+                          ? "Leave blank to keep saved key"
+                          : "Enter API key"
+                      }
                       className="h-9 pr-9 text-sm"
                     />
                     <button
@@ -1038,6 +1081,26 @@ export function ChatProvidersSettings({
                         <EyeOff className="size-3.5" />
                       )}
                     </button>
+                    {editingProviderHasSavedKey ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-1 h-7 px-2 text-xs"
+                        onClick={() => {
+                          setApiKey("");
+                          setClearApiKeyRequested((requested) => !requested);
+                        }}
+                      >
+                        {clearApiKeyRequested ? "Keep saved key" : "Remove saved key"}
+                      </Button>
+                    ) : null}
+                    {clearApiKeyRequested ? (
+                      <p className="mt-1 text-xs text-destructive">
+                        The saved key will be removed when you save this connection.
+                      </p>
+                    ) : null}
+
                   </div>
                 </div>
               ) : null}

@@ -3799,9 +3799,10 @@ export function createOpenAIStreamAdapter(
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
-      const externalApiKey = externalProvider
-        ? getExternalProviderApiKey(externalProvider.id).trim()
-        : "";
+      const externalApiKey =
+        externalProvider && !externalProvider.hasApiKey
+          ? getExternalProviderApiKey(externalProvider.id).trim()
+          : "";
 
       if (isExternalRequest && !externalProvider) {
         toast.error("Connection not found.", {
@@ -3822,6 +3823,7 @@ export function createOpenAIStreamAdapter(
       if (
         isExternalRequest &&
         !externalApiKey &&
+        !externalProvider?.hasApiKey &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -4660,6 +4662,8 @@ export function createOpenAIStreamAdapter(
               if (externalProvider.providerType === "openai") {
                 try {
                   const list = await listOpenAIContainers({
+                    providerId: externalProvider.id,
+
                     apiKey: externalApiKey,
                     baseUrl: externalProvider.baseUrl || null,
                   });
@@ -4724,6 +4728,8 @@ export function createOpenAIStreamAdapter(
                 try {
                   const created = await createOpenAIContainer(
                     {
+                      providerId: externalProvider.id,
+
                       apiKey: externalApiKey,
                       baseUrl: externalProvider.baseUrl || null,
                     },

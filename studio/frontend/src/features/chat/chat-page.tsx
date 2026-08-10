@@ -189,7 +189,6 @@ import {
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useResearchRunStore } from "./stores/research-run-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
-import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
 import { clearNewChatDraft } from "./utils/composer-draft";
@@ -1868,18 +1867,8 @@ export function ChatPage({
   const externalProvidersForChat = connectionsEnabled ? externalProviders : [];
 
   useEffect(() => {
-    void (async () => {
-      await hydratePersistedSettings();
-      try {
-        const synced = await syncExternalProvidersFromBackend(
-          useExternalProvidersStore.getState().providers,
-        );
-        setExternalProviders(synced);
-      } catch {
-        // Silent on startup; Connections settings still surfaces load errors.
-      }
-    })();
-  }, [hydratePersistedSettings, setExternalProviders]);
+    void hydratePersistedSettings();
+  }, [hydratePersistedSettings]);
 
   useEffect(() => {
     // Skip while off-route: ChatPage stays mounted, and toast+navigate here would

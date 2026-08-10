@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { reconcileLegacyProviderKeys } from "@/features/credentials/reconciliation";
+
 import {
   type ProviderRegistryEntry,
   listProviderConfigs,
@@ -11,6 +13,9 @@ import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   type ExternalProviderConfig,
+
+  getExternalProviderApiKey,
+  removeExternalProviderApiKey,
   isCustomProviderType,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -118,14 +123,25 @@ export function mergeLocalProviderOptions(
   };
 }
 
+
+
 /** Merge enabled backend provider configs with local store state. */
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
+  isCurrent?: () => boolean,
 ): Promise<ExternalProviderConfig[]> {
-  const [registryRows, configRows] = await Promise.all([
+  const [registryRows, loadedConfigRows] = await Promise.all([
     listProviderRegistry(),
     listProviderConfigs(),
   ]);
+  const configRows = await reconcileLegacyProviderKeys(loadedConfigRows, {
+    getLegacyKey: getExternalProviderApiKey,
+    saveLegacyKey: (providerId, apiKey) =>
+      updateProviderConfig(providerId, { apiKey }),
+    removeLegacyKey: removeExternalProviderApiKey,
+
+    isCurrent,
+  });
 
   const existingById = new Map<string, ExternalProviderConfig>();
   for (const provider of existingProviders) {
@@ -202,6 +218,8 @@ export async function syncExternalProvidersFromBackend(
         baseUrl: config.base_url ?? "",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
+
+        hasApiKey: config.has_api_key,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,
@@ -213,6 +231,8 @@ export async function syncExternalProvidersFromBackend(
       };
       return mergeLocalProviderOptions(existing, synced);
     });
+
+  if (isCurrent && !isCurrent()) return existingProviders;
 
   if (backfillTasks.length > 0) {
     await Promise.allSettled(backfillTasks);

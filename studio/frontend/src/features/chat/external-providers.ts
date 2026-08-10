@@ -14,6 +14,9 @@ export interface ExternalProviderConfig {
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+
+  /** Whether the backend has an owner-scoped saved key. */
+  hasApiKey?: boolean;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**
@@ -421,8 +424,7 @@ export function loadExternalProviders(): ExternalProviderConfig[] {
   }
 }
 
-/** Load the raw key map from localStorage. Values are opaque strings: either
- * AES-GCM ciphertext or legacy plaintext. */
+/** Load legacy browser keys for retry-safe backend migration. */
 function loadRawKeyMap(): Record<string, string> {
   if (!canUseStorage()) return {};
   try {
@@ -457,22 +459,14 @@ export function saveExternalProviders(
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
-    // Prune keys for removed providers (works on raw ciphertext, no decryption)
-    const allowedIds = new Set(providers.map((provider) => provider.id));
-    const keys = loadRawKeyMap();
-    const pruned: Record<string, string> = {};
-    for (const [providerId, value] of Object.entries(keys)) {
-      if (allowedIds.has(providerId)) {
-        pruned[providerId] = value;
-      }
-    }
-    saveRawKeyMap(pruned);
+    // Legacy keys are migration input. Preserve unmatched entries until the
+    // backend confirms the exact key was stored.
   } catch {
     // ignore
   }
 }
 
-/** Retrieve a provider API key from localStorage; "" if none stored. */
+/** Retrieve a legacy provider key used only as migration/request fallback. */
 export function getExternalProviderApiKey(
   providerId: string,
 ): string {

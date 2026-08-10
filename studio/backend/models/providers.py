@@ -56,6 +56,11 @@ class ProviderCreate(BaseModel):
         description = "Discovered catalog model IDs last fetched for this connection",
     )
 
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "Optional RSA-encrypted API key to persist for this connection",
+    )
+
 
 class ProviderUpdate(BaseModel):
     """Request to update a saved provider configuration."""
@@ -69,6 +74,15 @@ class ProviderUpdate(BaseModel):
         description = "Discovered catalog model IDs last fetched for this connection",
     )
 
+    encrypted_api_key: Optional[str] = Field(
+        None,
+        description = "Optional RSA-encrypted replacement API key; omission preserves the saved key",
+    )
+    clear_api_key: bool = Field(
+        False,
+        description = "Explicitly remove the saved API key",
+    )
+
 
 class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
@@ -78,6 +92,8 @@ class ProviderResponse(BaseModel):
     display_name: str = Field(..., description = "User-chosen label")
     base_url: str = Field(..., description = "API base URL")
     is_enabled: bool = Field(True, description = "Whether this provider is enabled")
+
+    has_api_key: bool = Field(False, description = "Whether this caller has a saved API key")
     models: list[str] = Field(
         default_factory = list,
         description = "Enabled model IDs for this connection",
@@ -105,6 +121,10 @@ class ProviderModelInfo(BaseModel):
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
 
+    provider_id: Optional[str] = Field(
+        None, description = "Saved provider config whose stored key may be used"
+    )
+
     provider_type: str = Field(..., description = "Provider type from the registry")
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -120,6 +140,10 @@ class ProviderModelsRequest(BaseModel):
 
 class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
+
+    provider_id: Optional[str] = Field(
+        None, description = "Saved provider config whose stored key may be used"
+    )
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     encrypted_api_key: Optional[str] = Field(
