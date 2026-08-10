@@ -5588,6 +5588,7 @@ def _estimate_gguf_required_gb(
         _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
             _forced_dflash and not _dflash_capable
         )
+
         def _same_file_key(p: str) -> str:
             # Identity by resolved path, so a symlinked or differently spelled
             # copy of one file is still one file.
