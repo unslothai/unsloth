@@ -190,7 +190,9 @@ def test_the_v1_surface_gets_the_same_message_cap():
     from utils.api_errors import _summarize_validation_errors, safe_validation_errors as sve
 
     msg = "Unsupported content block type " + "q" * 500_000
-    summary, _ = _summarize_validation_errors(sve([{"type": "x", "loc": ("body", "messages"), "msg": msg, "input": "x"}]))
+    summary, _ = _summarize_validation_errors(
+        sve([{"type": "x", "loc": ("body", "messages"), "msg": msg, "input": "x"}])
+    )
     assert len(summary) < 400, len(summary)
 
 
