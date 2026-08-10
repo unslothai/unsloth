@@ -223,7 +223,6 @@ def _forced_target(device):
     """A resolved diffusion target on ``device``, so a refusal keyed on the device can be tested
     off the hardware that has it."""
     from core.inference.diffusion_device import DiffusionDeviceTarget
-
     return lambda: DiffusionDeviceTarget(
         device = device,
         dtype = None,
