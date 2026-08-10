@@ -505,6 +505,55 @@ test("cross-tab refresh replays after an active HF hydration", async () => {
 });
 
 
+test("a delayed HF write response reconciles a newer cross-tab commit", async () => {
+  const { store } = installLocalStorageFake();
+  store.set("unsloth_auth_token", "session-token");
+  const originalFetch = globalThis.fetch;
+  let resolveWrite!: (response: Response) => void;
+  let writeStarted!: () => void;
+  const writeResponse = new Promise<Response>((resolve) => { resolveWrite = resolve; });
+  const startedWrite = new Promise<void>((resolve) => { writeStarted = resolve; });
+  let reads = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "PUT") {
+      writeStarted();
+      return writeResponse;
+    }
+    reads += 1;
+    return new Response(JSON.stringify({ token: "hf_new_tab", has_token: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const hfStore = await import("../src/features/hub/stores/hf-token-store.ts");
+    hfStore.useHfTokenStore.getState().setToken("hf_delayed_tab");
+    await startedWrite;
+
+    // Another tab commits while this write's response is still delayed.
+    await hfStore.refreshHfTokenFromBackend();
+    resolveWrite(new Response(JSON.stringify({ token: "hf_delayed_tab", has_token: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      if (!hfStore.useHfTokenStore.getState().isPersisting) break;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    assert.equal(reads, 2);
+    assert.equal(hfStore.getHfToken(), "hf_new_tab");
+    assert.equal(hfStore.useHfTokenStore.getState().isPersisting, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Reflect.deleteProperty(globalThis, "window");
+    Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});
+
+
+
 test("pending HF edits can be drained before onboarding navigation", async () => {
   const { store } = installLocalStorageFake();
   store.set("unsloth_auth_token", "session-token");

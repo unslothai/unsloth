@@ -17,6 +17,8 @@ const HF_TOKEN_MIGRATION_KEY = "unsloth_hf_token_migration_v1";
 
 const HF_TOKEN_SYNC_KEY = "unsloth_hf_token_backend_revision";
 
+let backendNotificationRevision = 0;
+
 let stagedLegacyToken = "";
 
 function canUseStorage(): boolean {
@@ -114,10 +116,23 @@ function persistTokenToBackend(token: string): void {
 
       const legacyTokenBeforeSave = loadLegacyToken();
       try {
-        const { clearSavedHfToken, saveHfToken } = await loadHfTokenApi();
-        const response = token
+        const { clearSavedHfToken, loadSavedHfToken, saveHfToken } =
+          await loadHfTokenApi();
+        const notificationRevisionBeforeWrite = backendNotificationRevision;
+        let response = token
           ? await saveHfToken(token)
           : await clearSavedHfToken();
+
+        if (notificationRevisionBeforeWrite !== backendNotificationRevision) {
+          // A cross-tab commit landed while this write's response was delayed.
+          // Read until no newer notification arrives during the GET, so the
+          // value applied below is the backend's latest committed credential.
+          let notificationRevision: number;
+          do {
+            notificationRevision = backendNotificationRevision;
+            response = await loadSavedHfToken();
+          } while (notificationRevision !== backendNotificationRevision);
+        }
         const persistedToken = response.token
           ? normalizeHfToken(response.token)
           : "";
@@ -272,6 +287,8 @@ export function hydrateHfTokenFromBackend(): Promise<void> {
 
 /** Re-read after an active hydration when another tab reports a newer backend value. */
 export async function refreshHfTokenFromBackend(): Promise<void> {
+
+  backendNotificationRevision += 1;
   if (!hydrationPromise) return hydrateHfTokenFromBackend();
   hydrationReplayRequested = true;
   try {
