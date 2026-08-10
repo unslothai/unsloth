@@ -30,9 +30,7 @@ BACKEND = Path(__file__).resolve().parent.parent / "studio" / "backend"
 
 
 def convrot_refusal(
-    group: int,
-    rotatable: Sequence[str],
-    not_divisible: Sequence[str],
+    group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
     """Why a ConvRot build must not be quantised and saved, or None when it is fine.
 

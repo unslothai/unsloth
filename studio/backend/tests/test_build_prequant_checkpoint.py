@@ -18,9 +18,7 @@ from core.inference.diffusion_convrot import rotation_metadata, rotation_metadat
 from core.inference.diffusion_families import detect_family
 from core.inference.video_families import detect_video_family
 
-_SCRIPT = (
-    Path(__file__).resolve().parents[3] / "scripts" / "build_prequant_checkpoint.py"
-)
+_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "build_prequant_checkpoint.py"
 
 
 def _script():
@@ -51,10 +49,7 @@ def test_a_rotated_upload_goes_to_the_name_the_loader_asks_for_not_the_legacy_fa
     # The rotated INT8 denoiser is published under the family's declared name, which is the one
     # resolve_prequant_source asks for first. transformer_int8.pt is never asked for on this
     # family, so an upload landing there would be invisible.
-    assert (
-        build.upload_destination(h3, "int8", rotated = True)
-        == "MiniMax-H3-INT8-ConvRot.pt"
-    )
+    assert build.upload_destination(h3, "int8", rotated = True) == "MiniMax-H3-INT8-ConvRot.pt"
     # A plain build keeps the legacy name it has always used, so nothing else moves.
     assert build.upload_destination(h3, "int8", rotated = False) == "transformer_int8.pt"
 
@@ -69,7 +64,9 @@ def test_a_rotated_upload_with_no_declared_name_is_refused_rather_than_published
         build.upload_destination(zimage, "int8", rotated = True)
     # An explicit name is the operator's escape hatch, rotated or not.
     assert (
-        build.upload_destination(zimage, "int8", rotated = True, override = "Z-Image-Turbo-INT8-ConvRot.pt")
+        build.upload_destination(
+            zimage, "int8", rotated = True, override = "Z-Image-Turbo-INT8-ConvRot.pt"
+        )
         == "Z-Image-Turbo-INT8-ConvRot.pt"
     )
     assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"
