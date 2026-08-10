@@ -6061,7 +6061,9 @@ def test_the_h3_modular_refusal_reruns_when_the_prequant_checkpoint_does_not_lan
     monkeypatch.setattr(
         prequant_mod,
         "resolve_prequant_source",
-        lambda fam, scheme, base_repo = None: types.SimpleNamespace(location = "unsloth/H3-FP8"),
+        lambda fam, scheme, base_repo = None, task = None: types.SimpleNamespace(
+            location = "unsloth/H3-FP8"
+        ),
     )
     monkeypatch.setattr(prequant_mod, "load_prequantized_transformer", lambda *a, **k: None)
 
