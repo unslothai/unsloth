@@ -164,7 +164,6 @@ async def video_download_plan(
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
     from utils.native_path_leases import redact_native_paths
-
     try:
         plan = await _video_plan_for_pick(request, request.gguf_filename)
         return DiffusionDownloadPlanResponse(**plan)

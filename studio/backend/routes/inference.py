@@ -20232,7 +20232,6 @@ async def diffusion_download_plan(
     Validates the same way /images/load does, so an unloadable pick fails here rather than
     after a multi-GB download."""
     from utils.native_path_leases import redact_native_paths
-
     try:
         plan = await _diffusion_plan_for_pick(request, request.gguf_filename)
         return DiffusionDownloadPlanResponse(**plan)
@@ -20247,8 +20246,7 @@ async def diffusion_download_plan(
 
 @studio_router.post("/images/companion-sizes", response_model = CompanionSizesResponse)
 async def diffusion_companion_sizes(
-    request: DiffusionCompanionSizesRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: DiffusionCompanionSizesRequest, current_subject: str = Depends(get_current_subject)
 ):
     """What each candidate quant downloads beyond its own checkpoint, so the picker can size a
     whole expander in one call.
@@ -20257,7 +20255,6 @@ async def diffusion_companion_sizes(
     the FLUX.2-klein 9B text encoder for the 4B default by inner dim, so one sample answer applied
     to every row misreports whichever size it did not come from."""
     from utils.native_path_leases import redact_native_paths
-
     try:
         sizes = await _companion_sizes_for(
             request.gguf_filenames,

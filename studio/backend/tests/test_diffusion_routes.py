@@ -1682,7 +1682,12 @@ def test_companion_sizes_omits_a_row_it_cannot_plan(client, monkeypatch):
             raise RuntimeError("no plan for this one")
         return {
             "entries": [
-                {"repo_id": "black-forest-labs/FLUX.1-dev", "files": ["x"], "bytes": 7, "gguf_filename": None}
+                {
+                    "repo_id": "black-forest-labs/FLUX.1-dev",
+                    "files": ["x"],
+                    "bytes": 7,
+                    "gguf_filename": None,
+                }
             ],
             "total_bytes": 7,
         }
