@@ -52,9 +52,8 @@ def _fam(
     return types.SimpleNamespace(name = name, modular_workflow = modular_workflow, base_repo = base_repo)
 
 
-# Device targets are passed EXPLICITLY everywhere below. The auto default reads the real device
-# when none is given, and a test whose answer depends on whether the runner has a bf16 CUDA card
-# is not a test.
+# Device targets are passed EXPLICITLY below: the auto default reads the real device when none is
+# given, and a test whose answer depends on the runner's GPU is not a test.
 def _cuda_target():
     return types.SimpleNamespace(
         device = "cuda", dtype = torch.bfloat16, supports_default_torch_compile = True
@@ -301,10 +300,10 @@ def test_none_still_pins_the_released_encoder():
 
 
 def test_the_auto_default_is_cuda_only():
-    """MPS and CPU keep exactly the components they load today. The ConvRot forward is plain torch
-    and would very likely run there, but nobody has measured it, and the modular loader does not
-    even reach a Mac today (ComponentsManager.enable_auto_cpu_offload needs mem_get_info, which
-    torch.mps does not have). An EXPLICIT request is unaffected by this gate."""
+    """MPS and CPU keep the components they load today. The ConvRot forward is plain torch and
+    would likely run there, but nobody has measured it, and the modular loader does not reach a Mac
+    at all (ComponentsManager.enable_auto_cpu_offload needs mem_get_info, which torch.mps lacks).
+    An EXPLICIT request is unaffected by this gate."""
     for target in (_cpu_target(), _mps_target()):
         assert VideoBackend._h3_te_quant_scheme(_fam(), None, H3_BASE, target) is None
         assert VideoBackend._h3_te_quant_scheme(_fam(), "int8", H3_BASE, target) == "int8"
@@ -668,10 +667,10 @@ def test_an_explicit_encoder_request_that_engages_nothing_is_refused(monkeypatch
             hf_token = None,
             memory_mode = None,
             text_encoder_quant = "int8",
-            # This test is about the ENCODER refusal, so pin the denoiser dense: unset would now
+            # This test is about the ENCODER refusal, so pin the denoiser dense: unset would
             # resolve to the hosted int8 checkpoint and the fake diffusers module has no
-            # transformer class to build it with. A CPU target for the same reason -- the auto
-            # default must not depend on whether the runner happens to have a bf16 CUDA card.
+            # transformer class to build it. CPU target so the answer cannot depend on the
+            # runner's GPU.
             transformer_quant = "none",
             target = _cpu_target(),
             diffusers = fake_diffusers,

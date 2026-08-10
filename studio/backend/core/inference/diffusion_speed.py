@@ -145,15 +145,14 @@ def resolve_speed_mode(
 def torch_compile_runtime_available() -> bool:
     """Whether THIS process can actually run an inductor compile.
 
-    Inductor needs Triton, and Windows is the one supported platform where the Triton wheel is not
-    part of a normal install. The three Studio workers (inference / training / export) already gate
-    on exactly this import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and
-    video backends run in the SERVER process, which those gates never reach, so ask the same
-    question in the one place both of them decide to compile.
+    Inductor needs Triton, and Windows is the one supported platform whose normal install has no
+    Triton wheel. The three Studio workers (inference / training / export) already gate on this
+    import and set ``TORCHDYNAMO_DISABLE=1`` when it fails, but the diffusion and video backends
+    run in the SERVER process, which those gates never reach, so ask it once here.
 
-    ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile call under it is a silent no-op
-    that would otherwise be recorded as an engaged optimisation. Cached -- neither answer can change
-    inside a process, and this runs on every load."""
+    ``TORCHDYNAMO_DISABLE`` is honored on every platform: a compile under it is a silent no-op that
+    would otherwise be recorded as an engaged optimisation. Cached, since neither answer can change
+    inside a process and this runs on every load."""
     if os.environ.get("TORCHDYNAMO_DISABLE", "").strip() not in ("", "0"):
         return False
     if sys.platform != "win32":

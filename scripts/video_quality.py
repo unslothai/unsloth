@@ -295,8 +295,8 @@ def run_config(
         "attention_backend": spec.get("attention_backend"),
         "transformer_cache": spec.get("transformer_cache"),
         "transformer_quant": spec.get("transformer_quant"),
-        # Needed to express a reference: on MiniMax-H3 the conditioner precision is a default the
-        # backend picks, so "the released bfloat16 encoder" is a spec value, not the absence of one.
+        # On MiniMax-H3 the conditioner precision is a backend default, so "the released bfloat16
+        # encoder" is a spec value rather than the absence of one.
         "text_encoder_quant": spec.get("text_encoder_quant"),
     }
     t0 = time.monotonic()

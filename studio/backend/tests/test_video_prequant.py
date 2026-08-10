@@ -336,10 +336,10 @@ def test_pinning_still_places_the_module_when_the_manager_is_unrecognisable():
 
 # ── the denoiser default: measured, and deliberately NOT changed ─────────────────
 # The hosted checkpoints are the fast ones (the same 8-step job runs 23.7 s against 194 s), so the
-# question was whether to make one of them the default. Measured against the released denoiser at
-# MiniMax-H3's own 30-step schedule, fixed prompt and seed, 960x544x124: no NaN, no black frames
-# and no visible degradation, but a re-rolled sample -- mean SSIM 0.49 (int8) and 0.43 (fp8) where
-# the released config compared against ITSELF scores 0.99. They stay opt-in.
+# question was whether to default to one. Measured against the released denoiser at H3's own
+# 30-step schedule, fixed prompt and seed, 960x544x124: no NaN, no black frames, no visible
+# degradation, but a re-rolled sample -- mean SSIM 0.49 (int8) / 0.43 (fp8) where the released
+# config against ITSELF scores 0.99. They stay opt-in.
 
 
 def _h3_fam():
@@ -360,9 +360,9 @@ def test_an_unset_denoiser_request_keeps_the_released_weights():
 
 def test_the_dense_denoiser_is_pinned_only_when_it_actually_fits():
     """Pinning the released denoiser is what makes the regional compile possible (a module the
-    offload hooks move per forward cannot be compiled), and quantizing the conditioner is what
-    makes it affordable. It is an optimisation, so the fit test has to be conservative: the
-    denoiser plus everything that still has to run beside it."""
+    offload hooks move per forward cannot be compiled) and quantizing the conditioner is what makes
+    it affordable. Being an optimisation, the fit test stays conservative: the denoiser plus
+    everything that still has to run beside it."""
     import torch
 
     from core.inference.video import _h3_dense_denoiser_resident_bytes

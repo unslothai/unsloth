@@ -845,10 +845,9 @@ def pin_prequantized_module(
     the VAEs still offload around it.
 
     For a torchao module that placement is REQUIRED, for the reason above. A caller may also pin a
-    plain dense module, where it is an optimisation rather than a fix: a module that moves per
-    forward cannot be regionally compiled either, because the onload hooks wrap the forward the
-    graph would replace. That caller owns the fit check -- this function does not size anything --
-    and passes its own ``label`` for the log line.
+    plain dense module, where it is an optimisation instead: a module that moves per forward cannot
+    be regionally compiled either, since the onload hooks wrap the forward the graph would replace.
+    That caller owns the fit check (this function sizes nothing) and passes its own ``label``.
 
     Returns True when the module was pinned. Best-effort on the hook surgery: if the manager does
     not look the way this expects, the module is still placed on ``device`` and False is returned,
