@@ -134,7 +134,13 @@ class GgufVariantDetail(BaseModel):
     """A single GGUF quantization variant in a HuggingFace repo."""
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
-    quant: str = Field(..., description = "Quantization label (e.g., 'Q4_K_M')")
+    quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field
+    # that exists only on the hub twin is dropped by pydantic without a word, and a qualified
+    # row falls back to rendering its whole relative path.
+    display_label: Optional[str] = Field(
+        None, description = "Optional user-facing label when quant is an internal key"
+    )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
     downloaded: bool = Field(
