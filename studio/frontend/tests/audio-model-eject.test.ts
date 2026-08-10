@@ -74,9 +74,16 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
   // Holding it through Generate doubled VRAM for the whole keep-alive window (PR 7984 report).
   // Anchored inside transitionMode: an unanchored [\s\S]* matched handleEject instead, so
   // deleting the release from the mode switch still passed.
+  // The release is now captured rather than fire-and-forget, so a following TTS load can
+  // wait behind the teardown instead of allocating alongside it.
   assert.match(
     source,
-    /setMode\(nextMode\);[^}]*if \(mode === "transcribe"\) \{\s*void releaseTranscribeSelection\(\)/,
+    /setMode\(nextMode\);[^}]*if \(mode === "transcribe"\) \{\s*const release = releaseTranscribeSelection\(\)/,
+  );
+  assert.match(source, /pendingTranscribeRelease\.current = release;/);
+  assert.match(
+    source,
+    /const releaseInFlight = pendingTranscribeRelease\.current;\s*if \(releaseInFlight\) await releaseInFlight;/,
   );
 });
 

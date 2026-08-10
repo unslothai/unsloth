@@ -744,12 +744,20 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
-        void releaseTranscribeSelection().catch((error) => {
+        const release = releaseTranscribeSelection().catch((error) => {
           toast.error(
             error instanceof Error
               ? error.message
               : "Failed to release the transcription model.",
           );
+        });
+        // Recorded so a TTS load can wait for the teardown: allocating while the sidecar
+        // still holds its model is what OOMs a device that fits either one alone.
+        pendingTranscribeRelease.current = release;
+        void release.finally(() => {
+          if (pendingTranscribeRelease.current === release) {
+            pendingTranscribeRelease.current = null;
+          }
         });
       }
       return true;
@@ -1016,6 +1024,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [active, ensureSttLoaded]);
 
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+  /** An in-flight Transcribe teardown a following TTS load has to wait behind. */
+  const pendingTranscribeRelease = useRef<Promise<void> | null>(null);
 
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
@@ -1042,6 +1052,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       }
       // TTS (or an uncurated repo the user pasted, which /load will validate).
       if (!transitionMode("speak")) return;
+      // Serialize against a Transcribe release started by that transition.
+      const releaseInFlight = pendingTranscribeRelease.current;
+      if (releaseInFlight) await releaseInFlight;
+      if (ttsPickGeneration.current !== selectionGeneration) return;
       const exactGguf = exactGgufLoadSelector(meta);
       const isGguf = Boolean(
         meta.isGguf ||

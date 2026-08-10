@@ -2540,7 +2540,9 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
-def _audio_type_of_checkpoint(model_path: str, base_model: Optional[str]) -> Optional[str]:
+def _audio_type_of_checkpoint(
+    model_path: str, base_model: Optional[str], hf_token: Optional[str] = None
+) -> Optional[str]:
     """Codec a trained checkpoint speaks, or None for a text one.
 
     A scan row carries no modality, so without this every trained audio model reads
@@ -2558,7 +2560,12 @@ def _audio_type_of_checkpoint(model_path: str, base_model: Optional[str]) -> Opt
             # local_files_only: this route was a filesystem scan. A trained checkpoint's
             # base is already cached, and a non-definitive miss is deliberately not cached,
             # so a gated or offline base would re-fetch on every poll.
-            audio_type = detect_audio_type(candidate, local_files_only = True)
+            # hf_token even under local_files_only: a gated base resolves through the same
+            # hub helpers, and the capability caches are keyed by token fingerprint, so a
+            # token-less probe would both misclassify and poison the cache for the rest.
+            audio_type = detect_audio_type(
+                candidate, hf_token = hf_token, local_files_only = True
+            )
         except Exception as exc:  # never let a scan row fail the whole listing
             logger.debug("audio detection failed for %r: %s", candidate, exc)
             continue
@@ -2575,6 +2582,7 @@ async def scan_loras(
     exports_dir: str = Query(
         default = str(exports_root()), description = "Directory to scan for exported models"
     ),
+    hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan for trained LoRA adapters and exported models.
@@ -2597,7 +2605,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "training",
                     export_type = model_type,
-                    audio_type = _audio_type_of_checkpoint(model_path, base_model),
+                    audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
                 )
             )
 
@@ -2611,7 +2619,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "exported",
                     export_type = export_type,
-                    audio_type = _audio_type_of_checkpoint(model_path, base_model),
+                    audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
                 )
             )
 

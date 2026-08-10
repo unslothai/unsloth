@@ -855,7 +855,9 @@ def health_app(tmp_path, monkeypatch):
 
     # This fixture exercises bearer redaction, not hardware startup. Keep the
     # payload settled even on macOS while MLX self-repair holds the live verdict.
-    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None))
+    # (chat_only, chat_only_reason, chat_only_detail): health_check reads all three, so a
+    # two-tuple here raised IndexError once main added the detail field.
+    monkeypatch.setattr(_main, "_hardware_snapshot", lambda: (False, None, None))
     app = FastAPI()
     app.add_api_route("/api/health", _main.health_check, methods = ["GET"])
 

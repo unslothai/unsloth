@@ -396,8 +396,10 @@ def _tts_max_new_tokens(payload, prompt: Optional[str] = None) -> int:
     if prompt:
         context_length = _monitor_context_length()
         if context_length:
-            budget = max(1, min(budget, context_length - _prompt_token_estimate(prompt)))
-    return budget
+            budget = min(budget, context_length - _prompt_token_estimate(prompt))
+    # A caller that reached generation with no budget left gets one token and a useless
+    # clip; the routes reject that case up front instead.
+    return max(1, budget)
 
 
 def _prompt_token_estimate(prompt: str) -> int:
@@ -9333,8 +9335,7 @@ async def openai_audio_speech(
     budget = AUDIO_GENERATION_MAX_TOKENS
     context_length = _monitor_context_length()
     if context_length:
-        prompt_tokens = max(1, len(body.input) // 3)
-        remaining = context_length - prompt_tokens
+        remaining = context_length - _prompt_token_estimate(body.input)
         # Flooring at 1 here would forward an over-context prompt anyway and fail deep in
         # generation. Say so instead, while the caller can still shorten the input.
         if remaining < _MIN_SPEECH_OUTPUT_TOKENS:

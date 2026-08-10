@@ -3082,12 +3082,25 @@ export function HubModelPicker({
         libraryName: r.libraryName,
       });
     }
+    // Downloaded rows too. The backend tags a cached Whisper checkpoint as ASR even when
+    // its repo name says nothing, and the Audio page lists it on those tags; without them
+    // here the same row picked from the unscoped Chat picker was judged on its id alone
+    // and refused routing to the page that does list it.
+    for (const c of cachedModels) {
+      if (map.has(c.repo_id)) continue;
+      map.set(c.repo_id, {
+        baseModel: null,
+        tags: c.tags,
+        libraryName: c.library_name,
+      });
+    }
     return map;
   }, [
     results,
     recommendedSearch.results,
     communityQuerySearch.results,
     communityBrowse.results,
+    cachedModels,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
