@@ -865,11 +865,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         selectedSttRepoRef.current === repoId;
 
       setBusy("loading");
-      sttLoadedByThisPage.current = true;
+      // Ownership is claimed only once the requested model is actually resident. Claiming it
+      // up front meant a cancelled or failed download left the flag set while the backend kept
+      // the previous resident model, so leaving Transcribe then unloaded another surface's
+      // model. A failure leaves the previous value alone, which is what it should be.
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
       try {
         try {
           await loadSttModel(sidecarKey, engine, controller.signal);
+          sttLoadedByThisPage.current = true;
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
@@ -913,6 +917,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           if (!isCurrent()) return;
           toast.loading(`Loading ${sidecarKey}…`, { id: toastId });
           await loadSttModel(sidecarKey, engine, controller.signal);
+          sttLoadedByThisPage.current = true;
         }
         if (isCurrent())
           toast.success("Transcription model ready", { id: toastId });

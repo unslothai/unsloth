@@ -472,6 +472,9 @@ class InferenceBackend:
                         llm_path = os.path.join(abs_repo_path, "LLM")
                         logger.info(f"Spark-TTS: repo at {repo_path}, loading LLM from {llm_path}")
 
+                    if not (config.is_lora and config.base_model):
+                        # Shared by the merged-export and repo-root branches above: both resolve
+                        # an llm_path and then load it the same way.
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,

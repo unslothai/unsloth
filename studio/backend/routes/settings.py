@@ -49,6 +49,7 @@ from utils.model_memory_settings import (
 from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MAX,
     BATCH_SIZE_MIN,
+    DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -56,6 +57,7 @@ from utils.openai_auto_switch_settings import (
     PARALLEL_SLOTS_MAX,
     PARALLEL_SLOTS_MIN,
     cached_repo_alias_keys,
+    get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
     get_model_overrides,
@@ -163,6 +165,7 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
     auto_download_model: Optional[bool] = None
+    auto_unload_api_only: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -176,6 +179,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
     # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
     auto_download_model: bool = DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED
+    # When true, the idle unload spares models loaded from the UI, not just via the API.
+    auto_unload_api_only: bool = DEFAULT_AUTO_UNLOAD_API_ONLY
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -489,6 +494,7 @@ def get_openai_auto_switch(
         idle_unload_active = get_auto_unload_idle_seconds() > 0,
         auto_unload_keep_kv = get_auto_unload_keep_kv(),
         auto_download_model = get_stored_openai_auto_download_enabled(),
+        auto_unload_api_only = get_auto_unload_api_only(),
     )
 
 
@@ -497,11 +503,12 @@ def update_openai_auto_switch(
     payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
 ) -> OpenAIAutoSwitchResponse:
     try:
-        enabled, idle_seconds, keep_kv, auto_download = set_openai_auto_switch(
+        enabled, idle_seconds, keep_kv, auto_download, api_only = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
             payload.auto_unload_keep_kv,
             payload.auto_download_model,
+            payload.auto_unload_api_only,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -523,6 +530,7 @@ def update_openai_auto_switch(
         idle_unload_active = idle_unload_active,
         auto_unload_keep_kv = keep_kv,
         auto_download_model = auto_download,
+        auto_unload_api_only = api_only,
     )
 
 

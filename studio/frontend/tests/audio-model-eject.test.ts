@@ -106,8 +106,15 @@ test("a dictation model this page did not load survives a mode switch", () => {
     source,
     /const owned = sttReady && selected !== null && sttLoadedByThisPage\.current;/,
   );
-  assert.match(
+  // Ownership is claimed after a successful load, not before it: claiming up front left the
+  // flag set when a download was cancelled while the backend kept the previous resident
+  // model, so leaving Transcribe unloaded another surface's model.
+  assert.doesNotMatch(
     source,
     /setBusy\("loading"\);\s*sttLoadedByThisPage\.current = true;/,
+  );
+  assert.match(
+    source,
+    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = true;/,
   );
 });
