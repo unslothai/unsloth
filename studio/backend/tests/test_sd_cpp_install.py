@@ -2124,6 +2124,56 @@ def test_a_failure_before_the_sweep_is_an_ordinary_install_failure(tmp_path, mon
     assert "cudart 404" in str(exc.value)
 
 
+def _owned_tree_holding(tmp_path, rel: str) -> Path:
+    """A Studio-owned install dir already carrying a previous bundle's sd-cli at ``rel``."""
+    (tmp_path / ".unsloth-studio-owned").touch()
+    old = tmp_path / rel
+    old.parent.mkdir(parents = True, exist_ok = True)
+    old.write_bytes(b"the previous build")
+    return old
+
+
+def test_a_same_path_upgrade_is_a_replacement_from_the_extract_on(tmp_path, monkeypatch):
+    """The boundary has to open at the EXTRACT, not at the sweep. Extraction merges and zipfile
+    rewrites each member in place, so an archive that lands its executables where the previous
+    bundle's are has already destroyed them by the time the cudart fetch runs -- and the new
+    sd-cli.exe cannot start without those DLLs. Called an ordinary failure, ensure_* memoises the
+    accelerator and hands the caller back that very path."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    _owned_tree_holding(tmp_path, "build/bin/sd-cli")  # the path _zip_with_sd_cli writes to
+    monkeypatch.setattr(
+        sdmod,
+        "_maybe_fetch_windows_cudart",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cudart 404")),
+    )
+    with pytest.raises(sdmod.SupersededBinaryError) as exc:
+        install(install_dir = tmp_path)
+    assert "part way through a replacement" in str(exc.value)
+    assert "cudart 404" in str(exc.value)
+
+
+def test_a_different_layout_upgrade_stays_an_ordinary_failure_before_the_sweep(
+    tmp_path, monkeypatch
+):
+    """And it must not open any earlier than that. This bundle writes somewhere else, so the
+    previous sd-cli is untouched and the pre-install fallback still runs it -- "this accelerator is
+    unavailable" is the true answer, and memoising it is what stops every later load re-downloading
+    the same failing bundle."""
+    zb = _zip_with_sd_cli()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    old = _owned_tree_holding(tmp_path, "sd-bin/sd-cli")
+    monkeypatch.setattr(
+        sdmod,
+        "_maybe_fetch_windows_cudart",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("cudart 404")),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        install(install_dir = tmp_path)
+    assert not isinstance(exc.value, sdmod.SupersededBinaryError)
+    assert old.read_bytes() == b"the previous build"
+
+
 def _server_load_backend(tmp_path, monkeypatch, root, server, on_fetch):
     """A native image backend wired to load out of ``root`` with the download stubbed.
 
@@ -2222,3 +2272,63 @@ def test_an_untouched_tree_still_starts_the_server_after_the_download(tmp_path, 
     assert started == [str(server)]
     assert backend._state is not None and backend._state.mode == "server"
     assert backend.load_progress()["error"] is None
+
+
+def test_a_started_server_holds_the_tree_until_state_is_published(tmp_path, monkeypatch):
+    """The started server stays in _pending_server until _state takes it over, under one lock.
+
+    Clearing it as soon as start() returned left a window in which nothing published says the tree
+    is busy -- no reader, no pending server, no resident state -- while the process is up and
+    running out of it. An ensure_* landing there is admitted, downloads for minutes and then
+    extracts over the executable of a live server."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+
+    backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
+    # _default_threads() is evaluated once in the server.start() kwargs and once building the
+    # _SdState the load commits, so it samples both ends of that window for free.
+    seen: list[bool] = []
+    real_threads = bk._default_threads
+    monkeypatch.setattr(
+        bk,
+        "_default_threads",
+        lambda: (seen.append(bk._tree_in_use(backend)), real_threads())[1],
+    )
+    run()
+
+    assert started == [str(server)]
+    assert backend._state is not None and backend._state.server is not None
+    assert backend._pending_server is None  # exchanged for _state, not leaked
+    assert len(seen) >= 2 and all(seen), "the tree read as idle while the server was running"
+
+
+def test_a_superseded_load_unpublishes_the_server_it_stops(tmp_path, monkeypatch):
+    """The other end of holding it longer: a load that finds itself superseded must still take the
+    started server back out. Left published it reads as "the managed tree is busy" for the rest of
+    the process and no install can ever run again."""
+    import core.inference.sd_cpp_backend as bk
+
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+
+    backend, started, run = _server_load_backend(tmp_path, monkeypatch, root, server, lambda: None)
+    real_threads = bk._default_threads
+
+    def _supersede_mid_commit():
+        # Between start() returning and the state commit, which is exactly the window the server
+        # is now left published across.
+        backend._load_token = 2
+        return real_threads()
+
+    monkeypatch.setattr(bk, "_default_threads", _supersede_mid_commit)
+    run()
+
+    assert started == [str(server)]
+    assert backend._state is None
+    assert backend._pending_server is None
+    assert backend._stopping_servers == 0
+    assert not bk._tree_in_use(backend)

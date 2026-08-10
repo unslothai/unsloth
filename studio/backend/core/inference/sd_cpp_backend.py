@@ -349,14 +349,28 @@ def ensure_h3_sd_cpp_binary(
         # Ours, but replacing it is exactly what auto-install is switched off for.
         logger.warning("managed sd.cpp binary %s predates MiniMax-H3 support", binary)
         return None
-    logger.warning(
-        "managed sd.cpp binary %s predates MiniMax-H3 support; removing it so it reinstalls", binary
-    )
-    try:
-        Path(binary).unlink()
-    except OSError as exc:
-        logger.warning("could not remove the stale managed sd.cpp binary %s: %s", binary, exc)
-        return None
+    # Deleting it is a WRITE to the managed tree, so it takes the same admission an install does.
+    # An image one-shot may be executing this very file: on Linux the running child survives the
+    # unlink but the next image in the batch can no longer resolve it, and on Windows the unlink
+    # fails outright and the H3 load is refused. Held only across the unlink -- ensure_sd_cpp_binary
+    # below claims the tree itself, and the claim is not reentrant.
+    with _tree_claimed_for_install() as claimed:
+        if not claimed:
+            logger.warning(
+                "managed sd.cpp binary %s predates MiniMax-H3 support, but something is still "
+                "running out of the managed install; retrying on a later load",
+                binary,
+            )
+            return None
+        logger.warning(
+            "managed sd.cpp binary %s predates MiniMax-H3 support; removing it so it reinstalls",
+            binary,
+        )
+        try:
+            Path(binary).unlink()
+        except OSError as exc:
+            logger.warning("could not remove the stale managed sd.cpp binary %s: %s", binary, exc)
+            return None
     binary = ensure_sd_cpp_binary(allow_install = True, accelerator = accelerator)
     if binary and not sd_cpp_supports_minimax_h3(binary):
         return None
@@ -989,6 +1003,10 @@ class SdCppDiffusionBackend:
     ) -> None:
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = _cancel_event if _cancel_event is not None else self._cancel_event
+        # The server this load publishes to _pending_server, out here so the backstop below can
+        # always unpublish it. A leaked _pending_server reads as "the managed tree is busy" for
+        # the rest of the process and blocks every later install.
+        started: Optional[SdCppServer] = None
         try:
             # Resolve mode (server preferred, one-shot fallback) + binary up front so an install failure surfaces before the multi-GB pull.
             mode, server_binary, engine = self._resolve_backend()
@@ -1158,6 +1176,13 @@ class SdCppDiffusionBackend:
                     # to one-shot, and comparing THAT against _pending_server left the stopped
                     # server published forever, which reads as "the managed tree is busy" for the
                     # rest of the process.
+                    #
+                    # A server that DID start stays published until _state takes it over, under the
+                    # same lock. Clearing it here would leave a window in which the tree reads as
+                    # idle -- no reader, no pending, no state -- while the process is up and
+                    # running out of it, and an ensure_* landing in that window admits an install
+                    # that later overwrites the executable underneath the live server.
+                    started_ok = False
                     try:
                         # Blocks until the model is loaded and answering; raises with the log tail on failure.
                         server.start(
@@ -1168,6 +1193,7 @@ class SdCppDiffusionBackend:
                             # Pin to physical cores (sd.cpp's default oversubscribes; see _default_threads).
                             threads = _default_threads(),
                         )
+                        started_ok = True
                     except SdCppCancelled:
                         # Aborted by unload / superseding load: stop the half-started server and bail.
                         server.stop()
@@ -1194,9 +1220,10 @@ class SdCppDiffusionBackend:
                             raise start_exc
                         mode = "oneshot"
                     finally:
-                        with self._lock:
-                            if self._pending_server is started:
-                                self._pending_server = None
+                        if not started_ok:
+                            with self._lock:
+                                if self._pending_server is started:
+                                    self._pending_server = None
                 state = _SdState(
                     repo_id = repo_id,
                     base_repo = base,
@@ -1216,14 +1243,28 @@ class SdCppDiffusionBackend:
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
                 )
+                superseded = False
+                orphan: Optional[SdCppServer] = None
                 with self._lock:
                     if self._load_token != _load_token:
-                        # Superseded / unloaded while loading: discard the started server so it doesn't leak.
+                        # Superseded / unloaded while loading: discard the started server so it
+                        # doesn't leak. Reserved in the SAME block that unpublishes it, so the tree
+                        # never reads as idle while the process is still coming down.
+                        superseded = True
                         if server is not None:
-                            server.stop()
-                        return
-                    self._state = state
-                    self._loading = None
+                            self._reserve_stop()
+                            orphan = server
+                    else:
+                        self._state = state
+                        self._loading = None
+                    # The exchange the started server stayed published for: it is _state's now, or
+                    # reserved for the stop below, and either way _tree_in_use still sees it.
+                    if self._pending_server is started:
+                        self._pending_server = None
+                if orphan is not None:
+                    self._stop_reserved(orphan)
+                if superseded:
+                    return
         except SdCppCancelled:
             return
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
@@ -1236,6 +1277,14 @@ class SdCppDiffusionBackend:
             with self._lock:
                 if self._load_token == _load_token and self._loading is not None:
                     self._loading.error = redact_native_paths(str(exc))
+        finally:
+            # Backstop for the window the started server is deliberately left published across
+            # (start() -> _state). Every path through that window unpublishes it itself; this only
+            # catches an unexpected raise in between, which would otherwise wedge the tree as busy.
+            if started is not None:
+                with self._lock:
+                    if self._pending_server is started:
+                        self._pending_server = None
 
     def download_plan(
         self,

@@ -632,7 +632,7 @@ def install(
         except OSError:
             pass
     archive = target / chosen
-    # Set the moment the sweep removes the first old binary. From then on the tree is a mixture of
+    # Set the moment the tree stops being purely the OLD bundle. From then on it is a mixture of
     # two bundles and every later failure has to be reported as an incomplete replacement, not as
     # "this accelerator is unavailable".
     replacing = False
@@ -644,6 +644,16 @@ def install(
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
             supplied = _archive_binary_paths(zf, target)
+            # The boundary opens HERE, not at the sweep, whenever this bundle lands its
+            # executables on the paths the previous one used. Extraction merges and zipfile
+            # rewrites each member in place, so from the first write the old sd-cli is gone:
+            # an interrupted extract leaves it truncated, and the Windows cudart fetch below
+            # can still fail once the new sd-cli.exe -- which cannot start without those DLLs
+            # -- has already taken its place. Called an ordinary failure, either one makes
+            # ensure_* memoise the accelerator and hand back a path it has just broken.
+            # A bundle that writes elsewhere leaves the old copies untouched, so that really is
+            # "this accelerator is unavailable" and the pre-install fallback still runs.
+            replacing = any(p.exists() for p in supplied)
             _safe_extractall(zf, target)
         # Nothing is swept until this bundle is known to have supplied the one binary the install
         # cannot do without. A malformed archive is caught below either way, but only AFTER the
@@ -652,31 +662,31 @@ def install(
         cli_name = _binary_names()[0]
         if not any(p.name == cli_name for p in supplied):
             raise RuntimeError(f"archive {chosen} contained no sd-cli binary")
-        # Windows CUDA builds need the separately-published cudart runtime DLLs. BEFORE the
-        # sweep, not after: its download / digest / extract can fail, and a failure once the old
-        # binaries are gone is neither recoverable here nor reported as one, so ensure_* would
-        # memoise the accelerator and hand back paths the sweep had already removed. Nothing it
-        # writes is an sd-cli or an sd-server, so the sweep below cannot take it.
+        # Windows CUDA builds need the separately-published cudart runtime DLLs. Still before the
+        # sweep, so a failure here costs nothing extra when the old copies are still in place;
+        # when the extract above already overwrote them, ``replacing`` is what makes this report
+        # as an incomplete replacement instead of a missing accelerator. Nothing it writes is an
+        # sd-cli or an sd-server, so the sweep below cannot take it.
         _maybe_fetch_windows_cudart(release, chosen, target)
         # Extraction merges, so anything the previous bundle put somewhere this one does not write
         # survives -- and it outranks the new copy whenever its path sorts higher. Drop what this
         # bundle did not supply, so the tree and the record written below agree.
         #
-        # LAST, and everything after it is an incomplete replacement by definition: from here the
-        # tree is a mixture of two bundles, and the caller has to retry the sweep rather than
-        # memoise the accelerator as unavailable.
+        # LAST, and past it the tree is mixed whatever the layout was: the caller has to retry the
+        # sweep rather than memoise the accelerator as unavailable.
         if _may_own:
             # Set BEFORE the call, not after: the sweep removes copies one at a time, so a failure
             # inside it has already changed the tree.
             replacing = True
-            try:
-                _discard_superseded_binaries(target, supplied)
-            except SupersededBinaryError:
-                raise
-            except Exception as exc:  # noqa: BLE001 -- any failure here leaves a mixed tree
-                raise SupersededBinaryError(
-                    f"the managed tree was left part way through a replacement: {exc}"
-                ) from exc
+            _discard_superseded_binaries(target, supplied)
+    except SupersededBinaryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- past the boundary, every failure is a mixed tree
+        if not replacing:
+            raise
+        raise SupersededBinaryError(
+            f"the managed tree was left part way through a replacement: {exc}"
+        ) from exc
     finally:
         # Always drop the archive: a corrupt or partial one must not linger and defeat a later retry.
         # Inside the boundary too: an unlink failure after the sweep is still a mixed tree.

@@ -720,6 +720,32 @@ def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
     assert not stale.exists()
 
 
+def test_h3_binary_gate_defers_while_a_generation_holds_the_tree(monkeypatch, tmp_path):
+    # Dropping the stale copy WRITES to the managed tree, so it takes the same admission an install
+    # does. A one-shot image generation may be executing that very file: on Linux the running child
+    # survives the unlink but the next image in the batch can no longer resolve it, and on Windows
+    # the unlink fails outright. Deferring costs one retry on a later load.
+    stale = tmp_path / "stale" / "sd-cli"
+    stale.parent.mkdir()
+    stale.write_text("binary")
+    ensures: list[bool] = []
+
+    monkeypatch.setattr(
+        bk,
+        "ensure_sd_cpp_binary",
+        lambda **kwargs: (ensures.append(kwargs.get("allow_install", True)), str(stale))[1],
+    )
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+
+    with bk._tree_reader(str(stale)):
+        assert bk.ensure_h3_sd_cpp_binary() is None
+    # The binary the generation is running is still there, and no reinstall was attempted behind it.
+    assert stale.exists()
+    assert ensures == [True]
+
+
 def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp_path):
     # Same ownership split as _usable_or_discard_managed: the user's own build is not ours to
     # delete (install() then refuses the still non-empty unmarked directory, leaving no binary at
