@@ -1881,8 +1881,36 @@ class TestDropEmptyAssistantSentinels:
         assert req.messages[1].reasoning_content == "Answer the greeting briefly."
         passthrough = _openai_messages_for_passthrough(req)
         gguf, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        _, standard_local, _ = _extract_content_parts(req.messages)
         assert passthrough[1]["reasoning_content"] == "Answer the greeting briefly."
         assert gguf[1]["reasoning_content"] == "Answer the greeting briefly."
+        assert standard_local[1]["reasoning_content"] == "Answer the greeting briefly."
+
+    def test_standard_local_builder_preserves_reasoning_only_assistant_turn(self):
+        req = ChatCompletionRequest(
+            model = "default",
+            messages = [
+                {"role": "user", "content": "What is the answer?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "The answer is forty-two.",
+                },
+                {"role": "user", "content": "Explain why."},
+            ],
+        )
+
+        _, messages, _ = _extract_content_parts(req.messages)
+
+        assert messages == [
+            {"role": "user", "content": "What is the answer?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "The answer is forty-two.",
+            },
+            {"role": "user", "content": "Explain why."},
+        ]
 
     def test_reasoning_only_assistant_turn_is_not_treated_as_a_stop_sentinel(self):
         req = ChatCompletionRequest(

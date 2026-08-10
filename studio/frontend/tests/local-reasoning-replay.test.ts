@@ -14,7 +14,10 @@ const adapterPath = fileURLToPath(
 const source = readFileSync(adapterPath, "utf8");
 const start = source.indexOf("function serializeAssistantReplayMessages(");
 const end = source.indexOf("\nfunction toOpenAIMessages(", start);
-assert.ok(start >= 0 && end > start, "assistant replay serializer was not found");
+assert.ok(
+  start >= 0 && end > start,
+  "assistant replay serializer was not found",
+);
 const declaration = source.slice(start, end);
 
 const serializeAssistantReplayMessages = new Function(
@@ -28,9 +31,12 @@ const serializeAssistantReplayMessages = new Function(
   "shouldFlushCompletedLocalToolPair",
   "attachAssistantThoughtSignature",
   "collectAssistantTextThoughtSignature",
-  `${ts.transpileModule(declaration, {
-    compilerOptions: { target: ts.ScriptTarget.ES2020 },
-  }).outputText}; return serializeAssistantReplayMessages;`,
+  "readIncompleteInfo",
+  `${
+    ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020 },
+    }).outputText
+  }; return serializeAssistantReplayMessages;`,
 )(
   () => false,
   () => [],
@@ -71,9 +77,17 @@ const serializeAssistantReplayMessages = new Function(
     part.type === "tool-call" && part.result !== undefined,
   () => undefined,
   () => undefined,
+  (metadata: unknown) => {
+    const custom = (
+      metadata as { custom?: Record<string, unknown> } | undefined
+    )?.custom;
+    return custom?.incomplete ?? null;
+  },
 ) as (
   message: {
     role: "assistant";
+    status?: { type: string; reason?: string };
+    metadata?: { custom?: Record<string, unknown> };
     content: Array<{
       type: string;
       text?: string;
@@ -111,11 +125,49 @@ test("external replay does not add the local reasoning extension", () => {
   ]);
 });
 
-test("a stopped reasoning-only turn remains an empty sentinel", () => {
+test("a completed reasoning-only turn preserves its answer", () => {
   assert.deepEqual(
     serializeAssistantReplayMessages(
       {
         role: "assistant",
+        status: { type: "complete" },
+        content: [{ type: "reasoning", text: "The answer is forty-two." }],
+      },
+      true,
+    ),
+    [
+      {
+        role: "assistant",
+        content: "",
+        reasoning_content: "The answer is forty-two.",
+      },
+    ],
+  );
+});
+
+test("an incomplete reasoning-only turn remains an empty sentinel", () => {
+  assert.deepEqual(
+    serializeAssistantReplayMessages(
+      {
+        role: "assistant",
+        status: { type: "incomplete", reason: "cancelled" },
+        content: [{ type: "reasoning", text: "An unfinished thought." }],
+      },
+      true,
+    ),
+    [{ role: "assistant", content: "" }],
+  );
+});
+
+test("a rehydrated incomplete reasoning-only turn remains an empty sentinel", () => {
+  assert.deepEqual(
+    serializeAssistantReplayMessages(
+      {
+        role: "assistant",
+        status: { type: "complete" },
+        metadata: {
+          custom: { incomplete: { reason: "cancelled" } },
+        },
         content: [{ type: "reasoning", text: "An unfinished thought." }],
       },
       true,

@@ -144,6 +144,7 @@ import {
   CONTINUE_INSTRUCTION,
   type IncompleteReason,
   joinContinuation,
+  readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
@@ -1201,12 +1202,15 @@ function serializeAssistantReplayMessages(
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
+    const reasoningOnlyTurnIsComplete =
+      message.status?.type !== "incomplete" &&
+      readIncompleteInfo((message as { metadata?: unknown }).metadata) === null;
     const hasReasoningContent =
       includeReasoningContent &&
       reasoningContent.length > 0 &&
-      (hasContent || hasToolCalls);
+      (hasContent || hasToolCalls || reasoningOnlyTurnIsComplete);
 
-    if (!force && !hasContent && !hasToolCalls) {
+    if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
       return;
     }
 
