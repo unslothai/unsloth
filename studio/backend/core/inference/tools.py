@@ -12088,8 +12088,7 @@ def _volume_timestamps_finely(workdir: str) -> bool:
     if stat.st_dev in _fine_mtime_devices:
         return True
     if not any(
-        stamp % 1_000_000_000
-        for stamp in (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_atime_ns)
+        stamp % 1_000_000_000 for stamp in (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_atime_ns)
     ):
         return False
     _fine_mtime_devices.add(stat.st_dev)
