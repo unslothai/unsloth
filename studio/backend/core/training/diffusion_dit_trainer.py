@@ -976,14 +976,24 @@ def _krea2_save(pipe_cls, out_dir, transformer_lora_layers):
 # ── FLUX.2 (dev + Klein) ──────────────────────────────────────────────────────
 # Both variants share Flux2Transformer2DModel and the upstream DreamBooth packing/forward conventions, differing only in the conditioning
 # stack (dev: Mistral-3-Small; Klein: Qwen3) and size. Latents train patchified and batch-norm-normalised, from the posterior MODE (deterministic).
-_FLUX2_TARGETS = (
+_FLUX2_COMMON_TARGETS = (
     # Double-stream blocks: separate q/k/v plus the ModuleList out proj.
     "to_k",
     "to_q",
     "to_v",
     "to_out.0",
-    # Single-stream blocks: the fused qkv+mlp input projection carries most of the capacity. Their out proj is a plain Linear named to_out, whose suffix also matches the double-stream container, so it stays dense.
+    # Single-stream blocks use one fused qkv+mlp input projection.
     "to_qkv_mlp_proj",
+)
+# Their output projection is a plain Linear called ``to_out``. A bare suffix also matches the
+# double-stream ModuleList, which PEFT cannot wrap, so the upstream trainers name each single block
+# explicitly: 24 possible blocks for Klein and 48 for dev. Missing high indexes are harmless on the
+# smaller Klein-4B layout, which has 20 single blocks.
+_FLUX2_KLEIN_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
+    f"single_transformer_blocks.{i}.attn.to_out" for i in range(24)
+)
+_FLUX2_DEV_TARGETS = _FLUX2_COMMON_TARGETS + tuple(
+    f"single_transformer_blocks.{i}.attn.to_out" for i in range(48)
 )
 # The references train dev with its guidance-distillation vector at 3.5 (Klein applies it only when the variant config carries guidance_embeds).
 _FLUX2_TRAIN_GUIDANCE = 3.5
@@ -1410,7 +1420,7 @@ _SPECS: dict[str, _FamilySpec] = {
     ),
     "flux.2-klein": _FamilySpec(
         family = "flux.2-klein",
-        lora_targets = _FLUX2_TARGETS,
+        lora_targets = _FLUX2_KLEIN_TARGETS,
         # The upstream references train in bf16; fp16 is unvalidated on the FLUX.2 stack.
         force_bf16 = True,
         dense_bf16_gb = 8.1,
@@ -1425,7 +1435,7 @@ _SPECS: dict[str, _FamilySpec] = {
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
-        lora_targets = _FLUX2_TARGETS,
+        lora_targets = _FLUX2_DEV_TARGETS,
         force_bf16 = True,
         # 32B DiT; the Mistral conditioning stack (~46 GB bf16) is loaded, encoded and freed BEFORE this lands on the device (the shared phased load).
         dense_bf16_gb = 64.5,
@@ -1464,7 +1474,13 @@ _GATED_TRAIN_REPOS = frozenset({"black-forest-labs/flux.1-dev", "black-forest-la
 
 def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
     """Raise a clear error before loading a gated base without a token."""
+    from core.inference.diffusion_families import _is_local_path
+
     name = str(base_model or "").strip().lower()
+    # A local clone named like the vendor repo is weights on disk, not a Hub fetch: no gate
+    # applies, and refusing it by name alone is what made that documented layout untrainable.
+    if _is_local_path(base_model):
+        return
     if name in _GATED_TRAIN_REPOS and not (hf_token and str(hf_token).strip()):
         raise ValueError(
             f"'{base_model}' is a gated Hugging Face repo. Accept its license on the Hub "
@@ -1840,7 +1856,11 @@ def run_dit_lora_training(
     weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
     _assert_trusted_base_model(cfg.base_model)
-    _assert_gated_access(cfg.base_model, cfg.hf_token)
+    # The repo this run will FETCH, which is what the start route preflights. Checking the
+    # canonical id instead would raise here for a gated base that normalization already
+    # redirected to its ungated mirror -- after the route had answered 200 and freed the
+    # resident models, so the request fails as a dead job rather than as a fast 400.
+    _assert_gated_access(cfg.fetch_base_model or cfg.base_model, cfg.hf_token)
     pairs = discover_image_caption_pairs(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
@@ -1918,6 +1938,10 @@ def _train_dit(
 
     use_lora_targets = _select_lora_targets(cfg.lora_target_modules, spec.lora_targets)
     out_dir = Path(cfg.output_dir).expanduser()
+    # Load from the byte-identical public mirror selected during normalization, while keeping
+    # cfg.base_model canonical for the adapter sidecar, completion event, and resume identity.
+    # One fetch config covers the conditioning pipeline, transformer, and scheduler.
+    fetch_cfg = replace(cfg, base_model = cfg.fetch_base_model or cfg.base_model)
 
     # Phase 0: the persistent conditioning cache (opt-in via cond_cache_dir). When every planned latent variant AND caption embedding is on disk, the run is "warm": the VAE and text encoders never load.
     image_paths = [p for p, _ in pairs]
@@ -1934,7 +1958,7 @@ def _train_dit(
         try:
             # Namespace on the CHECKPOINT, not just the family: the keys carry only caption/image content, so one cache dir reused for two checkpoints would train on the other model's embeddings and latent stats.
             from .diffusion_train_extras import source_revision  # noqa: PLC0415
-            namespace = f"{spec.family}_{cfg.base_model}_{source_revision(cfg.base_model)}"
+            namespace = f"{spec.family}_{cfg.base_model}_{source_revision(fetch_cfg.base_model)}"
             pcache = PersistentConditioningCache(cfg.cond_cache_dir, namespace, cfg.resolution)
         except Exception as exc:  # noqa: BLE001 -- the cache is an optimisation, never fatal
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
@@ -1962,7 +1986,7 @@ def _train_dit(
     if caption_embeds is None:
         # Phase 1 (cold): conditioning only. The pipeline loads WITHOUT its transformer, so the encoders + VAE never share VRAM with it. Captions are constant, so their embeddings are precomputed once and the encoders freed.
         latent_cache = None
-        pipe, vae = spec.load_conditioners(cfg, device, weight_dtype)
+        pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
         encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
         _free_text_encoders(pipe)
@@ -2016,7 +2040,7 @@ def _train_dit(
 
     # Phase 3: only now load the transformer, in the resolved base precision (nf4 QLoRA by default; bf16 / int8 / fp8 / mxfp8 are the dense speed modes; "auto" picks from free VRAM).
     base_precision = _resolve_base_precision(cfg, spec, device)
-    transformer = spec.load_transformer(cfg, device, weight_dtype, base_precision)
+    transformer = spec.load_transformer(fetch_cfg, device, weight_dtype, base_precision)
     base_is_bnb = base_precision == "nf4"
 
     # Freeze the base; attach the trainable LoRA to the transformer.
@@ -2061,7 +2085,7 @@ def _train_dit(
 
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+        fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
     # Timestep-shift + loss-weighting setup (see _training_sigma_table). getattr defaults keep an un-normalized config on the historical behavior.
     flow_shift = getattr(cfg, "flow_shift", None)
@@ -2088,7 +2112,11 @@ def _train_dit(
     # every bundle this run saves. The identity built before the load says "unresolved" on the
     # first run of an uncached repo, and an unresolved revision is not comparable, so a later
     # resume could not tell that the repo had moved underneath it.
-    identity = with_resolved_revision(identity, cfg.base_model)
+    # The repo actually fetched, matching identity_for_config: the canonical base is not on disk
+    # at all when the mirror was selected, so reading it here would pin "unresolved" forever.
+    # with_resolved_revision records which repo the SHA came from, and mismatch_reason only
+    # compares two revisions that came from the same one.
+    identity = with_resolved_revision(identity, fetch_cfg.base_model)
     # See the SDXL trainer: the cache path the loop actually took, not the one requested.
     identity = with_cache_mode(identity, latent_cache is not None)
     # ...and the precision the frozen base ended up in. base_precision is still the request at

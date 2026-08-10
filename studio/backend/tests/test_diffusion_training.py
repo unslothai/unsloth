@@ -589,6 +589,167 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
 
 
+@pytest.mark.parametrize(
+    ("hf_token", "authorization"),
+    [(None, None), ("  hf_test  ", "Bearer hf_test")],
+)
+def test_route_start_preflights_the_normalized_fetch_mirror(
+    client, monkeypatch, dit_train_host, healthy_diffusers, hf_token, authorization
+):
+    import urllib.error
+    import urllib.request
+
+    from core.inference import diffusion_families
+
+    source = "black-forest-labs/FLUX.2-klein-base-9B"
+    mirror = "unsloth/FLUX.2-klein-base-9B"
+    monkeypatch.setattr(
+        diffusion_families,
+        "prefer_ungated_mirror",
+        lambda base, token = None: mirror if base.lower() == source.lower() else base,
+    )
+    requests = []
+
+    def _fake_urlopen(req, timeout = None):
+        requests.append(req)
+        if source in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
+        assert mirror in req.full_url
+        return object()
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": source, "hf_token": hf_token},
+    )
+
+    assert r.status_code == 200, r.text
+    assert len(requests) == 1
+    assert requests[0].get_header("Authorization") == authorization
+    # The fetch-only mirror must not replace the canonical id persisted with the run.
+    assert client._fake.started_with["base_model"] == source
+
+
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_takes_the_mirror_even_with_the_vendor_repo_cached(
+    monkeypatch, no_mirror_env
+):
+    """Cache preference must not strand a token-less run on a GATED vendor repo.
+
+    The credentials this run lacks are the credentials the fetch needs, so the cached snapshot
+    is unusable however complete it looks. prefer_ungated_mirror's probe counts ANY cached
+    weight as a hit, so one leftover shard from an interrupted or previously authorized download
+    kept the vendor id, and the start route's HEAD then refused the request outright: the exact
+    case the mirrors exist for became the one that could not train.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    mirror = "unsloth/FLUX.1-dev"
+    # The vendor repo looks cached, which is what made the old code keep it.
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    # The documented pin still wins, on this path as everywhere else.
+    expected = source if no_mirror_env else mirror
+    assert _cfg(None).fetch_base_model == expected
+    assert _cfg("   ").fetch_base_model == expected
+    # WITH a token the vendor repo is genuinely usable, so the cache preference stands.
+    assert _cfg("hf_realtoken").fetch_base_model == source
+    # And the canonical id is untouched either way: only the fetch moves.
+    assert _cfg(None).base_model == source
+
+
+@pytest.mark.parametrize("no_mirror_env", [False, True])
+def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env):
+    """The override is for gates, not for mirrors in general.
+
+    Most of the mirror table is ungated: those exist to keep the fetch inside unsloth/*, and the
+    upstream answers anonymously. Overriding the cache preference there would throw away a
+    complete local snapshot and re-pull gigabytes, or fail outright with no network. Klein base-4B
+    is the one that matters most here, since it is a default trainable base AND mirrored.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.2-klein-base-4B"
+    assert diffusion_families.mirror_repo(source), "precondition: this base is mirrored"
+    assert not diffusion_families.upstream_is_gated(source), "precondition: and it is ungated"
+    # Cached, so the cache-aware answer is the vendor repo. It must survive.
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    if no_mirror_env:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    def _cfg(token):
+        return DiffusionLoraConfig(
+            base_model = source, data_dir = "d", output_dir = "o", hf_token = token
+        ).normalized()
+
+    assert _cfg(None).fetch_base_model == source
+    assert _cfg("   ").fetch_base_model == source
+    assert _cfg("hf_realtoken").fetch_base_model == source
+
+
+def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, tmp_path):
+    """The preflight has to make the same exception the mirror override does.
+
+    A relative clone named like the vendor repo has one slash and no leading marker, so the
+    remote/local split by string shape alone sent it to a token-less HEAD of the gated repo and
+    turned the preserved local path into a 400 the run could not clear.
+    """
+    import urllib.request
+
+    from routes.training import _preflight_gated_base
+
+    local = "black-forest-labs/FLUX.1-dev"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents = True)
+
+    def _explode(*a, **k):
+        pytest.fail("a local clone must never be probed over the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+
+    _preflight_gated_base(local, None)
+
+
+def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch, tmp_path):
+    """A directory on disk is not a Hub id, even when it is spelled like a gated one.
+
+    The loaders resolve a relative `black-forest-labs/FLUX.1-dev` directory locally, and
+    prefer_ungated_mirror carves that out deliberately. The token-less gated override has to
+    make the same exception: rewriting a local clone to the mirror sends the fetch to the Hub
+    past the weights the user already has, so the run trains on a different repo or fails
+    outright with no network.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    assert diffusion_families.upstream_is_gated(source), "precondition: this base is gated"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / source).mkdir(parents = True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    cfg = DiffusionLoraConfig(
+        base_model = source, data_dir = "d", output_dir = "o", hf_token = None
+    ).normalized()
+
+    assert cfg.fetch_base_model == source
+    assert cfg.base_model == source
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}

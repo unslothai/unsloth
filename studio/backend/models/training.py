@@ -1106,6 +1106,10 @@ class DiffusionTrainableFamily(BaseModel):
     supports_compile: bool = False
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
+    # Variant-specific training-base to inference-base pairs, including public mirror ids.
+    deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):

@@ -2598,13 +2598,19 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     import urllib.error
     import urllib.request
 
+    from core.inference.diffusion_families import _is_local_path
+
     repo = (base_model or "").strip()
-    # Only remote 'org/name' repos are gated; skip local paths and single-file names.
+    # Only remote 'org/name' repos are gated; skip local paths and single-file names. A RELATIVE
+    # clone counts: a directory named exactly like the vendor id is what the loaders and the
+    # mirror override both resolve on disk, and it carries one slash and no leading marker, so
+    # without the existence test this HEADs the gated repo and 400s a run that never leaves disk.
     if (
         not repo
         or repo.count("/") != 1
         or repo.startswith((".", "/", "~"))
         or repo.endswith(".gguf")
+        or _is_local_path(repo)
     ):
         return
     url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"
@@ -2838,10 +2844,13 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Preflight access to a gated base repo with the user's token BEFORE freeing GPU residents,
-    # so a missing token fails fast (400). In a worker thread: blocking urlopen HEAD (5s).
+    # Preflight the repo the trainer will actually fetch, not the canonical id retained in its
+    # metadata. A gated canonical base may normalize to a byte-identical public mirror.
+    # In a worker thread: blocking urlopen HEAD (5s).
     await asyncio.to_thread(
-        _preflight_gated_base, config.get("base_model", ""), config.get("hf_token")
+        _preflight_gated_base,
+        normalized_cfg.fetch_base_model or normalized_cfg.base_model,
+        normalized_cfg.hf_token,
     )
 
     from core.training import diffusion_train_common as _dtc

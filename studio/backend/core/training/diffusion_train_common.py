@@ -533,6 +533,17 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "note": "Video: trains a style LoRA on still images.",
     },
 }
+# Facts that differ between selectable checkpoints inside one family. Keys are canonical
+# upstream ids; family_train_infos also publishes the mirror aliases so a custom mirror pick
+# gets the same guidance. Values overlay the family facts in the client.
+_BASE_TRAIN_SPECS: dict[str, dict[str, Any]] = {
+    "black-forest-labs/flux.2-klein-base-9b": {
+        "params": "9B",
+        # The auto policy measures 16.4 GB for the bf16 text encoder alone. Leave room for
+        # the VAE and runtime state rather than inheriting the 4B checkpoint's 10 GB floor.
+        "qlora_vram_gb": 18,
+    },
+}
 _GATED_NOTE = "Gated: needs its license and your HF token."
 
 
@@ -723,7 +734,7 @@ def family_train_infos() -> list[dict[str, Any]]:
     the preflight and the start route all accepted it, but nothing ever offered it. A family whose
     pipeline class the installed diffusers lacks is dropped rather than advertised, since the start
     route refuses it (``training_pipeline_import_error``) and no choice in the UI can fix that."""
-    from core.inference.diffusion_families import family_pipeline_available
+    from core.inference.diffusion_families import family_pipeline_available, mirror_repo
     from core.inference.diffusion_transformer_quant import _family_train_denied
 
     dit_modes, dit_recommended = train_precision_modes()
@@ -750,6 +761,23 @@ def family_train_infos() -> list[dict[str, Any]]:
         else:
             fam_modes = [m for m in dit_modes if not _family_train_denied(name, m)]
         spec = _FAMILY_TRAIN_SPECS.get(name, {})
+        deploy_bases: dict[str, str] = {}
+        base_specs: dict[str, dict[str, Any]] = {}
+        for repo in repos:
+            base_spec = _BASE_TRAIN_SPECS.get(str(repo).strip().lower())
+            if not base_spec:
+                continue
+            base_specs[repo] = dict(base_spec)
+            repo_mirror = mirror_repo(repo)
+            if repo_mirror:
+                base_specs[repo_mirror] = dict(base_spec)
+        for training_repo, inference_repo in getattr(fam, "deploy_base_repos", ()):
+            deploy_bases[training_repo] = inference_repo
+            # A custom base entered with the public mirror id must follow the same pairing as the
+            # advertised vendor id. Return the inference mirror too, so Deploy stays ungated.
+            training_mirror = mirror_repo(training_repo)
+            if training_mirror:
+                deploy_bases[training_mirror] = mirror_repo(inference_repo) or inference_repo
         infos.append(
             {
                 "name": name,
@@ -769,6 +797,15 @@ def family_train_infos() -> list[dict[str, Any]]:
                 "supports_compile": bool(not dit_block),
                 # Krea trains on Raw but previews adapters on Turbo; None elsewhere (and never for a video family).
                 "deploy_base": getattr(fam, "deploy_base_repo", None),
+                # Families with several train/deploy pairs cannot use the scalar above.
+                "deploy_bases": deploy_bases,
+                # Checkpoint-specific facts overlay the family facts in the Train UI. Dropped on a
+                # dit_block for the same reason the family chips above are: the overlay wins in
+                # resolveDiffusionTrainingFacts, so a per-base entry would put the 9B / 18 GB chips
+                # back, and FamilyFacts renders vram_note only when there are NO chips. Leaving
+                # these populated therefore replaces the actionable hardware reason (no CUDA, no
+                # native bf16) with a size the host cannot act on.
+                "base_specs": {} if dit_block else base_specs,
             }
         )
     return infos
@@ -807,6 +844,9 @@ class DiffusionLoraConfig:
     caption_column: str = "text"  # column in metadata.jsonl
     adapter_name: str = "default"
     hf_token: Optional[str] = None
+    # Derived by normalized(): the byte-identical mirror used by from_pretrained while
+    # base_model remains the canonical id stored in metadata and resume identity.
+    fetch_base_model: Optional[str] = None
     # Precompute the VAE latents once (freeing the VAE) instead of re-encoding every step. ``cache_variants`` crop/flip draws are frozen per image; the per-step VAE sampling noise is preserved.
     cache_latents: bool = True
     cache_variants: int = 4
@@ -997,6 +1037,45 @@ class DiffusionLoraConfig:
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
+        from core.inference.diffusion_families import (
+            _is_local_path,
+            mirror_repo,
+            prefer_ungated_mirror,
+            upstream_is_gated,
+        )
+
+        if resolved_family == "sdxl":
+            fetch_base_model = self.base_model
+        else:
+            fetch_base_model = prefer_ungated_mirror(self.base_model, token or None)
+            # For a GATED upstream and no token, the cache preference has to be overridden: the
+            # credentials this run lacks are the credentials the fetch needs, so a partial
+            # snapshot cannot be completed and the start route's HEAD refuses even a complete
+            # one. prefer_ungated_mirror's probe counts any cached weight as a hit, so a single
+            # leftover shard from an interrupted or previously authorized download was enough to
+            # keep the vendor id and hard-block the very case the mirrors exist for.
+            #
+            # Only gated, though. Most of the mirror table is ungated, mirrored to keep the
+            # fetch inside unsloth/*, and there the upstream is reachable anonymously: an
+            # override would discard a complete local cache and re-pull gigabytes, or fail
+            # outright offline. Those keep prefer_ungated_mirror's cache-aware answer.
+            #
+            # UNSLOTH_DIFFUSION_NO_MIRROR still wins, exactly as it does inside
+            # prefer_ungated_mirror: it is the documented way to pin the vendor repo, and an
+            # override that ignored it would make that switch a lie on the training path only.
+            #
+            # A local clone wins over both. A base can be a directory named exactly like the
+            # vendor id (the loaders resolve `black-forest-labs/FLUX.1-dev` on disk when it
+            # exists), and prefer_ungated_mirror carves that out for the same reason: rewriting
+            # it sends the fetch to the Hub past weights the user already has, so the run trains
+            # on a different repo, or fails offline.
+            if (
+                not token
+                and upstream_is_gated(self.base_model)
+                and not _is_local_path(self.base_model)
+                and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
+            ):
+                fetch_base_model = mirror_repo(self.base_model) or fetch_base_model
         # A blank caption_column means the default, as the start route's own preflight already
         # assumes ("or 'text'"). Without this the route and the trainer resolve different captions
         # from a metadata.jsonl, so their dataset fingerprints disagree and a resume that the
@@ -1009,6 +1088,7 @@ class DiffusionLoraConfig:
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),
             hf_token = token or None,
+            fetch_base_model = fetch_base_model,
             caption_column = caption_column,
             num_epochs = int(self.num_epochs),
             cache_variants = int(self.cache_variants),
@@ -1369,6 +1449,8 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
     {
         "black-forest-labs/flux.2-dev",
         "black-forest-labs/flux.2-klein-4b",
+        "black-forest-labs/flux.2-klein-base-4b",
+        "black-forest-labs/flux.2-klein-base-9b",
         # LTX-2's official base. It is a video family, so the image-side inference allowlist
         # (_is_trusted_diffusion_repo) never covered it; safetensors-only, no remote code.
         "lightricks/ltx-2",
