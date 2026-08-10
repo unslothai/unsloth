@@ -31,6 +31,7 @@ class _RecordingLogger:
     def _record(self, level: str):
         def log(msg, *args, **kwargs):
             self.calls.append((level, str(msg)))
+
         return log
 
     def __getattr__(self, name: str):
@@ -75,10 +76,7 @@ def test_announced_set_is_bounded(monkeypatch):
     _reset(monkeypatch)
     for i in range(model_config._ANNOUNCED_MODEL_DEFAULTS_MAX + 10):
         model_config._log_model_defaults(f"msg {i}", f"key-{i}")
-    assert (
-        len(model_config._ANNOUNCED_MODEL_DEFAULTS)
-        <= model_config._ANNOUNCED_MODEL_DEFAULTS_MAX
-    )
+    assert len(model_config._ANNOUNCED_MODEL_DEFAULTS) <= model_config._ANNOUNCED_MODEL_DEFAULTS_MAX
     model_config._ANNOUNCED_MODEL_DEFAULTS.clear()
 
 

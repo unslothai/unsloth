@@ -3407,7 +3407,11 @@ _ANNOUNCED_MODEL_DEFAULTS: set = set()
 _ANNOUNCED_MODEL_DEFAULTS_MAX = 4096
 
 
-def _log_model_defaults(message: str, key: str, level: str = "info") -> None:
+def _log_model_defaults(
+    message: str,
+    key: str,
+    level: str = "info",
+) -> None:
     """Log `message` at `level` the first time `key` is seen, then at debug."""
     if key in _ANNOUNCED_MODEL_DEFAULTS:
         logger.debug(message)
