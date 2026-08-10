@@ -16,12 +16,13 @@ import threading
 
 from storage import rag_db
 
-from . import captioner, chunking, config, embeddings, parsers, store
+from . import captioner, chunking, config, embeddings, job_leases, parsers, store
 
 logger = logging.getLogger(__name__)
 
 # Per-job event queues, drained by job_events; ``None`` ends the stream.
 _jobs: dict[str, "queue.Queue"] = {}
+_workers: dict[str, threading.Thread] = {}
 _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64  # bounds peak memory
@@ -85,6 +86,8 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
+    if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+        raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
@@ -202,8 +205,9 @@ def _run(
     caption: bool | None = None,
     replaces: tuple[str, str | None] | None = None,
 ) -> None:
-    conn = rag_db.get_connection()
+    conn = None
     try:
+        conn = rag_db.get_connection()
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
@@ -258,6 +262,9 @@ def _run(
             # needs the same guard as the chunk write below.
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
+            # inside the write transaction the guard opened, as _progress does
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
             _replace_old_document(conn, replaces, stored_path, document_id)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
@@ -290,16 +297,24 @@ def _run(
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
+    except job_leases.JobLeaseLost:
+        logger.info("ingestion job %s stopped after its lease was reclaimed", job_id)
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
         try:
+            if conn is None:
+                conn = rag_db.get_connection()
             store.set_document_status(conn, document_id, "failed", error = str(exc))
             _set_job(conn, job_id, status = "failed", stage = "error", error = str(exc))
         except Exception:  # noqa: BLE001
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
+        job_leases.release(job_leases.INGESTION, job_id)
+        with _jobs_lock:
+            _workers.pop(job_id, None)
         _emit(job_id, None)
 
 
@@ -314,6 +329,10 @@ def start_ingestion(
     model_name: str | None = None,
     ocr: bool | None = None,
     caption: bool | None = None,
+    dedupe: bool = True,
+    linked_folder_id: str | None = None,
+    linked_relative_path: str | None = None,
+    background: bool = True,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -328,12 +347,21 @@ def start_ingestion(
     sha = _sha256_file(stored_path)
     conn = rag_db.get_connection()
     try:
+        # Serialize admission with durable scope retirement across backend
+        # processes. The job lease is committed in the same transaction as the
+        # document, so cleanup never observes an unowned in-flight document.
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM linked_folder_retired_scopes WHERE scope=?", (scope,)
+        ).fetchone():
+            conn.rollback()
+            raise RuntimeError("Owning scope is being deleted")
         effective_model = model_name or config.effective_embedding_model()
         # (old_document_id, old_stored_path) replaced by this upload; deleted by
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
         replaces: tuple[str, str | None] | None = None
-        existing = store.document_by_hash(conn, scope, sha)
+        existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
@@ -365,9 +393,10 @@ def start_ingestion(
                 )
                 _emit(job_id, None)
                 return existing, job_id
-        for failed in store.failed_documents_by_hash(conn, scope, sha):
-            store.delete_document(conn, failed["id"])
-            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+        if dedupe:
+            for failed in store.failed_documents_by_hash(conn, scope, sha):
+                store.delete_document(conn, failed["id"], commit = False)
+                _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,
@@ -380,22 +409,89 @@ def start_ingestion(
             status = "pending",
             stored_path = stored_path,
             embedding_model = effective_model,
+            linked_folder_id = linked_folder_id,
+            linked_relative_path = linked_relative_path,
+            commit = False,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
         conn.close()
 
-    with _jobs_lock:
-        _jobs[job_id] = queue.Queue()
-    threading.Thread(
-        target = _run,
-        # effective_model (not the raw model_name) pins the embedder for the
-        # whole job: a Settings change mid-ingestion must not switch tokenizer
-        # or embedder between batches of one document.
-        args = (job_id, document_id, scope, stored_path, effective_model, ocr, caption, replaces),
-        daemon = True,
-    ).start()
+    try:
+        job_leases.activate(job_leases.INGESTION, job_id)
+        with _jobs_lock:
+            _jobs[job_id] = queue.Queue()
+        args = (
+            job_id,
+            document_id,
+            scope,
+            stored_path,
+            effective_model,
+            ocr,
+            caption,
+            replaces,
+        )
+        if not background:
+            _run(*args)
+            return document_id, job_id
+        worker = threading.Thread(
+            target = _run,
+            # effective_model (not the raw model_name) pins the embedder for the
+            # whole job: a Settings change mid-ingestion must not switch tokenizer
+            # or embedder between batches of one document.
+            args = args,
+            daemon = True,
+        )
+        with _jobs_lock:
+            _workers[job_id] = worker
+        worker.start()
+    except Exception:
+        with _jobs_lock:
+            _workers.pop(job_id, None)
+        job_leases.release(job_leases.INGESTION, job_id)
+        fail_stalled_job(job_id, "Ingestion worker could not start")
+        raise
     return document_id, job_id
+
+
+def job_worker_alive(job_id: str) -> bool:
+    """Return whether this process still has a live worker for a persisted job."""
+    with _jobs_lock:
+        worker = _workers.get(job_id)
+    return worker is not None and worker.is_alive()
+
+
+def fail_stalled_job(job_id: str, error: str) -> bool:
+    """Fail a nonterminal job only after its in-process worker has exited."""
+    if job_worker_alive(job_id):
+        return False
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT document_id, status FROM ingestion_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if row is None or row["status"] in _TERMINAL_JOB_STATUSES:
+            conn.rollback()
+            return False
+        conn.execute(
+            "UPDATE documents SET status='failed', error=? "
+            "WHERE id=? AND status IN ('pending','running')",
+            (error, row["document_id"]),
+        )
+        conn.execute(
+            "UPDATE ingestion_jobs SET status='failed', stage='error', error=? WHERE id=?",
+            (error, job_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    _emit(job_id, {"type": "error", "stage": "error", "error": error})
+    _emit(job_id, None)
+    return True
 
 
 def _new_job(
@@ -423,6 +519,9 @@ def _new_job(
             datetime.now(timezone.utc).isoformat(),
         ),
     )
+    if status not in _TERMINAL_JOB_STATUSES:
+        if not job_leases.claim(conn, job_leases.INGESTION, job_id):
+            raise RuntimeError("Could not claim ingestion job")
     conn.commit()
     return job_id
 
@@ -441,6 +540,24 @@ def _reap_finished_jobs() -> None:
         if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
             with _jobs_lock:
                 _jobs.pop(jid, None)
+
+
+def delete_terminal_job(job_id: str) -> bool:
+    """Remove a consumed internal job without racing an active ingestion worker."""
+    conn = rag_db.get_connection()
+    try:
+        cursor = conn.execute(
+            "DELETE FROM ingestion_jobs WHERE id=? AND status IN ('completed','failed')",
+            (job_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    if cursor.rowcount:
+        with _jobs_lock:
+            _jobs.pop(job_id, None)
+        return True
+    return False
 
 
 def job_events(job_id: str):

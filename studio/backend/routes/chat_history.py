@@ -8,6 +8,7 @@ SQLite-backed handlers are sync defs unless they also perform asynchronous clean
 mixed handlers explicitly send their database transaction through Starlette's threadpool.
 """
 
+import asyncio
 import sqlite3
 from typing import Annotated, Any, Literal, Optional
 
@@ -719,6 +720,23 @@ def patch_project(
     return ChatProject(**project)
 
 
+def _delete_project_rag_sources(project_id: str) -> None:
+    """Retire an ownerless project scope and reap it when RAG is available."""
+    from storage import rag_db
+    from core.rag import folder_sync, store as rag_store
+
+    scope = rag_store.project_scope(project_id)
+    # a project id is reusable, and the tombstone outlives the scope, so retiring one that
+    # another client already recreated would permanently disable RAG for the new project
+    with folder_sync.scope_lock(scope):
+        checked_at = folder_sync.now_iso()
+        if get_chat_project(project_id) is not None:
+            return
+        folder_sync.retire_scope(scope, checked_at)
+    if rag_db.rag_available():
+        folder_sync.delete_retired_scope(scope)
+
+
 @router.delete("/projects/{project_id}", response_model = ChatProjectDeleted)
 async def delete_project(
     project_id: str,
@@ -731,12 +749,32 @@ async def delete_project(
     # Rows first, files last: a member chat can still be running a tool in the
     # workspace, and its cwd disappearing mid-call either kills the call or
     # leaves what it writes next in a directory no project owns.
-    project = await run_in_threadpool(lambda: delete_chat_project(project_id, delete_files = False))
+    try:
+        project = await run_in_threadpool(
+            lambda: delete_chat_project(project_id, delete_files = False)
+        )
+    except Exception:
+        # the row transaction may still have committed, and an ownerless scope has to be
+        # retired by someone; periodic reconciliation is the fallback if this also fails
+        try:
+            if await run_in_threadpool(get_chat_project, project_id) is None:
+                await run_in_threadpool(_delete_project_rag_sources, project_id)
+        except Exception:  # noqa: BLE001 - preserve the original deletion error
+            logger.warning(
+                "failed to delete RAG sources for committed project %s", project_id, exc_info = True
+            )
+        raise
     if project is None:
         raise HTTPException(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # before any workspace work: the row is already gone, so a later failure must not
+    # leave the scope owned by nothing
+    try:
+        await run_in_threadpool(_delete_project_rag_sources, project_id)
+    except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
+        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # The transaction is the only authority on membership and it runs first, so
     # a chat moved in just before is deleted and one moved out survives. An
     # earlier listing would stop a chat that is still there.
@@ -859,35 +897,6 @@ async def delete_project(
     # Each member chat had its own sandbox for anything it wrote before joining
     # the project, and deleting the project removes the only records of them.
     _, sandboxes_kept = await _remove_sandboxes(member_ids, delete_files)
-    # Best-effort: drop the project's RAG sources (lazy import keeps RAG optional).
-    try:
-        import os
-
-        from storage import rag_db
-        if rag_db.RAG_AVAILABLE:
-            from core.rag import store as rag_store
-            from utils.paths import rag_uploads_root
-
-            uploads = os.path.realpath(str(rag_uploads_root()))
-            conn = rag_db.get_connection()
-            try:
-                scope = rag_store.project_scope(project_id)
-                for doc in rag_store.list_documents(conn, scope):
-                    full = rag_store.get_document(conn, doc["id"]) or {}
-                    rag_store.delete_document(conn, doc["id"])
-                    stored = full.get("stored_path")
-                    # Also remove the uploaded file; confined to the uploads root.
-                    if stored:
-                        target = os.path.realpath(stored)
-                        if (
-                            os.path.isfile(target)
-                            and os.path.commonpath([uploads, target]) == uploads
-                        ):
-                            os.remove(target)
-            finally:
-                conn.close()
-    except Exception:  # noqa: BLE001 - source cleanup must not block project deletion
-        logger.warning("failed to delete RAG sources for project %s", project_id, exc_info = True)
     # Those folders are reachable from nothing now, so the caller is told which
     # ones survived and can offer the delete once.
     return ChatProjectDeleted(**project, sandboxes_kept = sandboxes_kept)

@@ -505,6 +505,21 @@ class _VideoLoadingState:
     asset_repos: tuple[str, ...] = ()
 
 
+def _sd_cli_identity(binary: Optional[str]) -> Optional[tuple[int, int]]:
+    """``(size, mtime_ns)`` of an sd.cpp binary, or None when it cannot be read.
+
+    Enough to tell "the build we vetted at load" from "whatever an install left at that path",
+    without a subprocess on every generation. Never raises: an unreadable path is None, which the
+    caller reads as a change."""
+    if not binary:
+        return None
+    try:
+        stat = Path(binary).stat()
+    except OSError:
+        return None
+    return (stat.st_size, stat.st_mtime_ns)
+
+
 def _h3_te_canonical(repo_id: Optional[str]) -> str:
     """A repo id normalised for an EXACT identity compare: mirrors folded onto the id they copy,
     then trimmed and lowercased. Deliberately no tail-segment tolerance -- ``someone/MiniMax-H3``
@@ -1367,7 +1382,20 @@ class VideoBackend:
             accelerator = _install_accelerator_for(target.backend),
         )
         native_device = target.device
-        if target.backend not in ("cpu", "mps") and not sd_cpp_lists_accelerator_device(binary):
+        # What the accelerator decision below was made on, or None when it was never asked (a CPU
+        # or MPS target never consults it). Re-checked under the reader claim, so a replacement
+        # that arrives mid-load cannot silently change the answer this device choice rests on.
+        listed_accelerator: Optional[bool] = None
+        if target.backend not in ("cpu", "mps"):
+            # Under the claim, like the recheck. This probe SPAWNS the managed sd-cli, so leaving
+            # it unclaimed lets an install started by another in-process load extract over the
+            # executing binary: on Windows that fails on the locked file, on Linux it can leave
+            # the replacement half-written. The later claimed recheck cannot undo damage this
+            # first probe already allowed.
+            from .sd_cpp_backend import _tree_reader as _claim_tree
+            with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
+                listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+        if target.backend not in ("cpu", "mps") and not listed_accelerator:
             # Upstream currently publishes no Linux CUDA archive. Keep the picker
             # functional with the CPU prebuilt when the user has not supplied a
             # locally compiled CUDA binary through the normal sd.cpp discovery path.
@@ -1380,11 +1408,52 @@ class VideoBackend:
             # next chat/image acquire evicted a model to make room for one that was never there.
             binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
+            # The baseline this branch is compared against is the DECISION, not a fresh probe of
+            # what came back. An install can replace the returned CPU binary with a GPU build
+            # between that ensure and this line, and probing here would record ITS answer -- after
+            # which the re-check under the claim below compares the replacement against itself,
+            # passes, and commits CPU resource accounting around a CUDA executable that runs on
+            # VRAM nothing accounted for. native_device is "cpu" precisely because the build must
+            # offer no accelerator device, so that -- False -- is what the claim has to still find.
+            listed_accelerator = False
         engine = SdCppEngine(binary)
-        if not binary or engine.version() is None:
-            raise RuntimeError(
-                "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
-            )
+        # Re-vet and take the identity under ONE reader claim. ensure_h3_sd_cpp_binary checked the
+        # file it returned, but an install can start between that return and this line, and an
+        # in-place replacement would then become the recorded identity without ever having been
+        # checked for H3 support or the selected accelerator -- after which every generation
+        # compares the replacement against itself and lets it through. Inside the claim no install
+        # can start, so the build that answers --help here is the build whose identity is stored.
+        from .sd_cpp_backend import _tree_reader, sd_cpp_supports_minimax_h3
+        from .sd_cpp_engine import is_managed_binary
+
+        with _tree_reader(binary, cancel_event, VIDEO_CANCELLED_MSG):
+            if not binary or engine.version() is None:
+                raise RuntimeError(
+                    "stable-diffusion.cpp could not be installed or started for MiniMax-H3."
+                )
+            if is_managed_binary(binary) and not sd_cpp_supports_minimax_h3(binary):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary was replaced by an install that does not "
+                    "support MiniMax-H3. Try the load again."
+                )
+            # And re-ask the question native_device was decided on. H3 support alone is not
+            # enough: a replacement can be H3-capable and still be a different accelerator, and
+            # native_device is about to be committed for the life of this runtime. A CPU fallback
+            # committed around a CUDA executable runs on VRAM nothing accounted for, next to
+            # whatever the arbiter let in on the strength of this load claiming the CPU.
+            #
+            # Only when the decision actually consulted it. A CPU or MPS target never asked, so
+            # there is no answer to have changed, and inventing one would refuse those loads.
+            if (
+                listed_accelerator is not None
+                and is_managed_binary(binary)
+                and sd_cpp_lists_accelerator_device(binary) != listed_accelerator
+            ):
+                raise RuntimeError(
+                    "The stable-diffusion.cpp binary was replaced by an install for a different "
+                    "accelerator while this model was loading. Try the load again."
+                )
+            binary_identity = _sd_cli_identity(binary)
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -1418,6 +1487,10 @@ class VideoBackend:
 
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
+            # Pinned under the reader claim above, where this exact file answered --help with the
+            # H3 options. Taking it at generation time instead would compare a replacement against
+            # itself.
+            binary_identity = binary_identity,
             files = SdCppModelFiles(
                 diffusion_model = str(resolved[0]),
                 llm = str(resolved[1]),
@@ -4912,32 +4985,66 @@ class VideoBackend:
             init_img = stage(first_frame, "first")
             end_img = stage(last_frame, "last")
             staged = stage_h3_references(references, Path(scratch))
+            # An H3 native run is an sd-cli run out of the managed tree, exactly like a one-shot
+            # image generation, so it takes the same reader claim. Without it an image-engine
+            # request sees no readers, starts an install, and the sweep unlinks the CLI this
+            # runtime resolved at load: on Linux this process survives on the open inode but the
+            # next video request launches a path that is gone, and on Windows the unlink fails and
+            # leaves a mixed tree. A claim held here also makes the install stand down instead.
+            from .sd_cpp_backend import _tree_reader
+
+            binary = getattr(runtime.engine, "binary", None)
+            # Identity, not existence, and the identity RECORDED AT LOAD. An install can replace
+            # the binary in place, leaving a file that still exists but is not the build
+            # ensure_h3_sd_cpp_binary vetted: a different accelerator, or one predating the H3
+            # options, which aborts partway through a render nobody wants to repeat. Comparing two
+            # reads taken now would miss that entirely whenever the install landed before this
+            # generation started, since both would see the replacement and agree.
+            binary_identity = getattr(runtime, "binary_identity", None)
             try:
                 try:
-                    generated = runtime.engine.generate_video(
-                        runtime.files,
-                        SdCppVideoGenParams(
-                            prompt = prompt,
-                            width = width,
-                            height = height,
-                            num_frames = frames,
-                            fps = fps,
-                            steps = steps,
-                            cfg_scale = 1.0,
-                            seed = int(seed),
-                            init_img = init_img,
-                            end_img = end_img,
-                            ref_images = staged.images,
-                            ref_videos = staged.videos,
-                            ref_video_audios = staged.video_audios,
-                            ref_audios = staged.audios,
-                            flow_shift = flow_shift,
-                        ),
-                        output_path = str(output_path),
-                        offload = list(runtime.offload_flags),
-                        on_log = on_log,
-                        cancel_event = cancel,
-                    )
+                    with _tree_reader(binary, cancel, VIDEO_CANCELLED_MSG):
+                        current_identity = _sd_cli_identity(binary)
+                        # Unreadable now (swept), or readable but not what the load vetted. A
+                        # runtime carrying no recorded identity cannot answer the second question,
+                        # so it is held to the first rather than refused outright.
+                        if binary and (
+                            current_identity is None
+                            or (binary_identity is not None and current_identity != binary_identity)
+                        ):
+                            # The engine is committed at load, so this cannot be re-resolved
+                            # underneath a live generation the way the image path can. Say so
+                            # plainly instead of running an unvetted build or surfacing an ENOENT
+                            # from the subprocess.
+                            raise RuntimeError(
+                                "The stable-diffusion.cpp binary this model was loaded with was "
+                                "replaced by an install, so it is no longer the build this model "
+                                "was checked against. Reload the model and try again."
+                            )
+                        generated = runtime.engine.generate_video(
+                            runtime.files,
+                            SdCppVideoGenParams(
+                                prompt = prompt,
+                                width = width,
+                                height = height,
+                                num_frames = frames,
+                                fps = fps,
+                                steps = steps,
+                                cfg_scale = 1.0,
+                                seed = int(seed),
+                                init_img = init_img,
+                                end_img = end_img,
+                                ref_images = staged.images,
+                                ref_videos = staged.videos,
+                                ref_video_audios = staged.video_audios,
+                                ref_audios = staged.audios,
+                                flow_shift = flow_shift,
+                            ),
+                            output_path = str(output_path),
+                            offload = list(runtime.offload_flags),
+                            on_log = on_log,
+                            cancel_event = cancel,
+                        )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 if cancel.is_set():
