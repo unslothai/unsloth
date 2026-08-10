@@ -15,7 +15,8 @@ import types
 import pytest
 
 from core.training.diffusion_dit_trainer import (
-    _FLUX2_TARGETS,
+    _FLUX2_DEV_TARGETS,
+    _FLUX2_KLEIN_TARGETS,
     _FLUX_TARGETS,
     _GATED_TRAIN_REPOS,
     _QWEN_TARGETS,
@@ -63,13 +64,16 @@ def test_specs_cover_the_dit_families():
 
 
 def test_flux2_specs_share_targets_and_split_conditioners():
-    # dev and Klein share the transformer (so the LoRA target set) but load different conditioning pipelines and save through their own class.
+    # dev and Klein share the transformer class but have different single-block counts.
     klein, dev = _SPECS["flux.2-klein"], _SPECS["flux.2-dev"]
-    assert klein.lora_targets == dev.lora_targets == _FLUX2_TARGETS
-    # The fused single-stream projection is targeted; the plain to_out suffix is not (it also matches the double-stream ModuleList, which peft cannot wrap).
-    assert "to_qkv_mlp_proj" in _FLUX2_TARGETS
-    assert "to_out.0" in _FLUX2_TARGETS
-    assert "to_out" not in _FLUX2_TARGETS
+    assert klein.lora_targets == _FLUX2_KLEIN_TARGETS
+    assert dev.lora_targets == _FLUX2_DEV_TARGETS
+    # The upstream trainers pair the fused input with every plain single-stream output projection.
+    assert "to_qkv_mlp_proj" in _FLUX2_KLEIN_TARGETS
+    assert "to_out.0" in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.23.attn.to_out" in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.24.attn.to_out" not in _FLUX2_KLEIN_TARGETS
+    assert "single_transformer_blocks.47.attn.to_out" in _FLUX2_DEV_TARGETS
     assert klein.load_conditioners is not dev.load_conditioners
     assert klein.save is not dev.save
     assert klein.load_transformer is dev.load_transformer
@@ -151,6 +155,8 @@ def test_flux2_bases_pass_the_trusted_base_gate():
     # The FLUX.2 bases are training-side additions to the loader's trust allowlist, so the pre-download trust gate must accept them.
     from core.training.diffusion_train_common import _assert_trusted_base_model
 
+    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-4B")
+    _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-base-9B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-klein-4B")
     _assert_trusted_base_model("black-forest-labs/FLUX.2-dev")
     with pytest.raises(ValueError, match = "untrusted"):
@@ -190,7 +196,7 @@ def test_every_train_base_is_deployable_as_an_inference_pipeline():
         if not fam.trainable:
             continue
         for base in fam.train_base_repos:
-            deploy_base = fam.deploy_base_repo or base
+            deploy_base = fam.deploy_base_for(base)
             assert _is_trusted_diffusion_repo(
                 deploy_base
             ), f"{fam.name}: deploy base {deploy_base!r} is not loadable for inference"
@@ -213,6 +219,63 @@ def test_gated_access_requires_token():
     _assert_gated_access("black-forest-labs/FLUX.2-klein-4B", None)  # Klein is open
 
 
+def test_the_gate_lets_a_local_clone_named_like_a_gated_repo_through(monkeypatch, tmp_path):
+    """A directory on disk carries no gate, whatever it is called.
+
+    A base can be a relative clone named exactly like the vendor repo, which the loaders and the
+    token-less mirror override both resolve on disk. Matching \`_GATED_TRAIN_REPOS\` by name alone
+    refused that layout without a token, for weights the run never fetches.
+    """
+    local = "black-forest-labs/FLUX.1-dev"
+    assert local.lower() in _GATED_TRAIN_REPOS, "precondition: the name is gated"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents = True)
+
+    _assert_gated_access(local, None)
+
+
+def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
+    """A gated base redirected to its ungated mirror must not be refused by name.
+
+    The start route preflights the FETCH repo, so a child that checked the canonical id
+    would raise for a request the route had already answered 200 to, after freeing the
+    resident models: a dead job instead of a fast 400.
+    """
+    from core.inference import diffusion_families
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        "core.training.diffusion_dit_trainer._assert_gated_access",
+        lambda base, token: seen.append(base),
+    )
+    monkeypatch.setattr(
+        diffusion_families,
+        "prefer_ungated_mirror",
+        lambda base, token = None: "unsloth/FLUX.1-dev"
+        if base.lower() == "black-forest-labs/flux.1-dev"
+        else base,
+    )
+    cfg = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev",
+        data_dir = str(tmp_path / "empty"),  # the next step after the gate, so it stops here
+        output_dir = str(tmp_path / "out"),
+    )
+    with pytest.raises(Exception):  # noqa: B017, PT011 -- the dataset, not the gate
+        run_dit_lora_training(cfg)
+    assert seen == ["unsloth/FLUX.1-dev"]
+
+    # Control: with no mirror at all the canonical id is still what gets checked, so a
+    # genuinely gated fetch without a token keeps failing here rather than mid-download.
+    # mirror_repo has to go too: a token-less run overrides the cache preference on any repo
+    # the mirror table covers, so stubbing only the preference would still redirect.
+    seen.clear()
+    monkeypatch.setattr(diffusion_families, "prefer_ungated_mirror", lambda base, token = None: base)
+    monkeypatch.setattr(diffusion_families, "mirror_repo", lambda base: None)
+    with pytest.raises(Exception):  # noqa: B017, PT011
+        run_dit_lora_training(cfg)
+    assert seen == ["black-forest-labs/FLUX.1-dev"]
+
+
 def test_family_train_infos_lists_dit_families(dit_train_host):
     infos = {i["name"]: i for i in family_train_infos()}
     for fam in ("sdxl", "flux.1", "qwen-image", "z-image", "flux.2-klein", "flux.2-dev"):
@@ -225,8 +288,29 @@ def test_family_train_infos_lists_dit_families(dit_train_host):
     assert "gated" in infos["flux.1"]["vram_note"].lower()
     assert infos["flux.2-dev"]["default_base"] == "black-forest-labs/FLUX.2-dev"
     assert "gated" in infos["flux.2-dev"]["vram_note"].lower()
-    # Klein-4B is open.
-    assert infos["flux.2-klein"]["default_base"] == "black-forest-labs/FLUX.2-klein-4B"
+    # Klein trains on the undistilled bases and deploys each size on its distilled partner.
+    klein = infos["flux.2-klein"]
+    assert klein["default_base"] == "black-forest-labs/FLUX.2-klein-base-4B"
+    assert klein["base_repos"] == [
+        "black-forest-labs/FLUX.2-klein-base-4B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+    ]
+    assert klein["deploy_bases"]["black-forest-labs/FLUX.2-klein-base-4B"] == (
+        "black-forest-labs/FLUX.2-klein-4B"
+    )
+    assert klein["deploy_bases"]["black-forest-labs/FLUX.2-klein-base-9B"] == (
+        "black-forest-labs/FLUX.2-klein-9B"
+    )
+    assert klein["deploy_bases"]["unsloth/FLUX.2-klein-base-9B"] == ("unsloth/FLUX.2-klein-9B")
+    assert klein["base_specs"]["black-forest-labs/FLUX.2-klein-base-9B"] == {
+        "params": "9B",
+        "qlora_vram_gb": 18,
+    }
+    assert klein["base_specs"]["unsloth/FLUX.2-klein-base-9B"] == {
+        "params": "9B",
+        "qlora_vram_gb": 18,
+    }
+    assert "black-forest-labs/FLUX.2-klein-base-4B" not in klein["base_specs"]
     assert "gated" not in infos["flux.2-klein"]["vram_note"].lower()
     # Z-Image defaults to the prequant nf4 repo for QLoRA.
     assert "4bit" in infos["z-image"]["default_base"].lower()

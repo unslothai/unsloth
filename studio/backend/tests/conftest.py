@@ -15,6 +15,7 @@ import contextlib
 import errno
 import itertools
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -667,18 +668,46 @@ def api_key(studio_server):
 # ── RAG fixtures ─────────────────────────────────────────────────────
 
 
+@pytest.fixture(scope = "session")
+def linkable_temp_base(tmp_path_factory):
+    """Session scratch root for tests whose paths must satisfy the linked-folder policy.
+
+    macOS puts the pytest temp root under /private/var/folders, which the shared denylist
+    rejects as a system directory. The directory is unique per session so concurrent runs
+    cannot delete each other's databases, and session scope keeps its removal after every
+    function-scoped monkeypatch has been undone, so teardown sees a real os.scandir.
+    """
+    basetemp = tmp_path_factory.getbasetemp()
+    root = Path.home() / ".unsloth-test-tmp"
+    base = root / basetemp.name
+    base.mkdir(parents = True, exist_ok = True)
+    # pytest keeps its numbered temp roots, so a missing one means that session is gone
+    for stale in root.iterdir():
+        if stale.name != basetemp.name and not (basetemp.parent / stale.name).exists():
+            shutil.rmtree(stale, ignore_errors = True)
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors = True)
+
+
 @pytest.fixture
-def rag_home(tmp_path, monkeypatch):
+def rag_home(tmp_path, monkeypatch, linkable_temp_base):
     """Isolate the RAG database under a fresh UNSLOTH_STUDIO_HOME per test.
 
-    Points the storage root at ``tmp_path`` and resets the lazy schema flag so
+    Points the storage root at a linkable directory and resets the lazy schema flag so
     each test starts from an empty rag.db. Yields the temp home path.
     """
+    from hub.storage.scan_folders import is_denied_system_path
     from storage import rag_db
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    root = tmp_path
+    if is_denied_system_path(os.path.realpath(str(tmp_path))):
+        root = linkable_temp_base / tmp_path.name
+        root.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
     monkeypatch.setattr(rag_db, "_schema_ready", False)
-    return tmp_path
+    return root
 
 
 @pytest.fixture

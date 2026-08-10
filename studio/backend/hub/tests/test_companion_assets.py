@@ -862,3 +862,19 @@ def test_the_preview_reads_a_path_qualified_variant(monkeypatch):
     )
     impact = asyncio.run(companion_cleanup.delete_impact_response(repo, variant))
     assert impact["reclaimed_bytes"] == 6_000_000
+
+
+def test_the_curated_bases_carry_the_whole_mirror_table():
+    """Gated and ungated alike, both sides of every pair.
+
+    Gating decides whether a fetch may override a user's cache; it has nothing to do with whether
+    a base can strand an installed checkpoint's companions, and most of the table is ungated.
+    Reading only the gated half dropped Klein 4B and base-4B, HiDream Dev / Fast, SDXL Turbo and
+    the Qwen bases from the curated ids, so before a companion link is recorded the guards no
+    longer recognised those cached bases.
+    """
+    from core.inference.diffusion_families import _MIRROR_PAIRS
+
+    curated = companion_assets._curated_base_ids()
+    missing = [rid for pair in _MIRROR_PAIRS for rid in pair if rid not in curated]
+    assert missing == []

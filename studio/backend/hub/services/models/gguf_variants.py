@@ -24,7 +24,7 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
+    incomplete_blob_hash,
     iter_destructive_repo_cache_dirs,
     repo_cache_dir_name,
 )
@@ -538,14 +538,21 @@ def delete_variant_incomplete_blobs_result(
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
-        for h in target_hashes:
-            incomplete = blobs_dir / f"{h}{INCOMPLETE_SUFFIX}"
-            if incomplete.exists():
-                try:
-                    incomplete.unlink()
-                    deleted += 1
-                except OSError as e:
-                    logger.warning(f"Failed to unlink {incomplete}: {e}")
+        try:
+            candidates = list(blobs_dir.iterdir())
+        except OSError as e:
+            logger.warning(f"Failed to list partial blobs in {blobs_dir}: {e}")
+            continue
+        for incomplete in candidates:
+            try:
+                if not incomplete.is_file():
+                    continue
+                if incomplete_blob_hash(incomplete.name) not in target_hashes:
+                    continue
+                incomplete.unlink()
+                deleted += 1
+            except OSError as e:
+                logger.warning(f"Failed to unlink {incomplete}: {e}")
     return VariantIncompleteDeleteResult(deleted = deleted, unresolved = False)
 
 

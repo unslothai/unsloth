@@ -299,10 +299,15 @@ def _has_non_gguf_weights(path: Path) -> bool:
 
 
 def _local_pipeline_index(d: Path) -> bool:
-    """True when *d* is a diffusers PIPELINE root (top-level ``model_index.json``, weights in
-    component subdirs), which ``_is_model_directory`` (root config + loose weights) rejects."""
+    """True when *d* is a diffusers PIPELINE root (a top-level index, weights in component
+    subdirs), which ``_is_model_directory`` (root config + loose weights) rejects.
+
+    Either index counts. A Modular Diffusers pipeline carries ``modular_model_index.json`` and no
+    ``model_index.json``, and the video loader accepts exactly that pair, so recognising only the
+    conventional one hid a valid local root from the picker and let the publisher walk descend
+    into it and offer its components as separate, unusable models."""
     try:
-        return (d / "model_index.json").is_file()
+        return (d / "model_index.json").is_file() or (d / "modular_model_index.json").is_file()
     except OSError:
         return False
 
@@ -3927,10 +3932,24 @@ _VIDEO_GEN_TASK = "text-to-video"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 
 
+# The two denoiser partitions, by the filename prefix the loader itself validates against
+# (``video_minimax_h3``). These GGUFs carry no architecture metadata, so the NAME is the only
+# evidence there is, and it is the same evidence the load path acts on.
+_H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
-    """True when a name hint is one of the MiniMax-H3 GGUF bundle repos (video, never chat)."""
+    """True when a name hint names MiniMax-H3 GGUF weights (video, never chat).
+
+    Either a known bundle repo id, or a validated denoiser FILENAME. The filename half matters
+    for a GGUF the user copied into a custom local directory rather than leaving under one of the
+    bundle ids: with no architecture metadata to fall back on, ``_local_model_task`` returned null
+    and an otherwise loadable checkpoint was dropped from the Video On Device picker."""
     if not hint:
         return False
+    name = str(hint).strip().lower().rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if name.endswith(".gguf") and name.startswith(_H3_DENOISER_GGUF_PREFIXES):
+        return True
     try:
         from hub.utils.gguf import is_h3_bundle_repo
         return is_h3_bundle_repo(hint)

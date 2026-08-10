@@ -60,13 +60,19 @@ _TE_INT8_SKIP: dict[str, tuple[int, int]] = {
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
-    """Lower/strip a requested text-encoder quant; None / "" / "none" -> None.
+    """Lower/strip a requested text-encoder quant; None / "" / "none" / "off" / "auto" -> None.
+
+    The three no-scheme spellings collapse here because no family quantises its encoder without
+    a named scheme. They stay distinct to the caller that cares: MiniMax-H3 reads the RAW request
+    as a tri-state (unset picks the hosted conditioner, "none"/"off" pin the released bf16 one)
+    BEFORE normalising, so folding them is what lets an opt-out reach that branch at all instead
+    of being rejected here.
 
     Raises ValueError for an unsupported value so a bad request is rejected cheaply."""
     if value is None:
         return None
     normalized = str(value).strip().lower().replace("-", "_")
-    if not normalized or normalized == "none":
+    if not normalized or normalized in ("none", "off", "auto"):
         return None
     if normalized not in TE_QUANT_MODES:
         raise ValueError(
