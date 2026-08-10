@@ -208,7 +208,7 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
 # every test above green. rl.py is read as text because importing it pulls in
 # torch, trl and unsloth_zoo.
 
-RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text()
+RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
 
 
 def test_the_generated_config_routes_super_through_the_filter():

@@ -27,6 +27,7 @@ import {
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
 const H3_GGUF = "unsloth/MiniMax-H3-GGUF";
+const H3_REF_GGUF = "leejet/MiniMax-H3-GGUF";
 const H3_BF16 = "MiniMaxAI/MiniMax-H3";
 const LTX_GGUF = "unsloth/LTX-2.3-GGUF";
 const WAN_BF16 = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
@@ -74,6 +75,11 @@ test("a curated GGUF carries the param count its id cannot spell", () => {
   // without the catalog the row has no size chip at all.
   assert.equal(paramsFromId(H3_GGUF), undefined);
   assert.equal(curatedTotalParamsFor(H3_GGUF, VIDEO_CATALOG), 20_111_438_744);
+  assert.equal(paramsFromId(H3_REF_GGUF), undefined);
+  assert.equal(
+    curatedTotalParamsFor(H3_REF_GGUF, VIDEO_CATALOG),
+    20_111_438_744,
+  );
 });
 
 test("the curated param count is the artifact's own, not the group's", () => {
@@ -86,6 +92,7 @@ test("the curated param count is the artifact's own, not the group's", () => {
 test("a curated audio family reports audio the repo name never mentions", () => {
   assert.equal(detectCapabilities({ id: H3_GGUF }).audio, false);
   assert.equal(curatedCapabilitiesFor(H3_GGUF, VIDEO_CATALOG)?.audio, true);
+  assert.equal(curatedCapabilitiesFor(H3_REF_GGUF, VIDEO_CATALOG)?.audio, true);
   // Group-level, so every artifact of the model agrees.
   assert.equal(curatedCapabilitiesFor(H3_BF16, VIDEO_CATALOG)?.audio, true);
   assert.equal(curatedCapabilitiesFor(LTX_GGUF, VIDEO_CATALOG)?.audio, true);

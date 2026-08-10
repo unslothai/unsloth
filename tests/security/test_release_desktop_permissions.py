@@ -129,7 +129,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
 
     names = [step.get("name") for step in publish["steps"]]
     assert names.index("Wait for the build matrix") < names.index(
-        "Record desktop build provenance on the release"
+        "Publish versioned release assets"
     )
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
@@ -148,14 +148,10 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert 'gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}"' in release_step["run"]
     assert "already carries desktop assets" in release_step["run"]
 
-    # The release is the maintainer's, so provenance is appended, never created.
-    provenance = next(
-        step
-        for step in publish["steps"]
-        if step.get("name") == "Record desktop build provenance on the release"
-    )
-    assert "gh release edit" in provenance["run"]
+    # The release is the maintainer's: assets are uploaded onto it, but the
+    # release itself is never created and its notes are never rewritten.
     assert not any("gh release create" in step.get("run", "") for step in publish["steps"])
+    assert not any("gh release edit" in step.get("run", "") for step in publish["steps"])
 
 
 def test_post_publish_scan_job_holds_no_release_credentials():

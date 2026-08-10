@@ -389,6 +389,57 @@ Environment:
         } catch { }
     }
 
+    # The Studio-managed subtrees underneath the reparse-point TARGET of each Studio home, for the
+    # stop scan only.
+    #
+    # A junction or directory symlink Studio home runs its native binaries out of the PHYSICAL
+    # path: the backend resolves the home (Path.resolve) before deriving <home>\stable-diffusion.cpp
+    # and launching sd-server there, while _CustomStudioRoots only normalizes the string --
+    # System.IO.Path.GetFullPath is lexical and never touches the filesystem, so it leaves a
+    # reparse point untouched. The prefix scan below reads Win32_Process.ExecutablePath, the real
+    # image path, so without the target the running server never matches and survives an uninstall
+    # that took its tree.
+    #
+    # The SUBTREES, never the bare target. The delete unlinks only the reparse point and leaves the
+    # target standing, so anything there that is not ours is neither locking nor being removed --
+    # a home relocated onto a directory that holds other software must not have those force-stopped.
+    # Homes only, for the same reason: the component dirs ($defaultNode, $defaultLlamaCpp, ...) can
+    # themselves be links onto a shared runtime, and resolving those would put every process out of
+    # it in scope.
+    #
+    # Stop scan only, deliberately. _RemoveRootRecordingDb and the deletes still refuse to chase a
+    # link out of the expected location -- following one to delete its target is exactly what the
+    # deny list exists to prevent. Ending our own process under the target is not destructive.
+    function _ManagedPathsUnderReparseTargets {
+        param([string[]]$Roots)
+        # Everything setup.ps1 / the prebuilt installers place inside a Studio home.
+        $managed = @(
+            "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "node",
+            "stable-diffusion.cpp", ".cache", ".venv_t5_510", ".venv_t5_530", ".venv_t5_550"
+        )
+        $out = @()
+        foreach ($r in @($Roots | Where-Object { $_ })) {
+            try {
+                $item = Get-Item -LiteralPath $r -Force -ErrorAction SilentlyContinue
+                if (-not $item -or -not $item.Target) { continue }
+                $t = @($item.Target)[0]
+                if ([string]::IsNullOrWhiteSpace($t)) { continue }
+                # A symlink target may be relative; a junction's never is. Anchor it on the link's
+                # own parent, or GetFullPath would read it from the uninstaller's working directory.
+                if (-not [System.IO.Path]::IsPathRooted($t)) {
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                }
+                $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
+                if (-not $t) { continue }
+                foreach ($sub in $managed) {
+                    $p = (Join-Path $t $sub).TrimEnd('\', '/')
+                    if ($out -notcontains $p) { $out += $p }
+                }
+            } catch { }
+        }
+        return $out
+    }
+
     # Stop processes that would block deleting the paths we remove. Unlike
     # _StopStudioProcesses (venv exe only), this also catches llama-server/llama-cli,
     # the unsloth.exe shim, and orphaned mp workers under SYSTEM python holding a
@@ -535,9 +586,10 @@ Environment:
     if ($defaultSdCpp -and (Test-Path -LiteralPath $defaultSdCpp) -and (Test-Path -LiteralPath (Join-Path $defaultSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
         $defaultSdCppToStop = $defaultSdCpp
     }
-    # Custom/env-mode sd.cpp builds sit BESIDE each custom root at <parent>\stable-diffusion.cpp,
-    # outside $knownRoots. We delete those marker-owned dirs below, so add them to the handle scan
-    # too, gated on the same owner marker.
+    # A custom/env-mode sd.cpp build now sits UNDER its root at <root>\stable-diffusion.cpp, which
+    # the $knownRoots prefix match below already covers. Older builds put it BESIDE the root at
+    # <parent>\stable-diffusion.cpp, outside $knownRoots. We delete those marker-owned dirs below,
+    # so add them to the handle scan too, gated on the same owner marker.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
         $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
@@ -547,7 +599,8 @@ Environment:
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop))
+    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -564,13 +617,14 @@ Environment:
             continue
         }
         _RemoveRootRecordingDb $r
-        # Native diffusion (stable-diffusion.cpp) for a custom/env-mode Studio installs beside
-        # the root at <parent>\stable-diffusion.cpp -- find_sd_cpp_binary resolves it from
-        # UNSLOTH_STUDIO_HOME.parent (sd_cpp_engine.py) -- so removing only the root leaves the
-        # build behind. Only remove a sibling Studio installed: <parent> is a user-chosen dir
-        # and "stable-diffusion.cpp" is exactly what a git clone of leejet/stable-diffusion.cpp
-        # produces, so require our owner marker (written by install_sd_cpp_prebuilt) before rm,
-        # and keep any unowned checkout. Guard the derived parent path the same way.
+        # Native diffusion (stable-diffusion.cpp) now installs UNDER the custom root, at
+        # <root>\stable-diffusion.cpp, so the removal above already took it. Older builds put it
+        # BESIDE the root at <parent>\stable-diffusion.cpp (find_sd_cpp_binary derived it from
+        # UNSLOTH_STUDIO_HOME.parent), and removing only the root would leave that build behind.
+        # Only remove a sibling Studio installed: <parent> is a user-chosen dir and
+        # "stable-diffusion.cpp" is exactly what a git clone of the upstream project produces, so
+        # require our owner marker (written by install_sd_cpp_prebuilt) before rm, and keep any
+        # unowned checkout. Guard the derived parent path the same way.
         $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"

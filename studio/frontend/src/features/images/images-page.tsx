@@ -97,6 +97,7 @@ import {
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
+import { DEFAULT_GEN, defaultsFor } from "./image-generation-defaults";
 
 import {
   type ControlNetSpecInput,
@@ -150,48 +151,6 @@ const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   reference: "the source and reference images",
   controlnet: "the control image",
 };
-
-// Generation defaults when the model is unrecognised: the distilled few-step / no-CFG shape. Also seeds the sliders.
-const DEFAULT_GEN = { steps: 9, guidance: 0 };
-
-const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
-  { match: "z-image-turbo", steps: 9, guidance: 0 },
-  // Krea 2 Raw is the undistilled base: 52 steps at guidance 3.5, so it must precede the distilled "krea-2" key below.
-  { match: "krea-2-raw", steps: 52, guidance: 3.5 },
-  // Krea 2 Turbo is distilled (TDM): 8 steps, no CFG. "krea-2" covers Turbo and any other krea id but Raw, matched above.
-  { match: "krea-2", steps: 8, guidance: 0 },
-  { match: "flux.1-schnell", steps: 4, guidance: 0 },
-  // Kontext (editing) before the generic flux.1: ~28 steps, lower guidance (~2.5).
-  { match: "kontext", steps: 28, guidance: 2.5 },
-  // Krea FLUX.1-dev finetune runs its card recipe (28 steps, guidance 4.5); before the generic flux.1 key.
-  { match: "flux.1-krea", steps: 28, guidance: 4.5 },
-  { match: "flux.1", steps: 28, guidance: 3.5 },
-  { match: "flux.2-klein", steps: 4, guidance: 0 },
-  // FLUX.2-dev is the full (non-distilled) model: more steps + real guidance, unlike klein.
-  { match: "flux.2-dev", steps: 28, guidance: 4 },
-  { match: "qwen-image", steps: 20, guidance: 4 },
-  { match: "z-image", steps: 20, guidance: 4 },
-  // Ideogram 4 card settings (48 steps, guidance 7). At exactly these the backend keeps its tapered guidance schedule.
-  { match: "ideogram", steps: 48, guidance: 7 },
-  // Lumina Image 2.0 model-card recipe (the backend adds cfg_trunc_ratio itself).
-  { match: "lumina", steps: 50, guidance: 4 },
-  // HunyuanImage 2.1: 50 steps; guidance feeds distilled_guidance_scale, real CFG runs in the repo guiders.
-  { match: "hunyuanimage", steps: 50, guidance: 3.25 },
-  // HiDream-I1: Full runs 50 steps at guidance 5; the Dev/Fast distillations are guidance-free.
-  { match: "hidream-i1-dev", steps: 28, guidance: 0 },
-  { match: "hidream-i1-fast", steps: 16, guidance: 0 },
-  { match: "hidream", steps: 50, guidance: 5 },
-  // SDXL: Turbo is distilled (few steps, no CFG), base wants ~30 steps and CFG ~7; "sdxl-turbo" precedes "sdxl".
-  { match: "sdxl-turbo", steps: 3, guidance: 0 },
-  { match: "stable-diffusion-xl", steps: 30, guidance: 7 },
-  { match: "sdxl", steps: 30, guidance: 7 },
-];
-
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  // The fallback is only hit for an unrecognised on-device image GGUF; a curated entry covers every model in MODELS.
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
-}
 
 // Common aspect ratios (landscape; Flip mirrors to portrait). Picking one locks the W:H proportion; the sliders set the size.
 const ASPECT_RATIOS: Record<string, [number, number]> = {
