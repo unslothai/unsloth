@@ -2199,9 +2199,7 @@ def test_retirement_leaves_a_folder_linked_after_the_ownership_check(rag_home):
     scope = store.project_scope("p1")
     source = rag_home / "before-check"
     source.mkdir()
-    existing = folder_sync.create_folder(
-        scope_type = "project", scope_id = "p1", path = str(source)
-    )
+    existing = folder_sync.create_folder(scope_type = "project", scope_id = "p1", path = str(source))
     checked_at = folder_sync.now_iso()
     # a second backend process links this one after the check and before the write
     later = rag_home / "after-check"

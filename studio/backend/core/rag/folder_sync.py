@@ -563,7 +563,11 @@ def _metadata_table_exists(conn, table: str) -> bool:
     )
 
 
-def _retire_scope_rows(conn, scope: str, linked_before: str | None = None) -> None:
+def _retire_scope_rows(
+    conn,
+    scope: str,
+    linked_before: str | None = None,
+) -> None:
     folders_exist = _metadata_table_exists(conn, "linked_folders")
     jobs_exist = folders_exist and _metadata_table_exists(conn, "linked_folder_sync_jobs")
     conn.execute(
