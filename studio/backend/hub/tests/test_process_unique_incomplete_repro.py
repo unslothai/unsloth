@@ -304,3 +304,58 @@ def test_progress_counts_the_snapshot_the_refs_point_at(monkeypatch, tmp_path):
     )
 
     assert result["completed_bytes"] == 100
+
+
+def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
+    """A racer that installed the blob settles it; the loser's leftover is not progress."""
+    commit = "b" * 40
+    entry = tmp_path / "models--Org--Model-GGUF"
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    (blobs / _BLOB_HASH).write_bytes(b"x" * 100)
+    (blobs / f"{_BLOB_HASH}.22222222.incomplete").write_bytes(b"x" * 60)
+    (entry / "refs").mkdir(parents = True)
+    (entry / "refs" / "main").write_text(commit)
+    snapshot = entry / "snapshots" / commit
+    snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M.gguf").symlink_to(blobs / _BLOB_HASH)
+    manifest = download_manifest.Manifest(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        variant = "Q4_K_M",
+        started_at = "",
+        expected_files = (
+            download_manifest.ExpectedFile(
+                path = "model-Q4_K_M.gguf",
+                size = 100,
+                sha256 = _BLOB_HASH,
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+    monkeypatch.setattr(
+        snapshot_progress.download_manifest,
+        "read_manifest",
+        lambda *_args, **_kwargs: manifest,
+    )
+    result = snapshot_progress.compute_snapshot_progress(
+        repo_type = "model",
+        repo_id = "Org/Model-GGUF",
+        job_key = "model:org/model-gguf#q4_k_m",
+        expected_bytes = 100,
+        hf_token = None,
+        registry = _running_registry(),
+        metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+        variant = "Q4_K_M",
+        variant_file_matcher = lambda path, **_kwargs: path == "model-Q4_K_M.gguf",
+    )
+
+    # 160 of 100 bytes before, and completion refused for as long as the orphan survived.
+    assert result["downloaded_bytes"] == 100
+    assert result["complete_on_disk"] is True
+    assert result["progress"] == 1.0

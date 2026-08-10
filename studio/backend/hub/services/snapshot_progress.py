@@ -532,6 +532,7 @@ def compute_snapshot_progress(
         # Keyed by logical blob: a broken advisory lock leaves several process-unique writers
         # racing on one etag, and each downloads the WHOLE file, so summing them overshoots.
         partial_bytes: dict[str, int] = {}
+        completed_hashes: set[str] = set()
         # A partial this reading could not attribute to any target. It is not evidence FOR this
         # variant -- it may be a sibling quant's -- but with the hashes unresolved it is not
         # evidence against it either, and the by-name scan cannot see it because a partial is
@@ -580,6 +581,7 @@ def compute_snapshot_progress(
                                 continue
                         elif not count_unscoped:
                             continue
+                        completed_hashes.add(f.name)
                         completed_bytes += f.stat().st_size
                 except OSError as exc:
                     # A blob we could not inspect is not a blob that is not there. Swallowing it
@@ -587,6 +589,13 @@ def compute_snapshot_progress(
                     # persisted download whose target may be intact behind the error.
                     scan_errors.append(exc)
                     continue
+        # A finalized blobs/<hash> supersedes every partial for the same logical blob: the racer
+        # that installed the file settled it, so a leftover writer's bytes are a duplicate, not
+        # progress. Counting both overshot the expected total and, because completion requires
+        # no bytes in flight, pinned a fully downloaded variant at 0.99 until the orphan was
+        # swept -- and an orphan outlives the process that would have unlinked it on the way out.
+        for blob_hash in completed_hashes:
+            partial_bytes.pop(blob_hash, None)
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)
