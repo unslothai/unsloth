@@ -286,9 +286,11 @@ def reconcile_orphaned_ingestion_jobs() -> int:
         return 0
     conn = get_connection()
     try:
+        # 'cancelled' is terminal too: the job stopped because its document was deleted, so
+        # rewriting it to failed would report a deliberate cancellation as an indexing failure.
         rows = conn.execute(
             "SELECT id, document_id FROM ingestion_jobs "
-            "WHERE status NOT IN ('completed', 'failed')"
+            "WHERE status NOT IN ('completed', 'failed', 'cancelled')"
         ).fetchall()
         for row in rows:
             doc = conn.execute(
