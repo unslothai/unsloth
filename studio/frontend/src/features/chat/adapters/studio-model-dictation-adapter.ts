@@ -126,6 +126,9 @@ export interface SttDownloadStatus {
   error: string | null;
   /** The last download was stopped by the user rather than failing. */
   cancelled?: boolean;
+  /** Which model that cancellation applies to. `model` goes null once the worker thread
+   *  stops, so this is the only way to tell a settled cancellation from an unrelated one. */
+  cancelled_model?: string | null;
   bytes_total: number | null;
   bytes_done: number | null;
 }

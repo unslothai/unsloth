@@ -6105,10 +6105,19 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
-/** Codec -> the Hub pipeline tag the media routing understands, else undefined. */
-function audioPipelineTagFor(audioType?: string | null): string | undefined {
+/** Codec -> the Hub pipeline tag the media routing understands, else undefined.
+ *
+ * A local checkpoint never gets the ASR tag: it would route to the Audio page, which hands
+ * the filesystem path to /audio/stt/load, and the sidecar's resolve_model_id takes only a
+ * curated key or an `owner/model` Hub id, so the row is advertised and then 422s. TTS is
+ * fine, since that loads through the main slot, which does accept a local path. */
+function audioPipelineTagFor(
+  audioType?: string | null,
+  isLocalCheckpoint = false,
+): string | undefined {
   if (!audioType) return undefined;
-  if (audioType === "whisper") return "automatic-speech-recognition";
+  if (audioType === "whisper")
+    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
   return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
 }
 
@@ -6165,7 +6174,7 @@ function FineTunedRows({
           isLora: !isLocal && !isMerged && !isGguf,
           isDownloaded: true,
           isGguf: false,
-          pipelineTag: audioPipelineTagFor(adapter.audioType),
+          pipelineTag: audioPipelineTagFor(adapter.audioType, true),
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);

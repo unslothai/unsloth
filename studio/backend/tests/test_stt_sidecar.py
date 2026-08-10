@@ -1199,6 +1199,9 @@ def test_download_status_is_idle_before_any_download():
         "model": None,
         "error": None,
         "cancelled": False,
+        # Only set alongside cancelled: "model" goes None once the download thread stops, so
+        # this is what tells a settled cancellation from an unrelated one.
+        "cancelled_model": None,
         "bytes_total": None,
         "bytes_done": None,
     }

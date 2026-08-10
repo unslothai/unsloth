@@ -421,6 +421,10 @@ class _GgmlDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
             }
             captured = (

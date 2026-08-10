@@ -309,12 +309,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     () => StudioModelDictationAdapter.isSupported(),
     [],
   );
-  /** Audio the server produced but could not persist; kept so the generation is
-   *  not lost when the gallery write fails. Cleared once a real clip lands. */
+  /** Audio the server produced that the gallery is not showing yet: either it could not
+   *  be persisted at all, or it was persisted and this refresh missed it. Kept so the
+   *  generation is playable either way. Cleared once its real clip lands. */
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
     prompt: string;
     model: string;
+    saved: boolean;
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
@@ -982,7 +984,13 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             deferred.sidecarKey,
             deferred.engine,
           )?.download;
-          if (download?.cancelled && download.model === deferred.sidecarKey)
+          // `model` is null once the download thread has stopped, so a cancellation the
+          // user made while this page was hidden matched nothing here and the deferred
+          // load restarted the whole multi-GB download.
+          if (
+            download?.cancelled &&
+            (download.model ?? download.cancelled_model) === deferred.sidecarKey
+          )
             return;
         } catch {
           // Status is advisory here; the normal preparation path reports errors.
@@ -1261,10 +1269,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         setFallbackClip(null);
         selectClip(generatedClip.id);
       } else if (generated.clip_id) {
-        // The server did persist it; only this refresh missed it (refreshGallery
-        // swallows a transient failure and returns the stale cache). Keep the id so a
-        // later refresh selects it, rather than labelling a saved clip unsaved forever.
-        setFallbackClip(null);
+        // The server did persist it; only this refresh missed it (refreshGallery swallows a
+        // transient failure and returns the stale cache). Select the id so a later refresh
+        // shows the real record, but keep the response audio too: selectedClip resolves
+        // against `clips`, so an id that is not there yet would render the empty state and
+        // strand a generation the user just paid for.
+        setFallbackClip({
+          url: `data:audio/wav;base64,${generated.audio.data}`,
+          prompt: text,
+          model: generated.model,
+          saved: true,
+        });
         selectClip(generated.clip_id);
       } else {
         // Gallery persistence is best-effort server-side, so a full or unwritable
@@ -1276,6 +1291,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           url: `data:audio/wav;base64,${generated.audio.data}`,
           prompt: text,
           model: generated.model,
+          saved: false,
         });
       }
     } catch (error) {
@@ -1958,7 +1974,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     />
                     <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
                       <span>
-                        {fallbackClip.model} · not saved to the gallery
+                        {fallbackClip.model}
+                        {fallbackClip.saved
+                          ? " · saved, waiting for the gallery"
+                          : " · not saved to the gallery"}
                       </span>
                       <span className="flex-1" />
                       <Button

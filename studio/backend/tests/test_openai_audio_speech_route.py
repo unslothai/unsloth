@@ -147,9 +147,22 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
 
     cli, calls, _saved = _make_client(monkeypatch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
     assert cli.post("/v1/audio/speech", json = {"input": "a long script"}).status_code == 200
     payload = calls[0]["payload"]
     assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
+
+
+def test_the_speech_route_stays_inside_a_small_loaded_context(monkeypatch):
+    """This route is reachable after a plain /api/inference/load, whose default
+    max_seq_length=0 becomes 2048, so the full ceiling would overflow or truncate."""
+    cli, calls, _saved = _make_client(monkeypatch)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 2048)
+    text = "x" * 300
+    assert cli.post("/v1/audio/speech", json = {"input": text}).status_code == 200
+    budget = calls[0]["payload"].max_tokens
+    assert budget < 2048
+    assert budget == 2048 - max(1, len(text) // 3)
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):

@@ -9286,9 +9286,18 @@ async def openai_audio_speech(
     # max_tokens is set explicitly because the OpenAI CreateSpeech shape has no field for it,
     # so the chat default of 2048 would silently truncate any input past ~30s of speech and
     # still return HTTP 200 with a short WAV.
+    # Unlike the Audio page, which loads with headroom for both, this route is reachable
+    # after any /api/inference/load, including the default max_seq_length=0 that becomes
+    # 2048. Asking for the full ceiling against that context overflows or truncates, so
+    # cap to what is actually left once the prompt is accounted for.
+    budget = AUDIO_GENERATION_MAX_TOKENS
+    context_length = _monitor_context_length()
+    if context_length:
+        prompt_tokens = max(1, len(body.input) // 3)
+        budget = max(1, min(budget, context_length - prompt_tokens))
     payload = ChatCompletionRequest(
         messages = [{"role": "user", "content": body.input}],
-        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
+        max_tokens = budget,
     )
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.input, payload, request, current_subject
