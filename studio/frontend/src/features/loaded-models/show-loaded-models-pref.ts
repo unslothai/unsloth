@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Whether the corner indicator may appear. On by default; only an explicit
-// "false" (Settings -> General -> Notifications) disables it. Same shape as the
-// llama.cpp update banner pref.
+// Whether the corner indicator may appear. Off by default; only an explicit
+// "true" (Settings -> General -> Notifications) enables it. An older explicit
+// "false" still reads as off, so anyone who already turned it down stays that
+// way.
 
 import { useSyncExternalStore } from "react";
 
@@ -29,19 +30,19 @@ function notify(): void {
 
 export function getShowLoadedModels(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) !== "false";
+    return localStorage.getItem(STORAGE_KEY) === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 
 export function setShowLoadedModels(show: boolean): void {
   try {
     if (show) {
-      // Remove rather than store "true" so the default stays on.
-      localStorage.removeItem(STORAGE_KEY);
+      localStorage.setItem(STORAGE_KEY, "true");
     } else {
-      localStorage.setItem(STORAGE_KEY, "false");
+      // Remove rather than store "false" so the default stays off.
+      localStorage.removeItem(STORAGE_KEY);
     }
   } catch {
     // storage unavailable

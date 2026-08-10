@@ -25,6 +25,28 @@ function reset(): void {
   store.clear();
 }
 
+test("the indicator is off until it is switched on", () => {
+  reset();
+  assert.equal(getShowLoadedModels(), false);
+});
+
+test("switching on stores the key, switching off removes it", () => {
+  reset();
+  setShowLoadedModels(true);
+  assert.equal(store.get(LOADED_MODELS_PREFERENCE_KEYS.show), "true");
+  setShowLoadedModels(false);
+  // Removed, not stored as "false", so the default stays off.
+  assert.equal(store.has(LOADED_MODELS_PREFERENCE_KEYS.show), false);
+  assert.equal(getShowLoadedModels(), false);
+});
+
+// What the old default wrote when it was turned down. It must not now read as on.
+test("an older explicit false still reads as off", () => {
+  reset();
+  store.set(LOADED_MODELS_PREFERENCE_KEYS.show, "false");
+  assert.equal(getShowLoadedModels(), false);
+});
+
 test("the card is open until something closes it", () => {
   reset();
   assert.equal(getLoadedModelsDismissed(), false);
@@ -44,6 +66,7 @@ test("closing it stores the dismissal, reopening removes the key", () => {
 // The point of keeping them apart.
 test("closing the card does not switch the setting off", () => {
   reset();
+  setShowLoadedModels(true);
   setLoadedModelsDismissed(true);
   assert.equal(getShowLoadedModels(), true);
 });
