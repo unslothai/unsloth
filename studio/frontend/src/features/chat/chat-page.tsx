@@ -3126,6 +3126,7 @@ export function ChatPage({
       updatedAt: lora.updatedAt,
       source: lora.source,
       exportType: lora.exportType,
+      audioType: lora.audioType,
     }));
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);

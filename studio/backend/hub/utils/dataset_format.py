@@ -410,6 +410,12 @@ def detect_multimodal_dataset(dataset):
                 "transcript",
                 "transcription",
                 "label",
+                # TTS corpora name the line to speak rather than a transcript of it:
+                # every svjack/SparkTTS_* set uses "prompt", LJSpeech derivatives use
+                # "normalized_text". Without these the set needs a manual mapping it
+                # cannot satisfy, so the run is unreachable.
+                "prompt",
+                "normalized_text",
             ]:
                 detected_text_col = col_name
                 break

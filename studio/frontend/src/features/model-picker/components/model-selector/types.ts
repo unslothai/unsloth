@@ -25,6 +25,8 @@ export interface LoraModelOption extends ModelOption {
   updatedAt?: number;
   source?: "training" | "exported" | "local";
   exportType?: "lora" | "merged" | "gguf";
+  /** Codec when the checkpoint fine-tunes an audio model, else null. */
+  audioType?: string | null;
 }
 
 export interface ExternalModelOption extends ModelOption {

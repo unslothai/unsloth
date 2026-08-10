@@ -1671,6 +1671,8 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
+const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -3129,6 +3131,10 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            isLocalCheckpoint:
+              meta.source === "lora" ||
+              meta.source === "exported" ||
+              meta.source === "local",
             ...(hubEvidenceById.get(id) ?? {}),
           })
         ) {
@@ -5877,6 +5883,13 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
+/** Codec -> the Hub pipeline tag the media routing understands, else undefined. */
+function audioPipelineTagFor(audioType?: string | null): string | undefined {
+  if (!audioType) return undefined;
+  if (audioType === "whisper") return "automatic-speech-recognition";
+  return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
+}
+
 function FineTunedRows({
   adapters,
   value,
@@ -5922,11 +5935,15 @@ function FineTunedRows({
         const isTrainingFull = isTraining && isMerged;
         const isLocalGgufDir =
           isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        // A checkpoint that fine-tunes a TTS/STT model has to reach the Audio page:
+        // chat/completions cannot serve it and reports the adapter as "not downloaded".
+        // The pipeline tag is what onSelect routes on, so carry the detected codec as one.
         const selectionMeta: ModelSelectorChangeMeta = {
           source: isLocal ? "local" : isExported ? "exported" : "lora",
           isLora: !isLocal && !isMerged && !isGguf,
           isDownloaded: true,
           isGguf: false,
+          pipelineTag: audioPipelineTagFor(adapter.audioType),
         };
         const canConfigure = !(isLocalGgufDir || isExportedGguf);
         const optionKey = makeModelOptionKey("lora", adapter.id);

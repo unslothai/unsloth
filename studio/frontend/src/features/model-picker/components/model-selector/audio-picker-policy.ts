@@ -75,6 +75,7 @@ export function audioPickIsRoutable({
   task,
   isGguf,
   isCurated,
+  isLocalCheckpoint = false,
   baseModel,
   tags,
   libraryName,
@@ -83,11 +84,22 @@ export function audioPickIsRoutable({
   task: string | null | undefined;
   isGguf: boolean;
   isCurated: boolean;
+  /** Trained or exported here, so its codec was read off the checkpoint itself. */
+  isLocalCheckpoint?: boolean;
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
 }): boolean {
   if (isCurated) return true;
+  // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
+  // judge, and the family-name heuristic it applies would reject it on its directory
+  // name. Its task came from the backend reading the checkpoint, which is the stronger
+  // signal, and the Audio page lists it off that same tag.
+  if (isLocalCheckpoint) {
+    return (
+      task === "text-to-speech" || task === "automatic-speech-recognition"
+    );
+  }
   // The same Hub evidence the Audio page's own lists judge on. Passing the id alone
   // rejected a checkpoint whose family is in its tags or base model rather than its
   // name, so the page listed it but the chat picker refused to route to it.

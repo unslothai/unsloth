@@ -61,7 +61,12 @@ _DISPATCH_STOP_TIMEOUT = 5.0
 _DISPATCH_IDLE_TIMEOUT = 30.0
 _DISPATCH_DRAIN_TIMEOUT = 5.0
 
-_AUDIO_GENERATION_TIMEOUT = 120.0
+# Only bounds the Transformers subprocess path; llama.cpp TTS never reaches here.
+# 120s was tuned against GGUF speeds and killed real work: a safetensors LoRA on a
+# mid-range GPU needs minutes for the same clip a GGUF returns in seconds. A dead
+# worker is already caught every second by _ensure_subprocess_alive, so this only
+# has to bound one that is alive and wedged, and a generous value costs nothing.
+_AUDIO_GENERATION_TIMEOUT = 900.0
 _AUDIO_GENERATION_BASE_TOKENS = 2048
 AUDIO_GENERATION_MAX_TOKENS = 8192
 _AUDIO_CANCEL_DRAIN_TIMEOUT = 5.0

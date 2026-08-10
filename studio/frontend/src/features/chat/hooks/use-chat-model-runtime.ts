@@ -267,6 +267,7 @@ function toLoraSummary(lora: {
     updatedAt,
     source: lora.source ?? undefined,
     exportType: lora.export_type ?? undefined,
+    audioType: lora.audio_type ?? null,
   };
 }
 

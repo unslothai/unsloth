@@ -123,6 +123,15 @@ const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   transcribe: audioModelsForTask("stt"),
 };
 
+/** What to call a model on screen. A Hub repo is its id; a checkpoint trained here
+ *  is an output directory, and the full path in a toast reads as a bug. */
+function audioModelLabel(id: string): string {
+  if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return id;
+  const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
+  // Training stamps the output directory with an epoch; it means nothing to a reader.
+  return leaf.replace(/_\d{10,}$/, "");
+}
+
 function deviceSizeBytes(label: string): number {
   const match = label.trim().match(/^(\d+(?:\.\d+)?)\s*(MB|GB)$/i);
   if (!match) return 0;
@@ -632,7 +641,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       ttsLoadInFlight.current = true;
       busyRef.current = "loading";
       setBusy("loading");
-      const toastId = toast.loading(`Loading ${repoId}…`);
+      const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
         const res = await loadModel(
           {
@@ -1540,7 +1549,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             .filter((lora) => isTtsAudioType(lora.audio_type))
             .map((lora) => ({
               id: lora.adapter_path,
-              name: lora.display_name.replace(/_\d{10,}$/, ""),
+              name: audioModelLabel(lora.adapter_path),
               description:
                 lora.export_type === "merged"
                   ? `Fine-tuned - ${lora.base_model || "unknown base"}`
