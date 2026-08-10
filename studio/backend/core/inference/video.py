@@ -1205,7 +1205,6 @@ class VideoBackend:
             # the replacement half-written. The later claimed recheck cannot undo damage this
             # first probe already allowed.
             from .sd_cpp_backend import _tree_reader as _claim_tree
-
             with _claim_tree(binary, cancel_event, VIDEO_CANCELLED_MSG):
                 listed_accelerator = sd_cpp_lists_accelerator_device(binary)
         if target.backend not in ("cpu", "mps") and not listed_accelerator:
