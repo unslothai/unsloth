@@ -2853,6 +2853,12 @@ async def start_diffusion_training(
     try:
         service.reserve()
         reserved = True
+        # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it
+        # reports the folder as uncaptioned, and mixed it succeeds on the images and trains on
+        # that subset without saying so.
+        clip_refusal = _clip_dataset_refusal(config["data_dir"])
+        if clip_refusal is not None:
+            raise HTTPException(status_code = 400, detail = clip_refusal)
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
             pairs = await asyncio.to_thread(
@@ -2864,9 +2870,7 @@ async def start_diffusion_training(
                 verify_images = True,
             )
         except (FileNotFoundError, ValueError) as e:
-            raise HTTPException(
-                status_code = 400, detail = _dataset_preflight_detail(config["data_dir"], e)
-            )
+            raise HTTPException(status_code = 400, detail = str(e))
         if resuming:
             # The dataset half of the resume identity, now that the images are known -- and the
             # step target, which epochs mode only resolves here. Still before the GPU teardown.
@@ -3090,29 +3094,30 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     )
 
 
-def _dataset_preflight_detail(data_dir: str, error: Exception) -> str:
-    """Say why a clip dataset cannot start, instead of reporting it as uncaptioned.
+def _clip_dataset_refusal(data_dir: str) -> Optional[str]:
+    """Why a folder holding clips cannot be trained on yet, or None when it can.
 
-    ``discover_image_caption_pairs`` reads stills only, so a folder of properly captioned
-    clips comes back as "No captioned images found. Provide ... per-image .txt captions",
-    which is wrong twice over: the captions are there, and adding more would not help.
-    The dataset layer lists clip folders so they can be uploaded and captioned before a
-    clip-reading trainer exists; until one does, refuse with the actual reason. Once
-    discovery reads clips, the folder yields pairs and this branch is never reached."""
-    detail = str(error)
-    if not isinstance(error, ValueError) or "No captioned images found" not in detail:
-        return detail
+    No trainer reads clips, and ``discover_image_caption_pairs`` scans stills only, so
+    without this a clip folder fails two different ways and neither says so. Clip-only, it
+    raises "No captioned images found. Provide ... per-image .txt captions", which is wrong
+    twice over on a folder where every clip has one. MIXED, it succeeds on the images and
+    the run trains on that subset in silence, while the picker counted the clips as
+    trainable items. So the rule is the folder, not the outcome: any clip present, refuse.
+
+    The dataset layer still lists these folders, because uploading and captioning a clip set
+    is what lets one exist before the trainer does. Once discovery reads clips this check
+    goes with it."""
     try:
         summary = _diffusion_dataset_summary(Path(data_dir).expanduser())
     except OSError:
-        return detail
+        return None
     if summary.clip_count <= 0:
-        return detail
+        return None
     clips = f"{summary.clip_count} video clip" + ("" if summary.clip_count == 1 else "s")
     return (
-        f"'{Path(data_dir).expanduser().name}' holds {clips} and no captioned images. "
-        "Training from clips is not supported yet, so this dataset cannot be trained on. "
-        "Choose a dataset of images, or add captioned images to this folder."
+        f"'{Path(data_dir).expanduser().name}' holds {clips}. Training from clips is not "
+        "supported yet, and a run started here would train on the still images alone. "
+        "Choose a dataset of images, or take the clips out of this folder."
     )
 
 
