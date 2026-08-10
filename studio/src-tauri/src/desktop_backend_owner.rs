@@ -659,6 +659,41 @@ pub(crate) fn classify_health_desktop_owner(
     )
 }
 
+/// Binds a health-classified `CurrentApp` owner claim to the spawned backend
+/// recorded in the owner metadata.
+///
+/// `studio_root_id` and `desktop_owner.token_sha256` are both exposed by the
+/// unauthenticated health endpoint, so a local spoof can replay them. The
+/// claim is only accepted when the responder also sits on the port recorded
+/// for the backend this app spawned, and that backend process is still alive:
+/// a spoof cannot occupy the recorded port while the legitimate backend holds
+/// it, and cannot keep a dead backend pid alive.
+pub(crate) fn owner_metadata_binds_responder(
+    port: u16,
+    studio_root_id: Option<&str>,
+    owner_kind: Option<&str>,
+    token_sha256_value: Option<&str>,
+) -> bool {
+    let Some(metadata) = current_owner_metadata() else {
+        return false;
+    };
+    let expected = read_expected_studio_root_id();
+    if !(metadata_is_well_formed(&metadata)
+        && expected.as_deref() == Some(metadata.studio_root_id.as_str())
+        && metadata.app_pid == std::process::id()
+        && owner_matches_metadata(&metadata, studio_root_id, owner_kind, token_sha256_value))
+    {
+        return false;
+    }
+    if port != metadata.port.unwrap_or(metadata.requested_port) {
+        return false;
+    }
+    matches!(
+        previous_app_pid_status(metadata.backend_pid),
+        PreviousAppPidStatus::AliveOrCurrent
+    )
+}
+
 fn current_owner_metadata() -> Option<DesktopBackendMetadata> {
     #[cfg(test)]
     if let Ok(guard) = TEST_METADATA.lock() {
@@ -673,16 +708,23 @@ fn current_owner_metadata() -> Option<DesktopBackendMetadata> {
 
 #[cfg(test)]
 pub(crate) fn install_test_owner(root_id: &str, token: &str) {
+    install_test_owner_on_port(root_id, token, 8888);
+}
+
+#[cfg(test)]
+pub(crate) fn install_test_owner_on_port(root_id: &str, token: &str, port: u16) {
     let metadata = DesktopBackendMetadata {
         schema_version: METADATA_SCHEMA_VERSION,
         kind: OWNER_KIND_TAURI.to_string(),
         token: token.to_string(),
         token_sha256: token_sha256(token),
         app_pid: std::process::id(),
-        backend_pid: 2,
+        // The process-binding leg of the ownership check needs a live backend
+        // pid; the test process itself is alive for the whole test.
+        backend_pid: std::process::id(),
         generation: 3,
-        requested_port: 8888,
-        port: Some(8888),
+        requested_port: port,
+        port: Some(port),
         studio_root_id: root_id.to_string(),
         started_at_ms: 1,
         updated_at_ms: 1,

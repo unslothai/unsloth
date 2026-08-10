@@ -9,6 +9,11 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+/// The owner-metadata test hooks are process-global, and ownership proof now
+/// binds to the recorded port, so tests that install owner metadata must not
+/// interleave: hold this lock from the install through the final probe.
+pub(crate) static OWNER_METADATA_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Request line (e.g. `"GET /api/health HTTP/1.1"`) of every accepted connection.
 pub(crate) type RequestLog = Arc<Mutex<Vec<String>>>;
 

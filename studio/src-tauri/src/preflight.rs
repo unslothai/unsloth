@@ -767,11 +767,64 @@ exit 1
         health_body: impl Into<String>,
         route_status: &'static str,
     ) -> BackendProbe {
-        install_test_owner();
+        let _owner_guard = crate::test_support::OWNER_METADATA_LOCK.lock().await;
         let port = backend_server(health_body, route_status).await;
+        // Ownership proof binds to the responder's port, so record the
+        // server's actual port in the test owner metadata.
+        crate::desktop_backend_owner::install_test_owner_on_port(
+            EXPECTED_ROOT_ID,
+            OWNER_TOKEN,
+            port,
+        );
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
         let health = backend_health(&client, port).await.unwrap();
         backend_desktop_auth_status(&client, port, &health, Some(EXPECTED_ROOT_ID)).await
+    }
+
+    #[tokio::test]
+    async fn replayed_owner_fields_are_rejected_without_process_binding() {
+        // studio_root_id and desktop_owner.token_sha256 are both exposed by
+        // the unauthenticated health endpoint, so a spoof can replay them. A
+        // CurrentApp claim is only proven when the responder also matches the
+        // spawned backend's recorded port and live pid; a responder on any
+        // other port stays unverified and must not receive the desktop-login
+        // probe.
+        let _owner_guard = crate::test_support::OWNER_METADATA_LOCK.lock().await;
+        let server = crate::test_support::LoopbackTestServer::bind(
+            desktop_ready_health(EXPECTED_ROOT_ID),
+            "401 Unauthorized",
+        )
+        .await;
+        // Metadata records a different port than the responder's, so the
+        // replayed owner fields cannot bind to this responder.
+        crate::desktop_backend_owner::install_test_owner_on_port(
+            EXPECTED_ROOT_ID,
+            OWNER_TOKEN,
+            8888,
+        );
+
+        let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
+        let health = backend_health(&client, server.port).await.unwrap();
+        let probe = backend_desktop_auth_status(
+            &client,
+            server.port,
+            &health,
+            Some(EXPECTED_ROOT_ID),
+        )
+        .await;
+
+        assert!(matches!(
+            probe,
+            BackendProbe::ExternalConflict { reason, .. }
+                if reason == "desktop_ownership_unverified"
+        ));
+        let seen = server.requests.lock().unwrap();
+        assert_eq!(
+            seen.len(),
+            1,
+            "replayed owner fields must not earn a desktop-login probe"
+        );
+        assert!(seen[0].starts_with("GET /api/health "));
     }
 
     #[tokio::test]
@@ -911,6 +964,7 @@ exit 1
         // responder that echoes the expected root id must be rejected from the
         // unauthenticated health body alone, before preflight sends anything
         // to /api/auth/desktop-login.
+        let _owner_guard = crate::test_support::OWNER_METADATA_LOCK.lock().await;
         install_test_owner();
         let server = crate::test_support::LoopbackTestServer::bind(
             desktop_ready_health_with_owner(EXPECTED_ROOT_ID, false),
@@ -971,6 +1025,7 @@ exit 1
 
     #[tokio::test]
     async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
+        let _owner_guard = crate::test_support::OWNER_METADATA_LOCK.lock().await;
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();

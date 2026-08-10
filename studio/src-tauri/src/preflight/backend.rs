@@ -228,12 +228,26 @@ pub(super) async fn backend_desktop_auth_status(
     // The root id is intentionally exposed by the unauthenticated health
     // endpoint, so matching it alone cannot prove that a responder is safe to
     // receive the desktop secret. Only ownership metadata tied to this app
-    // instance provides that proof. Any other same-root responder is a
-    // conflict and never receives the desktop-login probe or the secret: one
-    // asserting ownership belongs to another desktop app instance; one
-    // asserting none cannot be verified at all and could be a local spoof.
+    // instance provides that proof, and even that metadata's health fields
+    // (root id, owner kind, token hash) are public and replayable — so a
+    // CurrentApp claim additionally has to bind to the backend this app
+    // actually spawned (recorded port plus live backend pid). Any responder
+    // that fails this gate is a conflict and never receives the desktop-login
+    // probe or the secret: one asserting ownership belongs to another desktop
+    // app instance; one asserting none, or replaying unbound owner fields,
+    // cannot be verified at all and could be a local spoof.
+    let owner = health.desktop_owner.as_ref();
+    let current_app_bound = owner_match
+        == crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp
+        && crate::desktop_backend_owner::owner_metadata_binds_responder(
+            port,
+            health.studio_root_id.as_deref(),
+            owner.and_then(|o| o.kind.as_deref()),
+            owner.and_then(|o| o.token_sha256.as_deref()),
+        );
+
     match owner_match {
-        crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp => {}
+        crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp if current_app_bound => {}
         crate::desktop_backend_owner::HealthOwnerMatch::PreviousApp
         | crate::desktop_backend_owner::HealthOwnerMatch::OtherDesktopOwner => {
             return BackendProbe::ExternalConflict {
@@ -241,7 +255,8 @@ pub(super) async fn backend_desktop_auth_status(
                 reason: "desktop_owned_backend_active".to_string(),
             };
         }
-        crate::desktop_backend_owner::HealthOwnerMatch::None => {
+        crate::desktop_backend_owner::HealthOwnerMatch::CurrentApp
+        | crate::desktop_backend_owner::HealthOwnerMatch::None => {
             return BackendProbe::ExternalConflict {
                 port,
                 reason: "desktop_ownership_unverified".to_string(),

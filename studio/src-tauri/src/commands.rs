@@ -876,8 +876,11 @@ mod tests {
 
     #[tokio::test]
     async fn mutation_guard_blocks_second_external_backend_when_owned_child_is_ignored() {
-        crate::desktop_backend_owner::install_test_owner(ROOT_ID, OWNER_TOKEN);
+        let _owner_guard = crate::test_support::OWNER_METADATA_LOCK.lock().await;
         let owned_port = command_test_backend(ready_health(true)).await;
+        // Ownership proof binds to the recorded port, so install the owner
+        // metadata for the owned backend's actual port.
+        crate::desktop_backend_owner::install_test_owner_on_port(ROOT_ID, OWNER_TOKEN, owned_port);
         let external_port = command_test_backend(ready_health(false)).await;
 
         let err = super::block_external_conflict(&[owned_port])
