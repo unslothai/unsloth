@@ -1688,9 +1688,8 @@ def test_the_pwsh_probe_keeps_the_inherited_module_path(monkeypatch):
 
 
 def test_the_probe_reads_the_module_path_windows_actually_exports(monkeypatch):
-    """dict(os.environ) on Windows is keyed PSMODULEPATH, and a plain dict is case-sensitive.
-    Reading "PSModulePath" found nothing, so the repair dropped the caller's entries and handed
-    the child a second key differing only by case."""
+    """dict(os.environ) on Windows is keyed PSMODULEPATH and a plain dict is case-sensitive, so
+    reading "PSModulePath" dropped the caller's entries and added a second, case-differing key."""
     from unsloth_cli.commands import studio as studio_cmd
 
     monkeypatch.setattr(studio_cmd.platform, "system", lambda: "Windows")
