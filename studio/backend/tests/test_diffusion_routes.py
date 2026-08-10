@@ -1848,7 +1848,12 @@ def test_a_failing_listing_is_not_retried_by_every_candidate():
     calls: list[str] = []
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             calls.append(repo_id)
             raise OSError("hub is offline")
 

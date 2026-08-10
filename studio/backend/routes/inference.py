@@ -20102,7 +20102,11 @@ def _guard_diffusion_load_against_training() -> None:
 _COMPANION_SIZE_CONCURRENCY = 4
 
 
-async def _companion_sizes_for(filenames, plan_for, is_cancelled = None) -> dict[str, int]:
+async def _companion_sizes_for(
+    filenames,
+    plan_for,
+    is_cancelled = None,
+) -> dict[str, int]:
     """``filename -> companion bytes`` for each candidate, planned concurrently.
 
     ``plan_for(name, check_precision)`` returns that candidate's download plan. Only the first
