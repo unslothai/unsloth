@@ -1,4 +1,5 @@
-# Core unsloth packages
+# Base ML requirements. The shell installers install these two core packages inline;
+# install_python_stack.py filters their names before applying any additional entries here.
 unsloth-zoo
 unsloth
 # diffusers is deliberately NOT here: its pin must run after every other requirements
