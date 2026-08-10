@@ -12,7 +12,11 @@ import {
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
-import type { DocumentStatus, RagDocument } from "../types/rag";
+import {
+  type RagDocument,
+  type TerminalJobStatus,
+  terminalJobStatus,
+} from "../types/rag";
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
@@ -114,11 +118,14 @@ export function useRagDocuments(
       trackedJobs.current.set(jobId, controller);
 
       const finish = (
-        status: DocumentStatus,
+        status: TerminalJobStatus,
         error?: string | null,
         numChunks?: number | null,
       ) => {
-        if (status === "failed") {
+        if (status === "cancelled") {
+          sigByDocId.current.delete(documentId);
+          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+        } else if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
@@ -150,21 +157,17 @@ export function useRagDocuments(
               finish("completed", null, ev.num_chunks);
               return;
             } else if (ev.type === "error") {
-              finish("failed", ev.error ?? "Indexing failed");
+              finish(
+                ev.stage === "cancelled" ? "cancelled" : "failed",
+                ev.error ?? "Indexing failed",
+              );
               return;
             }
           }
           // Stream ended with no terminal frame: reconcile.
           const job = await getJob(jobId);
-          finish(
-            job.status === "completed"
-              ? "completed"
-              : job.status === "failed"
-                ? "failed"
-                : "completed",
-            job.error,
-            job.numChunks,
-          );
+          const terminal = terminalJobStatus(job.status);
+          finish(terminal ?? "completed", job.error, job.numChunks);
         } catch {
           if (controller.signal.aborted) {
             trackedJobs.current.delete(jobId);
@@ -175,10 +178,15 @@ export function useRagDocuments(
             for (let i = 0; i < 600; i++) {
               if (controller.signal.aborted) break;
               const job = await getJob(jobId);
-              if (job.status === "completed")
-                return finish("completed", null, job.numChunks);
-              if (job.status === "failed") {
-                return finish("failed", job.error ?? "Indexing failed");
+              const terminal = terminalJobStatus(job.status);
+              if (terminal) {
+                return finish(
+                  terminal,
+                  terminal === "failed"
+                    ? (job.error ?? "Indexing failed")
+                    : job.error,
+                  job.numChunks,
+                );
               }
               patchDoc(documentId, {
                 status: job.status === "running" ? "running" : "pending",

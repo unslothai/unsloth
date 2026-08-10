@@ -29,7 +29,7 @@ _EMBED_BATCH = 64  # bounds peak memory
 # Poll with a timeout so the generator wakes periodically to detect a gone
 # client or a terminal job whose worker died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
-_TERMINAL_JOB_STATUSES = {"completed", "failed"}
+_TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
 
 def _sha256_file(path: str) -> str:
@@ -87,6 +87,23 @@ def _set_job(
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
+
+
+def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
+    """Retire the job when a project delete or a discarded upload removed its document.
+
+    Opens the write transaction the caller then commits into, so a delete cannot land between
+    the check and the write. Chunks carry no foreign key to the document, so writing after one
+    would strand rows under a dead scope, and completing would report a deleted document as
+    indexed and retire the document it was replacing.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    if store.get_document(conn, document_id) is not None:
+        return False
+    conn.rollback()
+    _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
+    _emit(job_id, {"type": "error", "stage": "cancelled", "error": "Document was deleted"})
+    return True
 
 
 def _embed_all(texts: list[str], model_name: str | None):
@@ -151,13 +168,24 @@ def _ocr_scanned_pages(
     return out, ocred
 
 
-def _replace_old_document(conn, replaces: tuple[str, str | None] | None, keep_path: str) -> None:
+def _replace_old_document(
+    conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
+) -> None:
     """Drop the document this ingestion replaced (stale embedder / empty prior
-    ingest), called only after the replacement completed successfully."""
+    ingest), called only after the replacement completed successfully.
+
+    Checked against the replacement inside the transaction that retires the old row: every
+    store helper commits, so a delete that removed the replacement between the completion and
+    this call would otherwise take the still-searchable document it was replacing with it.
+    """
     if replaces is None:
         return
     old_id, old_path = replaces
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if store.get_document(conn, document_id) is None:
+            conn.rollback()
+            return
         store.delete_document(conn, old_id)
         _remove_upload(old_path, keep_path = keep_path)
     except Exception:  # noqa: BLE001 - the new document is already live
@@ -226,8 +254,12 @@ def _run(
             count = count,
         )
         if not chunks:
+            # An empty parse still completes the document and retires the one it replaces, so it
+            # needs the same guard as the chunk write below.
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _replace_old_document(conn, replaces, stored_path)
+            _replace_old_document(conn, replaces, stored_path, document_id)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
@@ -246,9 +278,15 @@ def _run(
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
+        if _abort_if_document_deleted(conn, job_id, document_id):
+            return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
+        # add_chunks commits, which releases the lock taken above, so retake it before reporting
+        # success: a delete landing in that gap must not be recorded as a completed ingestion.
+        if _abort_if_document_deleted(conn, job_id, document_id):
+            return
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
-        _replace_old_document(conn, replaces, stored_path)
+        _replace_old_document(conn, replaces, stored_path, document_id)
 
         _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
