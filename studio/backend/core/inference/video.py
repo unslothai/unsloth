@@ -1621,7 +1621,6 @@ class VideoBackend:
             return False
         try:
             from huggingface_hub import HfApi
-
             repo, _files = self._denoiser_prequant_hub_files(
                 fam, transformer_quant, base, HfApi(token = hf_token), h3_task
             )

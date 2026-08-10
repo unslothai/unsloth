@@ -2825,7 +2825,12 @@ def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(m
         def __init__(self, names):
             self._names = names
 
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _PlanInfo([_PlanSibling(n, 20) for n in self._names])
 
     def _use(names):
@@ -2833,12 +2838,21 @@ def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(m
 
     # The keyframe artifacts exist, the reference one does not.
     _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-INT8-ConvRot.pt"])
-    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
-    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "fl2va", None) is True
+    assert (
+        backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None)
+        is False
+    )
+    assert (
+        backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "fl2va", None)
+        is True
+    )
 
     # Once the reference artifact is published the skip is earned again.
     _use(["MiniMax-H3-FP8.pt", "MiniMax-H3-Ref2VA-FP8.pt"])
-    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is True
+    assert (
+        backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None)
+        is True
+    )
 
     # An unreadable repo is a refusal, not a pass: the dense shards stay.
     class _Boom:
@@ -2846,9 +2860,15 @@ def test_the_verified_probe_keeps_the_dense_shards_when_the_artifact_is_absent(m
             raise RuntimeError("404 gated")
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Boom())
-    assert backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
+    assert (
+        backend._denoiser_prequant_verified(fam, "fp8", "MiniMaxAI/MiniMax-H3", "ref2va", None)
+        is False
+    )
     # And bf16 never asks in the first place.
-    assert backend._denoiser_prequant_verified(fam, None, "MiniMaxAI/MiniMax-H3", "ref2va", None) is False
+    assert (
+        backend._denoiser_prequant_verified(fam, None, "MiniMaxAI/MiniMax-H3", "ref2va", None)
+        is False
+    )
 
 
 def test_the_load_path_gates_its_dense_skip_on_the_verified_probe():
@@ -2933,9 +2953,9 @@ def test_the_h3_loader_optimises_the_partition_it_denoises_with():
         ]
         assert len(calls) == 1, f"{helper} is called {len(calls)} times"
         first = calls[0].args[0]
-        assert getattr(first, "id", None) == "speed_view", (
-            f"{helper} is handed {ast.dump(first)}, not the denoiser view"
-        )
+        assert (
+            getattr(first, "id", None) == "speed_view"
+        ), f"{helper} is handed {ast.dump(first)}, not the denoiser view"
 
 
 def test_download_plan_adds_no_prequant_entry_without_a_scheme(monkeypatch):
