@@ -57,7 +57,11 @@ jobs:
   pytest:
     name: (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not 15: the suite now runs 14.1 to 15.0 minutes on every interpreter in the matrix, so a
+    # 15 minute budget cancels whichever jobs happen to land on the slow side of the median and the
+    # result is a coin flip rather than a verdict. This guards against a hang, which 30 still does;
+    # it was never meant to be a performance budget. The suite's own runtime is the real problem.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +121,8 @@ jobs:
     # succeeds on CPU.
     name: Repo tests (CPU)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Same reason as the matrix above: this one measured 13.4 minutes against the same 15.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

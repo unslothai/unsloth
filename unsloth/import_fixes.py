@@ -20,6 +20,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 from importlib.metadata import version as importlib_version
+from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
 import logging
@@ -981,6 +982,170 @@ def _infer_required_torchvision(torch_major, torch_minor):
     return None
 
 
+# Unambiguous on their own: only a torchvision/torch mismatch produces these.
+_TORCHVISION_ABI_MARKERS = (
+    "torchvision::",
+    "torchvision.io.video",
+    "torchvision.io._video",
+)
+# A loader failure is a torchvision break only when it names torchvision or the
+# torch libraries it links. The probe below imports torchvision where nothing
+# used to, so a box whose torchvision cannot load for an UNRELATED reason (a
+# missing CUDA library, say) must keep importing unsloth exactly as before
+# instead of being handed a hard "reinstall torchvision".
+_LOADER_FAILURE_MARKERS = ("undefined symbol", "cannot open shared object file")
+_TORCH_LIBRARY_MARKERS = ("torchvision", "libtorch", "libc10", "_C.so", "c10::")
+
+
+def _is_broken_torchvision_error(error) -> bool:
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        message = str(current)
+        if any(marker in message for marker in _TORCHVISION_ABI_MARKERS):
+            return True
+        if any(m in message for m in _LOADER_FAILURE_MARKERS) and any(
+            m in message for m in _TORCH_LIBRARY_MARKERS
+        ):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
+# PyPI carries exactly one torchvision build per release and it is one CUDA
+# family: its `_C.so` links libcudart, libc10_cuda and libtorch_cuda. Every
+# other build -- CPU, XPU, ROCm, and every CUDA family but PyPI's -- lives only
+# on download.pytorch.org, under an index named after torch's own local tag.
+# `--no-deps` keeps the installed torch, so an unqualified pin swaps a working
+# wheel for PyPI's and raises the very `operator torchvision::nms does not
+# exist` this command is handed out to clear. A tag we cannot turn into an
+# index (a vendor build: this repo's Radeon extras install
+# `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com torchvision;
+# or a source build) has no wheel to name at all, and neither does a
+# prerelease, whose stable-looking companion is synthesised from the release
+# numbers alone.
+_TORCH_BACKEND_INDEX = re.compile(r"cpu|xpu|cu\d+|rocm\d+(?:\.\d+)*", re.IGNORECASE)
+# conda keeps the backend in the build string (`py3.12_cuda12.4_cudnn9_0`) and
+# leaves the version plain, so a conda torch is indistinguishable from a PyPI
+# one by version alone. Its own ledger tells them apart:
+# `conda-meta/<name>-<version>-<build>.json`, one per installed package.
+_CONDA_TORCH_PACKAGES = ("pytorch", "pytorch-cpu", "pytorch-gpu", "libtorch")
+
+
+def _torch_local_tag(torch_version_raw):
+    if not torch_version_raw or "+" not in torch_version_raw:
+        return ""
+    return torch_version_raw.split("+", 1)[1]
+
+
+def _torch_is_conda_managed(torch_version_raw):
+    """Did conda install this torch, rather than pip?"""
+    conda_meta = os.path.join(sys.prefix, "conda-meta")
+    # A conda version never carries the `+tag`, but strip it so a pip torch
+    # sitting in a conda prefix is still matched on its release numbers.
+    version = (torch_version_raw or "").split("+", 1)[0]
+    if not version or not os.path.isdir(conda_meta):
+        return False
+    # Pinned to this exact version, so an unrelated `pytorch-lightning-*.json`
+    # cannot answer for torch.
+    prefixes = tuple(f"{name}-{version}-" for name in _CONDA_TORCH_PACKAGES)
+    try:
+        entries = os.listdir(conda_meta)
+    except OSError:
+        return False
+    return any(e.endswith(".json") and e.startswith(prefixes) for e in entries)
+
+
+def _has_no_matching_public_wheel(torch_version_raw):
+    try:
+        # `.is_prerelease`, not a substring list: `2.11.0a1` and `2.11.0b2` are
+        # prereleases that no `a0`/`b0` match would catch.
+        if TrueVersion(torch_version_raw).is_prerelease:
+            return True
+    except Exception:
+        return True
+    local = _torch_local_tag(torch_version_raw)
+    if not local:
+        # An absent tag means PyPI for a pip install, but conda never writes one
+        # either, and its torch may be CPU, ROCm or a CUDA family PyPI does not
+        # ship. `--no-deps` would leave that torch beside PyPI's torchvision.
+        return _torch_is_conda_managed(torch_version_raw)
+    return not _TORCH_BACKEND_INDEX.fullmatch(local)
+
+
+def _torchvision_repair_advice(required = None, torch_version_raw = None):
+    """The one sentence telling the user how to repair a broken torchvision."""
+    if _has_no_matching_public_wheel(torch_version_raw):
+        return (
+            f"Reinstall the torchvision built for torch=={torch_version_raw}, "
+            f"from wherever that torch came from."
+        )
+    return f"Reinstall it with `{_torchvision_repair_command(required, torch_version_raw)}`."
+
+
+def _torchvision_repair_command(required = None, torch_version_raw = None):
+    """The pip command to repair a broken torchvision binary in place.
+
+    Pinned and `--no-deps`, both deliberately. Every torchvision wheel requires
+    an exact `torch==X.Y.Z`, so an unpinned `pip install --upgrade
+    --force-reinstall torchvision` resolves the newest torchvision and then
+    replaces the user's torch to satisfy it -- on a Colab/Kaggle image that is
+    the pinned torch every other wheel was built against, vLLM included. The
+    pin also fixes the case where the version gate passed on its lower bound
+    (torch 2.4 accepts torchvision >= 0.19, so an installed 0.20 reaches here):
+    the companion release is what gets reinstalled, not the newest one.
+    """
+    if required is None:
+        spec = "torchvision"
+    elif len(required) >= 3:
+        # Exact, because the pair is exact: torchvision 0.22.0 requires torch
+        # 2.7.0 and 0.22.1 requires torch 2.7.1. A `0.22.*` wildcard on a
+        # torch 2.7.0 host resolves 0.22.1, and `--no-deps` then keeps the torch
+        # that does not match it, rebuilding the mismatch the command repairs.
+        spec = f"torchvision=={required[0]}.{required[1]}.{required[2]}"
+    else:
+        spec = f"torchvision=={required[0]}.{required[1]}.*"
+    local = _torch_local_tag(torch_version_raw)
+    index = ""
+    if local and _TORCH_BACKEND_INDEX.fullmatch(local):
+        index = f" --index-url https://download.pytorch.org/whl/{local.lower()}"
+    return f'pip install --force-reinstall --no-deps --no-cache-dir{index} "{spec}"'
+
+
+def _probe_torchvision_binary(
+    torch_version_raw,
+    torchvision_version_raw,
+    required = None,
+):
+    """Import torchvision, so a broken binary is named here and not six frames
+    deep in transformers.
+
+    The table above compares metadata, which cannot see an ABI break: ops
+    built against a different torch die in `_meta_registrations`, at
+    `register_fake("torchvision::nms")`. Found by running Gemma4_(E2B)_GRPO,
+    whose T4 branch installs vllm==0.9.2 beside Colab's torch and mismatches
+    both; `disable_broken_vllm` already covers the vLLM half.
+
+    Costs no extra import: transformers imports torchvision from `image_utils`
+    the moment anything touches `processing_utils`.
+    """
+    try:
+        import torchvision  # noqa: F401
+        import torchvision.ops  # noqa: F401  where the compiled nms lives
+    except Exception as error:
+        # Anything else is left for whoever actually needs torchvision.
+        if not _is_broken_torchvision_error(error):
+            return
+        raise ImportError(
+            f"Unsloth: torchvision=={torchvision_version_raw} claims to match "
+            f"torch=={torch_version_raw}, but its compiled operators do not "
+            f"load ({type(error).__name__}: {error}). "
+            f"{_torchvision_repair_advice(required, torch_version_raw)} "
+            f"Set UNSLOTH_SKIP_TORCHVISION_CHECK=1 to skip this check."
+        ) from error
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -1028,6 +1193,12 @@ def torchvision_compatibility_check():
     if required is None:
         return
 
+    # Carry torch's own patch into the companion: the two move together
+    # (2.7.0/0.22.0, 2.7.1/0.22.1), so the repair command can name one wheel
+    # instead of a minor-wide range it cannot then satisfy under `--no-deps`.
+    if len(torch_release) >= 3:
+        required = (required[0], required[1], torch_release[2])
+
     required_tv_str = f"{required[0]}.{required[1]}.0"
 
     if tv_v >= Version(required_tv_str):
@@ -1035,6 +1206,7 @@ def torchvision_compatibility_check():
             f"Unsloth: torch=={torch_version_raw} and "
             f"torchvision=={torchvision_version_raw} are compatible."
         )
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, required)
         return
 
     # Version mismatch detected
@@ -1071,6 +1243,139 @@ def torchvision_compatibility_check():
         return
 
     raise ImportError(message)
+
+
+def _unsatisfied_transformers_requirements():
+    """Base (no-extras) requirements the environment does not satisfy, as
+    [(name, specifier, installed_version), ...]; installed_version is None when the
+    package is absent. Read from the installed distribution's own metadata, so it is
+    whatever that transformers asks for - git main, 4.57.x or 5.x - rather than a
+    table that would rot. Never raises; returns [] on anything unexpected.
+    """
+    try:
+        from importlib.metadata import requires as _dist_requires
+        from packaging.requirements import Requirement
+    except Exception:
+        return []
+
+    try:
+        raw_requirements = _dist_requires("transformers")
+    except Exception:
+        # transformers not installed, or its dist-info is missing / unreadable.
+        return []
+    if not raw_requirements:
+        return []
+
+    unsatisfied = []
+    for raw_requirement in raw_requirements:
+        try:
+            requirement = Requirement(raw_requirement)
+        except Exception:
+            continue  # Unparseable requirement line - ignore it, never guess.
+
+        # extra = "" drops optional-extra requirements and inapplicable
+        # python_version / sys_platform gates - packages the user is right not to have.
+        if requirement.marker is not None:
+            try:
+                if not requirement.marker.evaluate({"extra": ""}):
+                    continue
+            except Exception:
+                continue  # Undecidable marker - assume it does not apply.
+
+        try:
+            installed = importlib_version(requirement.name)
+        except PackageNotFoundError:
+            # Absent, which `--no-deps` causes as readily as a stale version.
+            # transformers checks its base requirements at its own root import and
+            # raises PackageNotFoundError carrying the same misleading hint, so an
+            # absent one belongs here - floor or no floor, it is not optional.
+            unsatisfied.append((requirement.name, str(requirement.specifier), None))
+            continue
+        except Exception:
+            continue  # Metadata unreadable - we cannot judge it, so stay quiet.
+
+        if not requirement.specifier:
+            continue  # Installed, and no floor it could fall below.
+
+        try:
+            # Parse explicitly: SpecifierSet.contains() reports a non-PEP440 version
+            # as "not contained" rather than raising, which would be a false positive.
+            installed_version = TrueVersion(installed)
+        except Exception:
+            continue  # Not a PEP 440 version - we cannot judge it, so stay quiet.
+
+        try:
+            # prereleases = True so a legitimate 1.0.0rc1 does not read as a violation.
+            if requirement.specifier.contains(installed_version, prereleases = True):
+                continue
+        except Exception:
+            continue  # Bad specifier - stay quiet.
+
+        unsatisfied.append((requirement.name, str(requirement.specifier), installed))
+
+    return unsatisfied
+
+
+def check_transformers_dependency_versions():
+    """Warn when transformers' own declared dependency floors are unmet.
+
+    A notebook needing a bleeding-edge model installs transformers from git with
+    `--no-deps` on purpose, so pip cannot re-resolve torch - and so pip never
+    enforces what that transformers requires either. The install "succeeds" and the
+    failure lands at import, advising `pip install transformers -U`. That remedy is
+    wrong here: the user is deliberately on main, so upgrading undoes the install
+    they wanted, or loops. The dependency is what needs upgrading. This runs first
+    and says so, naming it. Warns rather than raises; see the _gpu_init.py call.
+    """
+    if os.environ.get("UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK", "0").lower() in (
+        "1",
+        "true",
+    ):
+        return
+    try:
+        # find_spec RAISES ValueError, rather than returning None, for a transformers
+        # in sys.modules with `__spec__` None or unset - a stub, or one mid-teardown.
+        # Nothing here is worth failing `import unsloth` over.
+        if importlib.util.find_spec("transformers") is None:
+            return
+    except Exception:
+        return
+
+    try:
+        unsatisfied = _unsatisfied_transformers_requirements()
+    except Exception:
+        return
+    if not unsatisfied:
+        return
+
+    try:
+        transformers_version = importlib_version("transformers")
+    except Exception:
+        transformers_version = "unknown"
+
+    lines = [
+        f"Unsloth: transformers=={transformers_version} declares dependencies that "
+        f"your environment does not satisfy:"
+    ]
+    upgrades = []
+    for name, specifier, installed in unsatisfied:
+        found = f"found {name}=={installed}" if installed is not None else "it is not installed"
+        lines.append(f"    {name}{specifier} is required, but {found}")
+        upgrades.append(f'"{name}{specifier}"')
+    lines.append("")
+    verb = "Upgrade" if all(i is not None for _, _, i in unsatisfied) else "Install or upgrade"
+    lines.append(f"{verb} the dependencies, not transformers:")
+    lines.append(f"    pip install --upgrade {' '.join(upgrades)}")
+    lines.append("")
+    lines.append(
+        "transformers may suggest `pip install transformers -U` instead. Ignore that "
+        "if you installed transformers from git main on purpose (for example with "
+        "`pip install --no-deps git+https://github.com/huggingface/transformers.git` "
+        "for a new model) - upgrading transformers would only undo the install you "
+        "wanted. Set UNSLOTH_SKIP_TRANSFORMERS_DEPENDENCY_CHECK=1 to silence this."
+    )
+
+    logger.warning("\n".join(lines))
 
 
 # Fix TRL OpenEnv 0.26 NameError: name 'SamplingParams' is not defined
@@ -2287,6 +2592,15 @@ def fix_peft_transformers_weight_conversion_import():
         _install_transformers_core_model_loading_stub()
         patched_any = True
 
+    # Present but incomplete. transformers 5.x kept both modules and dropped
+    # names peft still imports at module top -- `cannot import name
+    # '_MODEL_TO_CONVERSION_PATTERN' from 'transformers.conversion_mapping'`.
+    # The stubs above only fire when a module is ABSENT, so that case fell
+    # through here and no-oped. Backfill the missing names onto the real
+    # module: strictly additive, so a transformers that still defines them is
+    # untouched, and nothing else on either side changes.
+    patched_any = _backfill_missing_conversion_symbols() or patched_any
+
     # An importable submodule can still lack individual symbols; backfill just
     # those names rather than replacing a real module wholesale.
     backfilled = {}
@@ -2302,7 +2616,7 @@ def fix_peft_transformers_weight_conversion_import():
         )
 
     if not patched_any:
-        # Real submodules present; failure was for some other reason.
+        # Real submodules present and complete; failure was for another reason.
         return False
 
     # Force a fresh import now that stubs are in place. Drop any cached
@@ -2323,6 +2637,404 @@ def fix_peft_transformers_weight_conversion_import():
         "transformers <5."
     )
     return True
+
+
+# What peft.utils.transformers_weight_conversion imports at module top. Kept
+# beside the stubs so the two lists cannot drift apart.
+_PEFT_CONVERSION_SYMBOLS = {
+    "transformers.conversion_mapping": (
+        "_MODEL_TO_CONVERSION_PATTERN",
+        "get_checkpoint_conversion_mapping",
+        "get_model_conversion_mapping",
+    ),
+    "transformers.core_model_loading": (
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
+        "rename_source_key",
+    ),
+}
+
+# Of those, the ones peft calls rather than merely imports. The stubs are
+# deliberately inert: on transformers <5 the whole module is ours and peft's
+# converter never runs. Landing an inert body on a REAL transformers is a
+# different matter -- peft would call it and get a wrong answer, so these are
+# replaced by a placeholder that says what is wrong instead.
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
+    (
+        "transformers.core_model_loading.dot_natural_key",
+        "transformers.core_model_loading.rename_source_key",
+        "transformers.core_model_loading.WeightRenaming",
+        "transformers.core_model_loading.WeightConverter",
+        # `build_peft_weight_mapping` buckets its entries with
+        # `isinstance(op, Concatenate)` / `isinstance(op, MergeModulelist)` and
+        # builds `Transpose(dim0 = 0, dim1 = 1)` outright, so an inert stub does not
+        # merely fail to help: the isinstance arms go quiet and the conversion is
+        # skipped. `ConversionOps` stays import-only -- peft subclasses it at module
+        # top and never asks about instances of it.
+        "transformers.core_model_loading.Concatenate",
+        "transformers.core_model_loading.MergeModulelist",
+        "transformers.core_model_loading.Transpose",
+        "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+        "transformers.conversion_mapping.get_model_conversion_mapping",
+    )
+)
+
+
+def _unsupported_conversion_symbol(qualified, donor_value = None):
+    """A stand-in that satisfies the import and refuses to answer wrongly.
+
+    Shaped like whatever it replaces: peft runs `isinstance(entry, X)` on the
+    class-valued names, so those stay classes -- never instantiable, which
+    makes the isinstance answer False, and False is right when the class does
+    not exist.
+    """
+    short = qualified.rsplit(".", 1)[-1]
+    message = (
+        f"Unsloth: this transformers does not provide {qualified}, which "
+        "peft.utils.transformers_weight_conversion calls to convert LoRA "
+        "weights. Unsloth supplied a placeholder so the import succeeds; "
+        "answering for it would silently mis-convert the adapter. Pin a "
+        "transformers that still exports it, or a peft that does not need it."
+    )
+    if isinstance(donor_value, type):
+        # `isinstance` has to raise, not answer False. peft buckets its
+        # conversion entries by type, and a placeholder that quietly matches
+        # nothing drops the operations instead of reporting that it cannot do
+        # the job. Subclassing still works: peft does `class PeftConcatenate
+        # (Concatenate)` at module top, and creating a class does not construct
+        # one.
+        class _RefusingMeta(type):
+            def __instancecheck__(cls, instance):
+                raise RuntimeError(message)
+
+        def _refuse_init(self, *args, **kwargs):
+            raise RuntimeError(message)
+
+        return _RefusingMeta(
+            short,
+            (object,),
+            {
+                "__init__": _refuse_init,
+                "__doc__": message,
+            },
+        )
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError(message)
+
+    _refuse.__name__ = _refuse.__qualname__ = short
+    _refuse.__doc__ = message
+    return _refuse
+
+
+# The model types peft actually acts on, and what it converts them as. Only two
+# base patterns reach a rewrite -- `_MOE_TARGET_MODULE_MAPPING` and
+# `_MOE_FUSED_TARGETS` are keyed on `mixtral` and `qwen2_moe` alone, and
+# `_convert_peft_config_moe` returns early for anything else -- so this is the
+# whole set of lookups that must not be answered with a silent None.
+# Snapshotted from transformers `conversion_mapping._MODEL_TO_CONVERSION_PATTERN`,
+# because the case this file handles is that map being gone. Names are the
+# reason it is a list and not a rule: `deepseek_v3`, `dots1`, `longcat_flash`,
+# `minimax`, `mellum`, `qwen3_next`, `solar_open` and `flex_olmo` are all fused
+# MoE and none of them say so.
+_PEFT_MOE_CONVERSION_PATTERNS = {
+    # The two base patterns map to themselves, and leaving them out was not the
+    # harmless omission it looked like: `mixtral` says nothing about MoE, so the
+    # substring hint answered the default for it -- the silent None this stand-in
+    # exists to prevent -- and the drift test failed outright on transformers
+    # 5.5.0, which pyproject permits. `qwen3_5_moe` is here for 5.3.0, where it
+    # is a separate key; the hint would catch that one, but only by its name.
+    "mixtral": "mixtral",
+    "qwen2_moe": "qwen2_moe",
+    "qwen3_5_moe": "qwen2_moe",
+    "minimax": "mixtral",
+    "minimax_m2": "mixtral",
+    "afmoe": "qwen2_moe",
+    "cohere2_moe": "qwen2_moe",
+    "deepseek_v2": "qwen2_moe",
+    "deepseek_v3": "qwen2_moe",
+    "deepseek_v32": "qwen2_moe",
+    "dots1": "qwen2_moe",
+    "ernie4_5_moe": "qwen2_moe",
+    "exaone_moe": "qwen2_moe",
+    "flex_olmo": "qwen2_moe",
+    "glm4_moe": "qwen2_moe",
+    "glm4_moe_lite": "qwen2_moe",
+    "glm4v_moe": "qwen2_moe",
+    "glm_moe_dsa": "qwen2_moe",
+    "hunyuan_v1_moe": "qwen2_moe",
+    "longcat_flash": "qwen2_moe",
+    "mellum": "qwen2_moe",
+    "olmoe": "qwen2_moe",
+    "qwen3_moe": "qwen2_moe",
+    "qwen3_next": "qwen2_moe",
+    "qwen3_omni_moe": "qwen2_moe",
+    "qwen3_omni_moe_thinker": "qwen2_moe",
+    "solar_open": "qwen2_moe",
+}
+
+# MoE-named model types whose conversion family is NOT one of the two fused ones,
+# so peft's `_convert_peft_config_moe` finds no `_MOE_TARGET_MODULE_MAPPING` entry
+# and returns without a rewrite. The substring hint below raised for all three
+# purely on the name, turning a load that works into a hard error. Every one is a
+# shipping model: `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite
+# MoE variants as `granitemoe`. Checked before the hint, never instead of the
+# snapshot above, so a genuinely fused type still refuses.
+_PEFT_MOE_NAMED_NOT_FUSED = frozenset(
+    (
+        "granitemoehybrid",
+        "granitemoeshared",
+        "qwen3_5_moe_text",
+    )
+)
+
+# The other half of the same carve-out: MoE-named model types that are not in the
+# conversion map AT ALL. peft's `.get()` answers None for them and skips the target
+# rewrite, so a refusal here breaks an ordinary adapter load -- `qwen3_vl_moe` and
+# `lfm2_moe` are both supported models that the substring hint caught. Kept apart
+# from the set above so its upstream canary keeps comparing like with like: that
+# one is "in the map, mapped elsewhere", this one is "not in the map".
+#
+# Every `*moe*` / `*mixtral*` model type absent from `_MODEL_TO_CONVERSION_PATTERN`
+# in BOTH 5.3.0 and 5.5.0. A name absent from one only (`afmoe`, `qwen3_5_moe`)
+# stays fused: refusing a type that was fused costs an error message, answering
+# None for one is the silent mis-conversion this exists to prevent.
+_PEFT_MOE_NAMED_NOT_CONVERTED = frozenset(
+    (
+        "ernie4_5_vl_moe",
+        "glm4v_moe_text",
+        "glm4v_moe_vision",
+        "granitemoe",
+        "jetmoe",
+        "lfm2_moe",
+        "phimoe",
+        "qwen3_vl_moe",
+        "qwen3_vl_moe_text",
+    )
+)
+
+# How many of those pairs a candidate map has to agree with before we believe it
+# is the conversion map under a new name. Three, so a coincidence does not pass
+# and a version that has renamed or dropped a handful of model types still does.
+_CONVERSION_MAP_MATCHES = 3
+
+
+def _recover_conversion_pattern_map(real):
+    """Find the model-type map under whatever name this transformers uses.
+
+    peft copies this dict and looks model families up in it, so an empty one
+    is not a harmless placeholder: `_convert_peft_config_moe` misses the
+    lookup and leaves legacy LoRA targets unconverted, with no error. The most
+    likely reason for the name to disappear is a rename, so go by shape --
+    a non-empty module-level `dict[str, str]` -- rather than by name.
+
+    Shape alone is not enough to install one, though. A module that renames the
+    map is just as likely to carry some other `dict[str, str]` (an alias table,
+    a doc map), and the largest of those is not the conversion map. So a
+    candidate also has to agree with the known model-type -> pattern pairs
+    above, and the best agreement wins rather than the biggest dict. Nothing
+    convincing means nothing recovered: the caller then installs the map that
+    raises on a MoE lookup, which is the safe answer, not the wrong one.
+    """
+    best = None
+    best_matches = 0
+    for attribute in vars(real).values():
+        if not isinstance(attribute, dict) or not attribute:
+            continue
+        if not all(isinstance(k, str) and isinstance(v, str) for k, v in attribute.items()):
+            continue
+        matches = sum(1 for k, v in _PEFT_MOE_CONVERSION_PATTERNS.items() if attribute.get(k) == v)
+        if matches < _CONVERSION_MAP_MATCHES:
+            continue
+        if matches > best_matches or (matches == best_matches and len(attribute) > len(best)):
+            best, best_matches = attribute, matches
+    return best
+
+
+_MISSING = object()
+
+
+class _UnavailableConversionPatternMap(dict):
+    """A conversion map that answers only for entries someone put in it, and raises otherwise.
+
+    Stands in when transformers has REMOVED the model-type map rather than renamed it, so
+    there is nothing to recover. Importing peft's converter still works, which is the point
+    of the backfill, but a lookup we cannot answer honestly raises where it happens instead
+    of returning None and letting the adapter load mis-converted.
+
+    ``copy`` returns another one of these because peft copies the map at import
+    (`_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`) and a plain dict
+    copy would be silent again. Writes still work, so peft's own `["mixtral"] = "mixtral"`
+    lands and answers normally.
+    """
+
+    _MESSAGE = (
+        "Unsloth: this transformers exports no model-type conversion map, so peft cannot "
+        "convert legacy LoRA targets for fused MoE checkpoints. Re-save the adapter with a "
+        "transformers that still ships transformers.conversion_mapping, or load it with a "
+        "peft that does not need the conversion."
+    )
+
+    # Only fused-MoE lookups are unsafe to answer with a silent None. peft reaches
+    # `_convert_peft_config_moe` for ANY model type that has a checkpoint conversion
+    # mapping, not just MoE ones, and for those a None is the correct answer: the function
+    # returns without a MoE target rewrite, which is what it would do with the real map
+    # too. Raising for all of them would break ordinary adapter loads to guard a case they
+    # are not in.
+    #
+    # The snapshot is the list, not a rule over the name: eleven of the twenty-four fused
+    # MoE model types say nothing about MoE in their names (`deepseek_v3`, `dots1`,
+    # `longcat_flash`, `minimax`, `mellum`, `qwen3_next`, `solar_open`, `flex_olmo` among
+    # them), so a substring test answered the default for exactly the checkpoints this
+    # exists to protect. The substring hints stay on top of it, for a fused MoE model type
+    # added after this snapshot that does follow the naming convention.
+    _MOE_HINTS = ("moe", "mixtral")
+
+    def _is_moe(self, key):
+        name = str(key).lower()
+        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+            return True
+        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+            return False
+        return any(hint in name for hint in self._MOE_HINTS)
+
+    def _answer(self, key, default):
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if self._is_moe(key):
+            raise RuntimeError(self._MESSAGE)
+        return default
+
+    def copy(self):
+        new = type(self)()
+        dict.update(new, self)
+        return new
+
+    def get(
+        self,
+        key,
+        default = None,
+    ):
+        return self._answer(key, default)
+
+    def __getitem__(self, key):
+        answer = self._answer(key, _MISSING)
+        if answer is _MISSING:
+            raise KeyError(key)
+        return answer
+
+
+def _backfill_conversion_symbols_once(builders, added):
+    """One pass over the modules. Returns True if any was left unimportable.
+
+    Split out so the caller can run it again: a module that could not be
+    imported this time may import fine once a module later in the pass has been
+    backfilled.
+    """
+    skipped = False
+    for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
+        real = sys.modules.get(name)
+        if real is None:
+            try:
+                real = importlib.import_module(name)
+            except Exception:
+                skipped = True
+                continue
+        if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
+            continue  # ours already, and complete
+        missing = [s for s in symbols if not hasattr(real, s)]
+        if not missing:
+            continue
+        # Build the stub off to the side rather than installing it, so the real
+        # module keeps its identity and everything else it exports.
+        saved = sys.modules.pop(name, None)
+        try:
+            donor = builders[name]()
+        finally:
+            if saved is not None:
+                sys.modules[name] = saved
+            else:
+                sys.modules.pop(name, None)
+        for symbol in missing:
+            qualified = f"{name}.{symbol}"
+            if symbol == "_MODEL_TO_CONVERSION_PATTERN":
+                # peft copies this and looks families up in it, so the stub's
+                # empty dict silently drops every alias. Recover the real one.
+                recovered = _recover_conversion_pattern_map(real)
+                if recovered is None:
+                    logger.warning(
+                        "Unsloth: this transformers exports no model-type "
+                        "conversion map, so peft cannot convert legacy LoRA "
+                        "targets for fused MoE checkpoints. Adapters for other "
+                        "architectures are unaffected."
+                    )
+                # An empty dict is the one shape that fails SILENTLY. peft does
+                # `_MODEL_TO_CONVERSION_PATTERN.copy()` at import and then
+                # `.get(model_type, None)`, and a None makes `_convert_peft_config_moe`
+                # return early, so every affected adapter loads with its legacy targets
+                # unconverted and no message anywhere. Every other runtime symbol here is
+                # backfilled as fail-on-use for exactly that reason; this one now matches.
+                setattr(
+                    real,
+                    symbol,
+                    dict(recovered) if recovered else _UnavailableConversionPatternMap(),
+                )
+                added.append(qualified)
+                continue
+            if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
+                # peft calls this one. The stub bodies exist to make the import
+                # work on transformers <5, where peft's converter never runs;
+                # on a real transformers it would run and answer wrongly.
+                setattr(
+                    real,
+                    symbol,
+                    _unsupported_conversion_symbol(qualified, getattr(donor, symbol, None)),
+                )
+                added.append(qualified)
+                continue
+            if hasattr(donor, symbol):
+                setattr(real, symbol, getattr(donor, symbol))
+                added.append(qualified)
+    return skipped
+
+
+def _backfill_missing_conversion_symbols():
+    """Add only the names a real module is missing, taken from our own stub.
+
+    Never replaces a module and never overwrites a name transformers defines,
+    so this is a no-op on every release that still exports them.
+    """
+    builders = {
+        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
+    }
+    added = []
+    # One pass is not enough when the two drifts coincide. conversion_mapping
+    # imports names from core_model_loading at its own module top, so while
+    # core_model_loading is still missing them, importing conversion_mapping
+    # raises and the pass skips it. Backfilling core_model_loading later in the
+    # same pass unblocks that import, but nothing comes back for it, and
+    # _gpu_init calls this guard once, so an installation carrying both drifts
+    # stayed broken. Repeat while a pass both adds a symbol and leaves a module
+    # unimportable; each pass adds at least one symbol, so the bound is the
+    # number of modules and there is no way to spin.
+    for _attempt in range(len(_PEFT_CONVERSION_SYMBOLS) + 1):
+        before = len(added)
+        skipped = _backfill_conversion_symbols_once(builders, added)
+        if not skipped or len(added) == before:
+            break
+    if added:
+        logger.info(
+            "Unsloth: backfilled %s so peft.utils."
+            "transformers_weight_conversion imports on this transformers.",
+            ", ".join(added),
+        )
+    return bool(added)
 
 
 def patch_peft_weight_converter_compatibility():

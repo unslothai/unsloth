@@ -1,0 +1,883 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Unit tests for the LTX-2 (video) family of the flow-matching DiT LoRA trainer.
+
+CPU-only, and deliberately free of a ``diffusers`` import: the two places that need the
+pipeline's patchifier are isolated behind ``_ltx2_pack`` / ``_ltx2_unpack`` so the forward
+contract can be checked against a fake transformer. What matters here is everything a video
+family gets WRONG by default: the LoRA targets leaking into the audio stream, the audio
+placeholder being fed at the wrong scale, the timestep being divided by 1000 as the image
+families do, the cross-modality attention staying on, and a video base silently routing to
+the SDXL trainer. The training loop itself is exercised by the live GPU run."""
+
+from __future__ import annotations
+
+import sys
+import types
+
+import pytest
+import torch
+
+from core.training import diffusion_dit_trainer as dit
+from core.training.diffusion_dit_trainer import (
+    _LTX2_TARGETS,
+    _LTX2_TRAIN_FPS,
+    _SPECS,
+    _free_text_encoders,
+    _ltx2_audio_state,
+    _ltx2_audio_token_count,
+    _ltx2_collate,
+    _ltx2_encode_latent_stats,
+    _ltx2_encode_latents,
+    _ltx2_forward,
+    _select_lora_targets,
+)
+from core.training.diffusion_train_common import (
+    AUTO_FLOW_SHIFT_FAMILIES,
+    DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
+    DiffusionLoraConfig,
+    TRAINABLE_VIDEO_FAMILIES,
+    _assert_trusted_base_model,
+    _component_only_repos,
+    _DIT_TRAIN_FAMILIES,
+    _family_vram_note,
+    get_trainer,
+    _publish_to_lora_catalog,
+    resolve_trainable_family,
+    train_defaults,
+)
+
+# The real LTX-2 checkpoint's transformer config values the trainer reads (from
+# Lightricks/LTX-2 transformer/config.json), so the fakes below are not invented numbers.
+LTX2_CONF = dict(
+    patch_size = 1,
+    patch_size_t = 1,
+    audio_in_channels = 128,
+    audio_sampling_rate = 16000,
+    audio_hop_length = 160,
+    audio_scale_factor = 4,
+    vae_scale_factors = (8, 32, 32),
+)
+
+# Every Linear inside one real LTX-2 transformer block, as reported by named_modules() on
+# LTX2VideoTransformer3DModel. Split into the video stream (adaptable) and everything else.
+_BLOCK = "transformer_blocks.0."
+VIDEO_STREAM_LINEARS = tuple(
+    _BLOCK + n
+    for n in (
+        "attn1.to_q",
+        "attn1.to_k",
+        "attn1.to_v",
+        "attn1.to_out.0",
+        "attn2.to_q",
+        "attn2.to_k",
+        "attn2.to_v",
+        "attn2.to_out.0",
+    )
+)
+NON_VIDEO_STREAM_LINEARS = tuple(
+    _BLOCK + n
+    for n in (
+        "audio_attn1.to_q",
+        "audio_attn1.to_k",
+        "audio_attn1.to_v",
+        "audio_attn1.to_out.0",
+        "audio_attn2.to_q",
+        "audio_attn2.to_k",
+        "audio_attn2.to_v",
+        "audio_attn2.to_out.0",
+        "audio_to_video_attn.to_q",
+        "audio_to_video_attn.to_k",
+        "audio_to_video_attn.to_v",
+        "audio_to_video_attn.to_out.0",
+        "video_to_audio_attn.to_q",
+        "video_to_audio_attn.to_k",
+        "video_to_audio_attn.to_v",
+        "video_to_audio_attn.to_out.0",
+        "audio_ff.net.0.proj",
+        "audio_ff.net.2",
+        # Video-stream feed-forward: real, but deliberately NOT a target (Lightricks' own
+        # video inpainting/outpainting LoRA configs stop at the attention projections).
+        "ff.net.0.proj",
+        "ff.net.2",
+    )
+)
+
+
+def _fake_config():
+    return types.SimpleNamespace(**LTX2_CONF)
+
+
+class _RecordingTransformer:
+    """Stands in for LTX2VideoTransformer3DModel: records the kwargs and returns
+    correctly-shaped (video, audio) predictions."""
+
+    def __init__(self):
+        self.config = _fake_config()
+        self.kwargs = None
+
+    def __call__(self, **kwargs):
+        self.kwargs = kwargs
+        hs = kwargs["hidden_states"]
+        audio = kwargs["audio_hidden_states"]
+        return hs.clone(), audio.clone()
+
+
+@pytest.fixture
+def patched_pack(monkeypatch):
+    """Replace the two diffusers-backed helpers with the identity-shaped equivalents, so the
+    forward contract is testable without importing LTX2Pipeline."""
+
+    def pack(latents, conf):
+        b, c, f, h, w = latents.shape
+        return latents.permute(0, 2, 3, 4, 1).reshape(b, f * h * w, c)
+
+    def unpack(pred, f, h, w, conf):
+        b = pred.shape[0]
+        return pred.reshape(b, f, h, w, -1).permute(0, 4, 1, 2, 3)
+
+    monkeypatch.setattr(dit, "_ltx2_pack", pack)
+    monkeypatch.setattr(dit, "_ltx2_unpack", unpack)
+
+
+# ── the spec ─────────────────────────────────────────────────────────────────
+def test_ltx2_spec_is_registered_and_bf16_only():
+    spec = _SPECS["ltx-2"]
+    assert spec.family == "ltx-2"
+    # LTX-2's RoPE runs in double precision and the reference stack is bf16 throughout.
+    assert spec.force_bf16 is True
+    # The 19B transformer index reports 37.76 GB bf16; "auto" sizes the dense modes off this.
+    assert 30.0 < spec.dense_bf16_gb < 45.0
+    assert spec.lora_targets == _LTX2_TARGETS
+
+
+def test_every_trainable_video_family_has_a_spec():
+    # The video registry has no trainable flag, so this set is the only gate; a name in it
+    # without a spec would pass resolve_trainable_family and then die in run_dit_lora_training.
+    assert TRAINABLE_VIDEO_FAMILIES <= set(_SPECS)
+    assert TRAINABLE_VIDEO_FAMILIES <= _DIT_TRAIN_FAMILIES
+    assert get_trainer("ltx-2") is dit.run_dit_lora_training
+
+
+# ── LoRA targets: the audio-stream leak ──────────────────────────────────────
+def test_ltx2_targets_are_fully_qualified():
+    # A bare "to_q" would also match audio_attn1 / audio_attn2 / audio_to_video_attn /
+    # video_to_audio_attn, which is exactly the mistake Lightricks warn about in their docs.
+    for target in _LTX2_TARGETS:
+        assert target.startswith(("attn1.", "attn2.")), target
+    assert "to_q" not in _LTX2_TARGETS
+    assert "to_out.0" not in _LTX2_TARGETS
+
+
+def _peft_selects(targets, module_name: str) -> bool:
+    """PEFT's own rule for a LIST of target_modules, from
+    ``peft.tuners.tuners_utils.check_target_module_exists``: a module is adapted when its
+    fully-qualified name equals a target or ends with "." + target. Reimplemented here
+    because importing peft pulls in transformers, which some environments cannot import;
+    ``test_our_peft_rule_matches_peft`` pins it to the real thing wherever peft loads."""
+    return any(module_name == t or module_name.endswith("." + t) for t in targets)
+
+
+def test_our_peft_rule_matches_peft():
+    try:
+        from peft import LoraConfig
+        from peft.tuners import tuners_utils as peft_utils
+    except Exception as exc:  # noqa: BLE001 -- peft drags in transformers; skip where it cannot load
+        pytest.skip(f"peft unavailable: {exc}")
+
+    cfg = LoraConfig(target_modules = list(_LTX2_TARGETS))
+    for name in VIDEO_STREAM_LINEARS + NON_VIDEO_STREAM_LINEARS:
+        assert peft_utils.check_target_module_exists(cfg, name) == _peft_selects(
+            _LTX2_TARGETS, name
+        ), name
+
+
+@pytest.mark.parametrize("name", VIDEO_STREAM_LINEARS)
+def test_ltx2_targets_select_every_video_attention_projection(name):
+    assert _peft_selects(_LTX2_TARGETS, name), name
+
+
+@pytest.mark.parametrize("name", NON_VIDEO_STREAM_LINEARS)
+def test_ltx2_targets_never_select_the_audio_or_cross_modality_streams(name):
+    assert not _peft_selects(_LTX2_TARGETS, name), name
+
+
+@pytest.mark.parametrize("name", NON_VIDEO_STREAM_LINEARS[:16])
+def test_the_generic_default_targets_would_leak_into_the_audio_stream(name):
+    """Why _LTX2_TARGETS is fully qualified: the shared DEFAULT_LORA_TARGETS suffixes match
+    the audio and cross-modality attentions too. If this ever stops being true the
+    qualification is no longer load-bearing and the comment above it is wrong."""
+    assert _peft_selects(DEFAULT_LORA_TARGETS, name), name
+
+
+def test_generic_default_targets_resolve_to_the_ltx2_set():
+    # normalized() fills the generic DEFAULT_LORA_TARGETS, and those bare suffixes WOULD hit
+    # the audio stream, so the spec's fully-qualified set must win.
+    cfg = DiffusionLoraConfig(
+        base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert cfg.lora_target_modules == DEFAULT_LORA_TARGETS
+    assert (
+        _select_lora_targets(cfg.lora_target_modules, _SPECS["ltx-2"].lora_targets) == _LTX2_TARGETS
+    )
+
+
+# ── the audio placeholder ────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "num_pixel_frames, fps, expected",
+    [
+        # 16000 / 160 / 4 = 25 audio latent tokens per second.
+        (1, 24.0, 1),  # a still: 1/24 s -> round(1.04) -> 1
+        (25, 24.0, 26),
+        (121, 24.0, 126),  # the family default clip
+        (1, 1.0, 25),
+    ],
+)
+def test_audio_token_count_matches_the_pipeline_formula(num_pixel_frames, fps, expected):
+    assert _ltx2_audio_token_count(_fake_config(), num_pixel_frames, fps) == expected
+
+
+def test_audio_token_count_never_returns_zero():
+    # round() would give 0 for a very short duration, and the transformer indexes the audio
+    # stream unconditionally, so an empty one trips its RoPE.
+    conf = types.SimpleNamespace(**{**LTX2_CONF, "audio_sampling_rate": 1})
+    assert _ltx2_audio_token_count(conf, 1, 24.0) == 1
+
+
+def test_audio_state_is_scaled_by_sigma():
+    torch.manual_seed(0)
+    sigmas = torch.tensor([0.25, 0.75]).view(2, 1, 1, 1, 1)
+    state = _ltx2_audio_state(sigmas, 2, 4, 128, torch.device("cpu"), torch.float32)
+    assert state.shape == (2, 4, 128)
+    # (1 - sigma) * 0 + sigma * noise: each row's scale must track its own sigma, so the
+    # 0.75 row is ~3x the 0.25 row. A version that fed unit noise regardless would be ~1:1.
+    ratio = float(state[1].std() / state[0].std())
+    assert 2.0 < ratio < 4.5
+
+
+def test_audio_state_is_zero_at_sigma_zero():
+    sigmas = torch.zeros(1).view(1, 1, 1, 1, 1)
+    state = _ltx2_audio_state(sigmas, 1, 3, 128, torch.device("cpu"), torch.float32)
+    assert torch.equal(state, torch.zeros_like(state))
+
+
+# ── the forward contract ─────────────────────────────────────────────────────
+def _run_forward(
+    transformer,
+    bsz = 1,
+    f = 1,
+    h = 4,
+    w = 4,
+    c = 8,
+    sigma = 0.5,
+):
+    noisy = torch.randn(bsz, c, f, h, w)
+    sigmas = torch.full((bsz,), sigma).view(bsz, 1, 1, 1, 1)
+    timesteps = torch.full((bsz,), sigma * 1000.0)
+    embeds = (
+        torch.randn(bsz, 6, 3840),
+        torch.randn(bsz, 6, 3840),
+        torch.ones(bsz, 6, dtype = torch.int64),
+    )
+    out = _ltx2_forward(transformer, noisy, timesteps, sigmas, embeds, None, "cpu", torch.float32)
+    return noisy, out
+
+
+def test_forward_returns_the_target_shape(patched_pack):
+    tr = _RecordingTransformer()
+    noisy, out = _run_forward(tr, bsz = 2, f = 1, h = 4, w = 4, c = 8)
+    # target = noise - latents is the 5-D latent, so the prediction must be unpacked back.
+    assert out.shape == noisy.shape
+
+
+def test_forward_isolates_the_cross_modality_attention(patched_pack):
+    tr = _RecordingTransformer()
+    _run_forward(tr)
+    # Without this the placeholder audio stream reaches the video prediction through
+    # audio_to_video_attn and the LoRA regresses against noise-contaminated targets.
+    assert tr.kwargs["isolate_modalities"] is True
+
+
+def test_forward_passes_the_unscaled_timestep(patched_pack):
+    # LTX-2's config carries timestep_scale_multiplier = 1000 and its pipeline feeds the
+    # scheduler timestep through as-is, unlike the FLUX / Qwen families' timestep / 1000.
+    tr = _RecordingTransformer()
+    _run_forward(tr, sigma = 0.5)
+    assert float(tr.kwargs["timestep"][0]) == pytest.approx(500.0)
+    # sigma rides the same tensor (what LTX-2.3 uses for prompt cross-attn modulation).
+    assert torch.equal(tr.kwargs["sigma"], tr.kwargs["timestep"])
+
+
+def test_forward_sizes_the_audio_stream_from_the_latent_frames(patched_pack):
+    tr = _RecordingTransformer()
+    # 1 latent frame -> 1 pixel frame at temporal compression 8 -> 1 audio token.
+    _run_forward(tr, f = 1)
+    assert tr.kwargs["audio_hidden_states"].shape == (1, 1, 128)
+    assert tr.kwargs["audio_num_frames"] == 1
+    # 4 latent frames -> (4 - 1) * 8 + 1 = 25 pixel frames -> 26 audio tokens.
+    _run_forward(tr, f = 4)
+    assert tr.kwargs["audio_hidden_states"].shape == (1, 26, 128)
+    assert tr.kwargs["audio_num_frames"] == 26
+
+
+def test_forward_reports_the_latent_geometry_and_fps(patched_pack):
+    tr = _RecordingTransformer()
+    _run_forward(tr, f = 1, h = 4, w = 6)
+    assert (tr.kwargs["num_frames"], tr.kwargs["height"], tr.kwargs["width"]) == (1, 4, 6)
+    # LTX-2's temporal RoPE coordinate is in SECONDS (frame index / fps), so the fps a still
+    # is trained at decides where on the temporal axis it lands.
+    assert tr.kwargs["fps"] == _LTX2_TRAIN_FPS == 24.0
+
+
+def test_forward_feeds_the_separate_video_and_audio_text_streams(patched_pack):
+    tr = _RecordingTransformer()
+    noisy = torch.randn(1, 8, 1, 4, 4)
+    sigmas = torch.full((1,), 0.5).view(1, 1, 1, 1, 1)
+    video_emb, audio_emb = torch.randn(1, 6, 3840), torch.randn(1, 6, 3840)
+    mask = torch.ones(1, 6, dtype = torch.int64)
+    _ltx2_forward(
+        tr,
+        noisy,
+        torch.full((1,), 500.0),
+        sigmas,
+        (video_emb, audio_emb, mask),
+        None,
+        "cpu",
+        torch.float32,
+    )
+    # The connector emits a DIFFERENT projection per modality; swapping them silently
+    # conditions the video stream on the audio caption embedding.
+    assert torch.equal(tr.kwargs["encoder_hidden_states"], video_emb)
+    assert torch.equal(tr.kwargs["audio_encoder_hidden_states"], audio_emb)
+    assert torch.equal(tr.kwargs["encoder_attention_mask"], mask)
+
+
+# ── latents + collation ──────────────────────────────────────────────────────
+class _FakeDist:
+    def __init__(self, mean, std):
+        self.mean, self.std = mean, std
+
+    def sample(self):
+        return self.mean
+
+
+class _FakeVae:
+    """Mimics AutoencoderKLLTX2Video: per-channel latents_mean / latents_std buffers plus a
+    scaling_factor, and a 5-D encode."""
+
+    def __init__(
+        self,
+        channels = 4,
+        scaling_factor = 1.0,
+    ):
+        self.latents_mean = torch.arange(channels, dtype = torch.float32)
+        self.latents_std = torch.full((channels,), 2.0)
+        self.config = types.SimpleNamespace(scaling_factor = scaling_factor)
+        self.seen = None
+
+    def encode(self, px):
+        self.seen = px.shape
+        b, _c, f, h, w = px.shape
+        ch = self.latents_mean.numel()
+        mean = torch.ones(b, ch, f, h // 2, w // 2) * 3.0
+        std = torch.ones(b, ch, f, h // 2, w // 2) * 5.0
+        return types.SimpleNamespace(latent_dist = _FakeDist(mean, std))
+
+
+def test_encode_latents_adds_a_temporal_axis_and_normalises_per_channel():
+    vae = _FakeVae()
+    out = _ltx2_encode_latents(vae, torch.zeros(1, 3, 8, 8))
+    # A still must reach the video VAE as a 1-frame clip, not as a 4-D image tensor.
+    assert vae.seen == (1, 3, 1, 8, 8)
+    expected = (3.0 - torch.arange(4, dtype = torch.float32)) / 2.0
+    assert torch.allclose(out[0, :, 0, 0, 0], expected)
+
+
+def test_encode_latent_stats_returns_the_posterior_affine_pair():
+    vae = _FakeVae()
+    a, b = _ltx2_encode_latent_stats(vae, torch.zeros(1, 3, 8, 8))
+    # The cache holds (A, B) so a per-step draw is A + B * randn; B must be the SCALED std,
+    # not the raw one, or every cached sample is drawn at the wrong width.
+    assert torch.allclose(a[0, :, 0, 0, 0], (3.0 - torch.arange(4, dtype = torch.float32)) / 2.0)
+    assert torch.allclose(b[0, :, 0, 0, 0], torch.full((4,), 5.0 / 2.0))
+
+
+def test_latent_normalisation_honours_the_scaling_factor():
+    # scaling_factor is 1.0 on the shipped checkpoint, so a version that dropped it would
+    # still pass every other test here.
+    plain = _ltx2_encode_latents(_FakeVae(scaling_factor = 1.0), torch.zeros(1, 3, 8, 8))
+    scaled = _ltx2_encode_latents(_FakeVae(scaling_factor = 2.0), torch.zeros(1, 3, 8, 8))
+    assert torch.allclose(scaled, plain * 2.0)
+
+
+def test_collate_batches_the_three_connector_tensors():
+    entries = [
+        (torch.zeros(1, 4, 8), torch.ones(1, 4, 8), torch.ones(1, 4, dtype = torch.int64)),
+        (torch.ones(1, 4, 8), torch.zeros(1, 4, 8), torch.zeros(1, 4, dtype = torch.int64)),
+    ]
+    video, audio, mask = _ltx2_collate(entries, "cpu", torch.float32)
+    assert video.shape == audio.shape == (2, 4, 8)
+    assert mask.shape == (2, 4)
+    # Order matters: entry 0's VIDEO embed is zeros and its AUDIO embed is ones.
+    assert float(video[0].sum()) == 0.0 and float(audio[0].sum()) == 32.0
+    assert float(video[1].sum()) == 32.0 and float(audio[1].sum()) == 0.0
+
+
+# ── memory: the LTX-2-only conditioning modules ──────────────────────────────
+def test_free_text_encoders_drops_the_ltx2_conditioning_stack():
+    pipe = types.SimpleNamespace(
+        text_encoder = object(),
+        tokenizer = object(),
+        # ~2.7 GB of connectors plus the decode-side audio modules the trainer never uses.
+        connectors = object(),
+        audio_vae = object(),
+        vocoder = object(),
+        transformer = object(),
+        vae = object(),
+    )
+    _free_text_encoders(pipe)
+    assert pipe.text_encoder is None and pipe.tokenizer is None
+    assert pipe.connectors is None and pipe.audio_vae is None and pipe.vocoder is None
+    # The VAE is freed separately (only once the latent cache is built), and the transformer
+    # is the thing being trained.
+    assert pipe.vae is not None and pipe.transformer is not None
+
+
+# ── routing, defaults, validation ────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "base",
+    ["Lightricks/LTX-2", "lightricks/ltx-2", "/data/models/ltx-2"],
+)
+def test_ltx2_bases_route_to_the_ltx2_trainer(base):
+    assert resolve_trainable_family(base) == "ltx-2"
+
+
+@pytest.mark.parametrize(
+    "base, family",
+    [
+        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "wan2.2-ti2v-5b"),
+        ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "wan2.2-t2v-a14b"),
+        ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", "hunyuanvideo-1.5"),
+    ],
+)
+def test_video_families_without_a_spec_are_refused_by_name(base, family):
+    # Before this gate these fell through to the unknown-name fallback and were handed to
+    # the SDXL trainer, which then failed deep inside from_pretrained.
+    with pytest.raises(ValueError) as exc:
+        resolve_trainable_family(base)
+    message = str(exc.value)
+    assert family in message
+    assert "video" in message.lower()
+    # The refusal must name what DOES work, or it is a dead end.
+    assert "ltx-2" in message
+
+
+def test_explicit_video_model_family_override_is_honoured_and_gated():
+    # An opaque local path plus an explicit family is the documented way to train from a
+    # local checkout, so the override path needs the same video routing as detection.
+    assert resolve_trainable_family("/tmp/some-local-checkout", "ltx-2") == "ltx-2"
+    with pytest.raises(ValueError, match = "wan2.2-ti2v-5b"):
+        resolve_trainable_family("/tmp/some-local-checkout", "wan2.2-ti2v-5b")
+
+
+def test_unknown_model_family_lists_the_video_families_too():
+    with pytest.raises(ValueError) as exc:
+        resolve_trainable_family("x", "not-a-real-family")
+    assert "ltx-2" in str(exc.value)
+
+
+def test_ltx2_official_base_passes_the_trusted_base_gate():
+    # It is a VIDEO base, so the image-side inference allowlist never covered it.
+    _assert_trusted_base_model("Lightricks/LTX-2")
+    with pytest.raises(ValueError, match = "untrusted"):
+        _assert_trusted_base_model("random-user/ltx-2-finetune")
+
+
+def test_ltx2_defaults_follow_the_upstream_lora_configs():
+    defaults = train_defaults("ltx-2")
+    # Lightricks ship rank/alpha 32 at lr 1e-4 in every LTX-2 LoRA config.
+    assert defaults["lora_rank"] == 32
+    assert defaults["learning_rate"] == pytest.approx(1e-4)
+    # The VAE compresses space by 32, so the default resolution must sit on that grid.
+    assert defaults["resolution"] % 32 == 0
+
+
+def test_ltx2_has_a_vram_row():
+    note = _family_vram_note("ltx-2")
+    assert "19B" in note and "GB" in note
+
+
+@pytest.mark.parametrize("resolution, ok", [(512, True), (768, True), (520, False), (528, False)])
+def test_video_resolution_must_sit_on_the_vae_grid(resolution, ok):
+    def build():
+        return DiffusionLoraConfig(
+            base_model = "Lightricks/LTX-2",
+            data_dir = "d",
+            output_dir = "o",
+            resolution = resolution,
+        ).normalized()
+
+    if ok:
+        assert build().resolution == resolution
+    else:
+        with pytest.raises(ValueError, match = "multiple of 32"):
+            build()
+
+
+def test_image_families_keep_the_multiple_of_8_rule():
+    # The /32 rule is video-only; an image family at 520px must still be accepted.
+    cfg = DiffusionLoraConfig(
+        base_model = "Tongyi-MAI/Z-Image-Turbo",
+        data_dir = "d",
+        output_dir = "o",
+        resolution = 520,
+    ).normalized()
+    assert cfg.resolution == 520
+
+
+def test_ltx2_flow_shift_defaults_to_auto():
+    # LTX-2's scheduler sets use_dynamic_shifting, so scheduler.sigmas is the UNSHIFTED
+    # uniform table; training on it would draw a sigma distribution inference never uses.
+    assert "ltx-2" in AUTO_FLOW_SHIFT_FAMILIES
+    cfg = DiffusionLoraConfig(
+        base_model = "Lightricks/LTX-2", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert cfg.flow_shift == "auto"
+    # ...while the identity families are untouched.
+    flux = DiffusionLoraConfig(
+        base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
+    ).normalized()
+    assert flux.flow_shift == 1.0
+
+
+def test_ltx2_rejects_fp16_before_loading():
+    with pytest.raises(ValueError, match = "bf16"):
+        DiffusionLoraConfig(
+            base_model = "Lightricks/LTX-2",
+            data_dir = "d",
+            output_dir = "o",
+            mixed_precision = "fp16",
+        ).normalized()
+
+
+# ── deployment surface, environment + component-repo preflight ───────────────
+def _run_cfg(base_model: str, tmp_path) -> DiffusionLoraConfig:
+    return DiffusionLoraConfig(
+        base_model = base_model,
+        data_dir = str(tmp_path / "data"),
+        output_dir = str(tmp_path / "run"),
+        adapter_name = "myrun",
+    ).normalized()
+
+
+def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
+    # loras/diffusion is scanned by the Images LoRA picker alone, and core/inference/video.py has
+    # no LoRA surface at all, so mirroring a video adapter there copies a large file into a
+    # catalog nothing can load and reports a catalog_path Studio cannot deploy.
+    from pathlib import Path
+
+    catalog = tmp_path / "loras" / "diffusion"
+    catalog.mkdir(parents = True)
+    monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
+    adapter = tmp_path / "run" / DEFAULT_LORA_FILENAME
+    adapter.parent.mkdir(parents = True, exist_ok = True)
+    adapter.write_bytes(b"adapter-bytes")
+
+    video = _run_cfg("Lightricks/LTX-2", tmp_path)
+    assert video.resolved_family == "ltx-2"
+    assert _publish_to_lora_catalog(str(adapter), video) is None
+    assert list(catalog.iterdir()) == []  # not even the metadata sidecar
+
+    # The image families are untouched: an SDXL run still mirrors + reports its catalog path.
+    image = _run_cfg("stabilityai/stable-diffusion-xl-base-1.0", tmp_path)
+    published = _publish_to_lora_catalog(str(adapter), image)
+    assert published is not None
+    assert Path(published).is_file() and Path(published).parent == catalog
+
+
+def test_ltx2_preflight_refuses_a_diffusers_without_the_pipeline(monkeypatch):
+    # LTX2Pipeline is a diffusers 0.37.0 export, and pyproject deliberately keeps an older
+    # diffusers installable on the Python 3.9 hosts this project still supports (0.36.0 is the
+    # newest one such a host can resolve). The inference paths assert this before a load; the
+    # training preflight has to as well, or the family resolves, /diffusion/start frees the
+    # resident GPU workloads, and only the child finds out. Same refusal whether the family is
+    # detected or named.
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    for base, family in (("Lightricks/LTX-2", None), ("/data/models/anything", "ltx-2")):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(base, family)
+        message = str(exc.value)
+        assert "LTX2Pipeline" in message
+        # The floor LTX-2 actually needs, not the packaging floor, and what is installed.
+        assert "0.37.0" in message and "0.36.0" in message
+
+    # A diffusers that HAS the pipeline resolves as before, so the gate is the class, not the stub.
+    monkeypatch.setitem(
+        sys.modules,
+        "diffusers",
+        types.SimpleNamespace(__version__ = "0.39.0", LTX2Pipeline = object()),
+    )
+    assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
+
+
+def test_a_component_repo_is_refused_as_a_training_base():
+    # unsloth/LTX-2-FP8 holds pre-cast component archives: no model_index.json, no VAE, no
+    # pipeline. It still carries the "ltx-2" token, so the family detector claimed it and the
+    # unsloth/* trust gate passed it, and the gated-access probe ignores the model_index.json 404
+    # because a 404 is not an access problem -- so the run evicted the resident models and only
+    # then failed inside LTX2Pipeline.from_pretrained.
+    catalogued = _component_only_repos()
+    assert catalogued["unsloth/ltx-2-fp8"] == ("ltx-2", "text_encoder", "Lightricks/LTX-2")
+    for base, family in (("unsloth/LTX-2-FP8", None), ("unsloth/LTX-2-FP8", "ltx-2")):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(base, family)
+        message = str(exc.value)
+        assert "model_index.json" in message  # says WHY it cannot be a base
+        assert "Lightricks/LTX-2" in message  # and names what to train instead
+
+
+def test_the_component_rule_reads_the_registry_rather_than_a_repo_blocklist():
+    # The rule is "registered only as a component, never as a base". The image FP8 repos are
+    # listed in prequant_repos (a full-model mirror) as well as te_prequant_repos, so they are
+    # bases and must keep resolving exactly as before.
+    assert "unsloth/qwen-image-fp8" not in _component_only_repos()
+    assert resolve_trainable_family("unsloth/Qwen-Image-FP8") == "qwen-image"
+    # An official base is never a component, whichever registry it comes from.
+    assert "lightricks/ltx-2" not in _component_only_repos()
+
+
+def test_the_preflight_survives_a_diffusers_that_cannot_import_its_pipeline(monkeypatch):
+    # The pipeline gate must refuse an OLD diffusers and stay silent on a BROKEN one. diffusers'
+    # top level is lazy, so the attribute probe is what imports the pipeline's submodule, and an
+    # install whose own dependencies are unsatisfiable raises RuntimeError from there rather than
+    # reporting the class missing. That is not the ValueError the start route maps to 400, so it
+    # would leave the preflight as a bare 500. Nothing here is a version judgement: let the load
+    # fail later with its own message.
+    class _LazyModule(types.ModuleType):
+        __version__ = "0.40.0"
+
+        def __getattr__(self, name):
+            raise RuntimeError(f"Failed to import diffusers.pipelines.{name.lower()}")
+
+    monkeypatch.setitem(sys.modules, "diffusers", _LazyModule("diffusers"))
+    assert resolve_trainable_family("Lightricks/LTX-2") == "ltx-2"
+
+
+# -- int8, the trust gate, and the connector padding side ---------------------
+
+
+def test_int8_excludes_the_one_token_audio_stream():
+    """A still feeds a ONE-token audio stream, and torch._int_mm needs M > 16. Without an
+    LTX-2 entry the generic int8 path quantized audio_proj_in / audio_attn* / audio_ff and the
+    first forward raised, after the whole base had been loaded."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    tokens = exclude_tokens_for_scheme("int8", "ltx-2")
+    assert "audio" in tokens and "av_cross_attn" in tokens and "adaln" in tokens
+    # The generic list is still there (the M=1 modulation projections).
+    assert "norm" in tokens and "time_embed" in tokens
+    # 2.3 is the same audiovisual DiT.
+    assert "audio" in exclude_tokens_for_scheme("int8", "ltx-2.3")
+    # An image family is unchanged, and a non-int8 scheme still excludes nothing.
+    assert "audio" not in exclude_tokens_for_scheme("int8", "flux.1")
+    assert exclude_tokens_for_scheme("fp8", "ltx-2") == ()
+
+
+def test_the_int8_filter_actually_skips_every_audio_side_linear():
+    """The token list is only useful if the shared filter drops these modules."""
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
+
+    fn = make_filter_fn(512, exclude_name_tokens = exclude_tokens_for_scheme("int8", "ltx-2"))
+    big = torch.nn.Linear(2048, 2048)
+    audio_names = (
+        "transformer_blocks.0.audio_proj_in",
+        "transformer_blocks.0.audio_attn1.to_q",
+        "transformer_blocks.0.audio_attn2.to_k",
+        "transformer_blocks.0.audio_ff.net.0.proj",
+        "transformer_blocks.0.audio_to_video_attn.to_q",
+        "transformer_blocks.0.video_to_audio_attn.to_k",
+    )
+    modulation_names = (
+        # LTX2AdaLayerNormSingle projections: Linear over a BATCH-sized input, so M = batch = 1.
+        # Nothing in these names says "audio", and none matches a generic token.
+        "av_cross_attn_video_scale_shift.linear",
+        "av_cross_attn_video_a2v_gate.linear",
+        "av_cross_attn_audio_scale_shift.linear",
+        "av_cross_attn_audio_v2a_gate.linear",
+        "prompt_adaln.linear",
+        "audio_prompt_adaln.linear",
+    )
+    for name in audio_names + modulation_names:
+        assert fn(big, name) is False, f"{name} must stay dense"
+    # The video stream keeps full int8 coverage.
+    assert fn(big, "transformer_blocks.0.attn1.to_q") is True
+    assert fn(big, "transformer_blocks.0.ff.net.0.proj") is True
+
+
+def test_the_int8_trainer_path_passes_the_family_through(monkeypatch):
+    """The exclusions only apply if the trainer asks for them by family."""
+    seen: dict = {}
+
+    def _fake_quantize(
+        model,
+        config,
+        filter_fn = None,
+    ):
+        seen["filter_fn"] = filter_fn
+
+    fake = types.ModuleType("torchao.quantization")
+    fake.Int8WeightOnlyConfig = lambda: object()
+    fake.quantize_ = _fake_quantize
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setitem(sys.modules, "torchao.quantization", fake)
+
+    dit._int8_quantize_base(torch.nn.Linear(8, 8), "ltx-2")
+    big = torch.nn.Linear(2048, 2048)
+    assert seen["filter_fn"](big, "transformer_blocks.0.audio_attn1.to_q") is False
+
+
+def test_ltx23_is_refused_as_a_training_base_with_the_real_reason():
+    """Lightricks/LTX-2.3 ships single-file checkpoints and no diffusers layout (no
+    model_index.json, no transformer/ subfolder), so LTX2Pipeline.from_pretrained cannot open it.
+    The name still resolves to the ltx-2 family, so it has to be refused explicitly -- in preflight,
+    before the run evicts the user's resident models."""
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    _assert_trusted_base_model("Lightricks/LTX-2")
+    for repo in ("Lightricks/LTX-2.3", "lightricks/ltx-2.3", "Lightricks/LTX-2.3-fp8"):
+        with pytest.raises(ValueError) as exc:
+            resolve_trainable_family(repo)
+        message = str(exc.value)
+        assert "single-file" in message and "Lightricks/LTX-2" in message
+        assert "untrusted" not in message
+    # An unrelated repo is still refused by the trust gate.
+    with pytest.raises(ValueError):
+        _assert_trusted_base_model("some-random-user/ltx-2-clone")
+
+
+def test_the_connector_padding_side_is_read_after_encode_prompt():
+    """diffusers' own encode_prompt sets tokenizer.padding_side = "left" (Gemma wants left
+    padding), and the pipeline reads the value AFTER calling it. Reading it before baked in a
+    stale "right", and the connectors build the valid-token mask from it, so every caption
+    shorter than the 1024 pad length would have been masked on the wrong end."""
+    seen: list = []
+
+    class _Tok:
+        padding_side = "right"  # what the tokenizer reports before encode_prompt runs
+
+    class _Pipe:
+        tokenizer = _Tok()
+
+        def encode_prompt(self, **_kwargs):
+            # Exactly what diffusers does inside _get_gemma_prompt_embeds.
+            self.tokenizer.padding_side = "left"
+            return torch.zeros(1, 4, 8), torch.ones(1, 4), None, None
+
+        def connectors(
+            self,
+            pe,
+            mask,
+            padding_side = "left",
+        ):
+            seen.append(padding_side)
+            return torch.zeros(1, 4, 8), torch.zeros(1, 4, 8), torch.ones(1, 4)
+
+    dit._ltx2_encode_prompts(_Pipe(), ["a sloth", "a second caption"], "cpu")
+    assert seen == ["left", "left"], "the connectors must get the side encode_prompt actually used"
+
+
+# ── the Train tab has to be able to OFFER the family ──────────────────────────
+
+
+def test_family_train_infos_offers_the_video_family(dit_train_host):
+    """The gap this closes: everything below the API accepted ltx-2 -- the trainer, the preflight,
+    /diffusion/start -- but ``/api/train/diffusion/info`` is built from the IMAGE registry alone,
+    so the family never appeared in the Train tab and the whole path was unreachable from the UI.
+    """
+    from core.training.diffusion_train_common import family_train_infos
+
+    infos = {i["name"]: i for i in family_train_infos()}
+    assert "ltx-2" in infos, "a trainable video family must be offered by /diffusion/info"
+    info = infos["ltx-2"]
+    # A video family has no train_base_repos, so its own base repo is the training base.
+    assert info["default_base"] == "Lightricks/LTX-2"
+    assert info["base_repos"] == ["Lightricks/LTX-2"]
+    assert info["label"] == "LTX-2"
+    assert info["defaults"]["resolution"] % 32 == 0  # the VAE's spatial grid
+    # No image LoRA catalog entry for a video run, so nothing to deploy to Create.
+    assert info["deploy_base"] is None
+    # Still a DiT, so it keeps the base_precision selector every other DiT family has.
+    assert "nf4" in info["precision_modes"]
+    # The image families must be untouched by the union.
+    assert "sdxl" in infos and "flux.1" in infos
+
+
+def test_family_train_infos_drops_a_family_this_diffusers_cannot_run(monkeypatch, dit_train_host):
+    """A family whose pipeline class is missing can only 400 at /diffusion/start, and no choice in
+    the UI fixes it, so it must not be offered at all."""
+    import core.training.diffusion_train_common as dtc
+
+    monkeypatch.setattr(
+        dtc, "family_pipeline_available", lambda fam: fam.name != "ltx-2", raising = False
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_families.family_pipeline_available",
+        lambda fam: getattr(fam, "name", "") != "ltx-2",
+    )
+    names = {i["name"] for i in dtc.family_train_infos()}
+    assert "ltx-2" not in names
+    assert "sdxl" in names  # only the unavailable one goes
+
+
+def test_the_strict_pipeline_gate_resolves_a_video_family_too(monkeypatch):
+    """``training_pipeline_import_error`` resolved the family name through the image registry only,
+    so it returned None for ltx-2 and the strict half of the preflight was skipped: the failure
+    then landed in the spawned child, after the resident GPU models were already freed."""
+    from core.training.diffusion_train_common import training_pipeline_import_error
+
+    monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
+    reason = training_pipeline_import_error("ltx-2")
+    assert reason and "LTX2Pipeline" in reason
+
+    healthy = types.SimpleNamespace(__version__ = "0.39.0", LTX2Pipeline = object)
+    monkeypatch.setitem(sys.modules, "diffusers", healthy)
+    assert training_pipeline_import_error("ltx-2") is None
+
+
+def test_editing_the_connectors_invalidates_the_conditioning_cache(tmp_path):
+    """Only the connector OUTPUT is cached (the Gemma3 hidden states are per-layer stacked and
+    never reach the transformer), so replacing the connector weights in place changes what a warm
+    run should encode. The fingerprint scanned text_encoder*/tokenizer*/vae* only, so it did not
+    move and the warm run trained on embeddings from the old connectors."""
+    from core.training.diffusion_train_extras import source_revision
+
+    root = tmp_path / "LTX-2"
+    for sub in ("text_encoder", "tokenizer", "vae", "connectors"):
+        (root / sub).mkdir(parents = True)
+        (root / sub / "model.safetensors").write_bytes(b"v1")
+    (root / "model_index.json").write_text("{}")
+
+    before = source_revision(str(root))
+    assert source_revision(str(root)) == before  # stable while nothing changes
+
+    (root / "connectors" / "model.safetensors").write_bytes(b"v2-different-size")
+    assert source_revision(str(root)) != before
+
+
+def test_an_unrelated_subdirectory_is_still_ignored(tmp_path):
+    """The fingerprint stays cheap: only the components the cached tensors come from are hashed,
+    so a scheduler or transformer edit (which the cache does not depend on) must not invalidate it.
+    """
+    from core.training.diffusion_train_extras import source_revision
+
+    root = tmp_path / "LTX-2"
+    (root / "connectors").mkdir(parents = True)
+    (root / "connectors" / "model.safetensors").write_bytes(b"v1")
+    (root / "transformer").mkdir()
+    (root / "transformer" / "model.safetensors").write_bytes(b"dit")
+
+    before = source_revision(str(root))
+    (root / "transformer" / "model.safetensors").write_bytes(b"a-different-dit-entirely")
+    assert source_revision(str(root)) == before

@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
@@ -43,10 +44,84 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest). A missing tag falls back to latest.
-DEFAULT_TAG = "master-809-eb7f35c"
+#
+# The -u<id> suffix means the mirror built upstream master-813-bfbef5b plus the patch set in its
+# patches/ directory, and the id is the hash of that set. MiniMax-H3 needs it: an unpatched build
+# aborts on the default --cfg-scale, aborts again on --vae-on-cpu, and quantizes H3's 1-D norms
+# into an output uncorrelated with its own bf16 reference. All three fixes are open upstream
+# (leejet/stable-diffusion.cpp#1861, #1862, #1863) and the patches are deleted once they ship
+# there, at which point this pin goes back to a plain upstream tag.
+#
+# leejet has no release under this name, so the upstream fallback cannot match the pin and drops
+# to leejet's latest, which is the documented behaviour for a mirror-only tag.
+DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO
+
+# ``master-<n>-<sha>-u<id>``: the mirror's marker for "upstream tree plus our patches/".
+_MIRROR_ONLY_TAG_RE = re.compile(r"^master-\d+-[0-9a-f]+-u[0-9a-f]+$")
+
+# What the managed directory records about the install it holds, so a later ensure_* can tell a CPU
+# bundle from a CUDA one instead of reusing whatever binary happens to be on disk.
+INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def accelerator_class(accelerator: Optional[str]) -> str:
+    """The accelerator an install actually serves. ``auto`` resolves to the plain build, so it and
+    ``cpu`` are the same install and must not look like an upgrade to one another."""
+    accel = (accelerator or "auto").strip().lower()
+    return "cpu" if accel in ("auto", "cpu", "") else accel
+
+
+def read_install_record(root: Path) -> dict:
+    """The install record in ``root``, or ``{}`` when there is none (an install predating the
+    record, or a directory that is not ours). Never raises."""
+    try:
+        with open(root / INSTALL_RECORD, "r", encoding = "utf-8") as f:
+            rec = json.load(f)
+        return rec if isinstance(rec, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def installed_accelerator(root: Path) -> Optional[str]:
+    """The accelerator class the install in ``root`` was built for, or None when unrecorded.
+
+    The memo WINS over the file. It is only ever set by an install that completed in this process,
+    so it is strictly newer than whatever is on disk -- and the case it exists for is precisely a
+    record that could not be overwritten, which then still reads as the PREVIOUS accelerator.
+    Preferring the file there would keep reporting cpu after a successful cuda install, and every
+    later selection would download the bundle again."""
+    val = _INSTALLED_ACCELERATOR_MEMO.get(str(root)) or read_install_record(root).get("accelerator")
+    return val if isinstance(val, str) and val else None
+
+
+# What THIS process installed, per install root. The on-disk record is the durable answer, but an
+# unwritable one (read-only file, a directory in its place) used to mean the accelerator was
+# unknown forever, and unknown reads as a mismatch for a GPU target: every later engine selection
+# would re-resolve and re-download the same multi-GB bundle. Remembering it in-process keeps a
+# successful install from being repeated, without failing an install whose binaries are fine.
+_INSTALLED_ACCELERATOR_MEMO: dict[str, str] = {}
+
+
+def _write_install_record(root: Path, *, accelerator: str, repo: str, tag: Optional[str]) -> None:
+    """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one.
+
+    The write itself stays best-effort -- a metadata failure must not throw away binaries that
+    extracted correctly -- but the answer is memoised either way, so this process never re-installs
+    what it just installed."""
+    klass = accelerator_class(accelerator)
+    _INSTALLED_ACCELERATOR_MEMO[str(root)] = klass
+    try:
+        with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
+            json.dump({"accelerator": klass, "repo": repo, "tag": tag}, f)
+    except OSError as exc:
+        print(
+            f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
+            f"remembering {klass} for this process only",
+            flush = True,
+        )
 
 
 def _repo() -> str:
@@ -57,6 +132,31 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def is_mirror_only_tag(tag: Optional[str]) -> bool:
+    """True for a ``<upstream tag>-u<id>`` tag, which only the Unsloth mirror can serve.
+
+    The mirror publishes such a tag when it builds the upstream tree plus the patch set in its
+    ``patches/`` directory, so by construction upstream has no release under that name."""
+    return bool(tag) and bool(_MIRROR_ONLY_TAG_RE.match(tag))
+
+
+# A mirror release built on top of an upstream one carries a "-u<short sha>" suffix naming the
+# fork commit (master-813-bfbef5b-u13b9d92 is upstream master-813-bfbef5b plus fork commit 13b9d92).
+_MIRROR_TAG_SUFFIX = re.compile(r"-u[0-9a-f]{7,}$")
+
+
+def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
+    """The upstream release ``tag`` was built from: the same tag with the mirror's fork suffix
+    dropped, or ``tag`` unchanged when it carries none.
+
+    Without this, pinning a fork-only tag silently costs every host the mirror does not build
+    (Linux Vulkan/ROCm, Windows GPU) its pinned install: the exact string 404s upstream and the
+    fallback settles for upstream *latest*, which is any build published since."""
+    if not tag:
+        return tag
+    return _MIRROR_TAG_SUFFIX.sub("", tag) or tag
 
 
 # accelerator -> the token that must appear in a Linux/Windows asset name.
@@ -247,6 +347,34 @@ def _locate_sd_cli(root: Path) -> Optional[Path]:
     return None
 
 
+def _archive_ships_sd_server(zf: zipfile.ZipFile) -> bool:
+    """Whether ``zf`` carries an sd-server binary. Read from the MEMBER LIST, never from the
+    extracted tree: a leftover sd-server from an earlier install looks identical on disk, which is
+    exactly the confusion this answers."""
+    name = "sd-server.exe" if sys.platform == "win32" else "sd-server"
+    return any(n.rsplit("/", 1)[-1] == name for n in zf.namelist())
+
+
+def _discard_stale_sd_server(root: Path) -> None:
+    """Remove an sd-server left behind by a previous, different bundle.
+
+    Raises when it cannot go. A leftover server is still RUNNABLE, so nothing downstream repairs
+    it: _usable_or_discard_managed only removes binaries that fail to run, and once the record
+    below names the new accelerator, _accelerator_changed trusts it and keeps handing back that
+    stale server. Failing here withholds the record, which is what makes the next load retry."""
+    stale = _locate_sd_server(root)
+    if stale is None:
+        return
+    try:
+        stale.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not remove the superseded sd-server {stale}: {exc}. It was built for a "
+            f"different accelerator than this bundle, and leaving it would keep serving it."
+        ) from exc
+    print(f"removed the previous sd-server -> {stale}", flush = True)
+
+
 def _locate_sd_server(root: Path) -> Optional[Path]:
     """The persistent ``sd-server`` binary in the extracted tree, if the archive ships
     one (modern stable-diffusion.cpp releases do). Best-effort: the native backend
@@ -363,13 +491,19 @@ def _resolve_with_fallback(
     allow_upstream = (
         not repo_pinned and primary == DEFAULT_REPO and DEFAULT_REPO != UPSTREAM_FALLBACK_REPO
     )
+    mirror_only = is_mirror_only_tag(tag)
 
     # (repo, tag_to_fetch, allow_latest): with a pin, try the exact pin on every repo first, then each repo's latest.
     attempts: list[tuple[str, Optional[str], bool]] = []
     if tag:
         attempts.append((primary, tag, False))
         if allow_upstream:
-            attempts.append((UPSTREAM_FALLBACK_REPO, tag, False))
+            # The mirror's own tag does not exist upstream, so the pin has to be translated back
+            # to the upstream release it was built from -- otherwise this attempt always 404s and
+            # the pin degrades to upstream latest for every host the mirror does not build.
+            # This supersedes simply skipping the attempt for a mirror-only tag: skipping kept the
+            # round trip cheap but dropped the pin entirely on those hosts.
+            attempts.append((UPSTREAM_FALLBACK_REPO, upstream_tag_for(tag), False))
         attempts.append((primary, None, True))
         if allow_upstream:
             attempts.append((UPSTREAM_FALLBACK_REPO, None, True))
@@ -390,6 +524,19 @@ def _resolve_with_fallback(
                     file = sys.stderr,
                     flush = True,
                 )
+                # A mirror-only pin means the shipped default carries fixes that upstream has
+                # not released. Falling back is still better than no native engine at all for
+                # every other model, but the H3 failures are SILENT (it renders, just wrongly),
+                # so this has to be said out loud rather than left to the generic line above.
+                if mirror_only:
+                    print(
+                        f"warning: {repo} has no {tag}; this build lacks the MiniMax-H3 fixes, "
+                        "so H3 will abort on the default cfg-scale and on --vae-on-cpu, and a "
+                        "blanket --type will quantize its 1-D norms into a broken render. Other "
+                        "models are unaffected.",
+                        file = sys.stderr,
+                        flush = True,
+                    )
             return repo, release, chosen
     return primary, None, None
 
@@ -456,7 +603,14 @@ def install(
         _verify_sha256(archive, asset.get("digest"))
         print("extracting ...", flush = True)
         with zipfile.ZipFile(archive) as zf:
+            ships_server = _archive_ships_sd_server(zf)
             _safe_extractall(zf, target)
+        # An archive that carries no sd-server leaves the PREVIOUS accelerator's one in place, and
+        # the record written below would then label the whole tree as this accelerator: the backend
+        # rediscovers that stale server, trusts the record and runs a CUDA request on the old CPU
+        # build forever. Drop what this bundle did not provide, so the tree and its record agree.
+        if _may_own and not ships_server:
+            _discard_stale_sd_server(target)
         # Windows CUDA builds need the separately-published cudart runtime DLLs.
         _maybe_fetch_windows_cudart(release, chosen, target)
     finally:
@@ -474,6 +628,16 @@ def install(
         _make_executable(sd_server)
     if sd_server is not None:
         print(f"installed sd-server -> {sd_server}", flush = True)
+    # Written only now, on a complete install: a record naming an accelerator whose binaries never
+    # finished extracting would suppress the very reinstall that repairs it. Only for a directory we
+    # own -- an unowned one is the user's build, which we never claim to have installed.
+    if _may_own:
+        _write_install_record(
+            target,
+            accelerator = accelerator,
+            repo = used_repo,
+            tag = release.get("tag_name"),
+        )
     # The ownership marker was written before extraction, so a crashed partial install is still recognised as ours.
     return sd_cli
 
