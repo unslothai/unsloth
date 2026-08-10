@@ -77,8 +77,23 @@ test("returns null rather than inventing a base the backend would refuse", () =>
   assert.equal(resolveDiffusionTrainingBase(klein, ""), null);
   // Loaded checkpoint the family declares no pairing for.
   assert.equal(resolveDiffusionTrainingBase(klein, "krea/Krea-2-Turbo"), null);
-  // Paired, but the training half is not offered, so it must not be preselected.
-  assert.equal(resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-9B"), null);
+  // A repo whose name matches nothing the family offers stays null.
+  assert.equal(resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-42B"), null);
+});
+
+test("a mirror-loaded checkpoint preselects the vendor base it copies", () => {
+  // Deploy hands a LoRA trained on unsloth/FLUX.2-klein-base-9B the mirror checkpoint
+  // unsloth/FLUX.2-klein-9B, so that is what /images/status reports afterwards. Its pairing names
+  // the mirror TRAINING id, which base_repos does not offer, and the panel then fell back to the
+  // first base: the 4B, seeding a 9B workflow from 4B weights. A mirror keeps the upstream name.
+  assert.equal(
+    resolveDiffusionTrainingBase(klein, "unsloth/FLUX.2-klein-9B"),
+    "black-forest-labs/FLUX.2-klein-base-9B",
+  );
+  assert.equal(
+    resolveDiffusionTrainingBase(klein, "UNSLOTH/FLUX.2-KLEIN-9B"),
+    "black-forest-labs/FLUX.2-klein-base-9B",
+  );
 });
 
 test("the Train panel preselect actually consults the pairing", async () => {

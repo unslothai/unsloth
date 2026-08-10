@@ -219,6 +219,21 @@ def test_gated_access_requires_token():
     _assert_gated_access("black-forest-labs/FLUX.2-klein-4B", None)  # Klein is open
 
 
+def test_the_gate_lets_a_local_clone_named_like_a_gated_repo_through(monkeypatch, tmp_path):
+    """A directory on disk carries no gate, whatever it is called.
+
+    A base can be a relative clone named exactly like the vendor repo, which the loaders and the
+    token-less mirror override both resolve on disk. Matching \`_GATED_TRAIN_REPOS\` by name alone
+    refused that layout without a token, for weights the run never fetches.
+    """
+    local = "black-forest-labs/FLUX.1-dev"
+    assert local.lower() in _GATED_TRAIN_REPOS, "precondition: the name is gated"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents = True)
+
+    _assert_gated_access(local, None)
+
+
 def test_the_gate_reads_the_repo_the_run_will_fetch(monkeypatch, tmp_path):
     """A gated base redirected to its ungated mirror must not be refused by name.
 

@@ -51,7 +51,18 @@ export function resolveDiffusionTrainingBase(
   );
   const trainingRepo = pair?.[0];
   if (!trainingRepo) return null;
+  const exact = family.base_repos.find(
+    (repo) => normalizedRepo(repo) === normalizedRepo(trainingRepo),
+  );
+  if (exact) return exact;
+  // A checkpoint loaded from the ungated MIRROR pairs with the mirror training id, and
+  // /diffusion/info offers only the vendor ids, so the exact match above finds nothing and the
+  // panel falls back to the first base -- for Klein the 4B, which is the very mix-up this
+  // function exists to prevent, reached through Deploy's own mirror pairing. A mirror keeps the
+  // upstream repo NAME, so fold to that; still only ever returning a base the backend offers.
+  const name = normalizedRepo(trainingRepo.split("/").pop() ?? "");
+  if (!name) return null;
   return (
-    family.base_repos.find((repo) => normalizedRepo(repo) === normalizedRepo(trainingRepo)) ?? null
+    family.base_repos.find((repo) => normalizedRepo(repo.split("/").pop() ?? "") === name) ?? null
   );
 }

@@ -1474,7 +1474,13 @@ _GATED_TRAIN_REPOS = frozenset({"black-forest-labs/flux.1-dev", "black-forest-la
 
 def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
     """Raise a clear error before loading a gated base without a token."""
+    from core.inference.diffusion_families import _is_local_path
+
     name = str(base_model or "").strip().lower()
+    # A local clone named like the vendor repo is weights on disk, not a Hub fetch: no gate
+    # applies, and refusing it by name alone is what made that documented layout untrainable.
+    if _is_local_path(base_model):
+        return
     if name in _GATED_TRAIN_REPOS and not (hf_token and str(hf_token).strip()):
         raise ValueError(
             f"'{base_model}' is a gated Hugging Face repo. Accept its license on the Hub "

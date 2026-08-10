@@ -2598,13 +2598,19 @@ def _preflight_gated_base(base_model: str, hf_token: Optional[str]) -> None:
     import urllib.error
     import urllib.request
 
+    from core.inference.diffusion_families import _is_local_path
+
     repo = (base_model or "").strip()
-    # Only remote 'org/name' repos are gated; skip local paths and single-file names.
+    # Only remote 'org/name' repos are gated; skip local paths and single-file names. A RELATIVE
+    # clone counts: a directory named exactly like the vendor id is what the loaders and the
+    # mirror override both resolve on disk, and it carries one slash and no leading marker, so
+    # without the existence test this HEADs the gated repo and 400s a run that never leaves disk.
     if (
         not repo
         or repo.count("/") != 1
         or repo.startswith((".", "/", "~"))
         or repo.endswith(".gguf")
+        or _is_local_path(repo)
     ):
         return
     url = f"https://huggingface.co/{repo}/resolve/main/model_index.json"

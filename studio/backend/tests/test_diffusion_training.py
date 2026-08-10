@@ -701,6 +701,29 @@ def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env)
     assert _cfg("hf_realtoken").fetch_base_model == source
 
 
+def test_the_start_preflight_never_heads_the_hub_for_a_local_clone(monkeypatch, tmp_path):
+    """The preflight has to make the same exception the mirror override does.
+
+    A relative clone named like the vendor repo has one slash and no leading marker, so the
+    remote/local split by string shape alone sent it to a token-less HEAD of the gated repo and
+    turned the preserved local path into a 400 the run could not clear.
+    """
+    import urllib.request
+
+    from routes.training import _preflight_gated_base
+
+    local = "black-forest-labs/FLUX.1-dev"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / local).mkdir(parents = True)
+
+    def _explode(*a, **k):
+        pytest.fail("a local clone must never be probed over the network")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _explode)
+
+    _preflight_gated_base(local, None)
+
+
 def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch, tmp_path):
     """A directory on disk is not a Hub id, even when it is spelled like a gated one.
 
