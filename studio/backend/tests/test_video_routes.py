@@ -209,6 +209,18 @@ class _FakeBackend(video_module.VideoBackend):
         }
 
 
+@pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """These tests are about the route, not about the runner's diffusers.
+
+    The module docstring promises they run without diffusers, and most do, but the
+    MiniMax-H3 download plan reaches `import diffusers` in video.py's modular-workflow
+    branch. Backend CI installs no diffusers (it lives in requirements/diffusers-pin.txt,
+    which only install_python_stack.py applies), so without the proxy that one test dies
+    on ModuleNotFoundError. Same fixture the diffusion test modules already use.
+    """
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
@@ -1273,6 +1285,11 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
     # pick rather than a keyframe checkpoint wearing the wrong name. A scheme with no checkpoint
     # at all is still refused BEFORE staging, which is the failure this route check was added for
     # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
+    #
+    # The int8 half needs a torchao that can actually run a dense quant scheme; without one the
+    # route answers 409 and is RIGHT to. Backend CI installs no torchao, so assert nothing there
+    # rather than assert the wrong thing. Same guard as tests/test_diffusion_quant_pad.py.
+    pytest.importorskip("torchao")
     backend = video_module.get_video_backend()
     monkeypatch.setattr(
         backend,
