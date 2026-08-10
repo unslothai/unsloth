@@ -311,6 +311,15 @@ def run_diffusion_lora_training(
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
+    # Only now is diffusers in sys.modules, and it hard-codes _tqdm_active = True and
+    # honours no env var, so this is the earliest point its "Loading pipeline
+    # components..." bar can be turned off -- and it comes before the pipeline load below.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a training run
+        pass
+
     cfg = config.normalized()
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
