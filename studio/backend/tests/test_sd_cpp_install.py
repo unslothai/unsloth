@@ -1841,9 +1841,7 @@ def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_pa
     current = home / "stable-diffusion.cpp"
     current.mkdir()
     (current / ".unsloth-studio-owned").touch()
-    sdmod._write_install_record(
-        current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False
-    )
+    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
 
     installs: list[dict] = []
@@ -1881,9 +1879,7 @@ def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_p
     current = home / "stable-diffusion.cpp"
     current.mkdir()
     (current / ".unsloth-studio-owned").touch()
-    sdmod._write_install_record(
-        current, accelerator = "cpu", repo = "r", tag = "t", ships_server = False
-    )
+    sdmod._write_install_record(current, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
 
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
@@ -1954,12 +1950,8 @@ def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_pa
     root.mkdir()
     sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
     assert sdmod.installed_ships_server(root) is None  # unrecorded stays unknown
-    sdmod._write_install_record(
-        root, accelerator = "cpu", repo = "r", tag = "t", ships_server = True
-    )
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t", ships_server = True)
     assert sdmod.installed_ships_server(root) is True
-    sdmod._write_install_record(
-        root, accelerator = "cpu", repo = "r", tag = "t", ships_server = False
-    )
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
     assert sdmod.installed_ships_server(root) is False
     assert sdmod.installed_accelerator(root) == "cpu"
