@@ -2002,9 +2002,9 @@ def test_every_video_fetch_reads_either_cache_root():
         for call in re.finditer(
             r"hf_hub_download_with_xet_fallback\((?:[^()]|\([^()]*\))*\)", source
         ):
-            assert "reuse_other_cache_root" in call.group(0), (
-                f"{name}: {call.group(0)[:80]} must reuse the other cache root"
-            )
+            assert "reuse_other_cache_root" in call.group(
+                0
+            ), f"{name}: {call.group(0)[:80]} must reuse the other cache root"
 
 
 def test_predownload_base_refuses_a_snapshot_split_across_roots(monkeypatch):
