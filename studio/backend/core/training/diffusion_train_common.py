@@ -1038,6 +1038,7 @@ class DiffusionLoraConfig:
         # A blank Hub token (the Studio default when none is configured) must load anonymously, not as an explicit empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
         from core.inference.diffusion_families import (
+            _is_local_path,
             mirror_repo,
             prefer_ungated_mirror,
             upstream_is_gated,
@@ -1062,9 +1063,16 @@ class DiffusionLoraConfig:
             # UNSLOTH_DIFFUSION_NO_MIRROR still wins, exactly as it does inside
             # prefer_ungated_mirror: it is the documented way to pin the vendor repo, and an
             # override that ignored it would make that switch a lie on the training path only.
+            #
+            # A local clone wins over both. A base can be a directory named exactly like the
+            # vendor id (the loaders resolve `black-forest-labs/FLUX.1-dev` on disk when it
+            # exists), and prefer_ungated_mirror carves that out for the same reason: rewriting
+            # it sends the fetch to the Hub past weights the user already has, so the run trains
+            # on a different repo, or fails offline.
             if (
                 not token
                 and upstream_is_gated(self.base_model)
+                and not _is_local_path(self.base_model)
                 and not os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip()
             ):
                 fetch_base_model = mirror_repo(self.base_model) or fetch_base_model

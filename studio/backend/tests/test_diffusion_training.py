@@ -701,6 +701,32 @@ def test_a_tokenless_run_keeps_a_cached_ungated_base(monkeypatch, no_mirror_env)
     assert _cfg("hf_realtoken").fetch_base_model == source
 
 
+def test_a_tokenless_run_keeps_a_local_clone_named_like_a_gated_base(monkeypatch, tmp_path):
+    """A directory on disk is not a Hub id, even when it is spelled like a gated one.
+
+    The loaders resolve a relative `black-forest-labs/FLUX.1-dev` directory locally, and
+    prefer_ungated_mirror carves that out deliberately. The token-less gated override has to
+    make the same exception: rewriting a local clone to the mirror sends the fetch to the Hub
+    past the weights the user already has, so the run trains on a different repo or fails
+    outright with no network.
+    """
+    from core.inference import diffusion_families
+    from core.training.diffusion_train_common import DiffusionLoraConfig
+
+    source = "black-forest-labs/FLUX.1-dev"
+    assert diffusion_families.upstream_is_gated(source), "precondition: this base is gated"
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / source).mkdir(parents = True)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+    cfg = DiffusionLoraConfig(
+        base_model = source, data_dir = "d", output_dir = "o", hf_token = None
+    ).normalized()
+
+    assert cfg.fetch_base_model == source
+    assert cfg.base_model == source
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}
