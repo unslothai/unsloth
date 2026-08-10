@@ -3553,6 +3553,7 @@ async def get_kv_cache_estimate(
                     _extract_model_size_b,
                     _mla_mtp_auto_enabled,
                 )
+
                 drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
                 # Auto declines MTP on a sub-3B embedded head, where the
                 # per-token cost regresses; a separate drafter is exempt. Pricing
@@ -3565,9 +3566,7 @@ async def get_kv_cache_estimate(
                 # declines on an inconclusive probe too. Both cover the
                 # separate-drafter path, which is emitted behind the same gate.
                 # Probes are cached on (path, mtime), so this stays cheap.
-                _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get(
-                    "mtp_token"
-                )
+                _binary_lacks_mtp = not (be.probe_server_capabilities() or {}).get("mtp_token")
                 # Auto also declines an MLA embedded head (GLM/DeepSeek/Kimi):
                 # that path keeps a duplicated full target-KV context and runs
                 # slower than no speculation, so it is off unless opted into.
@@ -3579,10 +3578,14 @@ async def get_kv_cache_estimate(
                     and not drafter_path
                     and not _mla_mtp_auto_enabled()
                 )
-                if _binary_lacks_mtp or _auto_drops_mla or _auto_mode_drops_mtp(
-                    _mode,
-                    _extract_model_size_b(repo_id),
-                    has_separate_drafter = bool(drafter_path),
+                if (
+                    _binary_lacks_mtp
+                    or _auto_drops_mla
+                    or _auto_mode_drops_mtp(
+                        _mode,
+                        _extract_model_size_b(repo_id),
+                        has_separate_drafter = bool(drafter_path),
+                    )
                 ):
                     drafter_path = None
                 else:
