@@ -205,9 +205,7 @@ def _load_conditioners(cfg, device):
     # invisible here: components already sitting in the selected root were missed and roughly
     # 145 GB re-downloaded into the old one.
     cache_dir = hub_cache_dir()
-    pipe = ModularPipeline.from_pretrained(
-        cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir
-    )
+    pipe = ModularPipeline.from_pretrained(cfg.base_model, token = cfg.hf_token, cache_dir = cache_dir)
     # The token above opens the modular INDEX only. load_components runs a separate
     # from_pretrained per component, against the repos that index names, so it has to carry the
     # token again -- and it swallows a component failure as a logger.warning rather than raising,

@@ -1428,7 +1428,11 @@ def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
 
     class _Modular:
         @staticmethod
-        def from_pretrained(path, token = None, **kw):
+        def from_pretrained(
+            path,
+            token = None,
+            **kw,
+        ):
             seen.append({"index_token": token, **kw})
             return _Pipe()
 
