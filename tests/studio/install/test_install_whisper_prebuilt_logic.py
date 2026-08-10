@@ -690,9 +690,7 @@ def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
     monkeypatch.setattr(
         M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "windows-cpu")
     )
-    manifest = _windows_slim_manifest(
-        requires_ggml_sonames = ["ggml.dll", "ggml-base.dll"]
-    )
+    manifest = _windows_slim_manifest(requires_ggml_sonames = ["ggml.dll", "ggml-base.dll"])
     artifact, backend, _fb = M.select_artifact_with_fallback(
         manifest, _host("windows", "x64"), "cpu"
     )
@@ -729,9 +727,7 @@ def test_windows_rocm_slim_does_not_require_cpu_only_libomp(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("backend", ["cpu", "cuda", "vulkan"])
-def test_windows_non_rocm_slim_still_requires_manifest_libomp(
-    tmp_path, monkeypatch, backend
-):
+def test_windows_non_rocm_slim_still_requires_manifest_libomp(tmp_path, monkeypatch, backend):
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     module = {
@@ -752,18 +748,14 @@ def test_windows_non_rocm_slim_still_requires_manifest_libomp(
         ]
     )["artifacts"][0]
 
-    assert M.slim_pairing_for_artifact(
-        artifact, _host("windows", "x64"), backend
-    ) is None
+    assert M.slim_pairing_for_artifact(artifact, _host("windows", "x64"), backend) is None
 
 
 @pytest.mark.parametrize(
     "missing_name",
     ["ggml.dll", "ggml-base.dll", "ggml-hip.dll"],
 )
-def test_windows_rocm_slim_still_requires_ggml_runtime(
-    tmp_path, monkeypatch, missing_name
-):
+def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, missing_name):
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in {"ggml.dll", "ggml-base.dll", "ggml-hip.dll"} - {missing_name}:
@@ -779,11 +771,14 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(
         ]
     )["artifacts"][0]
 
-    assert M.slim_pairing_for_artifact(
-        artifact,
-        _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
-        "rocm",
-    ) is None
+    assert (
+        M.slim_pairing_for_artifact(
+            artifact,
+            _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
+            "rocm",
+        )
+        is None
+    )
 
 
 MAC_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-macos-arm64-slim.tar.gz"
