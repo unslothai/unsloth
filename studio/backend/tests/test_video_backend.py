@@ -1443,6 +1443,16 @@ def test_load_wan_ti2v_5b_pipeline(fake_runtime):
     assert backend._state.pipe.vae.decoder.hooks == []
 
 
+def _fits_in_memory_snapshot(device):
+    """A memory snapshot big enough that no load is ever refused for size, so a test forcing a
+    device does not inherit the runner's own free memory as a precondition."""
+    from core.inference.diffusion_memory import DeviceMemory
+
+    total = 512 * 1024
+    kind = "unified_memory" if device == "mps" else "discrete_vram"
+    return lambda target: DeviceMemory(device, device, kind, int(total * 0.80), total)
+
+
 @pytest.mark.parametrize("device,hooked", [("mps", 1), ("cuda", 0)])
 def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
     fake_runtime, monkeypatch, device, hooked
@@ -1471,6 +1481,16 @@ def test_load_installs_the_pressure_gated_decoder_sync_on_mps(
             supports_default_torch_compile = False,
             supports_pinned_transfer = False,
         ),
+    )
+    # Forcing device="mps" also forces the unified-memory placement, and that snapshot is read
+    # from the HOST's free RAM (snapshot_device_memory sends mps to _system_memory_mib), not from
+    # the torch.mps stub above. A runner with little free RAM therefore refuses this 25 GB load
+    # before the hook is ever installed, which is correct behaviour and nothing to do with what
+    # is being asserted here. Pin a pool with room to spare so the result does not depend on how
+    # busy the machine is.
+    monkeypatch.setattr(
+        "core.inference.video.settled_snapshot_device_memory",
+        _fits_in_memory_snapshot(device),
     )
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
