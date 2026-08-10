@@ -649,6 +649,30 @@ def _patch_config_pickle_identity(pristine_config, patched_config):
     _register_config_pickle_fallback(pristine_config, patched_config)
 
 
+def _config_reduction_is_safe(displaced_config, patched_config):
+    """Can instances of `displaced_config` be rebuilt as `patched_config`?
+
+    The straightforward yes is a subclass: the patched class carries every field
+    the displaced one declares.
+
+    A sibling also qualifies, and TRL produces one. The deprecation shims at
+    `trl.trainer.<x>_config.<X>Config` subclass the real class in
+    `trl.experimental.<x>`, and the wrapper resolution above generates the
+    patched class from that same parent rather than from the shim -- so the two
+    end up siblings, not subclass and base. The shim adds only a `__post_init__`
+    that warns, and every base it has is already in the patched class's MRO, so
+    the patched class still holds everything such an instance can carry.
+
+    Anything else is left alone: rebuilding an unrelated class as this one would
+    silently drop state, which is worse than the PicklingError it would avoid.
+    """
+    if issubclass(patched_config, displaced_config):
+        return True
+    # `object` alone is no relationship at all, so it does not count as shared.
+    bases = set(displaced_config.__mro__[1:]) - {object}
+    return bool(bases) and bases.issubset(set(patched_config.__mro__))
+
+
 def _register_config_pickle_fallback(displaced_config, patched_config):
     """Route instances of a config class Unsloth displaced through the patched one.
 
@@ -657,7 +681,9 @@ def _register_config_pickle_fallback(displaced_config, patched_config):
     """
     if displaced_config is None or displaced_config is patched_config:
         return
-    if not isinstance(displaced_config, type) or not issubclass(patched_config, displaced_config):
+    if not isinstance(displaced_config, type):
+        return
+    if not _config_reduction_is_safe(displaced_config, patched_config):
         return
     if copyreg.dispatch_table.get(displaced_config) is _reduce_pristine_rl_config:
         return

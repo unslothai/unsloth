@@ -209,6 +209,61 @@ def test_reducer_registration_is_idempotent(patched, tmp_path):
     assert pickle.loads(pickle.dumps(_make(patched, tmp_path))).output_dir == str(tmp_path)
 
 
+def test_a_displaced_sibling_wrapper_is_covered(patched, tmp_path):
+    """TRL's deprecation shims are siblings of the patched class, not its bases.
+
+    `trl.trainer.<x>_config.<X>Config` subclasses the real class in
+    `trl.experimental.<x>`, and the wrapper resolution generates the patched
+    class from that same parent -- so a subclass-only guard skips the shim even
+    though its module attribute has already been taken over, and any instance
+    captured before patching stays unpicklable.
+    """
+    import copyreg
+
+    from unsloth.models.rl import (
+        _UNSLOTH_CONFIG_PICKLE_TARGET,
+        _register_config_pickle_fallback,
+    )
+
+    experimental_parent = patched.__mro__[1]
+
+    class _Shim(experimental_parent):
+        pass
+
+    assert not issubclass(patched, _Shim), "not the sibling shape this test is about"
+
+    registered = copyreg.dispatch_table.get(_Shim)
+    try:
+        _register_config_pickle_fallback(_Shim, patched)
+        assert copyreg.dispatch_table.get(_Shim) is not None, "sibling shim left unregistered"
+        assert getattr(_Shim, _UNSLOTH_CONFIG_PICKLE_TARGET, None) is patched
+        restored = pickle.loads(pickle.dumps(_make(_Shim, tmp_path)))
+        assert restored.output_dir == str(tmp_path)
+        # Reduced through the patched class, so the file loads without Unsloth.
+        assert type(restored) is patched
+    finally:
+        copyreg.dispatch_table.pop(_Shim, None)
+        if registered is not None:
+            copyreg.dispatch_table[_Shim] = registered
+
+
+def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
+    """The widening stops at classes whose state the patched class can hold.
+
+    Rebuilding an unrelated class as this one would drop fields silently, which
+    is worse than the PicklingError it avoids.
+    """
+    import copyreg
+
+    from unsloth.models.rl import _register_config_pickle_fallback
+
+    class _Unrelated:
+        pass
+
+    _register_config_pickle_fallback(_Unrelated, patched)
+    assert _Unrelated not in copyreg.dispatch_table
+
+
 # ---------------------------------------------------------------------------
 # The reported ordering: a fresh interpreter that imports trl, builds a config,
 # and only then imports unsloth. The fixture above cannot reproduce it, because
