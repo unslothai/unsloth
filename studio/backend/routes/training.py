@@ -3665,9 +3665,7 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
             # "video" too: the clip discovery accepts it, so without it a clip dataset whose
             # metadata.jsonl uses that key reports caption_count 0 and the panel demands a
             # trigger prompt the trainer does not need.
-            key = (
-                row.get("file_name") or row.get("video") or row.get("image") or row.get("file")
-            )
+            key = row.get("file_name") or row.get("video") or row.get("image") or row.get("file")
             value = row.get("text")
             # A JSON null is "no caption", not the string "None".
             if key and value is not None:
