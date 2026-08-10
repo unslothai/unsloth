@@ -198,17 +198,16 @@ def test_versioned_release_hides_updater_signature_assets():
 def test_publishing_draft_validates_normal_release_without_rebuilding():
     workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
     triggers = workflow.get("on", workflow.get(True))
-    assert triggers["release"] == {"types": ["published"]}
-    assert "workflow_dispatch" in triggers
+    assert set(triggers) == {"workflow_dispatch"}
     assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["queue"] == "max"
 
     job = workflow["jobs"]["publish-updater"]
     assert "build" not in workflow["jobs"]
     assert job["permissions"] == {"contents": "write"}
-    assert "startsWith(github.event.release.tag_name, 'v')" in job["if"]
+    assert "startsWith(inputs.release_tag, 'v')" in job["if"]
     # The job runs for a mistakenly flagged prerelease so validation fails visibly.
-    assert "github.event.release.prerelease" not in job["if"]
+    assert "prerelease" not in job["if"]
     assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
 
@@ -240,7 +239,6 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
         for step in job["steps"]
         if step.get("name") == "Bridge legacy desktop-latest clients once"
     )
-    assert "workflow_dispatch" in bridge["if"]
     assert "inputs.bridge_legacy_channel" in bridge["if"]
     assert "gh release create desktop-latest" not in bridge["run"]
     assert "gh release upload desktop-latest" in bridge["run"]
@@ -271,9 +269,34 @@ def test_the_updater_workflow_skips_releases_without_desktop_bundles():
         "Download updater metadata",
         "Validate updater metadata",
         "Remove standalone signature assets",
+        "Prevent GitHub latest downgrade",
         "Mark published release as GitHub latest",
     ):
         assert "steps.gate.outputs.proceed == 'true'" in steps[name]["if"], name
 
     # The v... release is shared, so the sweep must not reach past desktop assets.
     assert 'startswith("Unsloth-Desktop-")' in steps["Remove standalone signature assets"]["run"]
+
+
+def test_the_updater_workflow_is_manual_dispatch_only():
+    """It shares a concurrency group with release-desktop.yml, so an auto-fired
+    run queues ahead of the desktop build dispatched right after it and stalls
+    the release. Nothing may start this workflow except a maintainer."""
+    workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"workflow_dispatch"}, triggers
+
+    job = workflow["jobs"]["publish-updater"]
+    # Every condition has to resolve against dispatch inputs: a leftover
+    # github.event.release reference is null under dispatch and silently false.
+    conditions = [job["if"]] + [step["if"] for step in job["steps"] if "if" in step]
+    for condition in conditions:
+        assert "github.event" not in condition, condition
+
+    # The pointer repair is the reason the release trigger could be removed at
+    # all, so it must stay reachable rather than becoming dead code.
+    carry = next(
+        step for step in job["steps"] if step.get("name") == "Carry desktop metadata forward"
+    )
+    assert "inputs.repair_pointer" in carry["if"]
+    assert triggers["workflow_dispatch"]["inputs"]["repair_pointer"]["default"] is False

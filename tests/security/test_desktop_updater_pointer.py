@@ -50,6 +50,9 @@ def _step_run():
     step = steps[STEP_NAME]
     # Only for a release that arrived without bundles of its own.
     assert "steps.gate.outputs.proceed == 'false'" in step["if"]
+    # Nothing fires this workflow automatically any more, so the repair is
+    # reachable only when a maintainer asks for it by name.
+    assert "inputs.repair_pointer" in step["if"]
     return step["run"]
 
 
