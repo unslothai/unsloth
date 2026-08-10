@@ -731,9 +731,7 @@ async def delete_project(
     # Rows first, files last: a member chat can still be running a tool in the
     # workspace, and its cwd disappearing mid-call either kills the call or
     # leaves what it writes next in a directory no project owns.
-    project = await run_in_threadpool(
-        lambda: delete_chat_project(project_id, delete_files = False)
-    )
+    project = await run_in_threadpool(lambda: delete_chat_project(project_id, delete_files = False))
     if project is None:
         raise HTTPException(
             status_code = 404,

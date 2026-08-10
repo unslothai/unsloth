@@ -206,9 +206,7 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     response = asyncio.run(
         chat_history.clear_history(
             request,
-            chat_history.ChatClearRequest(
-                ids = ["pending-thread"], operationId = "clear-operation-1"
-            ),
+            chat_history.ChatClearRequest(ids = ["pending-thread"], operationId = "clear-operation-1"),
             current_subject = "test-user",
         )
     )

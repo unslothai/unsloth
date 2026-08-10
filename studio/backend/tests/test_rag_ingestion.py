@@ -127,7 +127,9 @@ def test_ingestion_skips_an_empty_completion_when_the_document_was_deleted(
         return []
 
     monkeypatch.setattr(ingestion.chunking, "chunk_pages", delete_document_then_return_nothing)
-    doc_id, job_id = ingestion.start_ingestion(scope, None, None, "empty.txt", path, project_id = "P1")
+    doc_id, job_id = ingestion.start_ingestion(
+        scope, None, None, "empty.txt", path, project_id = "P1"
+    )
     deleted["id"] = doc_id
     doc_id_known.set()
 
