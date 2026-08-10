@@ -7164,6 +7164,10 @@ def _session_in_flight(session_id: "str | None"):
         # stays closed, so nothing starts in the directory being removed.
         try:
             for pending_id, pending_files in pending.items():
+                if _thread_exists(pending_id):
+                    # Recreated while that call ran: this delete belongs to the
+                    # chat that went, and the folder is the new one's now.
+                    continue
                 _remove_session_sandbox_locked(pending_id, pending_files)
         finally:
             with _sessions_free:
@@ -7364,22 +7368,27 @@ def collect_orphaned_project_workspaces() -> None:
             continue
         try:
             session = record_id if is_chat else project_session_id(record_id)
+            # This runs minutes after the row went, and the id is the client's
+            # to reuse: a chat or a project created since owns that folder, and
+            # a card of its own may not be stored yet.
+            if _thread_exists(record_id) if is_chat else _project_exists(record_id):
+                logger.info("Kept %s: it was created again", record_id)
+                continue
             if not wait_for_sessions_idle([session], timeout = 0.0):
                 continue
             if sandbox_is_referenced_elsewhere(session):
                 continue
-            project_id = record_id
             if is_chat:
                 # Its own ownership checks decide whether that directory is
                 # ours to take, exactly as the chat's own delete would.
                 remove_session_sandbox(session, delete_files = True)
             else:
-                _delete_recorded_workspace(project_id, workspace, root)
+                _delete_recorded_workspace(record_id, workspace, root)
             # A locked file on Windows, or a network volume having a bad
             # moment: the record stays so the next launch tries again.
-            forget_orphaned_project_if_gone(project_id, workspace, root)
+            forget_orphaned_project_if_gone(record_id, workspace, root)
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
-            logger.warning("Could not collect workspace for %s", project_id, exc_info = True)
+            logger.warning("Could not collect workspace for %s", record_id, exc_info = True)
 
 
 def finish_workspace_delete_when_idle(
@@ -7443,6 +7452,15 @@ def _thread_exists(thread_id: str) -> bool:
         return get_chat_thread(thread_id) is not None
     except Exception:  # noqa: BLE001 - a storage hiccup must not reroute a call
         return False
+
+
+def _project_exists(project_id: str) -> bool:
+    """Whether a project of the user's is stored under this exact id."""
+    try:
+        from storage.studio_db import get_chat_project
+        return get_chat_project(project_id) is not None
+    except Exception:  # noqa: BLE001 - a storage hiccup must not delete files
+        return True
 
 
 def _project_workdir_for(session_id: "str | None") -> "str | None":
@@ -7780,8 +7798,18 @@ def _free_for(path: str, name: str) -> bool:
 
 
 def _root_is_ours() -> bool:
-    """True unless the root is a directory the user pointed us at."""
-    return not (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    """True unless the root is a directory the user pointed us at.
+
+    A link is theirs as well: `<studio home>/sandbox` pointing somewhere else
+    means the directories under it are the user's, and "ours by construction"
+    is what lets a delete rename and remove one of them.
+    """
+    if (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip():
+        return False
+    try:
+        return not os.path.islink(sandbox_root())
+    except OSError:
+        return False
 
 
 def _sandbox_is_ours(target: str) -> bool:
@@ -12040,6 +12068,19 @@ def _call_finished(token: "dict | None") -> None:
             _workdir_calls.pop(token["workdir"], None)
 
 
+def _snapshot_differs(before: tuple, after: tuple) -> bool:
+    """Whether a file changed between two snapshots of its directory.
+
+    The digest only when both snapshots have one: hashing stops at a byte
+    budget, so a file added or removed earlier in the walk can push an
+    untouched later file in or out of it, and comparing the tuples whole would
+    then report that file as one this call wrote.
+    """
+    if before[:2] != after[:2]:
+        return True
+    return before[2] is not None and after[2] is not None and before[2] != after[2]
+
+
 def _created_file_sentinels(
     workdir: str | None,
     before: "dict[str, tuple]",
@@ -12071,7 +12112,9 @@ def _created_file_sentinels(
     changed = sorted(
         name
         for name, key in after.items()
-        if name != exclude and name not in scratch and (name not in before or before[name] != key)
+        if name != exclude
+        and name not in scratch
+        and (name not in before or _snapshot_differs(before[name], key))
     )
     if not changed:
         return ""

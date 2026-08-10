@@ -5236,5 +5236,133 @@ def test_a_download_refuses_a_file_swapped_for_a_link(tmp_path, monkeypatch):
     assert raised.value.status_code in (403, 404)
 
 
+def test_a_linked_sandbox_root_is_not_ours_to_delete_from(tmp_path, monkeypatch):
+    """`<studio home>/sandbox` pointing into the user's own folder makes every
+    directory under it theirs, whatever the environment says."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("UNSLOTH_STUDIO_SANDBOX_HOME", raising = False)
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    theirs = tmp_path / "Documents"
+    (theirs / "chat-linked-1").mkdir(parents = True)
+    (theirs / "chat-linked-1" / "thesis.tex").write_text("x", encoding = "utf-8")
+    root = Path(tools.sandbox_root())
+    if root.exists():
+        shutil.rmtree(root)
+    root.parent.mkdir(parents = True, exist_ok = True)
+    root.symlink_to(theirs)
+
+    assert tools._root_is_ours() is False
+    workdir = Path(tools.get_sandbox_workdir("chat-linked-1"))
+    assert not (workdir / "thesis.tex").exists(), "the chat ran in the user's directory"
+    tools.remove_session_sandbox("chat-linked-1", delete_files = True)
+    assert (theirs / "chat-linked-1" / "thesis.tex").is_file(), "deleted the user's files"
+
+
+def test_a_collection_failure_names_the_record_it_was_on(tmp_path, monkeypatch):
+    """The handler runs before the loop's own name is bound, and an
+    UnboundLocalError there turns a finished delete into a 500."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    workspace = tmp_path / "Notes-projfail"
+    (workspace / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project("projfail1", str(workspace / "sandbox"), True, str(workspace))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("database is away")
+
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", boom)
+    tools.collect_orphaned_project_workspaces()  # must not raise
+    assert workspace.is_dir()
+
+
+def test_a_project_created_again_keeps_the_recorded_workspace(tmp_path, monkeypatch):
+    """The collection runs minutes later, and the id is the client's to reuse."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "projagain"
+    workspace = tmp_path / "Notes-projagai"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
+    tools.record_orphaned_project(project_id, str(workspace / "sandbox"), True, str(workspace))
+
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: {"id": pid})
+    tools.collect_orphaned_project_workspaces()
+    assert (workspace / "fresh.csv").is_file(), "the new project's files went"
+
+    # Gone again, and the collection finishes what was asked for.
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: None)
+    tools.collect_orphaned_project_workspaces()
+    assert not workspace.exists()
+
+
+def test_a_chat_recreated_while_its_tool_ran_keeps_its_files(tmp_path, monkeypatch):
+    """The delete was queued behind a running call, and by the time it fires
+    the id can belong to a chat the user did not delete."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    session = "chat-requeued-1"
+    workdir = Path(tools.get_sandbox_workdir(session))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: None)
+    with tools._session_in_flight(session):
+        assert tools.remove_session_sandbox(session, delete_files = True) is False
+        assert tools.sandbox_removal_deferred(session)
+        # The user starts a new chat and the id comes round again.
+        monkeypatch.setattr(studio_db, "get_chat_thread", lambda tid: {"id": tid})
+
+    assert (workdir / "report.csv").is_file(), "the recreated chat's files went"
+
+
+def test_a_file_outside_the_hash_budget_is_not_reported_as_written(tmp_path, monkeypatch):
+    """Hashing stops at a byte budget, so a file written earlier in the walk
+    pushes an untouched later one out of it."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    untouched = workdir / "z-report.csv"
+    untouched.write_bytes(b"x" * 32)
+
+    before = tools._snapshot_workdir_files(str(workdir))
+    assert before["z-report.csv"][2] is not None, "the file was not hashed to begin with"
+
+    # The call writes its own file, and the budget the untouched one had is
+    # taken by whatever the walk reaches first.
+    (workdir / "a-new.bin").write_bytes(b"y" * 64)
+    monkeypatch.setattr(tools, "_MAX_SNAPSHOT_HASH_BYTES", 0)
+    sentinels = tools._created_file_sentinels(str(workdir), before)
+    assert "a-new.bin" in sentinels
+    assert "z-report.csv" not in sentinels, sentinels
+
+
+def test_the_file_download_button_refreshes_the_session_first():
+    """The bearer rides in the URL, so an access token that expired during the
+    session would save a 401 body under the file's name."""
+    src = Path(__file__).resolve().parents[2] / "frontend/src"
+    view = (src / "components/assistant-ui/sandbox-files-view.tsx").read_text(encoding = "utf-8")
+    assert "authFetch(apiUrl(path), { method: \"HEAD\" })" in view
+    assert view.index("authFetch(apiUrl(path)") < view.index("const token = getAuthToken()")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

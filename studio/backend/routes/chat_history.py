@@ -460,6 +460,10 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
                     # collection below takes it once the last fork goes too.
                     record_kept_sandbox(thread_id)
                 continue
+            # Again, next to the removal: the reference scan above reads
+            # every message, and another tab can recreate the chat while it runs.
+            if get_chat_thread(thread_id) is not None:
+                continue
             if remove_session_sandbox(thread_id, delete_files = delete_files):
                 removed += 1
             # A removal that had to wait for a running tool call is reported as

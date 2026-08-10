@@ -6,7 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { getAuthToken } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
 
@@ -35,8 +35,14 @@ function SandboxFileRow({
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      const token = getAuthToken();
       const path = sandboxFilePath(sessionId, file.name);
+      // The bearer rides in the URL, so nothing refreshes it: an access token
+      // that expired during the session would otherwise save a 401 body under
+      // the file's name. authFetch refreshes and retries, and the token is read
+      // after it; the HEAD also settles whether the file is still there.
+      const probe = await authFetch(apiUrl(path), { method: "HEAD" });
+      if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
+      const token = getAuthToken();
       const separator = path.includes("?") ? "&" : "?";
       // Absolute: the native command parses this and rejects a relative URL,
       // so a bare /api path failed before the request was made.
