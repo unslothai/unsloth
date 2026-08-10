@@ -161,6 +161,7 @@ def resolve_prequant_source(
     agnostic = None
     try:
         from .diffusion_families import family_prequant_filename, family_prequant_repo
+
         repo_id = family_prequant_repo(fam, scheme, base_repo = base_repo)
         preferred = family_prequant_filename(fam, scheme, task = task)
         # What the same call would have resolved WITHOUT a task, which is what decides whether a
@@ -188,9 +189,7 @@ def resolve_prequant_source(
             location = repo_id,
             filename = preferred or derived,
             fallback_filename = (
-                None
-                if task_specific
-                else (derived if preferred else prequant_filename(scheme))
+                None if task_specific else (derived if preferred else prequant_filename(scheme))
             ),
         )
     return None

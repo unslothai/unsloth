@@ -456,17 +456,14 @@ def video_family_prequant_available(
         return False
     wanted = (task or "").strip().lower()
     partition_tasks = {
-        (t or "").strip().lower()
-        for t in (getattr(fam, "prequant_partition_tasks", ()) or ())
+        (t or "").strip().lower() for t in (getattr(fam, "prequant_partition_tasks", ()) or ())
     }
     if wanted and wanted in partition_tasks:
         return video_family_prequant_task_specific(fam, scheme, wanted)
     return True
 
 
-def video_family_prequant_schemes(
-    fam: VideoFamily, task: Optional[str] = None
-) -> tuple[str, ...]:
+def video_family_prequant_schemes(fam: VideoFamily, task: Optional[str] = None) -> tuple[str, ...]:
     """Every scheme this family has a hosted denoiser checkpoint for, in table order.
 
     Used to name the workable schemes in a refusal message, so a rejected request tells the caller
@@ -481,9 +478,7 @@ def video_family_prequant_schemes(
         if isinstance(entry, (tuple, list)) and len(entry) == 3 and entry[1] not in schemes:
             schemes.append(entry[1])
     if task:
-        schemes = [
-            s for s in schemes if video_family_prequant_available(fam, s, task = task)
-        ]
+        schemes = [s for s in schemes if video_family_prequant_available(fam, s, task = task)]
     return tuple(schemes)
 
 

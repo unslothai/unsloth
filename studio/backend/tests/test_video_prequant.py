@@ -230,9 +230,7 @@ def test_a_family_predating_the_task_shape_is_unaffected_by_a_task():
     import types
 
     fam = _fam(prequant_repos = (("fp8", "unsloth/Test-FP8"),))
-    assert resolve_prequant_source(fam, "fp8", task = "ref2va") == resolve_prequant_source(
-        fam, "fp8"
-    )
+    assert resolve_prequant_source(fam, "fp8", task = "ref2va") == resolve_prequant_source(fam, "fp8")
     assert resolve_prequant_source(types.SimpleNamespace(), "fp8", task = "ref2va") is None
 
 
@@ -284,7 +282,6 @@ def test_the_h3_partition_task_matches_the_reference_workflow_name():
     # The registry spells the task as a literal to stay import-free; pin it to the constant the
     # loader and the download planner branch on, so the two cannot drift apart silently.
     from core.inference.video_minimax_h3 import H3_TASK_REFERENCES
-
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
     assert fam.prequant_partition_tasks == (H3_TASK_REFERENCES,)
 
@@ -299,9 +296,7 @@ def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(m
         prequant_filenames = (("fp8", "ref2va", "Test-Ref2VA-FP8.pt"),),
         prequant_partition_tasks = ("ref2va",),
     )
-    monkeypatch.setattr(
-        "core.inference.video._detect_load_family", lambda *a, **k: fam
-    )
+    monkeypatch.setattr("core.inference.video._detect_load_family", lambda *a, **k: fam)
     monkeypatch.setattr("core.inference.video._is_trusted_video_repo", lambda repo: True)
     backend = VideoBackend()
     with pytest.raises(ValueError) as excinfo:
@@ -328,9 +323,9 @@ def test_a_reference_load_is_refused_when_its_scheme_has_no_reference_artifact(m
             h3_task = "ref2va",
         )
     except Exception as exc:  # noqa: BLE001
-        assert "transformer_quant" not in str(exc), (
-            f"fp8 ref2va should be loadable but was refused: {exc}"
-        )
+        assert "transformer_quant" not in str(
+            exc
+        ), f"fp8 ref2va should be loadable but was refused: {exc}"
 
 
 # ── validate_load_request: refuse BEFORE the download ────────────────────────────

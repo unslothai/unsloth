@@ -817,7 +817,9 @@ def family_prequant_repo(
 
 
 def family_prequant_filename(
-    fam: DiffusionFamily, scheme: str, task: Optional[str] = None
+    fam: DiffusionFamily,
+    scheme: str,
+    task: Optional[str] = None,
 ) -> Optional[str]:
     """The preferred checkpoint filename this family declares for ``scheme``, or None.
 

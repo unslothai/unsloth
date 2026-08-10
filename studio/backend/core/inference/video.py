@@ -1554,9 +1554,7 @@ class VideoBackend:
             # for a modular workflow, so it must NOT drop the dense shards that load then wants.
             if scheme is None or scheme == TQ_AUTO:
                 return False
-            return video_family_prequant_available(
-                fam, scheme, task = h3_task, base_repo = base
-            )
+            return video_family_prequant_available(fam, scheme, task = h3_task, base_repo = base)
         except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense shards
             return False
 
@@ -1584,6 +1582,7 @@ class VideoBackend:
             return None, []
         try:
             from .diffusion_prequant import resolve_prequant_source
+
             # Task-keyed, like the coverage probe: staging the other partition's checkpoint would
             # advertise the right byte count for the wrong file.
             source = resolve_prequant_source(fam, scheme, base_repo = base, task = h3_task)
@@ -1690,9 +1689,7 @@ class VideoBackend:
 
         siblings = list(info.siblings or [])
         is_h3_modular = any(s.rfilename == "modular_model_index.json" for s in siblings)
-        h3_is_references = (
-            is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
-        )
+        h3_is_references = is_h3_modular and (h3_task or "").strip().lower() == H3_TASK_REFERENCES
         h3_denoiser_prefix = "transformer_ref/" if h3_is_references else "transformer/"
         # Which component's dense weight shards ``skip_transformer_weights`` drops. It has to be
         # the partition this load will actually open: a reference load stages transformer_ref/ and
@@ -1726,9 +1723,7 @@ class VideoBackend:
                 continue
             # is_prequant_covered_weight is component-agnostic (it matches "<component>/" against a
             # weight suffix), so the encoder helper serves the denoiser verbatim.
-            if skip_transformer_weights and is_prequant_covered_weight(
-                name, (h3_skip_component,)
-            ):
+            if skip_transformer_weights and is_prequant_covered_weight(name, (h3_skip_component,)):
                 continue
             if name.startswith("text_encoder/diffusion_pytorch_model"):
                 continue

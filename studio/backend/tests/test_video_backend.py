@@ -2010,8 +2010,7 @@ def test_base_download_files_skips_the_partition_the_prequant_checkpoint_replace
     # 66 of the 68 units in the reference plan were the dense denoiser; without the fix the totals
     # are identical with and without the skip.
     assert sum(references.values()) < sum(
-        size
-        for _n, size in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")
+        size for _n, size in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")
     )
 
 

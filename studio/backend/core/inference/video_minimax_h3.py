@@ -334,9 +334,7 @@ def h3_denoiser_component(task: Optional[str]) -> str:
     the config subfolder alike -- and seeding ``transformer`` for a reference load would leave the
     denoise step with no denoiser and pull the dense 66.28 GB partition anyway."""
     return (
-        "transformer_ref"
-        if (task or "").strip().lower() == H3_TASK_REFERENCES
-        else "transformer"
+        "transformer_ref" if (task or "").strip().lower() == H3_TASK_REFERENCES else "transformer"
     )
 
 
