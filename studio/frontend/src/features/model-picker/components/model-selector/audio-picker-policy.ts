@@ -64,6 +64,33 @@ export function communityAudioRowIsRunnable({
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
 }
 
+/** Whether an audio pick from the chat picker may be routed to the Audio page.
+ *
+ * The page's own lists apply `communityAudioRowIsRunnable`, so a repo that fails it
+ * is not listed there. Routing one anyway sends the user to a page that cannot show
+ * the row, and its `?model=` handoff loads it into the main slot, evicting the chat
+ * model before reporting the repo is unsupported. Curated ids always route: the
+ * catalog, not the tag, is their runtime contract. */
+export function audioPickIsRoutable({
+  id,
+  task,
+  isGguf,
+  isCurated,
+}: {
+  id: string;
+  task: string | null | undefined;
+  isGguf: boolean;
+  isCurated: boolean;
+}): boolean {
+  if (isCurated) return true;
+  return communityAudioRowIsRunnable({
+    isStt: task === "automatic-speech-recognition",
+    isTts: task === "text-to-speech",
+    isGguf,
+    id,
+  });
+}
+
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated
  * families may expose a non-GGUF canonical row because Audio resolves that row
  * to its published GGUF sibling before loading. */

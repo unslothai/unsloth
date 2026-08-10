@@ -46,13 +46,18 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
     source,
     /const handleEject[\s\S]*stopAndDiscardRecording\(\);[\s\S]*if \(mode === "transcribe"\)/,
   );
+  // One release path, shared with the Generate-mode transition, so both stay owned.
   assert.match(
     source,
-    /if \(mode === "transcribe"\)[\s\S]*const selectedEngine = sttEngineForRepoId\(selected\)[\s\S]*sttLoadedModel !== sttSidecarKeyFor\(selected\)[\s\S]*sttLoadedEngine !== selectedEngine[\s\S]*await unloadSttModel\(selectedEngine\)/,
+    /const releaseTranscribeSelection = useCallback\([\s\S]*const owned = sttReady && selected !== null[\s\S]*if \(!owned\) return;[\s\S]*await unloadSttModel\(sttEngineForRepoId\(selected\)\);[\s\S]*await refreshSttStatus\(\)/,
   );
   assert.match(
     source,
-    /await unloadSttModel\(selectedEngine\);[\s\S]*setSelectedSttRepo\(null\);[\s\S]*await refreshSttStatus\(\)/,
+    /const releaseTranscribeSelection = useCallback\([\s\S]*setSelectedSttRepo\(null\);/,
+  );
+  assert.match(
+    source,
+    /if \(mode === "transcribe"\)[\s\S]*await releaseTranscribeSelection\(\)/,
   );
   assert.match(
     adapterSource,
@@ -60,7 +65,15 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
   );
   assert.match(
     source,
-    /sttLoadedEngine !== selectedEngine[\s\S]*sttStatusRefreshGeneration\.current \+= 1;[\s\S]*setSelectedSttRepo\(null\)/,
+    /if \(!sttReady\) \{[\s\S]*sttStatusRefreshGeneration\.current \+= 1;[\s\S]*void releaseTranscribeSelection\(\)/,
+  );
+});
+
+test("leaving Transcribe releases the sidecar it loaded", () => {
+  // Holding it through Generate doubled VRAM for the whole keep-alive window (PR 7984 report).
+  assert.match(
+    source,
+    /const transitionMode = useCallback\([\s\S]*setMode\(nextMode\);[\s\S]*if \(mode === "transcribe"\) \{[\s\S]*releaseTranscribeSelection\(\)/,
   );
 });
 

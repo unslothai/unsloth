@@ -30,6 +30,7 @@ from typing import Any, Generator, Optional, Sequence, Tuple, Union
 from core.inference.audio_errors import (
     AUDIO_UNSUPPORTED_CODE,
     AudioBackendUnsupportedError,
+    AudioGenerationCancelledError,
 )
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
@@ -2094,7 +2095,7 @@ class InferenceOrchestrator:
             try:
                 dispatcher_idle = self._wait_dispatcher_idle(cancel_event = cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Audio generation cancelled")
+                    raise AudioGenerationCancelledError("Audio generation cancelled")
                 if not dispatcher_idle:
                     raise RuntimeError(
                         "Cannot start audio generation while compare requests are active"
@@ -2178,7 +2179,7 @@ class InferenceOrchestrator:
 
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():
-                                raise RuntimeError("Audio generation cancelled")
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
                             return wav_bytes, sample_rate
@@ -2187,7 +2188,7 @@ class InferenceOrchestrator:
                             if resp.get("cancelled") or (
                                 cancel_event is not None and cancel_event.is_set()
                             ):
-                                raise RuntimeError("Audio generation cancelled")
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
                             # Tagged code = no path for this task, not a failure.
                             if resp.get("code") == AUDIO_UNSUPPORTED_CODE:
                                 raise AudioBackendUnsupportedError(
@@ -2198,7 +2199,7 @@ class InferenceOrchestrator:
 
                         if rtype == "error":
                             if cancel_event is not None and cancel_event.is_set():
-                                raise RuntimeError("Audio generation cancelled")
+                                raise AudioGenerationCancelledError("Audio generation cancelled")
                             raise RuntimeError(resp.get("error", "Unknown error"))
 
                         if rtype == "status":
@@ -2211,7 +2212,7 @@ class InferenceOrchestrator:
                         if self._shutdown_subprocess(timeout = _AUDIO_CANCEL_DRAIN_TIMEOUT):
                             self.active_model_name = None
                             self.models.clear()
-                        raise RuntimeError("Audio generation cancelled")
+                        raise AudioGenerationCancelledError("Audio generation cancelled")
 
                     # Do not release worker ownership or dispatcher exclusivity over a
                     # command that may still be generating. Cancel, consume its terminal

@@ -999,7 +999,13 @@ def _scan_cached_models(
                     payload_snapshots = payload.payload_snapshots,
                 )
                 load_snapshot = identity.load_snapshot
-                local_metadata = _cached_model_local_metadata(repo_path, load_snapshot)
+                # Reused when the row hands out the snapshot already probed above: each call
+                # reads config.json and the model card, so 150 cached repos pay for the repeat.
+                local_metadata = (
+                    snapshot_metadata
+                    if load_snapshot == snapshot_path
+                    else _cached_model_local_metadata(repo_path, load_snapshot)
+                )
                 is_whisper_stt = local_metadata.pop("_hidden_stt", False)
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
                 download_partial = hf_cache_scan.is_snapshot_partial(

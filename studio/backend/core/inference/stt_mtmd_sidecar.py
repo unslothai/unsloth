@@ -43,6 +43,7 @@ from core.inference.stt_sidecar import (
     _SelectedHubFile,
     _capture_stt_hub_cache,
     _claim_stt_repository,
+    _close_connection_on_cancel,
     _decode_audio_bounded,
     _downloaded_file_bytes,
     _fallback_revisions,
@@ -1017,25 +1018,6 @@ class MtmdSttSidecar:
         choices = body.get("choices") or []
         text = (choices[0].get("message", {}).get("content") or "") if choices else ""
         return _clean_transcript(text, spec.transcript_marker)
-
-
-def _close_connection_on_cancel(
-    connection: http.client.HTTPConnection, cancel_event: threading.Event, done: threading.Event
-) -> None:
-    while not done.is_set():
-        if not cancel_event.wait(0.05):
-            continue
-        while not done.is_set():
-            sock = connection.sock
-            if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                connection.close()
-                return
-            time.sleep(0.01)
-        return
 
 
 def _clean_transcript(text: str, marker: Optional[str]) -> str:

@@ -11,6 +11,7 @@ import {
   expectedGgufDownloadBytes,
   isTtsAudioType,
   macTtsPickAction,
+  mergeGalleryPage,
   micStreamRequestIsCurrent,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -281,7 +282,7 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
   );
   assert.match(
     audioPageSource,
-    /!fallbackClipRef\.current[\s\S]*page\.audio\.length > 0/,
+    /!fallbackClipRef\.current[\s\S]*merged\.length > 0/,
   );
   assert.match(
     audioPageSource,
@@ -333,5 +334,53 @@ test("history-only downloads revoke their temporary blob URL", () => {
   assert.doesNotMatch(
     audioPageSource,
     /handleDownloadClipById[\s\S]{0,500}galleryCache\.srcById\.set/,
+  );
+});
+
+test("a gallery refresh keeps the loaded scrollback instead of collapsing it", () => {
+  const page = [{ id: "e" }, { id: "d" }, { id: "c" }];
+  const cached = [
+    { id: "d" },
+    { id: "c" },
+    { id: "b" },
+    { id: "a" },
+  ];
+
+  // Newest page first, then the pages the user scrolled to.
+  assert.deepEqual(mergeGalleryPage(page, cached), [
+    { id: "e" },
+    { id: "d" },
+    { id: "c" },
+    { id: "b" },
+    { id: "a" },
+  ]);
+});
+
+test("a clip this client deleted leaves the merged gallery", () => {
+  const merged = mergeGalleryPage([{ id: "c" }], [{ id: "b" }, { id: "a" }], "b");
+  assert.deepEqual(merged, [{ id: "c" }, { id: "a" }]);
+});
+
+test("the selection only moves when its clip left the merged gallery", () => {
+  assert.match(
+    audioPageSource,
+    /const merged = mergeGalleryPage\([\s\S]*!merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)/,
+  );
+  // Play an older clip, delete another, and the player must not jump to the newest.
+  assert.doesNotMatch(
+    audioPageSource,
+    /galleryCache\.clips = page\.audio/,
+  );
+});
+
+test("a superseded refresh still reports the clips its own fetch saw", () => {
+  // Otherwise a generation whose clip really persisted was told it was not saved.
+  assert.match(
+    audioPageSource,
+    /if \(generation !== galleryRefreshGeneration\.current\) return page\.audio;/,
+  );
+  assert.match(
+    audioPageSource,
+    /const refreshed = await refreshGallery\(\);[\s\S]*persistedClipForGeneration\(\s*generated\.clip_id,\s*refreshed,/,
   );
 });

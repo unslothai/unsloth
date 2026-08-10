@@ -19,8 +19,10 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -211,18 +213,28 @@ class SttLanguageError(ValueError):
     """The requested language is not supported by the selected STT model."""
 
 
-def _terminate_process_on_cancel(process, cancel_event, done_event) -> None:
-    """Interrupt one blocked local-runtime request without waiting on its lock."""
+def _close_connection_on_cancel(connection, cancel_event, done_event) -> None:
+    """Abandon one blocked sidecar HTTP request, leaving its server resident.
+
+    Shutting the socket unblocks the waiting read without touching the process, so a
+    cancelled dictation does not cost the next one a server relaunch and model load.
+    Shared by the whisper.cpp and llama.cpp sidecars, which both speak HTTP to a
+    long-lived local server.
+    """
     while not done_event.is_set():
-        if cancel_event.wait(0.05):
-            if done_event.is_set():
-                return
-            if process is not None and process.poll() is None:
+        if not cancel_event.wait(0.05):
+            continue
+        while not done_event.is_set():
+            sock = connection.sock
+            if sock is not None:
                 try:
-                    process.terminate()
-                except Exception:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
                     pass
-            return
+                connection.close()
+                return
+            time.sleep(0.01)
+        return
 
 
 _WHISPER_LANGUAGE_ALIASES = {

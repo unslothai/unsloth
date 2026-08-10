@@ -329,10 +329,17 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
 });
 
 test("Chat-to-Audio handoff preserves the live Hub task", () => {
+  // pickedTask, not meta.pipelineTag: a cached row absent from the current Hub listing
+  // has no tag, and the page would then classify an ASR checkpoint as TTS.
   assert.match(
     pickerSource,
-    /page === "audio"[\s\S]*task:\s*meta\.pipelineTag \?\? undefined/,
+    /page === "audio"[\s\S]*task:\s*pickedTask \?\? undefined/,
   );
+  assert.match(
+    pickerSource,
+    /const routable =\s*page !== "audio" \|\|\s*audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
+  );
+  assert.match(pickerSource, /if \(page && routable\) \{/);
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,

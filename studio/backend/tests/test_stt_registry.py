@@ -69,6 +69,32 @@ def test_load_delegates_to_the_engines_sidecar(monkeypatch):
     assert sidecar.load_cancel_event is cancel_event
 
 
+def test_load_releases_the_other_engines_before_loading(monkeypatch):
+    order = []
+    sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
+    for name, sidecar in sidecars.items():
+        sidecar.unload = lambda name = name: order.append(f"unload:{name}")
+    target = sidecars["mtmd"]
+    target.load = lambda model, request_cancel_event = None: order.append("load:mtmd")
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    stt_registry.load("qwen3-asr-0.6b", "mtmd")
+
+    # Two engines resident at once doubles VRAM for the whole keep-alive window.
+    assert order == ["unload:transformers", "unload:gguf", "load:mtmd"]
+
+
+def test_load_still_loads_when_another_engine_refuses_to_release(monkeypatch):
+    sidecars = {
+        name: _Sidecar(name, fail = name == "gguf") for name in stt_registry.STT_ENGINES
+    }
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: sidecars[name])
+
+    stt_registry.load("small", "transformers")
+    assert sidecars["transformers"].loaded_with == "small"
+    assert sidecars["mtmd"].unloaded
+
+
 def test_resident_reports_whichever_engine_holds_a_model(monkeypatch):
     sidecars = {
         "transformers": _Sidecar("transformers"),

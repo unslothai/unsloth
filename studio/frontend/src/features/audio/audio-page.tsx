@@ -92,6 +92,7 @@ import {
   expectedGgufDownloadBytes,
   isTtsAudioType,
   macTtsPickAction,
+  mergeGalleryPage,
   micStreamRequestIsCurrent,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -436,6 +437,28 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
+  const sttSelected = selectedSttRepo !== null;
+  const sttReady = sttSelectionReady(
+    selectedSttRepo,
+    sttLoadedModel,
+    sttSidecarKeyFor,
+    selectedSttRepo ? sttEngineForRepoId(selectedSttRepo) : null,
+    sttLoadedEngine,
+  );
+
+  /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
+  const releaseTranscribeSelection = useCallback(async () => {
+    const selected = selectedSttRepoRef.current;
+    const owned = sttReady && selected !== null;
+    deferredSttLoad.current = null;
+    selectedSttRepoRef.current = null;
+    sttLoadGeneration.current += 1;
+    setSelectedSttRepo(null);
+    if (!owned) return;
+    await unloadSttModel(sttEngineForRepoId(selected));
+    await refreshSttStatus();
+  }, [refreshSttStatus, sttReady]);
+
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
     const cached = galleryCache.srcById.get(clip.id);
     if (cached) {
@@ -454,38 +477,50 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, []);
 
-  const refreshGallery = useCallback(async () => {
-    const generation = ++galleryRefreshGeneration.current;
-    try {
-      const page = await listAudioGallery(0, PAGE_SIZE);
-      if (generation !== galleryRefreshGeneration.current) return;
-      galleryCache.clips = page.audio;
-      galleryCache.hasMore = page.has_more;
-      galleryCache.nextCursor =
-        page.next_before_mtime !== null && page.next_before_id !== null
-          ? { mtime: page.next_before_mtime, id: page.next_before_id }
-          : null;
-      setClips(page.audio);
-      setHasMore(page.has_more);
-      if (
-        galleryCache.selectedId &&
-        !page.audio.some((c) => c.id === galleryCache.selectedId)
-      ) {
-        galleryCache.selectedId = page.audio[0]?.id ?? null;
-        setSelectedId(galleryCache.selectedId);
+  const refreshGallery = useCallback(
+    async (removedId?: string): Promise<AudioGalleryClip[]> => {
+      const generation = ++galleryRefreshGeneration.current;
+      try {
+        const page = await listAudioGallery(0, PAGE_SIZE);
+        // The caller's own fetch, even when a newer refresh owns the cache below: a
+        // generation that reported its clip persisted must not be told it was not saved.
+        if (generation !== galleryRefreshGeneration.current) return page.audio;
+        const merged = mergeGalleryPage(
+          page.audio,
+          galleryCache.clips,
+          removedId,
+        );
+        galleryCache.clips = merged;
+        galleryCache.hasMore = page.has_more;
+        galleryCache.nextCursor =
+          page.next_before_mtime !== null && page.next_before_id !== null
+            ? { mtime: page.next_before_mtime, id: page.next_before_id }
+            : null;
+        setClips(merged);
+        setHasMore(page.has_more);
+        if (
+          galleryCache.selectedId &&
+          !merged.some((c) => c.id === galleryCache.selectedId)
+        ) {
+          galleryCache.selectedId = merged[0]?.id ?? null;
+          setSelectedId(galleryCache.selectedId);
+        }
+        if (
+          !galleryCache.selectedId &&
+          !fallbackClipRef.current &&
+          merged.length > 0
+        ) {
+          galleryCache.selectedId = merged[0].id;
+          setSelectedId(galleryCache.selectedId);
+        }
+        return merged;
+      } catch {
+        // Same recoverable-poll stance as status.
+        return galleryCache.clips;
       }
-      if (
-        !galleryCache.selectedId &&
-        !fallbackClipRef.current &&
-        page.audio.length > 0
-      ) {
-        galleryCache.selectedId = page.audio[0].id;
-        setSelectedId(galleryCache.selectedId);
-      }
-    } catch {
-      // Same recoverable-poll stance as status.
-    }
-  }, []);
+    },
+    [],
+  );
 
   const loadMore = useCallback(async () => {
     // Repeated scroll events near the bottom would otherwise each fire with the
@@ -636,9 +671,24 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       if (busyRef.current === "generating") generateAbort.current?.abort();
       stopAndDiscardRecording();
       setMode(nextMode);
+      // Holding the sidecar through Generate keeps a dictation model in VRAM beside the speech model for the whole keep-alive window.
+      if (mode === "transcribe") {
+        void releaseTranscribeSelection().catch((error) => {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Failed to release the transcription model.",
+          );
+        });
+      }
       return true;
     },
-    [invalidatePendingStagedTts, mode, stopAndDiscardRecording],
+    [
+      invalidatePendingStagedTts,
+      mode,
+      releaseTranscribeSelection,
+      stopAndDiscardRecording,
+    ],
   );
   const { stage: stageTtsDownload } = useStagedDownload({
     scopeId: "audio",
@@ -1059,21 +1109,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     stopAndDiscardRecording();
 
     if (mode === "transcribe") {
-      const selected = selectedSttRepo;
-      if (!selected) return;
-      const selectedEngine = sttEngineForRepoId(selected);
-
-      // A selection can exist before its sidecar is resident. Only issue an
-      // unload when our latest sidecar snapshot says this selection owns it.
-      if (
-        sttLoadedModel !== sttSidecarKeyFor(selected) ||
-        sttLoadedEngine !== selectedEngine
-      ) {
+      if (!selectedSttRepo) return;
+      // A selection can exist before its sidecar is resident, so an unowned pick is only forgotten.
+      if (!sttReady) {
         sttStatusRefreshGeneration.current += 1;
-        deferredSttLoad.current = null;
-        selectedSttRepoRef.current = null;
-        sttLoadGeneration.current += 1;
-        setSelectedSttRepo(null);
+        void releaseTranscribeSelection();
         return;
       }
 
@@ -1081,12 +1121,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       const toastId = toast.loading("Unloading transcription model…");
       void (async () => {
         try {
-          await unloadSttModel(selectedEngine);
-          deferredSttLoad.current = null;
-          selectedSttRepoRef.current = null;
-          sttLoadGeneration.current += 1;
-          setSelectedSttRepo(null);
-          await refreshSttStatus();
+          await releaseTranscribeSelection();
           toast.success("Transcription model unloaded", {
             id: toastId,
             duration: 1200,
@@ -1136,13 +1171,12 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     isRecording,
     mode,
     refreshStatus,
-    refreshSttStatus,
+    releaseTranscribeSelection,
     selectedSttRepo,
     invalidatePendingStagedTts,
     stageTtsDownload,
     status?.active_model,
-    sttLoadedModel,
-    sttLoadedEngine,
+    sttReady,
     stopAndDiscardRecording,
   ]);
 
@@ -1158,10 +1192,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         max_tokens: maxTokens,
         signal: controller.signal,
       });
-      await refreshGallery();
+      const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
         generated.clip_id,
-        galleryCache.clips,
+        refreshed,
       );
       if (generatedClip) {
         setFallbackClip(null);
@@ -1210,14 +1244,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   // --- Transcribe ---------------------------------------------------------
 
-  const sttSelected = selectedSttRepo !== null;
-  const sttReady = sttSelectionReady(
-    selectedSttRepo,
-    sttLoadedModel,
-    sttSidecarKeyFor,
-    selectedSttRepo ? sttEngineForRepoId(selectedSttRepo) : null,
-    sttLoadedEngine,
-  );
   const runTranscription = useCallback(
     async (blob: Blob, name: string) => {
       if (!selectedSttRepo) return;
@@ -1372,7 +1398,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         await deleteAudioClip(id);
         galleryCache.srcById.delete(id);
         setSrcById(galleryCache.srcById.toRecord());
-        await refreshGallery();
+        await refreshGallery(id);
       } catch (error) {
         toast.error(
           error instanceof Error ? error.message : "Could not delete the clip.",
@@ -1504,9 +1530,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         : "No transcription model selected.";
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="flex items-center gap-2">
+    <div className="@container flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
+      <div className="relative flex h-[48px] shrink-0 items-start justify-between gap-2 pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        {/* min-w-0: a long resident model name would otherwise push the mode pill off a narrow window. */}
+        <div className="flex min-w-0 items-center gap-2">
           <ModelSelector
             models={selectorModels}
             additionalOnDeviceModels={
@@ -1570,13 +1597,15 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           />
         </div>
       </div>
-      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and
+          Video: side by side, the 408px rail plus a usable preview needs more width than that. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-8",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 @[50rem]:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -1725,7 +1754,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           ) : null}
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 @[50rem]:min-h-0">
           {mode === "transcribe" ? (
             <div className="hover-scrollbar flex flex-1 flex-col gap-3 overflow-auto p-6 pl-8">
               {busy === "transcribing" ? (

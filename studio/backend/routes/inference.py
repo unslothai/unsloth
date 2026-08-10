@@ -48,7 +48,10 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
-from core.inference.audio_errors import AudioBackendUnsupportedError
+from core.inference.audio_errors import (
+    AudioBackendUnsupportedError,
+    AudioGenerationCancelledError,
+)
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -6729,6 +6732,9 @@ _scoped_load_cancel_tombstones: dict[tuple[str, str], tuple[str, float]] = {}
 _running_load_attempt: Optional[_ScopedLoadAttempt] = None
 _SCOPED_LOAD_CANCEL_TOMBSTONE_TTL_S = 60.0
 _SCOPED_LOAD_CANCEL_TOMBSTONE_LIMIT_PER_SUBJECT = 256
+# Long enough for a cancelling unload to terminate and reap a server, short enough that a
+# lost acknowledgement releases the load instead of stranding the lifecycle gate.
+_LOAD_CANCEL_HANDSHAKE_TIMEOUT = 30.0
 
 
 def _prune_scoped_load_cancel_tombstones(now: float) -> None:
@@ -6846,7 +6852,16 @@ async def _run_tracked_load_model_impl(
         )
     finally:
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
-            await asyncio.to_thread(attempt.cancel_complete.wait)
+            # Bounded: only the cancelling unload sets this, and it needs a pool thread of its
+            # own to reach the setter, so an unbounded wait here deadlocks a saturated executor
+            # and strands the lifecycle gate until the process restarts.
+            if not await asyncio.to_thread(
+                attempt.cancel_complete.wait, _LOAD_CANCEL_HANDSHAKE_TIMEOUT
+            ):
+                logger.warning(
+                    "Cancelling unload did not acknowledge within %.0fs; releasing the load anyway",
+                    _LOAD_CANCEL_HANDSHAKE_TIMEOUT,
+                )
         with _scoped_load_attempts_lock:
             if _running_load_attempt is attempt:
                 _running_load_attempt = None
@@ -9131,7 +9146,9 @@ async def _generate_tts_wav(
             with _direct_llama_request(_direct_llama_tts):
                 wav_bytes, sample_rate = await asyncio.to_thread(gen)
         except Exception as e:
-            if _audio_cancel.is_set():
+            # An idle auto-unload or another surface's teardown cancels through the backend
+            # without touching this route's event, so trust the raised type as well.
+            if _audio_cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
             # Missing capability, not a failure: no retry helps, and the message
             # carries no path or user input, so send it as written.
@@ -9694,7 +9711,12 @@ async def _transcribe_audio_result(
             )
     except asyncio.CancelledError:
         if cancel_event is not None:
-            sidecar.cancel_transcription(cancel_event)
+            # cancel_transcription takes the sidecar lock, which a concurrent load can hold across a server reap, so inline would stall the event loop.
+            threading.Thread(
+                target = sidecar.cancel_transcription,
+                args = (cancel_event,),
+                daemon = True,
+            ).start()
         raise
     except SttTranscriptionCancelledError as e:
         raise HTTPException(status_code = 499, detail = str(e))

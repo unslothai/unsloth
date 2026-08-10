@@ -101,6 +101,7 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
+  audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
@@ -3094,7 +3095,15 @@ export function HubModelPicker({
           diffusionTaskById.get(id.toLowerCase()),
         );
         const page = mediaPageForTask(pickedTask);
-        if (page) {
+        const routable =
+          page !== "audio" ||
+          audioPickIsRoutable({
+            id,
+            task: pickedTask,
+            isGguf: Boolean(meta.isGguf || meta.ggufFilename),
+            isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+          });
+        if (page && routable) {
           void navigateToPage({
             to: `/${page}`,
             // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
@@ -3107,7 +3116,9 @@ export function HubModelPicker({
                     ggufQuant: meta.ggufFilename
                       ? undefined
                       : (meta.ggufVariant ?? undefined),
-                    task: meta.pipelineTag ?? undefined,
+                    // pickedTask, not meta.pipelineTag: a cached row with no Hub listing has
+                    // no tag, and the page would then treat an ASR checkpoint as TTS.
+                    task: pickedTask ?? undefined,
                   }
                 : diffusionRouteSearch(id, meta),
           });

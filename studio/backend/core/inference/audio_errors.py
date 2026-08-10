@@ -18,6 +18,15 @@ from __future__ import annotations
 AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 
 
+class AudioGenerationCancelledError(RuntimeError):
+    """The generation was stopped rather than failing.
+
+    A bare RuntimeError here reached the route's generic handler, which flattens every
+    message, so an idle auto-unload interrupting a Speak reported HTTP 500 "An internal
+    error occurred" instead of a cancellation the client can retry.
+    """
+
+
 class AudioBackendUnsupportedError(RuntimeError):
     """The model loaded fine; this backend cannot do this audio task.
 

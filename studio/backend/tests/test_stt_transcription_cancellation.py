@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import threading
 
 import pytest
@@ -187,25 +188,46 @@ def test_disconnected_raw_transcription_cancels_its_sidecar(monkeypatch):
     assert sidecar.cancelled is True
 
 
-def test_server_cancel_watcher_terminates_blocked_runtime():
-    from core.inference.stt_sidecar import _terminate_process_on_cancel
+def test_server_cancel_watcher_abandons_the_request_and_keeps_the_server():
+    """A cancel used to SIGTERM whisper-server, so the next dictation paid a full relaunch."""
+    from core.inference.stt_sidecar import _close_connection_on_cancel
 
-    class _Process:
-        terminated = False
+    class _Socket:
+        shutdown_with = None
 
-        def poll(self):
-            return None
+        def shutdown(self, how):
+            self.shutdown_with = how
 
-        def terminate(self):
-            self.terminated = True
+    class _Connection:
+        closed = False
 
-    process = _Process()
+        def __init__(self):
+            self.sock = _Socket()
+
+        def close(self):
+            self.closed = True
+
+    connection = _Connection()
+    sock = connection.sock
     cancelled = threading.Event()
     cancelled.set()
 
-    _terminate_process_on_cancel(process, cancelled, threading.Event())
+    _close_connection_on_cancel(connection, cancelled, threading.Event())
 
-    assert process.terminated is True
+    assert sock.shutdown_with == socket.SHUT_RDWR
+    assert connection.closed is True
+
+
+def test_the_gguf_sidecar_cancels_through_its_connection():
+    """Both HTTP sidecars share one watcher, so neither can drift back to a process kill."""
+    import inspect
+
+    from core.inference import stt_ggml_sidecar
+
+    source = inspect.getsource(stt_ggml_sidecar)
+    assert "_close_connection_on_cancel" in source
+    assert "_terminate_process_on_cancel" not in source
+    assert "http.client.HTTPConnection" in source
 
 
 def test_transformers_disconnect_cancels_only_its_owned_startup():

@@ -23,6 +23,7 @@ the binary.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -53,6 +54,7 @@ from core.inference.stt_sidecar import (
     SttTranscriptionCancelledError,
     _capture_stt_hub_cache,
     _claim_stt_repository,
+    _close_connection_on_cancel,
     _decode_audio_bounded,
     _downloaded_file_bytes,
     _fallback_revisions,
@@ -61,7 +63,6 @@ from core.inference.stt_sidecar import (
     _prepare_stt_cache_for_http,
     _read_revision_record,
     _TARGET_SAMPLE_RATE,
-    _terminate_process_on_cancel,
     _training_active,
     _write_revision_record,
     normalize_whisper_language,
@@ -1021,20 +1022,12 @@ class GgmlSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:
-            cancel_done = threading.Event()
             try:
                 if cancel_event is None:
                     self.load(model_id)
                 else:
                     self.load(model_id, request_cancel_event = cancel_event)
-                process = self._process
-                if cancel_event is not None:
-                    threading.Thread(
-                        target = _terminate_process_on_cancel,
-                        args = (process, cancel_event, cancel_done),
-                        daemon = True,
-                    ).start()
-                text = self._post_inference(wav_bytes, lang, fast)
+                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -1042,7 +1035,6 @@ class GgmlSttSidecar:
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
                 raise
             finally:
-                cancel_done.set()
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
@@ -1057,7 +1049,13 @@ class GgmlSttSidecar:
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled
 
-    def _post_inference(self, wav_bytes: bytes, lang: Optional[str], fast: bool) -> str:
+    def _post_inference(
+        self,
+        wav_bytes: bytes,
+        lang: Optional[str],
+        fast: bool,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         boundary = uuid.uuid4().hex
         fields = {
             "temperature": "0.0",
@@ -1085,20 +1083,40 @@ class GgmlSttSidecar:
         )
         parts.append(f"--{boundary}--\r\n".encode())
         body = b"".join(parts)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self._port}/inference",
-            data = body,
-            headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        # http.client, not urllib: cancellation needs the socket to shut down the blocked
+        # read, and urlopen exposes no connection to shut.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self._port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
         try:
-            with urllib.request.urlopen(req, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as resp:
-                payload = json.load(resp)
+            connection.request(
+                "POST",
+                "/inference",
+                body = body,
+                headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            with connection.getresponse() as response:
+                if not 200 <= response.status < 300:
+                    raise SttEngineUnavailableError(
+                        f"The local transcription runtime returned HTTP {response.status}."
+                    )
+                payload = json.loads(response.read().decode("utf-8"))
         except SttAudioDecodeError:
             raise
         except Exception as exc:
             raise SttEngineUnavailableError(
                 "The local transcription runtime did not answer the request."
             ) from exc
+        finally:
+            cancel_done.set()
+            connection.close()
         text = payload.get("text")
         if not isinstance(text, str):
             raise SttAudioDecodeError("Could not decode the audio.")

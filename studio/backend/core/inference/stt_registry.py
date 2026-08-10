@@ -23,6 +23,9 @@ logger = get_logger(__name__)
 # unload sweeps them, which matters only for logging.
 STT_ENGINES = ("transformers", "gguf", "mtmd")
 
+# Serialises release-then-load so two loads on different engines cannot leave both resident.
+_load_lock = threading.Lock()
+
 
 def sidecar_for(engine: str) -> Any:
     """The sidecar serving ``engine``. Transformers is the catch-all."""
@@ -42,8 +45,17 @@ def load(
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
 ) -> None:
-    """Make ``model`` resident on ``engine``. Raises what the sidecar raises."""
-    sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+    """Make ``model`` resident on ``engine``, releasing every other engine first.
+
+    Dictation is one user-visible choice, so the engines are alternatives rather
+    than slots: a Transformers Whisper and a llama.cpp Qwen3-ASR held at once
+    doubles VRAM for the whole keep-alive window. Releasing before the load
+    mirrors what a sidecar already does for an in-engine model switch, so the
+    peak never holds two models either. Raises what the sidecar raises.
+    """
+    with _load_lock:
+        unload([name for name in STT_ENGINES if name != engine])
+        sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
 
 
 def unload(engines: Optional[Sequence[str]] = None) -> list[str]:

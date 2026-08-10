@@ -173,6 +173,25 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
+/** Fold a freshly fetched first page into the list already on screen.
+ *
+ * The page is authoritative for the newest `page.length` clips, so it replaces those
+ * and any scrollback the user loaded below it is kept. Replacing outright collapsed a
+ * paginated History back to one page on every delete and generate, and reselected a
+ * different clip because the playing one was no longer in the list. `removedId` drops
+ * a clip this client just deleted, which the page can no longer report. */
+export function mergeGalleryPage<T extends { id: string }>(
+  page: readonly T[],
+  cached: readonly T[],
+  removedId?: string,
+): T[] {
+  const inPage = new Set(page.map((clip) => clip.id));
+  const tail = cached.filter(
+    (clip) => !inPage.has(clip.id) && clip.id !== removedId,
+  );
+  return [...page, ...tail];
+}
+
 /** Match the gallery record returned by this generation, never another
  * client's concurrently persisted clip. */
 export function persistedClipForGeneration<T extends { id: string }>(

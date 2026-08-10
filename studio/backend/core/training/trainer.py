@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 import pandas as pd
 from datasets import Dataset
+from utils.datasets.audio_decode import audio_array_and_rate, ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.third_party_source import (
@@ -1583,11 +1584,8 @@ class UnslothTrainer:
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = SNAC_SAMPLE_RATE))
 
         # Sample rate from first example (after cast, always SNAC_SAMPLE_RATE)
-        first_audio = dataset[0][audio_col]
-        ds_sample_rate = (
-            first_audio.get("sampling_rate", SNAC_SAMPLE_RATE)
-            if isinstance(first_audio, dict)
-            else SNAC_SAMPLE_RATE
+        _, ds_sample_rate = audio_array_and_rate(
+            dataset[0][audio_col], SNAC_SAMPLE_RATE
         )
 
         self._update_progress(status_message = "Loading SNAC codec model...")
@@ -1624,14 +1622,16 @@ class UnslothTrainer:
                     skipped += 1
                     continue
 
-                audio_data = example.get(audio_col)
-                if audio_data is None or audio_data.get("array") is None:
+                audio_array, _ = audio_array_and_rate(
+                    example.get(audio_col), ds_sample_rate
+                )
+                if audio_array is None:
                     skipped += 1
                     continue
 
                 # Encode audio with SNAC (notebook 122-142)
                 waveform = (
-                    torch.from_numpy(audio_data["array"]).unsqueeze(0).to(dtype = torch.float32)
+                    torch.from_numpy(audio_array).unsqueeze(0).to(dtype = torch.float32)
                 )
                 if resample_transform is not None:
                     waveform = resample_transform(waveform)
@@ -1820,13 +1820,12 @@ class UnslothTrainer:
                     skipped += 1
                     continue
 
-                audio_data = example.get(audio_col)
-                if audio_data is None or audio_data.get("array") is None:
+                audio_array, sampling_rate = audio_array_and_rate(
+                    example.get(audio_col), target_sr
+                )
+                if audio_array is None:
                     skipped += 1
                     continue
-
-                audio_array = audio_data["array"]
-                sampling_rate = audio_data.get("sampling_rate", target_sr)
 
                 if sampling_rate != target_sr:
                     resampler = T.Resample(orig_freq = sampling_rate, new_freq = target_sr)
@@ -2013,13 +2012,14 @@ class UnslothTrainer:
                     skipped += 1
                     continue
 
-                audio_data = example.get(audio_col)
-                if audio_data is None or audio_data.get("array") is None:
+                decoded, sampling_rate = audio_array_and_rate(
+                    example.get(audio_col), 24000
+                )
+                if decoded is None:
                     skipped += 1
                     continue
 
-                audio_array = np.array(audio_data["array"], dtype = np.float32)
-                sampling_rate = audio_data.get("sampling_rate", 24000)
+                audio_array = np.array(decoded, dtype = np.float32)
 
                 # Convert to WAV bytes (Whisper needs a file path)
                 buf = io.BytesIO()
@@ -2159,15 +2159,17 @@ class UnslothTrainer:
 
                 example = ds[idx]
                 try:
-                    audio_data = example.get(audio_col)
+                    audio_array, sampling_rate = audio_array_and_rate(
+                        example.get(audio_col), WHISPER_SAMPLE_RATE
+                    )
                     text = example.get(text_col)
-                    if audio_data is None or audio_data.get("array") is None or not text:
+                    if audio_array is None or not text:
                         skipped += 1
                         continue
 
                     # Extract audio features (notebook 112-115)
                     features = self.tokenizer.feature_extractor(
-                        audio_data["array"], sampling_rate = audio_data["sampling_rate"]
+                        audio_array, sampling_rate = sampling_rate
                     )
                     # Tokenize text (notebook 116)
                     tokenized_text = self.tokenizer.tokenizer(text)
@@ -2698,6 +2700,14 @@ class UnslothTrainer:
                 return None
 
             # ========== AUDIO MODELS: custom preprocessing ==========
+            # Every audio branch, including the VLM path further down, casts an Audio column and reads its decoded array.
+            if self._audio_type or self.is_audio_vlm:
+                if not ensure_audio_decoding():
+                    raise RuntimeError(
+                        "This host cannot decode audio datasets: torchcodec cannot load "
+                        "its FFmpeg libraries and soundfile is unavailable. Install an "
+                        "FFmpeg full-shared build, or reinstall soundfile."
+                    )
             if self._audio_type == "csm":
                 processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
                 return (processed, None)

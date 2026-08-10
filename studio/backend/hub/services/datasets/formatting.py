@@ -43,6 +43,7 @@ from hub.utils.paths import (
     normalize_path,
     resolve_dataset_path,
 )
+from utils.datasets.audio_decode import ensure_audio_decoding
 
 logger = get_logger(__name__)
 
@@ -314,6 +315,9 @@ def check_format_response(
         PREVIEW_SIZE = 10
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
+
+        # An audio column decodes as soon as a preview row is read, so this precedes every tier below.
+        ensure_audio_decoding()
 
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)
