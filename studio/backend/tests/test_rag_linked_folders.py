@@ -1035,7 +1035,8 @@ def test_requested_rebuild_promotes_an_intervening_pending_sync(rag_home):
     completed = folder_sync.request_sync(folder["id"])
     with _connection() as conn:
         conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='completed', rebuild_requested=1 WHERE id=?",
+            "UPDATE linked_folder_sync_jobs SET status='completed', successor_kind='rebuild' "
+            "WHERE id=?",
             (completed,),
         )
         pending = "intervening-sync"
@@ -1047,17 +1048,17 @@ def test_requested_rebuild_promotes_an_intervening_pending_sync(rag_home):
         )
         conn.commit()
 
-    folder_sync._queue_requested_rebuild(completed)
+    folder_sync._queue_successor(completed)
     with _connection() as conn:
         successor = conn.execute(
-            "SELECT kind, rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (pending,)
+            "SELECT kind, successor_kind FROM linked_folder_sync_jobs WHERE id=?", (pending,)
         ).fetchone()
-        assert tuple(successor) == ("rebuild", 0)
+        assert tuple(successor) == ("rebuild", None)
         assert (
             conn.execute(
-                "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
-            ).fetchone()["rebuild_requested"]
-            == 0
+                "SELECT successor_kind FROM linked_folder_sync_jobs WHERE id=?", (completed,)
+            ).fetchone()["successor_kind"]
+            is None
         )
 
 
@@ -1066,15 +1067,17 @@ def test_pending_rebuild_promotion_clears_a_recovered_successor_flag(rag_home):
     _, folder = _folder(rag_home)
     job_id = folder_sync.request_sync(folder["id"])
     with _connection() as conn:
-        conn.execute("UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?", (job_id,))
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' WHERE id=?", (job_id,)
+        )
         conn.commit()
 
     assert folder_sync.request_sync(folder["id"], rebuild = True) == job_id
     with _connection() as conn:
         job = conn.execute(
-            "SELECT kind, rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
+            "SELECT kind, successor_kind FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
         ).fetchone()
-        assert tuple(job) == ("rebuild", 0)
+        assert tuple(job) == ("rebuild", None)
 
 
 @requires_sqlite_vec
@@ -1083,7 +1086,7 @@ def test_startup_recovers_terminal_rebuild_handoff(rag_home):
     completed = folder_sync.request_sync(folder["id"])
     with _connection() as conn:
         conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='completed', rebuild_requested=1, "
+            "UPDATE linked_folder_sync_jobs SET status='completed', successor_kind='rebuild', "
             "completed_at=created_at WHERE id=?",
             (completed,),
         )
@@ -1100,9 +1103,9 @@ def test_startup_recovers_terminal_rebuild_handoff(rag_home):
         assert successor["kind"] == "rebuild"
         assert (
             conn.execute(
-                "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
-            ).fetchone()["rebuild_requested"]
-            == 0
+                "SELECT successor_kind FROM linked_folder_sync_jobs WHERE id=?", (completed,)
+            ).fetchone()["successor_kind"]
+            is None
         )
 
 
@@ -1951,3 +1954,178 @@ def test_preview_containment_is_component_aware(rag_home):
 
     assert _is_managed_preview_path(str(inside))
     assert not _is_managed_preview_path(str(prefix_sibling))
+
+
+@requires_sqlite_vec
+def test_unrelated_ingest_failure_still_removes_deleted_sources(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    (source / "doomed.txt").unlink()
+    (source / "poison.txt").write_text("never indexes", encoding = "utf-8")
+    real_start = folder_sync.ingestion.start_ingestion
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable"))
+        if args[3] == "poison.txt"
+        else real_start(*args, **kwargs),
+    )
+
+    # each vanished path gets one grace pass before it is removed anyway
+    assert _run(folder["id"])["deleted"] == 0
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    assert result["deleted"] == 1
+    assert "poison.txt" in result["error"]
+    with _connection() as conn:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            )
+        }
+        assert paths == {"keep.txt"}
+        assert not store.search_lexical(conn, folder["scope"], "removable", 5)
+
+
+@requires_sqlite_vec
+def test_sync_requested_during_a_running_sync_queues_a_successor(rag_home):
+    _, folder = _folder(rag_home)
+    running = folder_sync.request_sync(folder["id"])
+    with _connection() as conn:
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (running,))
+        conn.commit()
+
+    assert folder_sync.request_sync(folder["id"]) == running
+    folder_sync.reconcile_folder(running)
+
+    successor = _row(
+        "SELECT id, kind FROM linked_folder_sync_jobs WHERE folder_id=? AND status='pending'",
+        (folder["id"],),
+    )
+    assert successor is not None
+    assert successor["id"] != running
+    assert successor["kind"] == "sync"
+
+
+@requires_sqlite_vec
+def test_a_queued_rebuild_is_not_downgraded_by_a_later_sync_request(rag_home):
+    _, folder = _folder(rag_home)
+    running = folder_sync.request_sync(folder["id"])
+    with _connection() as conn:
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (running,))
+        conn.commit()
+
+    folder_sync.request_sync(folder["id"], rebuild = True)
+    folder_sync.request_sync(folder["id"])
+
+    assert _row(
+        "SELECT successor_kind FROM linked_folder_sync_jobs WHERE id=?", (running,)
+    )["successor_kind"] == "rebuild"
+
+
+def test_failure_summary_names_the_files_and_caps_the_list():
+    assert folder_sync._failure_summary([]) is None
+    assert folder_sync._failure_summary(["b.txt", "a.txt"]) == (
+        "2 file(s) could not be indexed (a.txt, b.txt)"
+    )
+    summary = folder_sync._failure_summary([f"f{index}.txt" for index in range(6)])
+    assert summary.startswith("6 file(s) could not be indexed (f0.txt, f1.txt, f2.txt and 3 more)")
+
+
+@requires_sqlite_vec
+def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    original = source / "report.txt"
+    original.write_text("durable travelling words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    # an atomic re-save after a rename shares neither inode nor content with the original
+    renamed = source / "report-final.txt"
+    renamed.write_text("rewritten content that fails", encoding = "utf-8")
+    original.unlink()
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    assert result["deleted"] == 0
+    with _connection() as conn:
+        assert store.search_lexical(conn, folder["scope"], "travelling", 5)
+
+
+@requires_sqlite_vec
+def test_an_unreadable_file_stops_withholding_removals_after_one_pass(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    (source / "doomed.txt").unlink()
+    (source / "unreadable.txt").write_text("cannot be copied", encoding = "utf-8")
+    monkeypatch.setattr(
+        folder_sync,
+        "_snapshot",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("source unreadable")),
+    )
+
+    assert _run(folder["id"])["deleted"] == 0
+    assert _run(folder["id"])["deleted"] == 1
+    with _connection() as conn:
+        assert not store.search_lexical(conn, folder["scope"], "removable", 5)
+
+
+@requires_sqlite_vec
+def test_a_failing_file_that_keeps_changing_cannot_block_removals(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    (source / "doomed.txt").unlink()
+    churn = source / "churn.txt"
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+    churn.write_text("attempt one", encoding = "utf-8")
+    assert _run(folder["id"])["deleted"] == 0
+    churn.write_text("attempt two, a different size entirely", encoding = "utf-8")
+
+    assert _run(folder["id"])["deleted"] == 1
+    with _connection() as conn:
+        assert not store.search_lexical(conn, folder["scope"], "removable", 5)
+
+
+@requires_sqlite_vec
+def test_job_events_emits_a_keepalive_while_a_job_is_quiet(rag_home, monkeypatch):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    monkeypatch.setattr(folder_sync, "_JOB_EVENT_KEEPALIVE_S", 0.0)
+    monkeypatch.setattr(folder_sync.time, "sleep", lambda _seconds: None)
+
+    events = []
+    for event in folder_sync.job_events(job_id):
+        events.append(event)
+        if len(events) == 3:
+            break
+
+    assert events[0] is not None
+    assert events[1:] == [None, None]

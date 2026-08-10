@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
   DocumentUploadResult,
   FolderSyncJob,
@@ -316,116 +317,46 @@ export function getJob(jobId: string): Promise<IndexJob> {
   return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
 }
 
-// SSE; returns on [DONE]. Transport errors propagate so callers can poll getJob.
-export async function* streamJobEvents(
-  jobId: string,
-  signal?: AbortSignal,
-): AsyncGenerator<JobEvent> {
-  const response = await authFetch(
-    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
-    signal ? { signal } : undefined,
-  );
+/** Longest gap between frames before a stream is treated as buffered by a proxy. */
+const SSE_STALL_MS = 12000;
+
+async function openEventStream(
+  url: string,
+  signal: AbortSignal | undefined,
+): Promise<ReadableStream<Uint8Array>> {
+  const response = await authFetch(url, signal ? { signal } : undefined);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
-    // Also gated on the extension, and also not routed through ragRequest.
+    // also gated on the extension, and also not routed through ragRequest
     noteRagResponse(response.status, body);
     throw new Error(parseErrorText(response.status, body));
   }
   if (!response.body) throw new Error("Stream response missing body");
+  return response.body;
+}
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
-
-        const dataLines: string[] = [];
-        for (const line of rawEvent.split(/\r?\n/)) {
-          if (line.startsWith("data:"))
-            dataLines.push(line.slice(5).trimStart());
-        }
-        if (dataLines.length > 0) {
-          const dataText = dataLines.join("\n");
-          if (dataText === "[DONE]") return;
-          try {
-            yield JSON.parse(dataText) as JobEvent;
-          } catch {
-            // Ignore unparseable frames; [DONE] still ends the loop.
-          }
-        }
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-      }
-    }
-  } finally {
-    // Release the stream lock now instead of leaking the reader until GC.
-    try {
-      await reader.cancel();
-    } catch {
-      // already closed
-    }
-  }
+// sse; returns on [DONE]. transport errors propagate so callers can poll getJob
+export async function* streamJobEvents(
+  jobId: string,
+  signal?: AbortSignal,
+): AsyncGenerator<JobEvent> {
+  // no stall bound: this consumer reads an early end as a finished job
+  const body = await openEventStream(
+    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
+    signal,
+  );
+  yield* readSseJsonEvents<JobEvent>(body);
 }
 
 export async function* streamFolderSyncJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<FolderSyncJobEvent> {
-  const response = await authFetch(
+  const body = await openEventStream(
     `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
-    signal ? { signal } : undefined,
+    signal,
   );
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
-  }
-  if (!response.body) throw new Error("Stream response missing body");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let separatorIndex = buffer.search(/\r?\n\r?\n/);
-      while (separatorIndex >= 0) {
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorLength = buffer[separatorIndex] === "\r" ? 4 : 2;
-        buffer = buffer.slice(separatorIndex + separatorLength);
-        const data = rawEvent
-          .split(/\r?\n/)
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        if (data === "[DONE]") return;
-        if (data) {
-          try {
-            yield JSON.parse(data) as FolderSyncJobEvent;
-          } catch {
-            // Ignore malformed frames and continue to the terminal event.
-          }
-        }
-        separatorIndex = buffer.search(/\r?\n\r?\n/);
-      }
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // already closed
-    }
-  }
+  yield* readSseJsonEvents<FolderSyncJobEvent>(body, SSE_STALL_MS);
 }
 
 export function getPreviewTarget(

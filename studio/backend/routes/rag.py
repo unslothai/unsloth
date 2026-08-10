@@ -844,6 +844,9 @@ def folder_job_events(
 
     def gen():
         for event in folder_sync.job_events(job_id):
+            if event is None:
+                yield ": keepalive\n\n"
+                continue
             view = _folder_job_view(event)
             view["type"] = (
                 "complete"
@@ -1037,5 +1040,6 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     return FileResponse(
         stored_path,
         media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
-        filename = doc["filename"],
+        # linked documents are named by a posix relative path, invalid in this header
+        filename = doc["filename"].rsplit("/", 1)[-1],
     )

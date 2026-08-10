@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import sqlite3
@@ -38,6 +39,9 @@ _named_locks_lock = threading.Lock()
 _retirement_schema_lock = threading.Lock()
 _TERMINAL = {"completed", "failed"}
 _MAX_FOLDER_DEPTH = 64
+_MAX_NAMED_FAILURES = 3
+_MAX_WITHHELD_PATHS = 500
+_JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
 
 
@@ -537,6 +541,7 @@ def _retirement_connection():
                 "CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes ("
                 "scope TEXT NOT NULL PRIMARY KEY, retired_at TEXT NOT NULL, purged_at TEXT)"
             )
+            rag_db.ensure_linked_folder_columns(conn)
             conn.commit()
     except Exception:
         conn.close()
@@ -569,9 +574,9 @@ def _retire_scope_rows(conn, scope: str) -> None:
     if jobs_exist:
         conn.execute(
             "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-            "error='Owning scope was removed', rebuild_requested=0, completed_at=? "
+            "error='Owning scope was removed', successor_kind=NULL, completed_at=? "
             "WHERE folder_id IN (SELECT id FROM linked_folders WHERE scope=?) "
-            "AND (status IN ('pending','running') OR rebuild_requested=1)",
+            "AND (status IN ('pending','running') OR successor_kind IS NOT NULL)",
             (_now(), scope),
         )
 
@@ -770,6 +775,28 @@ def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
         return _request_sync(folder_id, rebuild = rebuild)
 
 
+def _fold_into_active_job(conn, active, kind: str) -> None:
+    """Absorb a new request into the job already queued or running for this folder.
+
+    A pending job has not scanned yet, so it can simply become the requested kind. A
+    running job already fixed its file list, so the request becomes a successor: the
+    caller's changes are only guaranteed to land in the run that follows this one.
+    """
+    if active["status"] == "pending":
+        if kind == "rebuild":
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET kind='rebuild', successor_kind=NULL WHERE id=?",
+                (active["id"],),
+            )
+        return
+    # a queued rebuild outranks a queued sync; it covers everything a sync would
+    conn.execute(
+        "UPDATE linked_folder_sync_jobs SET successor_kind=? WHERE id=? "
+        "AND (successor_kind IS NULL OR ?='rebuild')",
+        (kind, active["id"], kind),
+    )
+
+
 def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
     job_id = str(uuid.uuid4())
     with closing(rag_db.get_connection()) as conn:
@@ -789,22 +816,7 @@ def _request_sync(folder_id: str, *, rebuild: bool = False) -> str:
             (folder_id,),
         ).fetchone()
         if active is not None:
-            if rebuild and active["status"] == "pending":
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
-                    "WHERE id=?",
-                    (active["id"],),
-                )
-            elif rebuild and active["kind"] != "rebuild":
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
-                    (active["id"],),
-                )
-            elif rebuild:
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=0 WHERE id=?",
-                    (active["id"],),
-                )
+            _fold_into_active_job(conn, active, "rebuild" if rebuild else "sync")
             conn.commit()
             return active["id"]
         conn.execute(
@@ -823,7 +835,7 @@ def _prune_terminal_jobs(conn) -> None:
     conn.execute(
         "DELETE FROM linked_folder_sync_jobs WHERE id IN ("
         "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
-        "AND rebuild_requested=0 "
+        "AND successor_kind IS NULL "
         "ORDER BY completed_at DESC, created_at DESC LIMIT -1 OFFSET ?)",
         (limit,),
     )
@@ -837,8 +849,13 @@ def get_job(job_id: str) -> dict | None:
 
 
 def job_events(job_id: str):
-    """Poll persisted state so streams also work after a backend restart."""
+    """Poll persisted state so streams also work after a backend restart.
+
+    Yields None as a keepalive when a pass produces no change for a while, which is what
+    lets a client tell a slow job from a proxy holding the whole response back.
+    """
     previous = None
+    last_sent = time.monotonic()
     while True:
         row = get_job(job_id)
         if row is None:
@@ -847,6 +864,10 @@ def job_events(job_id: str):
         if state != previous:
             yield row
             previous = state
+            last_sent = time.monotonic()
+        elif time.monotonic() - last_sent >= _JOB_EVENT_KEEPALIVE_S:
+            yield None
+            last_sent = time.monotonic()
         if row["status"] in _TERMINAL:
             return
         time.sleep(0.5)
@@ -1185,6 +1206,36 @@ def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:
         conn.commit()
 
 
+def _load_withheld(folder: dict) -> set[str]:
+    try:
+        stored = json.loads(folder.get("withheld_paths") or "[]")
+    except ValueError:
+        return set()
+    return {path for path in stored if isinstance(path, str)} if isinstance(stored, list) else set()
+
+
+def _store_withheld(folder_id: str, withheld: set[str]) -> None:
+    # truncation only shortens a grace pass, so the cap can never block a removal
+    capped = sorted(withheld)[:_MAX_WITHHELD_PATHS]
+    with closing(rag_db.get_connection()) as conn:
+        conn.execute(
+            "UPDATE linked_folders SET withheld_paths=? WHERE id=?",
+            (json.dumps(capped) if capped else None, folder_id),
+        )
+        conn.commit()
+
+
+def _failure_summary(failures: list[str]) -> str | None:
+    """Name the files that could not be indexed, so the folder error is actionable."""
+    if not failures:
+        return None
+    named = ", ".join(sorted(failures)[:_MAX_NAMED_FAILURES])
+    remainder = len(failures) - _MAX_NAMED_FAILURES
+    if remainder > 0:
+        named = f"{named} and {remainder} more"
+    return f"{len(failures)} file(s) could not be indexed ({named})"
+
+
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
     _check_running()
@@ -1262,9 +1313,12 @@ def _reconcile_folder(job_id: str) -> None:
             if content_hash:
                 key = (content_hash, os.path.splitext(rel)[1].lower())
                 missing_by_content.setdefault(key, []).append(rel)
+    already_withheld = _load_withheld(folder)
     total = len(work) + len(missing)
     _set_job(job_id, stage = "ingesting", discovered = len(current), renamed = renamed)
-    added = changed_count = failed = 0
+    added = changed_count = 0
+    failures: list[str] = []
+    withheld: set[str] = set()
     for index, rel in enumerate(work):
         snapshot = None
         document_id = None
@@ -1344,7 +1398,9 @@ def _reconcile_folder(job_id: str) -> None:
                 _remove_snapshot(snapshot)
             raise
         except Exception:
-            failed += 1
+            failures.append(rel)
+            # a failed file may be a rename or copy of a vanished path, so grant one pass
+            withheld.update(missing - already_withheld)
             logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
             if document_id:
                 _discard_document(document_id)
@@ -1364,12 +1420,12 @@ def _reconcile_folder(job_id: str) -> None:
             job_id,
             added = added,
             changed = changed_count,
-            failed = failed,
+            failed = len(failures),
             progress = (index + 1) / max(total, 1),
         )
 
     deleted = 0
-    for rel in sorted(missing) if failed == 0 else ():
+    for rel in sorted(missing - withheld):
         _check_running()
         _check_root_identity(folder["path"], scanned_identity)
         if _source_reappeared(folder["path"], rel):
@@ -1384,14 +1440,12 @@ def _reconcile_folder(job_id: str) -> None:
         )
 
     _check_running()
-    status = "completed" if failed == 0 else "failed"
-    error = (
-        None if failed == 0 else f"{failed} file(s) could not be indexed; prior versions retained"
-    )
+    _store_withheld(folder["id"], withheld)
+    error = _failure_summary(failures)
     _set_job(
         job_id,
-        status = status,
-        stage = "done" if failed == 0 else "error",
+        status = "completed" if error is None else "failed",
+        stage = "done" if error is None else "error",
         progress = 1.0,
         error = error,
         completed_at = _now(),
@@ -1400,7 +1454,7 @@ def _reconcile_folder(job_id: str) -> None:
         conn.execute(
             "UPDATE linked_folders SET status=?, last_error=?, last_scan_at=?, updated_at=? "
             "WHERE id=? AND delete_remove_index IS NULL",
-            ("ready" if failed == 0 else "error", error, _now(), _now(), folder["id"]),
+            ("ready" if error is None else "error", error, _now(), _now(), folder["id"]),
         )
         conn.commit()
         _prune_terminal_jobs(conn)
@@ -1435,16 +1489,17 @@ def _pause_job(job_id: str) -> None:
         conn.commit()
 
 
-def _queue_requested_rebuild(job_id: str) -> None:
+def _queue_successor(job_id: str) -> None:
+    """Hand a finished job's queued follow-up request to the next run."""
     conn = rag_db.get_connection()
     queued = False
     try:
         conn.execute("BEGIN IMMEDIATE")
         job = conn.execute(
-            "SELECT folder_id, rebuild_requested, status FROM linked_folder_sync_jobs WHERE id=?",
+            "SELECT folder_id, successor_kind, status FROM linked_folder_sync_jobs WHERE id=?",
             (job_id,),
         ).fetchone()
-        if job and job["rebuild_requested"] and job["status"] not in ("pending", "running"):
+        if job and job["successor_kind"] and job["status"] not in ("pending", "running"):
             active = conn.execute(
                 "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
                 "AND status IN ('pending','running') ORDER BY created_at LIMIT 1",
@@ -1454,22 +1509,13 @@ def _queue_requested_rebuild(job_id: str) -> None:
                 conn.execute(
                     "INSERT INTO linked_folder_sync_jobs"
                     "(id, folder_id, kind, status, stage, created_at) "
-                    "VALUES(?,?,'rebuild','pending','queued',?)",
-                    (str(uuid.uuid4()), job["folder_id"], _now()),
+                    "VALUES(?,?,?,'pending','queued',?)",
+                    (str(uuid.uuid4()), job["folder_id"], job["successor_kind"], _now()),
                 )
-            elif active["status"] == "pending":
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
-                    "WHERE id=?",
-                    (active["id"],),
-                )
-            elif active["kind"] != "rebuild":
-                conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
-                    (active["id"],),
-                )
+            else:
+                _fold_into_active_job(conn, active, job["successor_kind"])
             conn.execute(
-                "UPDATE linked_folder_sync_jobs SET rebuild_requested=0 WHERE id=?", (job_id,)
+                "UPDATE linked_folder_sync_jobs SET successor_kind=NULL WHERE id=?", (job_id,)
             )
             queued = True
         conn.commit()
@@ -1503,7 +1549,7 @@ def reconcile_folder(job_id: str) -> None:
     finally:
         try:
             if not lease_lost:
-                _queue_requested_rebuild(job_id)
+                _queue_successor(job_id)
         finally:
             del _worker_state.job_id
             job_leases.release(job_leases.FOLDER_SYNC, job_id)
@@ -1644,14 +1690,14 @@ def _recover_startup_state() -> None:
             (job_leases.FOLDER_SYNC, now),
         )
         conn.execute("DELETE FROM rag_job_leases WHERE expires_at<=?", (now,))
-        rebuild_handoffs = conn.execute(
+        successor_handoffs = conn.execute(
             "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
-            "AND rebuild_requested=1"
+            "AND successor_kind IS NOT NULL"
         ).fetchall()
         _reap_orphaned_documents(conn, now)
         conn.commit()
-    for job in rebuild_handoffs:
-        _queue_requested_rebuild(job["id"])
+    for job in successor_handoffs:
+        _queue_successor(job["id"])
 
 
 def _reap_orphaned_documents(conn, now: str) -> None:

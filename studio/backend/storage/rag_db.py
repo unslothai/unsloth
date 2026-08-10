@@ -181,6 +181,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             last_error TEXT,
             last_scan_at TEXT,
+            withheld_paths TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(scope, path)
@@ -222,7 +223,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             renamed INTEGER NOT NULL DEFAULT 0,
             failed INTEGER NOT NULL DEFAULT 0,
             error TEXT,
-            rebuild_requested INTEGER NOT NULL DEFAULT 0,
+            successor_kind TEXT,
             created_at TEXT NOT NULL,
             started_at TEXT,
             completed_at TEXT
@@ -254,7 +255,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    ensure_linked_folder_columns(conn)
     conn.commit()
+
+
+def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
+    """Add the linked-folder columns a database created by an earlier build is missing.
+
+    Also called for the metadata connection, which skips _ensure_schema so that scope
+    retirement keeps working when the vector extension cannot load.
+    """
+    job_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()
+    }
+    # the queued follow-up request; it replaced a flag that only recorded rebuilds
+    if job_cols and "successor_kind" not in job_cols:
+        conn.execute("ALTER TABLE linked_folder_sync_jobs ADD COLUMN successor_kind TEXT")
+        if "rebuild_requested" in job_cols:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' "
+                "WHERE rebuild_requested=1"
+            )
+    # vanished paths already granted their one grace pass before removal
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
+    if folder_cols and "withheld_paths" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
 
 
 def get_connection() -> sqlite3.Connection:
