@@ -409,21 +409,26 @@ def test_the_build_uses_the_release_tag_not_the_dispatch_ref():
     checkout = next(s for s in build if "actions/checkout" in str(s.get("uses", "")))
     assert checkout["with"]["ref"] == "${{ needs.prepare-version.outputs.desktop_release_tag }}"
 
+
 def test_the_tag_is_validated_before_it_is_checked_out(tmp_path):
     # actions/checkout resolves the free-text input, so a malformed tag would fail
     # on a generic missing-ref error and none of the corrections would be printed.
     steps = _workflow()["jobs"]["prepare-version"]["steps"]
     names = [step.get("name") or str(step.get("uses")) for step in steps]
-    checkout = next(i for i, step in enumerate(steps) if "actions/checkout" in str(step.get("uses", "")))
+    checkout = next(
+        i for i, step in enumerate(steps) if "actions/checkout" in str(step.get("uses", ""))
+    )
     assert names.index("Validate release versions") < checkout, names
     # And the checkout uses the validated value, not the raw input.
     assert steps[checkout]["with"]["ref"] == "${{ steps.prepare.outputs.studio_version }}"
 
-    for index, (bad, expected) in enumerate((
-        ("v.0.1.52-beta", "did you mean v0.1.52-beta?"),
-        ("0.1.52-beta", "must start with v"),
-        ("2026.8.3", "not a date-style backend version"),
-    )):
+    for index, (bad, expected) in enumerate(
+        (
+            ("v.0.1.52-beta", "did you mean v0.1.52-beta?"),
+            ("0.1.52-beta", "must start with v"),
+            ("2026.8.3", "not a date-style backend version"),
+        )
+    ):
         case_dir = tmp_path / f"case-{index}"
         case_dir.mkdir()
         result, _ = _run_step(
@@ -439,7 +444,7 @@ def test_the_tag_is_validated_before_it_is_checked_out(tmp_path):
 
 def test_the_promotion_guard_orders_numbered_prereleases_by_number():
     guard = _step(_workflow(), "publish-release", "Promote normal release to GitHub latest")["run"]
-    body = guard.split("python3 - \"$latest_before\"", 1)[1].split("\nPY", 1)[0]
+    body = guard.split('python3 - "$latest_before"', 1)[1].split("\nPY", 1)[0]
     body = "\n".join(line[10:] if line.startswith(" " * 10) else line for line in body.split("\n"))
     body = body.split("\n", 1)[1].lstrip("\n")
     namespace: dict = {}
