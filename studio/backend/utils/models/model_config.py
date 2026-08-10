@@ -1173,6 +1173,11 @@ def detect_audio_type_checked(
     failed for a reason that is not "the file is absent" -- a 401 on a gated repo,
     a 5xx, a timeout -- so a None means unknown rather than "not audio".
     """
+    # No model is definitively not an audio model. Without this the name is
+    # interpolated into the Hub URL and every poll fetches /None/resolve/main/...
+    if not model_name:
+        return None, True
+
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
         if is_local_path(model_name):
