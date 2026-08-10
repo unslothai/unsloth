@@ -732,7 +732,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 function VideoGenerator({ active = true }: { active?: boolean }) {
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
-    "a tiny ginger sloth surfing a wave at sunset, cinematic, smooth motion",
+    "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);

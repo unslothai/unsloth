@@ -2017,6 +2017,53 @@ def test_base_download_files_gguf_drops_transformer():
     assert "text_encoder/model-00001-of-00002.safetensors" in names
 
 
+_H3_SIBLINGS = [
+    _sibling("model_index.json", 10),
+    _sibling("modular_model_index.json", 10),
+    _sibling("transformer/config.json", 1),
+    _sibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 33),
+    _sibling("transformer/diffusion_pytorch_model-00002-of-00002.safetensors", 33),
+    _sibling("transformer_ref/config.json", 1),
+    _sibling("transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors", 33),
+    _sibling("transformer_ref/diffusion_pytorch_model-00002-of-00002.safetensors", 33),
+    _sibling("text_encoder/model-00001-of-00001.safetensors", 15),
+    _sibling("tokenizer/chat_template.jinja", 1),
+    _sibling("vae/diffusion_pytorch_model.safetensors", 3),
+    _sibling("audio_vae/diffusion_pytorch_model.safetensors", 1),
+    _sibling("scheduler/scheduler_config.json", 1),
+    _sibling("audio_scheduler/scheduler_config.json", 1),
+    _sibling("processor/preprocessor_config.json", 1),
+]
+
+
+def test_base_download_files_stages_the_h3_partition_the_load_will_open():
+    """H3 ships two denoisers in separate subfolders, 66.28 GB each, and a load opens one.
+
+    ref2va reads transformer_ref/, which the scoped list left out entirely, so a reference load
+    staged the wrong 66.28 GB and then pulled the right ones inline, outside the download panel.
+    Both partitions must never be staged at once either: that is the whole 132 GB.
+    """
+    info = types.SimpleNamespace(siblings = _H3_SIBLINGS)
+
+    keyframes = [n for n, _ in VideoBackend._base_download_files(info, "pipeline")]
+    assert "transformer/diffusion_pytorch_model-00001-of-00002.safetensors" in keyframes
+    assert not any(n.startswith("transformer_ref/") for n in keyframes)
+
+    references = [
+        n for n, _ in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")
+    ]
+    assert "transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors" in references
+    assert "transformer_ref/diffusion_pytorch_model-00002-of-00002.safetensors" in references
+    assert not any(n.startswith("transformer/") for n in references)
+    # Everything shared still comes along on both.
+    for shared in (
+        "model_index.json",
+        "text_encoder/model-00001-of-00001.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+    ):
+        assert shared in keyframes and shared in references
+
+
 def test_load_progress_clamps_overshoot(fake_runtime, monkeypatch):
     # The cache scan counts blobs a broader previous pull left behind, so the counter must never exceed the scoped estimate.
     backend = VideoBackend()
@@ -2503,6 +2550,50 @@ def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
         "required_bytes": 43,
         "checkpoint_bytes": 19,
     }
+
+
+def test_h3_native_uses_the_local_bundles_own_text_encoder(monkeypatch, tmp_path):
+    """A local clone of the H3 GGUF bundle ships the encoder beside the denoisers.
+
+    Hardcoding the Hub repo for the encoder re-fetches multiple GB that are already on disk next
+    to the picked checkpoint, and fails outright with no network. The denoiser was resolved
+    locally and the encoder was not, from the same directory.
+    """
+    local = tmp_path / "MiniMax-H3-GGUF"
+    local.mkdir()
+    (local / "minimax_h3_fl2va-Q4_K_M.gguf").write_bytes(b"x")
+    (local / "qwen3vl_32b_minimax_h3-Q4_K_M.gguf").write_bytes(b"x")
+
+    assert VideoBackend._h3_text_encoder_repo(
+        str(local), "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
+    ) == str(local)
+    # A clone WITHOUT the encoder still falls back to the hosted copy, so nothing regresses.
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    assert (
+        VideoBackend._h3_text_encoder_repo(str(bare), "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
+        == "unsloth/MiniMax-H3-GGUF"
+    )
+
+    # And the plan stages only the VAEs: both halves of the local bundle are already on disk.
+    _plan_api(
+        monkeypatch,
+        {
+            "unsloth/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+            ],
+            "Comfy-Org/MiniMax-H3": [
+                _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
+                _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
+            ],
+        },
+    )
+    plan = VideoBackend._h3_native_download_plan(
+        str(local), "minimax_h3_fl2va-Q4_K_M.gguf", hf_token = None
+    )
+    assert [entry["repo_id"] for entry in plan["entries"]] == ["Comfy-Org/MiniMax-H3"]
+    assert plan["total_bytes"] == 6
 
 
 _H3_BASE_SIBLINGS = [
@@ -3116,6 +3207,54 @@ def test_h3_modular_load_forwards_the_hub_token_to_the_component_loads(fake_runt
     # Without a configured token nothing extra is passed, so the hub's own resolution still applies.
     pipe = _load_h3_modular(VideoBackend())
     assert "token" not in pipe.load_kwargs
+
+
+def test_h3_modular_load_pins_the_component_loads_to_the_studio_cache(fake_runtime):
+    """The component from_pretrained calls need the same cache_dir the index load got.
+
+    load_components forwards its extra kwargs through ComponentSpec.load into each component's
+    from_pretrained. Without cache_dir those ~145 GB of Hub-pinned components resolve against the
+    HF_HUB_CACHE snapshot taken at import time, while the scoped pre-download stages into the
+    cache folder Studio currently points at, and the two really can differ (it is a live setting).
+    """
+    from core.inference.video import hub_cache_dir
+
+    pipe = _load_h3_modular(VideoBackend())
+    assert _FakeModularPipeline.last["cache_dir"] == hub_cache_dir()
+    assert pipe.load_kwargs["cache_dir"] == hub_cache_dir()
+
+
+def test_h3_modular_load_refuses_a_text_encoder_quant_it_cannot_honour(fake_runtime):
+    """An explicit text_encoder_quant the modular path cannot honour must RAISE.
+
+    This started life asserting the weaker contract: record the request so a decline reads as
+    FELL_BACK rather than vanishing into a backend-owned row stamped requested=null / APPLIED.
+    #8283 went further and made the modular encoder path fail closed, matching what the
+    conventional path already did, so an unhonourable explicit request never reaches a load at
+    all. That subsumes the original concern -- a request cannot be silently dropped from a run
+    that does not happen -- so this pins the refusal, and the reason, instead.
+    """
+    backend = VideoBackend()
+    diffusers = sys.modules["diffusers"]
+    diffusers.ComponentsManager = _FakeComponentsManager
+    diffusers.ModularPipeline = _FakeModularPipeline
+    fam = _detect_load_family("MiniMaxAI/MiniMax-H3", None, "minimax-h3")
+    with pytest.raises(RuntimeError, match = "text_encoder_quant='fp8' could not be used"):
+        backend._load_h3_modular_pipeline(
+            diffusers = diffusers,
+            torch = sys.modules["torch"],
+            fam = fam,
+            repo_id = "MiniMaxAI/MiniMax-H3",
+            base = fam.base_repo,
+            kind = "pipeline",
+            dtype = sys.modules["torch"].bfloat16,
+            device = "cpu",
+            hf_token = None,
+            memory_mode = None,
+            text_encoder_quant = "fp8",
+            _load_token = None,
+            _base_local_dir = None,
+        )
 
 
 def test_h3_modular_generation_ticks_and_cancels_through_the_scheduler(fake_runtime):
@@ -4239,6 +4378,50 @@ def test_h3_omitted_size_takes_the_canvas_from_the_keyframe(monkeypatch):
     # Without a keyframe there is nothing to match, so the family's first preset still wins.
     backend.generate(prompt = "p")
     assert (calls[-1]["params"].width, calls[-1]["params"].height) == (1344, 768)
+
+
+def test_h3_native_clip_records_the_build_it_came_off(monkeypatch):
+    """A native GGUF clip must carry the same build record as the diffusers twin.
+
+    _run_generate copies model_kind / gguf_filename / transformer_quant / text_encoder_quant /
+    memory_mode / offload_policy out of the result into the saved sidecar, so if the native return
+    dict omits them every native clip saves a blank recipe and the gallery shows nothing.
+    """
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    import dataclasses
+
+    backend._state = dataclasses.replace(
+        backend._state,
+        transformer_quant = "fp8",
+        text_encoder_quant = "int8",
+        memory_mode = "low",
+        offload_policy = "model",
+    )
+
+    result = backend.generate(prompt = "p", width = 960, height = 544)
+
+    assert result["model_kind"] == "gguf"
+    assert result["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+    assert result["transformer_quant"] == "fp8"
+    assert result["text_encoder_quant"] == "int8"
+    assert result["memory_mode"] == "low"
+    assert result["offload_policy"] == "model"
+
+
+def test_a_cfg_free_family_records_the_guidance_it_actually_ran(monkeypatch):
+    """H3 has no CFG, so a requested guidance must not reach the recipe.
+
+    The native path pins cfg_scale to 1.0 and the diffusers path passes no guidance kwarg at all,
+    so recording the caller's number would label the clip with a scale that never ran.
+    """
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "p", width = 960, height = 544, guidance = 7.0)
+
+    assert result["guidance"] == 1.0
+    assert calls[-1]["params"].cfg_scale == 1.0
 
 
 def test_keyframes_are_refused_by_a_family_that_has_none(fake_runtime, tmp_path):

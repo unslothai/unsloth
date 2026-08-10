@@ -482,6 +482,10 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-4b",
         "black-forest-labs/flux.2-klein-base-9b",
         "tongyi-mai/z-image-turbo",
+        # The undistilled Z-Image: the base the upstream DreamBooth recipe trains on, and the
+        # base_model tag of unsloth/Z-Image-GGUF. Leaving it out made that tag untrusted, so the
+        # GGUF fell back to the Turbo companions and denoised on its shift 3.0 scheduler.
+        "tongyi-mai/z-image",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
@@ -5690,7 +5694,23 @@ def _resolve_base_repo(
             # base_model, both of which must stay the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
     # Returns the UPSTREAM id; the swap happens at the fetch sites only.
-    return resolve_base_repo(fam, base)
+    resolved = resolve_base_repo(fam, base)
+    _remember_companion_base(repo_id, resolved)
+    return resolved
+
+
+def _remember_companion_base(repo_id: str, base: str) -> None:
+    """Record that *repo_id* takes its companions from *base*, for the delete/cleanup guards.
+
+    A card ``base_model`` tag is the one input this resolver has that a later offline scan cannot
+    reconstruct -- a GGUF pick caches only the .gguf, never the card -- so the link is written
+    where it is decided. Additive and best-effort: a failure here must never fail a load.
+    """
+    try:
+        from hub.utils.companion_assets import record_companion_link
+        record_companion_link(repo_id, base)
+    except Exception as exc:  # noqa: BLE001 -- bookkeeping only
+        logger.debug("diffusion.companion_link_record_failed: %s", exc)
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:

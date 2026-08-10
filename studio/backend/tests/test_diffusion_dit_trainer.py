@@ -157,6 +157,30 @@ def test_flux2_bases_pass_the_trusted_base_gate():
         _assert_trusted_base_model("someone/random-flux2-finetune")
 
 
+def test_zimage_offers_the_undistilled_base_the_upstream_recipe_trains_on():
+    # examples/dreambooth/README_z_image.md trains on Tongyi-MAI/Z-Image, not the distilled Turbo,
+    # and the trust gate refused that id until it joined the allowlist. The nf4 Turbo stays first
+    # so it remains the picker's default.
+    from core.inference.diffusion_families import detect_family
+    from core.training.diffusion_train_common import _assert_trusted_base_model
+
+    fam = detect_family("Tongyi-MAI/Z-Image")
+    assert fam is not None and fam.name == "z-image"
+    assert fam.train_base_repos == (
+        "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+        "Tongyi-MAI/Z-Image-Turbo",
+        "Tongyi-MAI/Z-Image",
+    )
+    _assert_trusted_base_model("Tongyi-MAI/Z-Image")
+    with pytest.raises(ValueError, match = "untrusted"):
+        _assert_trusted_base_model("someone/random-z-image-finetune")
+    # The upstream script's target list; the family spec must already match it.
+    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0")
+    # No deploy pairing: an adapter previews on whichever checkpoint it trained on. A family-wide
+    # one would also rewrite the nf4 Turbo base, sending a QLoRA run's preview to a dense fp32 load.
+    assert fam.deploy_base_repo is None
+
+
 def test_every_train_base_is_deployable_as_an_inference_pipeline():
     # "Deploy to Create" reloads the trained-on base (or the family's deploy_base) through /images/load as a PIPELINE, gated on
     # _is_trusted_diffusion_repo, so an advertised training base failing that gate makes Deploy 400 for every adapter.

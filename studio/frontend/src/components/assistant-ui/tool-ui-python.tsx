@@ -5,6 +5,10 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { authFetch } from "@/features/auth";
+
+import { SandboxFiles } from "./sandbox-files-view";
+import type { SandboxFile } from "./sandbox-files";
+import { isSandboxFileList } from "@/features/chat/api/chat-adapter";
 import {
   preferSanitizedFullToolOutput,
   useChatRuntimeStore,
@@ -31,15 +35,19 @@ interface StructuredResult {
   text: string;
   images: string[];
   sessionId: string;
+  files?: SandboxFile[];
 }
 
 function isStructuredResult(val: unknown): val is StructuredResult {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as { files?: unknown };
   return (
-    typeof val === "object" &&
-    val !== null &&
     "text" in val &&
     "images" in val &&
-    "sessionId" in val
+    "sessionId" in val &&
+    // Persisted content can carry anything, and the card maps over this and
+    // reads name off each entry.
+    isSandboxFileList(v.files)
   );
 }
 
@@ -143,11 +151,13 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
 
   let output: string;
   let images: string[] = [];
+  let files: SandboxFile[] = [];
   let sessionId = "";
 
   if (isStructuredResult(result)) {
     output = result.text;
     images = result.images;
+    files = result.files ?? [];
     sessionId = result.sessionId;
   } else if (result != null) {
     output = stringifyToolResult(result);
@@ -221,6 +231,9 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
+
+          {/* Anything the script wrote, as a real download */}
+          <SandboxFiles sessionId={sessionId} files={files} />
 
           {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (
