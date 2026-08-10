@@ -1102,6 +1102,36 @@ def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypat
     assert len(installs) == 1
 
 
+def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatch):
+    """The accelerator record belongs to the tree the binary is in.
+
+    A tree an older build installed BESIDE the Studio home is still found by the finder, but the
+    current managed root is now under the home and holds nothing. Reading the record from there
+    reports the install as unrecorded, and unrecorded reads as a mismatch for a GPU target: the
+    matching CUDA bundle already on disk would be downloaded again on every load."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"  # where the old build put it
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()  # the record must be read off disk, not memoised
+
+    server = legacy / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert installs == [], "the CUDA build recorded in the legacy root is already what was asked for"
+
+
 def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
     """Only an upgrade reinstalls. A CPU/auto request must reuse whatever is there, including an
     install predating the record, or every CPU host would re-download on its next load."""

@@ -71,7 +71,7 @@ from core.inference.sd_cpp_engine import (
     find_sd_cpp_binary,
     find_sd_server_binary,
     is_managed_binary,
-    managed_install_root,
+    owning_managed_root,
     runtime_env,
 )
 from core.inference.sd_cpp_server import SdCppServer
@@ -357,7 +357,8 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
     the CPU build is wanted: unrecorded is unknown (GPU assets shipped before the record did), and
     reinstalling every legacy install on a CPU target would redownload the bundle for the common
     case, where the install almost certainly is the CPU one already."""
-    if not is_managed_binary(binary):
+    root = owning_managed_root(binary)
+    if root is None:
         return False
     if _managed_tree_in_use():
         return False  # an install now would overwrite a running binary; the load retries after teardown
@@ -366,7 +367,10 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         want = mod.accelerator_class(accelerator)
         if want in _failed_accelerator_upgrades:
             return False
-        have = mod.installed_accelerator(managed_install_root())
+        # From the root the binary is actually in, not the current default: an install an older
+        # build put beside the Studio home keeps its own record, and reading the wrong root would
+        # report it unrecorded and re-download a bundle that is already here.
+        have = mod.installed_accelerator(root)
         if want == "cpu":
             return have is not None and have != "cpu"
         return have != want

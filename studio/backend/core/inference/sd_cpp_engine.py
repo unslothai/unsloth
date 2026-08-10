@@ -315,8 +315,19 @@ def is_managed_binary(binary: Optional[str]) -> bool:
     Deleting out of an unmarked root would take a file we are then refused permission to reinstall:
     the repair unlinks sd-server, install() rejects the now still-non-empty unmarked directory, and
     the user is left with no binary at all and no way back."""
+    return owning_managed_root(binary) is not None
+
+
+def owning_managed_root(binary: Optional[str]) -> Optional[Path]:
+    """The installer-owned root ``binary`` lives under, or None when it is not ours.
+
+    Both locations are checked, current first, because a tree an older build installed beside the
+    Studio home is still discovered by the finder. Callers that read per-install state (the
+    accelerator record) must read it from the root the binary is actually in: reading the current
+    root while the binary came from the legacy one reports "unrecorded", which a GPU target treats
+    as a mismatch and answers by re-downloading a bundle that is already installed."""
     if not binary:
-        return False
+        return None
     roots = [managed_install_root()]
     legacy = legacy_sibling_install_root()
     if legacy is not None:
@@ -328,10 +339,10 @@ def is_managed_binary(binary: Optional[str]) -> bool:
             continue
         try:
             if (root / OWNER_MARKER).is_file():
-                return True
+                return root
         except OSError:
             continue
-    return False
+    return None
 
 
 def _find_binary(
