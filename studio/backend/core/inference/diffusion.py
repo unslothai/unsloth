@@ -482,6 +482,10 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "black-forest-labs/flux.2-klein-base-4b",
         "black-forest-labs/flux.2-klein-base-9b",
         "tongyi-mai/z-image-turbo",
+        # The undistilled Z-Image: the base the upstream DreamBooth recipe trains on, and the
+        # base_model tag of unsloth/Z-Image-GGUF. Leaving it out made that tag untrusted, so the
+        # GGUF fell back to the Turbo companions and denoised on its shift 3.0 scheduler.
+        "tongyi-mai/z-image",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
