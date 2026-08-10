@@ -737,7 +737,7 @@ def test_media_pages_clear_the_custom_titlebar():
 
 
 def test_image_page_structural_panes_share_the_container_breakpoint():
-    source = IMAGES_PAGE.read_text(encoding="utf-8")
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
     shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
     section = source.split("Settings column + preview canvas", 1)[1]
 
@@ -751,7 +751,7 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
 
 
 def test_image_train_rail_matches_create_and_header():
-    source = DIFFUSION_TRAIN_PANEL.read_text(encoding="utf-8")
+    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
@@ -763,13 +763,12 @@ def test_image_train_rail_matches_create_and_header():
 
 
 def test_compact_media_link_keeps_accessible_name_and_truncation():
-    source = MEDIA_PAGE_LINK.read_text(encoding="utf-8")
+    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
     button = source.split("<button", 1)[1].split("</button>", 1)[0]
 
     assert "aria-label={label}" in button
     assert 'cn("min-w-0 truncate", labelClassName)' in button
     assert "arrowClassName" in button
-
 
 
 def test_media_page_headers_out_stack_the_mac_drag_region():
@@ -799,7 +798,7 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
 
 
 def test_images_header_tracks_preview_and_preserves_titlebar_controls():
-    source = IMAGES_PAGE.read_text(encoding="utf-8")
+    source = IMAGES_PAGE.read_text(encoding = "utf-8")
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
