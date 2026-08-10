@@ -596,11 +596,16 @@ def test_orphaned_native_components_do_not_hold_each_other_on_disk(monkeypatch):
     vae = "unsloth/FLUX.2-VAE"
     _install(
         monkeypatch,
-        _repo(encoder, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]),
+        _repo(
+            encoder, [("split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors", 9_000)]
+        ),
         _repo(vae, [("split_files/vae/flux2-vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents(vae) == []
-    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert offered == {encoder, vae}
 
 
@@ -629,5 +634,8 @@ def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
     )
     impact = asyncio.run(companion_cleanup.delete_impact_response(checkpoint))
     assert borrowed not in {c["repo_id"] for c in impact["freeable_companions"]}
-    offered = {c["repo_id"] for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]}
+    offered = {
+        c["repo_id"]
+        for c in asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
+    }
     assert borrowed not in offered
