@@ -402,10 +402,13 @@ def test_start_leaves_an_image_only_folder_alone(tmp_path):
     assert _clip_dataset_refusal(str(tmp_path / "does-not-exist")) is None
 
 
-def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root):
+def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root, monkeypatch):
     """Where the filesystem folds case, CAT.mp4's sidecar IS cat.txt, so an exact stem compare
     would delete the caption the clip still reads. The upload refuses to create such a pair,
     but an externally populated folder can hold one."""
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: True)
     folder = ds_root / "legacy-case"
     folder.mkdir()
     _write_png(folder / "cat.png")
@@ -416,3 +419,23 @@ def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root):
     assert r.status_code == 200, r.text
     assert not (folder / "cat.png").exists()
     assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
+
+
+def test_deleting_an_image_still_drops_its_sidecar_where_case_is_kept(client, ds_root, monkeypatch):
+    """The other half of the same probe. Here CAT.mp4 reads CAT.txt, a different file, so
+    cat.txt belongs to the image alone and must go with it: left behind, the next cat.png
+    uploaded into this folder would silently inherit a caption written for something else."""
+    import routes.training as tr
+
+    monkeypatch.setattr(tr, "_dataset_folder_is_case_insensitive", lambda folder: False)
+    folder = ds_root / "sensitive-case"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
+    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+    (folder / "CAT.txt").write_text("a CAT", encoding = "utf-8")
+
+    r = client.delete("/api/train/diffusion/dataset/sensitive-case/image/cat.png")
+    assert r.status_code == 200, r.text
+    assert not (folder / "cat.txt").exists()
+    assert (folder / "CAT.txt").read_text(encoding = "utf-8") == "a CAT"

@@ -3758,15 +3758,24 @@ async def delete_diffusion_dataset_image(
         image_path.unlink(missing_ok = True)
         # Sidecars are keyed on the STEM, so cat.jpg and cat.png share cat.txt: deleting it with one
         # would strip the survivor's caption. New collisions are refused at upload; legacy ones exist.
+        # Fold stems only where the filesystem folds them, off the same probe the upload's case
+        # checks use. Where it folds, CAT.mp4 reads the very file cat.png calls cat.txt, so an
+        # exact compare would not see the survivor and would unlink its caption. Where it does
+        # not, those are two separate sidecars, and folding would strand cat.txt for whatever
+        # later takes the cat stem to inherit.
+        folds_case = _dataset_folder_is_case_insensitive(folder)
+
+        def same_stem(p: Path) -> bool:
+            return (
+                p.stem.casefold() == image_path.stem.casefold()
+                if folds_case
+                else p.stem == image_path.stem
+            )
+
         stem_still_used = any(
             p.is_file()
             and p != image_path
-            # Case-folded, like the upload's _shares_sidecar: where the filesystem folds case,
-            # CAT.mp4 reads the very file cat.png calls cat.txt, so an exact stem compare would
-            # not see it and would unlink the caption out from under it. Where case is kept the
-            # two sidecars are separate files and this only leaves one behind, which nothing
-            # reads (the summary and the trainer both walk media files, not .txt).
-            and p.stem.casefold() == image_path.stem.casefold()
+            and same_stem(p)
             # Clips share the stem-keyed sidecar with images, so a cat.mp4 beside cat.png holds
             # cat.txt open just as a second image would. Checking images alone would strip the
             # clip's caption when the image is deleted.
