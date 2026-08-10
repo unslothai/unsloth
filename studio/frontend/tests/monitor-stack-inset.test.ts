@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -302,6 +303,36 @@ test("a docked composer is dodged whatever the stack measures", () => {
       `a ${height}px stack must still clear Send`,
     );
   }
+});
+
+// The measurement feeds the cap, and the cap is on the element being measured.
+// The overlays are flex items with min-h-0, so under the cap they shrink to it
+// and both clientHeight and scrollHeight come back as the cap: a stack taller
+// than the gap would measure as exactly the gap, never ask for a lift, and sit
+// there clipped. The read has to be taken with the cap off.
+test("the height is measured with the hook's own cap lifted", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("observer.observe(node)"),
+  );
+  assert.ok(measure, "the measure callback moved");
+  assert.match(
+    measure,
+    /node\.style\.maxHeight = "none";[\s\S]*node\.scrollHeight/,
+    "scrollHeight is read while the cap still applies",
+  );
+  assert.match(
+    measure,
+    /node\.scrollHeight;[\s\S]*node\.style\.maxHeight = capped;/,
+    "the cap is not restored after the read",
+  );
 });
 
 // The sweep above, re-run at the heights the stack actually takes, since the

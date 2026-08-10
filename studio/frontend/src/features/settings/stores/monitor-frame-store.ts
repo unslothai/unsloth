@@ -302,10 +302,14 @@ export type StackPlacement = StackGeometry & {
  * `stackGeometry` in px, recomputed as the monitor moves or resizes, and as the
  * stack's own content grows.
  *
- * The height is read from `scrollHeight`, never `clientHeight`: `maxHeight` is
- * this hook's own output, so measuring the clipped box would feed the placement
- * its own answer and settle wherever it happened to start. `scrollHeight` is
- * what the overlays want to be, which is the input the dodge test needs.
+ * The measurement has to be taken with this hook's own `maxHeight` off. The
+ * overlays are flex items with `min-h-0` and their own inner scrollers, so under
+ * the cap they shrink to fit it rather than overflowing, and both `clientHeight`
+ * and `scrollHeight` come back as the cap itself. Measured in a browser: a stack
+ * whose content is 83px tall reports 83, and reports 40 the moment a 40px cap is
+ * applied. Fed back in, that is the placement reading its own output: a stack
+ * taller than the gap under an obstacle would measure as exactly the gap, never
+ * ask to be lifted, and sit there clipped.
  */
 export function useStackGeometry(): StackPlacement {
   const frames = useMonitorFrameStore((state) => state.frames);
@@ -327,8 +331,21 @@ export function useStackGeometry(): StackPlacement {
     if (node === null || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       // An empty stack asks for nothing, so nothing is dodged for it.
-      const height = node.childElementCount === 0 ? 0 : node.scrollHeight;
-      setNeededRoom((current) => (current === height ? current : height));
+      if (node.childElementCount === 0) {
+        setNeededRoom((current) => (current === 0 ? current : 0));
+        return;
+      }
+      // Drop the cap for the read and put it straight back, in one synchronous
+      // block: reading scrollHeight in between forces the unconstrained layout,
+      // and restoring before yielding means no observer, paint or other reader
+      // ever sees the uncapped box. Written through style rather than state
+      // because React owns this property and will rewrite the same value on the
+      // next render anyway.
+      const capped = node.style.maxHeight;
+      node.style.maxHeight = "none";
+      const natural = node.scrollHeight;
+      node.style.maxHeight = capped;
+      setNeededRoom((current) => (current === natural ? current : natural));
     };
     measure();
     const observer = new ResizeObserver(measure);
