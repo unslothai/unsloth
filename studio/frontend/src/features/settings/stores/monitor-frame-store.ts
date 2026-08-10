@@ -6,7 +6,7 @@
 // same corner; the chat composer docks to the bottom of the same column once a
 // thread has turns. Each publishes its box here while it is mounted.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 
 export type MonitorFrame = {
@@ -71,6 +71,11 @@ const STACK_GAP = 8;
 const STACK_WIDTH = 448;
 // Never lift so far that the stack itself is pushed off the top.
 const MIN_STACK_ROOM = 120;
+// Fallback for "how much room does the stack need under a box" before it has been
+// measured. Deliberately small: guessing high is what parked the loaded models card in
+// the middle of a short window, with the corner underneath it empty and big enough to
+// hold it. The real height arrives from the stack's own ResizeObserver on the next frame.
+const ASSUMED_STACK_HEIGHT = 56;
 // The monitor's own controls, measured from its top edge: 12px of panel
 // padding, a 24px control row (the drag handle and the size-6 Close button),
 // an 8px rule and an 8px margin come to 54. Rounded up so a font or a border
@@ -104,10 +109,12 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  * lifting over it there is what put the banners in the middle of the page with
  * the corner underneath them empty.
  *
- * Derived from the cap rather than guessed, so the two cannot disagree: the
- * space below the box is what stackMaxHeight allows. Read as a bare "is it near
- * the bottom" instead, boxes ending just above the cutoff were left in the
- * capped branch with a cap that did not fit under them.
+ * Measured against what the stack actually is, not a fixed guess. A guess is
+ * what put the loaded models card in the middle of a short window: the welcome
+ * composer left 83px under it, the card is 80px tall and fits there, but the
+ * constant said 120 so the stack lifted clear over the composer's top edge and
+ * left the corner it was dodging empty. `neededRoom` comes from the stack's own
+ * ResizeObserver (see useStackGeometry), so a taller stack still gets dodged.
  *
  * Asked against the inset in force, never a fixed one: lifting over one box
  * moves the stack up into the next, and a box that had room at the corner may
@@ -117,8 +124,12 @@ function reachesStack(
   frame: MonitorFrame,
   viewportHeight: number,
   bottomInset: number,
+  neededRoom: number,
 ): boolean {
-  return roomBelow(frame, viewportHeight, bottomInset) < MIN_STACK_ROOM;
+  // At least a pixel, even for an empty stack. Zero would let the capped branch
+  // hand back a max-height of exactly 0, which is a valid value browsers keep,
+  // so the stack would be there and invisible rather than dodged.
+  return roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, neededRoom);
 }
 
 /** The inset that clears this box's top edge, whether or not it fits there. */
@@ -169,6 +180,7 @@ export function stackBottomInset(
   frame: MonitorFrame | null,
   viewportWidth: number,
   viewportHeight: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
 ): number {
   if (!frame) return STACK_INSET;
   // Only dodge a box that is in the stack's column and crowds its corner; one
@@ -176,7 +188,7 @@ export function stackBottomInset(
   // corner free.
   const inTheWay =
     inStackColumn(frame, viewportWidth) &&
-    reachesStack(frame, viewportHeight, STACK_INSET);
+    reachesStack(frame, viewportHeight, STACK_INSET, neededRoom);
   return inTheWay ? dodgeInset(frame, viewportHeight) : STACK_INSET;
 }
 
@@ -200,10 +212,11 @@ export function stackMaxHeight(
   viewportWidth: number,
   viewportHeight: number,
   bottomInset: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (reachesStack(frame, viewportHeight, bottomInset)) {
+  if (reachesStack(frame, viewportHeight, bottomInset, neededRoom)) {
     // Lifted over: bottomInset already cleared it.
     if (liftFits(frame, viewportHeight)) return ownMargin;
     // Seated inside it instead. Stop below its header, or the Close button goes
@@ -234,13 +247,25 @@ export function stackGeometry(
   frames: MonitorFrame | null | readonly MonitorFrame[],
   viewportWidth: number,
   viewportHeight: number,
+  neededRoom: number = ASSUMED_STACK_HEIGHT,
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
   if (list.length === 0) {
-    const bottom = stackBottomInset(null, viewportWidth, viewportHeight);
+    const bottom = stackBottomInset(
+      null,
+      viewportWidth,
+      viewportHeight,
+      neededRoom,
+    );
     return {
       bottom,
-      maxHeight: stackMaxHeight(null, viewportWidth, viewportHeight, bottom),
+      maxHeight: stackMaxHeight(
+        null,
+        viewportWidth,
+        viewportHeight,
+        bottom,
+        neededRoom,
+      ),
     };
   }
   // Settled, not summed. Lifting over one box moves the stack up into the next,
@@ -251,7 +276,7 @@ export function stackGeometry(
   for (let pass = 0; pass <= column.length; pass += 1) {
     let next = bottom;
     for (const frame of column) {
-      if (reachesStack(frame, viewportHeight, bottom)) {
+      if (reachesStack(frame, viewportHeight, bottom, neededRoom)) {
         next = Math.max(next, dodgeInset(frame, viewportHeight));
       }
     }
@@ -262,14 +287,27 @@ export function stackGeometry(
     bottom,
     maxHeight: Math.min(
       ...list.map((f) =>
-        stackMaxHeight(f, viewportWidth, viewportHeight, bottom),
+        stackMaxHeight(f, viewportWidth, viewportHeight, bottom, neededRoom),
       ),
     ),
   };
 }
 
-/** `stackGeometry` in px, recomputed as the monitor moves or resizes. */
-export function useStackGeometry(): StackGeometry {
+export type StackPlacement = StackGeometry & {
+  /** Attach to the stack container so its height feeds back into the placement. */
+  ref: (node: HTMLElement | null) => void;
+};
+
+/**
+ * `stackGeometry` in px, recomputed as the monitor moves or resizes, and as the
+ * stack's own content grows.
+ *
+ * The height is read from `scrollHeight`, never `clientHeight`: `maxHeight` is
+ * this hook's own output, so measuring the clipped box would feed the placement
+ * its own answer and settle wherever it happened to start. `scrollHeight` is
+ * what the overlays want to be, which is the input the dodge test needs.
+ */
+export function useStackGeometry(): StackPlacement {
   const frames = useMonitorFrameStore((state) => state.frames);
   // Every published box, not their union: see stackGeometry.
   const published = useMemo(() => [...frames.values()], [frames]);
@@ -277,6 +315,7 @@ export function useStackGeometry(): StackGeometry {
     width: typeof window === "undefined" ? 0 : window.innerWidth,
     height: typeof window === "undefined" ? 0 : window.innerHeight,
   }));
+  const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
   useEffect(() => {
     const onResize = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -284,5 +323,27 @@ export function useStackGeometry(): StackGeometry {
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
-  return stackGeometry(published, viewport.width, viewport.height);
+  const ref = useCallback((node: HTMLElement | null) => {
+    if (node === null || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      // An empty stack asks for nothing, so nothing is dodged for it.
+      const height = node.childElementCount === 0 ? 0 : node.scrollHeight;
+      setNeededRoom((current) => (current === height ? current : height));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    // Overlays mount and unmount inside the stack without resizing it while it is
+    // empty (a 0-height box stays 0), so watch the child list too.
+    const mutations = new MutationObserver(measure);
+    mutations.observe(node, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+    };
+  }, []);
+  return {
+    ...stackGeometry(published, viewport.width, viewport.height, neededRoom),
+    ref,
+  };
 }

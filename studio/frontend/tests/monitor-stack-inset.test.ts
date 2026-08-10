@@ -271,6 +271,61 @@ test("the welcome composer is left alone, and the stack stays in the corner", ()
   assert.equal(stackBottomInset(welcome, CHAT_W, CHAT_H), 16);
 });
 
+// A short window, where the welcome composer really does sit close to the
+// bottom: 921x534, the reported case. It leaves 83px under it, and the loaded
+// models card is 80px tall, so the corner it is being lifted out of is the one
+// place it fits. Asking for a fixed 120 lifted the card clear over the
+// composer's top edge and parked it in the middle of the screen.
+const SHORT_W = 921;
+const SHORT_H = 534;
+const SHORT_WELCOME = { left: 316, top: 308, right: 877, bottom: 427 };
+
+test("a card that fits under the welcome composer keeps the corner", () => {
+  const geometry = stackGeometry(SHORT_WELCOME, SHORT_W, SHORT_H, 80);
+  assert.equal(geometry.bottom, 16, "the card belongs in the corner");
+  const stackTop = SHORT_H - geometry.bottom - geometry.maxHeight;
+  assert.ok(stackTop >= SHORT_WELCOME.bottom, "and still clears the composer");
+  assert.ok(geometry.maxHeight >= 80, "with room for the card it measured");
+});
+
+test("a stack too tall for that gap is still lifted over", () => {
+  const inset = stackBottomInset(SHORT_WELCOME, SHORT_W, SHORT_H, 200);
+  assert.ok(inset > 16, "200px cannot fit in 83px, so it has to move");
+  assert.ok(SHORT_H - inset <= SHORT_WELCOME.top, "and clears it fully");
+});
+
+test("a docked composer is dodged whatever the stack measures", () => {
+  const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (const height of [40, 80, 120, 260]) {
+    assert.ok(
+      stackBottomInset(docked, CHAT_W, CHAT_H, height) > 16,
+      `a ${height}px stack must still clear Send`,
+    );
+  }
+});
+
+// The sweep above, re-run at the heights the stack actually takes, since the
+// dodge test is now driven by them.
+test("no measured height leaves the stack overlapping a box", () => {
+  const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
+  for (const needed of [0, 40, 80, 120, 200, 320]) {
+    for (let bottom = 60; bottom <= CHAT_H - 16; bottom += 4) {
+      const box = { left: 996, top: Math.max(0, bottom - 180), right: 1264, bottom };
+      for (const boxes of [[box], [box, composer]]) {
+        const geometry = stackGeometry(boxes, CHAT_W, CHAT_H, needed);
+        const label = `needed=${needed} bottom=${bottom} n=${boxes.length}`;
+        assert.ok(geometry.maxHeight > 0, `non-positive cap for ${label}`);
+        const stackTop = CHAT_H - geometry.bottom - geometry.maxHeight;
+        for (const each of boxes) {
+          const clearsAbove = CHAT_H - geometry.bottom <= each.top;
+          const clearsBelow = stackTop >= each.bottom;
+          assert.ok(clearsAbove || clearsBelow, `overlap for ${label}`);
+        }
+      }
+    }
+  }
+});
+
 // Same rule, applied to the other publisher: a monitor dragged up the screen
 // leaves the corner free, so the stack belongs in it.
 test("a monitor away from the corner no longer lifts the stack", () => {
