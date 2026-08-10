@@ -17,6 +17,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
+import { ImageDropzone } from "@/components/image-dropzone";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -38,6 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useSidebar } from "@/components/ui/sidebar";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -72,6 +74,7 @@ import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
@@ -107,6 +110,7 @@ import {
   type GalleryImage,
   type LoraSpecInput,
   GenerateResponseLostError,
+  cancelDiffusionGeneration,
   deleteGalleryImage,
   fetchGalleryObjectUrl,
   generateDiffusionImage,
@@ -120,6 +124,10 @@ import {
   loadDiffusionModel,
   unloadDiffusionModel,
 } from "./api";
+import {
+  shouldContinueGenerating,
+  shouldReportGenerateError,
+} from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -497,12 +505,20 @@ function loadToastDescription(p: DiffusionLoadProgress) {
 }
 
 // Toast args mirroring chat: persistent, closeable, content in `description`. Pass `id` to update in place.
-function loadToastArgs(p: DiffusionLoadProgress, id?: string | number) {
+// `onCancel` adds chat's Cancel action, the one control that reaches a load already in flight: the model
+// selector's eject is hidden for exactly the span a first load runs (nothing is resident, so it has no
+// selection to eject), which left a multi-gigabyte pull with no way out.
+function loadToastArgs(
+  p: DiffusionLoadProgress,
+  id?: string | number,
+  onCancel?: () => void,
+) {
   return {
     ...(id != null ? { id } : {}),
     description: loadToastDescription(p),
     duration: Infinity,
     closeButton: true,
+    ...(onCancel ? { cancel: { label: "Cancel", onClick: onCancel } } : {}),
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
@@ -646,91 +662,6 @@ function AdvancedSelect({
       </div>
       {desc && <p className="text-ui-11 leading-snug text-muted-foreground/70">{desc}</p>}
     </div>
-  );
-}
-
-// Source-image picker for Transform (img2img): click or drag-drop an image, read it to a data URL sent as init_image.
-function ImageDropzone({
-  value,
-  onChange,
-}: {
-  value: string | null;
-  onChange: (dataUrl: string | null) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [dragging, setDragging] = useState(false);
-
-  const readFile = useCallback(
-    (file: File | undefined | null) => {
-      if (!file || !file.type.startsWith("image/")) {
-        if (file) toast.error("Please choose an image file");
-        return;
-      }
-      const reader = new FileReader();
-      reader.onload = () => onChange(typeof reader.result === "string" ? reader.result : null);
-      reader.onerror = () => toast.error("Could not read the image");
-      reader.readAsDataURL(file);
-    },
-    [onChange],
-  );
-
-  if (value) {
-    return (
-      <div className="relative overflow-hidden rounded-[10px] border border-border">
-        <img src={value} alt="Source" className="max-h-44 w-full object-contain bg-muted/30" />
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <Button
-              type="button"
-              variant="secondary"
-              size="icon"
-              aria-label="Remove source image"
-              className="absolute right-1.5 top-1.5 size-7"
-              onClick={() => {
-                onChange(null);
-                if (inputRef.current) inputRef.current.value = "";
-              }}
-            >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Remove</TooltipContent>
-        </Tooltip>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => inputRef.current?.click()}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        readFile(e.dataTransfer.files?.[0]);
-      }}
-      className={cn(
-        "flex h-28 w-full flex-col items-center justify-center gap-1 rounded-xl border border-dashed text-xs transition-colors",
-        dragging
-          ? "border-primary/60 bg-primary/5 text-foreground"
-          : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
-      )}
-    >
-      <HugeiconsIcon icon={ImageAdd02Icon} className="size-5" />
-      <span>Click or drop an image</span>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        className="hidden"
-        onChange={(e) => readFile(e.target.files?.[0])}
-      />
-    </button>
   );
 }
 
@@ -1189,6 +1120,7 @@ type LoadAdvanced = Pick<
 >;
 
 export function ImagesPage({ active = true }: { active?: boolean }) {
+  const { isMobile, pinned } = useSidebar();
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
@@ -1318,6 +1250,27 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const visibleIds = useRef<Set<string>>(new Set());
   // False once the page truly unmounts. Tab switches keep it mounted, so a batch keeps generating off-tab.
   const isMounted = useRef(true);
+  // Set by Stop for the duration of one handleGenerate call. The backend cancel only reaches the
+  // denoise that is running RIGHT NOW, so a multi-run request (count > 1) would start its next run
+  // straight after; this breaks the loop as well. Cleared when the run settles.
+  const cancelRequested = useRef(false);
+  // True only once the backend has answered {cancelled: true}, i.e. it really stopped a running
+  // denoise. Anything else -- a POST that never landed, or a {cancelled: false} because the run
+  // was already past its last cancellation check -- means the run was NOT stopped, so an error it
+  // raises afterwards is a real failure and not the user's own Stop coming back.
+  const cancelAcked = useRef(false);
+  // Bumped once per handleGenerate call, so a cancel can tell its own run from a later one.
+  const runToken = useRef(0);
+  // The run token owning the Stop currently on the wire, or null. Without it each extra click
+  // posts again, and a late duplicate can land after the run settled and stop whichever
+  // generation is running by then. Held as a token rather than a flag because the clear is
+  // asynchronous: a slow cancel from the PREVIOUS run must neither swallow this run's Stop nor,
+  // when it finally settles, release this run's guard.
+  const cancelInFlight = useRef<number | null>(null);
+  // Aborts the Stop still on the wire, if any. A pending cancel outlives its run when it is
+  // waiting on a 401 refresh-and-replay, and the replay would then target whatever is generating
+  // by the time it lands. Dropping it as the next run starts is what keeps that from happening.
+  const cancelAbort = useRef<AbortController | null>(null);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place (chat-style).
   const loadToastId = useRef<string | number | null>(null);
@@ -1347,6 +1300,30 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     loadToastId.current = null;
   }, []);
 
+  // The load toast is built by handleLoad and the progress poll, both of which are defined above
+  // handleCancelLoad (it needs handleUnload, which needs them). Route the action through a ref so
+  // the toast keeps a stable onClick instead of dragging the whole load graph into its deps.
+  const cancelLoadRef = useRef<() => void>(() => {});
+  const cancelLoadFromToast = useCallback(() => cancelLoadRef.current(), []);
+  // Bumped by every cancel / eject (see dropResidentState). Requests that were already awaiting a
+  // response when the cancel landed compare against it and discard their own result.
+  const cancelSeq = useRef(0);
+  // Bumped by every load start. The compensating unload below carries no identity, so it must not
+  // fire once a newer load owns the page -- it would tear that one down instead.
+  const loadSeq = useRef(0);
+  // The load currently in flight, if any, as a promise that settles only once handleLoad has run
+  // to the end -- including the compensating unload it may issue. A cancel that lands before the
+  // backend has registered the load has to wait for all of it: begin_load REFUSES a second load
+  // while one is live ("a load is already in progress"), so a model picked in that window would be
+  // rejected while the cancelled one kept going, and the compensating unload names no load, so one
+  // still in flight would tear down whatever the user picked next. Holding busy shuts both.
+  const pendingStart = useRef<Promise<unknown> | null>(null);
+
+  // Set by restoreLoadTracking: handleLoad's compensating unload failed, so the load it was
+  // cancelling is STILL running and its toast and poll are back up. handleUnload reads it to
+  // report that the eject stopped nothing, rather than claiming success over a live load.
+  const loadTrackingRestored = useRef(false);
+
   // Client-side state that only means anything while a model is resident: the
   // in-flight replacement load's tracking, and the Reapply target. Shared with
   // the indicator eject, which frees the runtime without going through the
@@ -1356,6 +1333,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // back what was just ejected. In here rather than only in handleUnload, so
     // an eject driven from the loaded models card is covered by it too.
     pickGuard.cancel();
+    // Everything already in flight is now stale. Clearing the timer below stops the NEXT poll
+    // tick, but not a poll or a start request currently awaiting its response, and those still
+    // apply terminal state when they land. The counter is what they compare against.
+    cancelSeq.current += 1;
+    // A deploy that was cancelled must not resurface: this ref outlives the load and is applied
+    // to whatever LoRA-capable model becomes resident next, which would silently mix a discarded
+    // adapter into an unrelated model's output.
+    pendingDeploy.current = null;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     pollTimer.current = null;
     dismissLoadToast();
@@ -1742,7 +1727,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // comes back empty, so only an app reload recovered. Narrowed to
         // "loading" so a generation in flight is left alone, as handleUnload's
         // own finally does.
-        setBusy((prev) => (prev === "loading" ? null : prev));
+        // ...but not while a load start is still in flight. begin_load refuses a second load
+        // while one is registered, so a model picked in that window is rejected while the load
+        // this eject was meant to cancel carries on, and handleLoad's compensating unload names
+        // no load. Hold busy until the whole path settles, exactly as handleCancelLoad does.
+        const pending = pendingStart.current;
+        if (pending) {
+          setBusy((prev) => (prev === "loading" ? "unloading" : prev));
+          void pending
+            .catch(() => {})
+            .finally(() => setBusy((prev) => (prev === "unloading" ? null : prev)));
+        } else {
+          setBusy((prev) => (prev === "loading" ? null : prev));
+        }
         setQuant(null);
         void refreshStatus();
       }),
@@ -1758,11 +1755,23 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place each tick.
   const pollLoadProgress = useCallback(async () => {
+    // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
+    const seq = cancelSeq.current;
     try {
       const p = await getDiffusionLoadProgress();
+      if (seq !== cancelSeq.current) return;
       if (p.phase === "ready") {
         dismissLoadToast();
-        setStatusIfNewest(++statusTicket.current, await getDiffusionStatus());
+        const ticket = ++statusTicket.current;
+        const loaded = await getDiffusionStatus();
+        if (seq !== cancelSeq.current) {
+          // Cancelled while this read was in flight, so it describes a pipeline being torn down.
+          // Drop it and refresh NOTHING: the unload's own response is authoritative and already
+          // holds the newest ticket, and a status read issued from here would take a newer one
+          // still and could re-report the model mid-teardown.
+          return;
+        }
+        setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
@@ -1812,13 +1821,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const sig = `${p.phase}:${p.bytes_downloaded}:${p.bytes_total}`;
       if (loadToastId.current != null && sig !== lastLoadSig.current) {
         lastLoadSig.current = sig;
-        toast(null, loadToastArgs(p, loadToastId.current));
+        toast(null, loadToastArgs(p, loadToastId.current, cancelLoadFromToast));
       }
     } catch {
       // Transient poll failure: keep trying.
     }
+    if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+
+  // Put back what a teardown removed when the load it was tearing down is still running: the
+  // unload failed, so the poll and the toast were stopped for nothing. refreshStatus cannot do
+  // this -- a first load is not resident yet, so status has nothing to report -- and without it a
+  // multi-gigabyte load continues with no progress and no way to cancel it a second time.
+  const restoreLoadTracking = useCallback(() => {
+    loadTrackingRestored.current = true;
+    setBusy("loading");
+    lastLoadSig.current = null;
+    loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
+    void pollLoadProgress();
+  }, [pollLoadProgress, cancelLoadFromToast]);
 
   // Re-enter the per-step poll for a generation already in flight that this page did not start, instead of a stale idle view.
   // generate-progress carries no terminal record, so refresh the gallery on completion to merge any image saved after mount.
@@ -1874,7 +1896,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           setBusy("loading");
           dismissLoadToast();
           lastLoadSig.current = null;
-          loadToastId.current = toast(null, loadToastArgs(p));
+          loadToastId.current = toast(null, loadToastArgs(p, undefined, cancelLoadFromToast));
           void pollLoadProgress();
         }
       } catch {
@@ -1902,7 +1924,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       }
       dismissLoadToast();
     };
-  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll]);
+  }, [refreshStatus, dismissLoadToast, pollLoadProgress, resumeGeneratePoll, cancelLoadFromToast]);
 
   // Seed the generation sliders from a resident model's recipe when the page finds one it did not load itself, else they keep the
   // unrecognised-model fallback and a resident flux.1-dev generates garbage at 9 steps. Guarded by lastLoad.current === null and a per-repo ref.
@@ -2008,11 +2030,29 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     ): Promise<boolean> => {
       // Cancel any prior poll loop so two can't run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
+      // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
+      // unload that can reach the backend first, find no load registered, and succeed without
+      // stopping anything.
+      const startSeq = cancelSeq.current;
+      const startLoad = ++loadSeq.current;
+      // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
+      let settleLoad: () => void = () => {};
+      const inFlight = new Promise<void>((resolve) => {
+        settleLoad = resolve;
+      });
+      pendingStart.current = inFlight;
+      // Every exit below goes through this: it settles the promise a cancel is waiting on and
+      // releases the ref, so the page cannot stay busy on a load that has already finished.
+      const settle = (started: boolean): boolean => {
+        settleLoad();
+        if (pendingStart.current === inFlight) pendingStart.current = null;
+        return started;
+      };
       setBusy("loading");
       // Show the chat-style toast immediately; the poll updates it by id.
       dismissLoadToast();
       lastLoadSig.current = null;
-      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS));
+      loadToastId.current = toast(null, loadToastArgs(IDLE_PROGRESS, undefined, cancelLoadFromToast));
       // Remember what was loaded so "Reapply" can reload it with new advanced options. Snapshot the prior target first: a load
       // that fails to START leaves the previous model resident, so Reapply must keep pointing at it.
       const prevLastLoad = lastLoad.current;
@@ -2029,7 +2069,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       try {
         // Returns immediately -- the load runs in the background and we poll. The backend infers the family + base repo from the id;
         // forward the saved HF token for gated bases. A pipeline load carries no filename; the "auto" sentinels map to omitted.
-        await loadDiffusionModel({
+        const startRequest = loadDiffusionModel({
           model_path: repoId,
           model_kind: opts.kind,
           gguf_filename: opts.filename,
@@ -2046,6 +2086,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           transformer_cache: advanced.transformer_cache,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
         });
+        await startRequest;
       } catch (err) {
         lastLoad.current = prevLastLoad;
         setCanReapply(prevLastLoad != null);
@@ -2054,12 +2095,33 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
         setBusy(null);
         void refreshStatus();
-        return false;
+        return settle(false);
+      }
+      if (startSeq !== cancelSeq.current) {
+        // Cancelled during the start request. The unload it sent may have landed before this load
+        // registered, in which case it stopped nothing and the model is loading right now with no
+        // toast and no Cancel button. The load exists on the backend as of this line, so unload
+        // once more -- that one cannot miss it. Unless a NEWER load has since taken the page:
+        // this unload names nothing, so firing it then would cancel that load instead of this
+        // one, and the newer start has already superseded this load's token on the backend.
+        if (startLoad === loadSeq.current) {
+          try {
+            await unloadDiffusionModel();
+          } catch {
+            // This request is the ONLY one that can still stop the load the first unload missed,
+            // so a failure here is not best-effort: the load is running, untracked. Put the
+            // tracking back exactly as a failed cancel does, so it stays visible and cancellable.
+            restoreLoadTracking();
+            return settle(false);
+          }
+        }
+        void refreshStatus();
+        return settle(false);
       }
       void pollLoadProgress();
-      return true;
+      return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast],
   );
 
   // Set (or clear) the Transform/Inpaint source image; always drop any painted mask, which is sized to the previous source.
@@ -2596,20 +2658,71 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [busy, handleLoad, pickGuard, setPageMode],
   );
 
-  const handleUnload = useCallback(async () => {
+  // Resolves true when the backend accepted the unload; handleCancelLoad reports the cancel only then.
+  const handleUnload = useCallback(async (): Promise<boolean> => {
     // Ejecting cancels any in-flight replacement load, so tear down its client-side tracking too, or the toast leaks forever.
     dropResidentState();
+    loadTrackingRestored.current = false;
     setBusy("unloading");
     try {
       setStatusIfNewest(++statusTicket.current, await unloadDiffusionModel());
       setQuant(null);
+      // Hold the page until any load start still in flight has run to its END, compensating
+      // unload and all. The selector's eject routes straight here, so without the fence an eject
+      // landing before the start registered returned success and cleared busy: the user picks
+      // another model, the backend refuses it ("a load is already in progress") because the older
+      // start won the race, and that older handler -- seeing the newer loadSeq -- skips its
+      // compensating unload and returns without restarting its poll, leaving a multi-gigabyte
+      // load running with no toast and no cancel control. Same fence handleCancelLoad and the
+      // external-eject listener take.
+      const pending = pendingStart.current;
+      if (pending) {
+        try {
+          await pending;
+        } catch {
+          // Its own handler reports the failure; this only waits for the window to close.
+        }
+      }
+      // The wait above can end with the tracking RESTORED: handleLoad's compensating unload
+      // failed, so the load is still running. This eject stopped nothing, so do not report
+      // success -- the caller would toast "stopped loading" over a live load.
+      return !loadTrackingRestored.current;
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to unload model");
       void refreshStatus();
+      return false;
     } finally {
-      setBusy(null);
+      // Not an unconditional clear. A restore during the wait above put the page back to
+      // "loading" deliberately; wiping it hides the toast's Cancel and the "Cancel load"
+      // button and re-enables the picker over a load that is still running.
+      setBusy((prev) => (prev === "unloading" ? null : prev));
     }
   }, [refreshStatus, dropResidentState]);
+
+  // Cancelling a load IS the unload: it sets the running load's cancel event, bumps the load token so the
+  // worker can never commit, and drops the load marker. What it leaves behind is only cache: bytes already
+  // fetched stay in the HF cache, so loading the same model again resumes instead of restarting, and no
+  // half-built pipeline survives (the worker's commit is token-gated and unload clears the GPU state).
+  const handleCancelLoad = useCallback(async () => {
+    const wasLoading = busy === "loading";
+    if (await handleUnload()) {
+      // handleUnload holds the page for the whole pending-start path before it returns, so by
+      // here the window the backend's "a load is already in progress" refusal lives in is shut.
+      toast.info("Stopped loading the model", {
+        description: "Anything already downloaded stays cached, so loading it again resumes.",
+      });
+      return;
+    }
+    // Already restored inside handleUnload (its own compensating-unload failure), so the toast
+    // and the poll are up: a second restore would raise a duplicate toast and a second poll loop.
+    if (!wasLoading || loadTrackingRestored.current) return;
+    // The unload failed, so the load is still running and its tracking was torn down for nothing.
+    restoreLoadTracking();
+  }, [busy, handleUnload, restoreLoadTracking]);
+
+  useEffect(() => {
+    cancelLoadRef.current = () => void handleCancelLoad();
+  }, [handleCancelLoad]);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -2715,6 +2828,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     setBusy("generating");
     setGenDone(0);
     setGenStep(null);
+    // Fresh run: a Stop from the PREVIOUS run must not cancel this one.
+    cancelRequested.current = false;
+    cancelAcked.current = false;
+    // Per-run, like the two above. A cancel POST still outstanding from the PREVIOUS run (a 401
+    // refresh-and-replay is the slow case) would otherwise leave the guard set and swallow this
+    // run's own Stop entirely.
+    cancelInFlight.current = null;
+    // Any Stop still pending belongs to the run that just ended, so it must not reach the server
+    // now that a new one is starting.
+    cancelAbort.current?.abort();
+    cancelAbort.current = null;
+    runToken.current += 1;
     // Poll the backend's per-step progress across the whole run so the bar tracks live denoising steps. A named poll body
     // (guarded against overlap) also serves the visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
@@ -2747,8 +2872,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     const knownIds = new Set(galleryCache.images.map((image) => image.id));
     try {
       for (let i = 0; i < runs; i++) {
-        // The page truly unmounted mid-run: stop issuing more GPU generations. A plain tab switch keeps it mounted.
-        if (!isMounted.current) break;
+        // Stop issuing more GPU generations once the page truly unmounted (a plain tab switch
+        // keeps it mounted), or once Stop was pressed: the backend cancel only reaches the denoise
+        // in flight, so the remaining runs of a count > 1 request would otherwise start anyway.
+        if (
+          !shouldContinueGenerating({
+            mounted: isMounted.current,
+            stopRequested: cancelRequested.current,
+          })
+        )
+          break;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -2809,11 +2942,21 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         res.images.forEach((image) => void ensureSrc(image));
         setGenDone(i + 1);
       }
-      // A generation can change server-side status: Speed=Auto compiles on the 3rd LoRA-free run (supports_lora flips false),
-      // so without a refresh the LoRA picker stays enabled and the next LoRA run fails. Cheap status GET.
-      if (isMounted.current) void refreshStatus();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Image generation failed");
+      const msg = err instanceof Error ? err.message : "Image generation failed";
+      // The user's own Stop comes back as the backend's cancelled sentinel (409). Not an error,
+      // so do not toast it. Same treatment the video page gives its Cancel.
+      // Only a Stop the backend confirmed it acted on explains an error away. If the POST never
+      // landed, or the backend answered {cancelled: false} because the run was already past its
+      // last cancellation check while the route was still persisting, the generation was not
+      // stopped, so whatever it raised is a real failure rather than "the user stopped it".
+      if (
+        shouldReportGenerateError({
+          message: msg,
+          stopRequested: cancelRequested.current && cancelAcked.current,
+        })
+      )
+        toast.error(msg);
     } finally {
       if (genPollTimer.current) clearInterval(genPollTimer.current);
       genPollTimer.current = null;
@@ -2821,11 +2964,51 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         document.removeEventListener("visibilitychange", genVisibilityListener.current);
         genVisibilityListener.current = null;
       }
+      cancelRequested.current = false;
+      // Refresh on EVERY exit, not just the successful one, and AWAIT it before Generate comes
+      // back. A generation can change server-side status (Speed=Auto compiles on the 3rd LoRA-free
+      // run and supports_lora flips false), and a cancelled native run can leave no model at all:
+      // when the native cancel is not reflected within its grace window, sd-server is stopped
+      // outright. Re-enabling Generate first would offer a button that 409s against a backend with
+      // nothing loaded. Cheap status GET, so the wait is not felt.
+      if (isMounted.current) await refreshStatus();
       setBusy(null);
       setGenDone(null);
       setGenStep(null);
     }
   }, [prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus]);
+
+  // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
+  // races the run that is already finishing, then ask the backend to break out of the sampler.
+  const handleCancelGenerate = useCallback(async () => {
+    cancelRequested.current = true;
+    // One Stop on the wire at a time. The button stays enabled so the click still latches, but a
+    // second POST would target whatever is active when IT arrives, which after the stopped run
+    // settles can be a generation the user started since.
+    const token = runToken.current;
+    if (cancelInFlight.current === token) return;
+    cancelInFlight.current = token;
+    const abort = new AbortController();
+    cancelAbort.current = abort;
+    try {
+      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
+      cancelAcked.current = Boolean(cancelled);
+    } catch {
+      // An abort means the next run dropped this one on purpose; it belongs to a generation that
+      // is already over, so there is nothing to report. Otherwise the request never landed, the
+      // denoise in flight keeps running, and the click cannot be treated as handled: say so, and
+      // stop it explaining away an error the run raises later.
+      if (!abort.signal.aborted) {
+        cancelAcked.current = false;
+        toast.error("Could not reach the server to stop this generation; it is still running");
+      }
+    } finally {
+      // Only if they are still ours: a slow cancel from an earlier run must not release the guard
+      // a later run set, or a duplicate click gets through and can land on a generation after it.
+      if (cancelInFlight.current === token) cancelInFlight.current = null;
+      if (cancelAbort.current === abort) cancelAbort.current = null;
+    }
+  }, []);
 
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
@@ -2969,69 +3152,105 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="pointer-events-auto flex items-center gap-2">
-          {pageMode === "train" ? (
-            <TrainBaseSelector
-              families={trainFamilies}
-              familyName={trainFamilyName}
-              base={trainBaseChoice}
-              onSelect={(family, repo) => {
-                // Set both together: the panel reseed effect keeps a base valid for the new family.
-                setTrainFamilyName(family);
-                setTrainBaseChoice(repo);
-              }}
-            />
-          ) : (
-            <ModelSelector
-              models={MODELS}
-              value={status?.loaded ? status.repo_id ?? undefined : undefined}
-              activeGgufVariant={quant}
-              onValueChange={handleModelSelect}
-              resolveDownloadFootprint={resolveDownloadFootprint}
-              onEject={status?.loaded ? handleUnload : undefined}
-              variant="ghost"
-              className="!h-[34px]"
-              task={IMAGE_GEN_TASKS}
-              catalog={IMAGE_CATALOG}
-              placeholder="Select image model"
-              open={active && selectorOpen}
-              onOpenChange={(o) => setSelectorOpen(active && o)}
-            />
+      {/* grid at every width, not an overlay below md: the absolute mode switch painted over the model selector and the Video link. */}
+      {/* @container, not md:/xl:, because the header is the viewport minus a sidebar the user can drag between 260px and 480px. */}
+      <div className="@container pointer-events-none relative z-40 grid h-[48px] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div
+          className={cn(
+            "pointer-events-none flex min-w-0 items-center",
+            isMobile
+              ? "pl-12"
+              : !pinned && isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
           )}
+        >
+          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2">
+            {pageMode === "train" ? (
+              <TrainBaseSelector
+                families={trainFamilies}
+                familyName={trainFamilyName}
+                base={trainBaseChoice}
+                onSelect={(family, repo) => {
+                  // Set both together: the panel reseed effect keeps a base valid for the new family.
+                  setTrainFamilyName(family);
+                  setTrainBaseChoice(repo);
+                }}
+              />
+            ) : (
+              <ModelSelector
+                models={MODELS}
+                value={status?.loaded ? status.repo_id ?? undefined : undefined}
+                activeGgufVariant={quant}
+                onValueChange={handleModelSelect}
+                resolveDownloadFootprint={resolveDownloadFootprint}
+                onEject={status?.loaded ? handleUnload : undefined}
+                variant="ghost"
+                className="!h-[34px] max-w-full overflow-hidden"
+                task={IMAGE_GEN_TASKS}
+                catalog={IMAGE_CATALOG}
+                placeholder="Select image model"
+                open={active && selectorOpen}
+                onOpenChange={(o) => setSelectorOpen(active && o)}
+              />
+            )}
+          {/* The load's own cancel, beside the selector rather than inside it: the selector's eject needs a
+              resident model, so it is hidden for exactly the span a first load runs. A real button, not the
+              trigger's aria-hidden eject hit area, so it is reachable by keyboard and a screen reader. Says
+              "load", never "download": the download manager's own Cancel stops a staged pull, a different job. */}
+          {pageMode !== "train" && busy === "loading" && (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label="Cancel load"
+                  className="!h-[34px] rounded-full text-xs"
+                  onClick={() => void handleCancelLoad()}
+                >
+                  Cancel load
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Stop loading this model</TooltipContent>
+            </Tooltip>
+          )}
+          </div>
         </div>
-        {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
-          <PillTabs
-            ariaLabel="Page mode"
-            value={pageMode}
-            onValueChange={(v) => setPageMode(v as "create" | "train")}
-            fit={true}
-            className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
-            tabs={[
-              {
-                value: "create",
-                label: "Create",
-                icon: (
-                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                ),
-              },
-              {
-                value: "train",
-                label: "Train",
-                icon: (
-                  <HugeiconsIcon
-                    icon={TestTubeOutlineIcon}
-                    className="size-3.5"
-                  />
-                ),
-              },
-            ]}
-          />
-        </div>
-        <div className="pointer-events-auto flex items-center gap-2">
+        {/* Create | Train page-mode switch, centred on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
+        {/* No padding on the grid, so the equal side tracks centre the pill on the header itself; px-11 makes the pair 277px, so it waits for the room. */}
+        <PillTabs
+          ariaLabel="Page mode"
+          value={pageMode}
+          onValueChange={(v) => setPageMode(v as "create" | "train")}
+          fit={true}
+          className="pointer-events-auto h-[34px] justify-self-center [&>button]:h-[34px] [&>button]:px-3 @min-[560px]:[&>button]:px-11"
+          tabs={[
+            {
+              value: "create",
+              label: "Create",
+              icon: (
+                <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+              ),
+            },
+            {
+              value: "train",
+              label: "Train",
+              icon: (
+                <HugeiconsIcon
+                  icon={TestTubeOutlineIcon}
+                  className="size-3.5"
+                />
+              ),
+            },
+          ]}
+        />
+        {/* pr-2 rides the wrapper, not the grid: on the grid it would shift the centred pill by half of it. */}
+        <div className="pointer-events-none flex min-w-0 items-center justify-end pr-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
-          <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+            <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
+          </div>
         </div>
       </div>
       {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
@@ -3609,16 +3828,28 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
-            <Button
-              className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-              onClick={handleGenerate}
-              disabled={busy !== null || !status?.loaded}
-            >
-              {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
-              {busy === "generating" && genDone != null && count > 1
-                ? `Generating ${genDone}/${count}…`
-                : "Generate"}
-            </Button>
+            {busy === "generating" ? (
+              /* Replaces Generate while a run is in flight, mirroring the video page. Every workflow
+                 (Create, Transform, Inpaint, Extend, Upscale, Reference, Edit) funnels through the
+                 same handler, so one control stops all of them. */
+              <Button
+                // Opaque hover: this one floats over the settings too.
+                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                variant="outline"
+                onClick={handleCancelGenerate}
+              >
+                <Spinner className="mr-2 size-4" />
+                {genDone != null && count > 1 ? `Stop (${genDone}/${count})` : "Stop"}
+              </Button>
+            ) : (
+              <Button
+                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleGenerate}
+                disabled={busy !== null || !status?.loaded}
+              >
+                Generate
+              </Button>
+            )}
           </div>
         </div>
 

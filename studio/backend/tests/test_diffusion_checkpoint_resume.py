@@ -120,6 +120,12 @@ class _Run:
         )
 
 
+@pytest.fixture(autouse = True)
+def _healthy_diffusers(healthy_diffusers):
+    """The resume route runs the same preflight as start, which asserts the family's pipeline
+    class strictly; these tests are about resume, not about the runner's diffusers."""
+
+
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
     """A run output directory inside the (per-test) Studio outputs root, since the resume
@@ -157,6 +163,33 @@ def test_kill_mid_write_leaves_no_valid_looking_checkpoint(run_dir, monkeypatch)
     assert dc.latest_valid_checkpoint(run_dir) is None
     assert dc.describe_resume_state(str(run_dir))["can_resume"] is False
     assert not list(run_dir.glob("checkpoint-*"))
+
+
+def _cosine_schedule(
+    optimizer,
+    num_training_steps: int,
+    num_warmup_steps: int = 0,
+):
+    """The zero-warmup cosine ``LambdaLR`` that ``diffusers.optimization.get_scheduler("cosine")``
+    builds, written out here rather than imported.
+
+    Byte-for-byte the same lambda diffusers uses (half a cosine period, ``num_cycles = 0.5``,
+    floored at 0), so what the trainers get from get_scheduler and what this returns step
+    identically. Rebuilt locally because this file is CPU-and-stdlib only by design -- diffusers
+    is not in the backend requirements and is not installed on the CI runners, so importing it
+    here would turn the assertion below into a skip on exactly the machines that gate merges,
+    which is the one place this regression has to be caught."""
+    import math
+
+    def lr_lambda(current_step: int) -> float:
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(
+            max(1, num_training_steps - num_warmup_steps)
+        )
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * 0.5 * 2.0 * progress)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 def _STREAMS() -> dict:
@@ -412,23 +445,68 @@ def test_bundle_round_trips_optimizer_scheduler_sampler_and_rng(run_dir):
     assert resumed.lr_sched.get_last_lr() == reference.lr_sched.get_last_lr()
 
 
-def test_a_foreign_optimizers_state_is_refused_instead_of_key_erroring(run_dir):
-    # The trainers choose their optimizer from the HOST (bitsandbytes present, a fused kernel
-    # available, UNSLOTH_DIFFUSION_FP32_OPTIM), not the config, so a checkpoint can arrive with
-    # moments from a different implementation. Shapes and counts match, so load_state_dict
-    # accepts them and the first step dies on a bare KeyError deep in the optimizer.
-    run = _Run(run_dir)
-    run.save(3)
+def _forge_8bit_optimizer_class(run_dir) -> None:
+    """Rewrite a just-written bundle's manifest so it claims bitsandbytes moments."""
     manifest_path = run_dir / "checkpoint-3" / dc.TRAINER_STATE_FILENAME
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     assert manifest["optimizer_class"] == "torch.optim.adamw.AdamW"
     manifest["optimizer_class"] = "bitsandbytes.optim.adamw.AdamW8bit"
     manifest_path.write_text(json.dumps(manifest), encoding = "utf-8")
 
+
+def _pretend_bitsandbytes(monkeypatch, installed: bool) -> None:
+    """Pin what ``_assert_optimizer_buildable`` sees, instead of inheriting it from the host.
+
+    That guard asks ``importlib.util.find_spec("bitsandbytes")``, so which of the two foreign
+    optimizer refusals fires depends on whether the machine running the tests happens to have
+    bitsandbytes -- the CPU CI runners do not, developer boxes with a GPU stack do. Both
+    refusals are correct and both need covering, so each test states the host it is about.
+    ``UNSLOTH_DIFFUSION_FP32_OPTIM`` is cleared for the same reason: set in the environment, it
+    short-circuits the guard before find_spec is ever consulted."""
+    import importlib.util as _importlib_util
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_FP32_OPTIM", raising = False)
+    real_find_spec = _importlib_util.find_spec
+
+    def fake_find_spec(name, *args, **kwargs):
+        if name == "bitsandbytes":
+            return object() if installed else None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(_importlib_util, "find_spec", fake_find_spec)
+
+
+def test_a_foreign_optimizers_state_is_refused_instead_of_key_erroring(run_dir, monkeypatch):
+    # The trainers choose their optimizer from the HOST (bitsandbytes present, a fused kernel
+    # available, UNSLOTH_DIFFUSION_FP32_OPTIM), not the config, so a checkpoint can arrive with
+    # moments from a different implementation. Shapes and counts match, so load_state_dict
+    # accepts them and the first step dies on a bare KeyError deep in the optimizer.
+    #
+    # bitsandbytes present, so the preflight's "this host cannot build that optimizer at all"
+    # refusal does NOT fire and the comparison against the optimizer this run actually built is
+    # what has to catch it.
+    _pretend_bitsandbytes(monkeypatch, installed = True)
+    run = _Run(run_dir)
+    run.save(3)
+    _forge_8bit_optimizer_class(run_dir)
+
     fresh = _Run(run_dir)
     fresh.cfg = __import__("dataclasses").replace(fresh.cfg, resume_from_checkpoint = str(run_dir))
     with pytest.raises(dc.ResumeError, match = "AdamW8bit"):
         fresh.restore()
+
+
+def test_8bit_moments_are_refused_up_front_on_a_host_without_bitsandbytes(run_dir, monkeypatch):
+    # The other half of the same problem, and the one a CPU host hits: with no bitsandbytes to
+    # load the 8-bit moments, preflight_resume refuses BEFORE the route evicts the resident GPU
+    # models, rather than letting the child get as far as building an optimizer it cannot fill.
+    _pretend_bitsandbytes(monkeypatch, installed = False)
+    run = _Run(run_dir)
+    run.save(3)
+    _forge_8bit_optimizer_class(run_dir)
+
+    with pytest.raises(dc.ResumeError, match = "bitsandbytes is not installed"):
+        dc.preflight_resume(str(run_dir), identity = _identity(), target_steps = 500)
 
 
 def test_a_partial_adapter_restore_is_refused(run_dir):
@@ -461,19 +539,11 @@ def test_resuming_reapplies_the_live_lr_schedule(run_dir):
     # load_state_dict restores the rate the checkpoint was written with and never re-evaluates
     # the lambda, so without the re-apply the first resumed step runs at the OLD schedule's
     # value -- lr 0.0 when continuing a finished cosine run by raising the step count.
-    from diffusers.optimization import get_scheduler
-
     def build(total: int):
         torch.manual_seed(0)
         model = torch.nn.Linear(4, 4, bias = False)
         optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
-        return (
-            model,
-            optimizer,
-            get_scheduler(
-                "cosine", optimizer = optimizer, num_warmup_steps = 0, num_training_steps = total
-            ),
-        )
+        return model, optimizer, _cosine_schedule(optimizer, total)
 
     model, optimizer, lr_sched = build(6)
     for _ in range(6):
@@ -741,12 +811,36 @@ def client(monkeypatch):
     return c
 
 
+def _resolved_request_precision() -> str:
+    """The mixed precision a run started from ``_RESUME_BODY`` on THIS host actually trains in.
+
+    ``identity_for_config`` records the EFFECTIVE precision, not the requested one, and it is
+    resolved from the live hardware: a CUDA Ampere-or-newer box resolves the default bf16
+    request to "bf16", a pre-Ampere card to "fp16", and a machine with no CUDA at all -- every
+    CPU CI runner -- to "no". Hard-coding one of those into the fixtures below made the route
+    tests pass on a GPU developer box and fail on CI with a mixed-precision refusal that was
+    the guard working correctly on a bundle claiming a precision the run could not have used.
+    Resolved through the same helper the route reaches, so the fixture describes the host it is
+    running on instead of guessing."""
+    from core.training.diffusion_lora_trainer import _config_from_dict
+    from core.training.diffusion_train_common import effective_mixed_precision
+
+    return effective_mixed_precision(_config_from_dict(dict(_RESUME_BODY)).normalized())
+
+
+def _other_precision() -> str:
+    """A mixed precision this host will NOT resolve to, so a bundle recording it is a genuine
+    mismatch rather than an artefact of which machine the tests run on."""
+    return "fp16" if _resolved_request_precision() != "fp16" else "bf16"
+
+
 def _request_identity(**overrides) -> dc.CheckpointIdentity:
     """The identity the start route computes for ``_RESUME_BODY`` + the stubbed dataset."""
     return _identity(
         **{
             "base_revision": "unresolved",
             "dataset_fingerprint": dc.dataset_fingerprint(_PAIRS),
+            "precision": _resolved_request_precision(),
             **overrides,
         }
     )
@@ -796,6 +890,23 @@ def test_route_resume_mismatch_400s_without_evicting_the_gpu(client, run_dir):
     assert r.status_code == 400, r.text
     assert "different model family" in r.json()["detail"]
     # The whole point of preflighting here: the user's loaded Images pipeline survives a refusal.
+    assert client._freed == []
+    assert "start" not in client._fake.calls
+
+
+def test_route_resume_precision_mismatch_400s_without_evicting_the_gpu(client, run_dir):
+    # The guard the fixture above must not be allowed to defeat. Restoring moments produced
+    # under one set of frozen-base numerics into a run using another continues the trajectory at
+    # a different precision while reporting a clean resume, so a bundle recording a precision
+    # this host does not resolve to has to be refused -- and refused HERE, before the resident
+    # Images pipeline is torn down. Written against a precision picked to differ from whatever
+    # this machine resolves, so it is a real mismatch on a GPU box and on a CPU runner alike.
+    mismatched = _other_precision()
+    assert mismatched != _resolved_request_precision()
+    _write_bundle(run_dir, 11, _request_identity(precision = mismatched))
+    r = client.post("/api/train/diffusion/start", json = _RESUME_BODY)
+    assert r.status_code == 400, r.text
+    assert "different mixed precision" in r.json()["detail"]
     assert client._freed == []
     assert "start" not in client._fake.calls
 

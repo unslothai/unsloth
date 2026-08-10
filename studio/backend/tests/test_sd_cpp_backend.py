@@ -741,6 +741,55 @@ def test_generate_cancellation_raises_cancelled_not_failure():
         b.generate(prompt = "x", steps = 8, seed = 5)
 
 
+def test_cancel_generate_stops_a_running_native_run():
+    # The native engine serves the same Images page, so the cancel route must reach it too. Here
+    # the cancel arrives from ANOTHER thread mid-run, which is what the route does: the engine
+    # polls the event, kills the sd-cli process tree, and the backend reports a cancellation.
+    started = threading.Event()
+    b = None
+
+    class _BlockingEngine(_FakeEngine):
+        def generate(
+            self,
+            files,
+            params,
+            *,
+            output_path,
+            cancel_event = None,
+            **kw,
+        ):
+            started.set()
+            assert cancel_event is not None and cancel_event.wait(5)
+            raise SdCppCancelled("cancelled")
+
+    b = _loaded_backend(engine = _BlockingEngine())
+    # Nothing running yet.
+    assert b.cancel_generate() is False
+
+    outcome: dict = {}
+
+    def _run():
+        try:
+            b.generate(prompt = "x", steps = 8, seed = 5)
+        except BaseException as exc:  # noqa: BLE001 -- the assertion below pins the type
+            outcome["error"] = exc
+
+    worker = threading.Thread(target = _run, daemon = True)
+    worker.start()
+    assert started.wait(5)
+
+    assert b.cancel_generate() is True
+    worker.join(10)
+    assert isinstance(outcome["error"], RuntimeError)
+    # Deregistered on exit, so a later cancel cannot poke a finished run.
+    assert b.cancel_generate() is False
+
+
+def test_cancel_generate_is_a_no_op_when_idle():
+    # The route calls this unconditionally; an idle native backend answers False rather than raising.
+    assert SdCppDiffusionBackend(engine = _FakeEngine()).cancel_generate() is False
+
+
 def test_generate_progress_tracks_parsed_steps():
     b = _loaded_backend()
     b._gen = bk._SdGen(total_steps = 8)
@@ -850,6 +899,83 @@ def test_ensure_binary_returns_found(monkeypatch):
 def test_ensure_binary_install_disabled_returns_none(monkeypatch):
     monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
     assert ensure_sd_cpp_binary(allow_install = False) is None
+
+
+# A --help extract shaped like the real one: the mode list and --audio-vae are old enough to be in
+# a pre-H3 build too (they came with LTX-2), so only the H3-only --ref-video separates the two.
+_PRE_H3_HELP = (
+    "  -M, --mode                    run mode, one of [img_gen, vid_gen, upscale, convert]\n"
+    "  --audio-vae <string>          path to standalone LTX audio vae model\n"
+)
+_H3_HELP = _PRE_H3_HELP + (
+    "  --ref-video                   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+)
+
+
+def test_h3_binary_gate_replaces_a_stale_managed_install(monkeypatch, tmp_path):
+    # An upgraded Studio still carrying an older managed sd-cli got that binary handed straight
+    # back: only runnability was probed, so the H3 load reported ready on a build with no H3
+    # support and the first generation failed, after the whole bundle had already downloaded.
+    stale = tmp_path / "stale" / "sd-cli"
+    fresh = tmp_path / "fresh" / "sd-cli"
+    for p in (stale, fresh):
+        p.parent.mkdir()
+        p.write_text("binary")
+    found = [str(stale), str(fresh)]
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: found.pop(0))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: True)
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda binary, *_args: _H3_HELP if binary == str(fresh) else _PRE_H3_HELP,
+    )
+
+    assert bk.ensure_h3_sd_cpp_binary() == str(fresh)
+    # A copy we own is dropped, which is what lets the installer put the pinned prebuilt back.
+    assert not stale.exists()
+
+
+def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp_path):
+    # Same ownership split as _usable_or_discard_managed: the user's own build is not ours to
+    # delete (install() then refuses the still non-empty unmarked directory, leaving no binary at
+    # all), so the load fails with a message naming the binary instead.
+    own = tmp_path / "sd-cli"
+    own.write_text("binary")
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "predates MiniMax-H3"):
+        bk.ensure_h3_sd_cpp_binary()
+    assert own.exists()
+
+
+def test_h3_binary_gate_keeps_a_binary_it_cannot_probe(monkeypatch):
+    # An unreadable --help is "cannot tell", not "no H3": the load's own version() gate already
+    # refuses a binary that will not run, and guessing here would strand a working build.
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: "/usr/bin/sd-cli")
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: None)
+    assert bk.ensure_h3_sd_cpp_binary() == "/usr/bin/sd-cli"
+
+
+def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
+    # --list-devices is the only way to tell a reused CPU prebuilt from an accelerator build after
+    # the fact: the finder returns whichever binary is installed, whatever accelerator was asked for.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "CPU\tIntel(R) Xeon(R) Platinum\n")
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is False
+
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "CUDA0\tNVIDIA GeForce RTX 4090\nCPU\tIntel(R) Xeon(R) Platinum\n",
+    )
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+
+    # An older build rejects the flag with a non-zero exit: "cannot tell", not "no accelerator".
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_lists_accelerator_device("/existing/sd-cli") is True
+    assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
 def test_unload_clears_state_and_signals_cancel():
@@ -1250,6 +1376,11 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
         _load_token = 1,
     )
     assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
+    # The server it started and stopped must not stay published: _pending_server means "a native
+    # process is running out of the managed tree", which suppresses every later accelerator
+    # install, so a stale one would pin this process to the wrong build until a restart.
+    assert b._pending_server is None
+    assert bk._tree_in_use(b) is False
     # and it can still generate via the one-shot engine
     out = b.generate(prompt = "x", steps = 4, seed = 1)
     assert len(out["images"]) == 1 and len(fake.calls) == 1
@@ -1614,3 +1745,30 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+
+
+def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
+    # /images/generate/cancel resolves through the engine router, so the native backend owes the
+    # same answer as the diffusers one: the final check and the deregistration are one critical
+    # section under the lock cancel_generate takes, and no Stop can be answered true for a run that
+    # then returns its images.
+    b = _loaded_backend()
+    seen: list[bool] = []
+    real_oneshot = b._generate_oneshot
+
+    def _oneshot(*args, **kwargs):
+        out = real_oneshot(*args, **kwargs)
+        # Still mid-generate, so a Stop here is genuine and must be honoured.
+        assert b.cancel_generate() is True
+        return out
+
+    monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+
+    # And once a run completes, the event is gone before the result is handed back.
+    b2 = _loaded_backend()
+    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    assert out["images"]
+    seen.append(b2.cancel_generate())
+    assert seen == [False]

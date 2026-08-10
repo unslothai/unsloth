@@ -2777,6 +2777,15 @@ async def start_diffusion_training(
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)
 
+    # The trainer child imports the family's pipeline itself, in a spawn of THIS interpreter, so a
+    # diffusers that cannot be imported here cannot be imported there either. Refuse now, while the
+    # GPU residents are still loaded, rather than after the teardown below frees them.
+    from core.training.diffusion_train_common import training_pipeline_import_error
+
+    _pipeline_reason = training_pipeline_import_error(normalized_cfg.resolved_family)
+    if _pipeline_reason:
+        raise HTTPException(status_code = 400, detail = _pipeline_reason)
+
     # Preflight a resume request in the same place and for the same reason: a checkpoint from a
     # different family / base / LoRA shape / precision must 400 BEFORE the resident GPU model is
     # evicted, not fail in the child once the user's Images pipeline is already gone. The dataset
@@ -3394,7 +3403,7 @@ def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
     return folder
 
 
-# Per-side dimension bound for uploaded training images, matching diffusion._decode_b64_image's 4096px guard, so a compressible PNG cannot smuggle huge pixels past the byte limit.
+# Match diffusion's 4096px decoded-image limit.
 _MAX_TRAINING_IMAGE_SIDE = 4096
 
 

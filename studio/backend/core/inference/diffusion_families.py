@@ -206,9 +206,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
-        # int8 only: fp8 is family-denied (_FAMILY_SCHEME_DENY) so a repo entry would be dead.
+        # int8 only: no fp8 DiT checkpoint is published for this family yet. fp8 is no longer
+        # denied for inference, so adding one here would now be live rather than dead.
         prequant_repos = (("int8", "unsloth/Qwen-Image-FP8"),),
-        # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). The DiT fp8 denial is a transformer-scheme rule; the layerwise TE cast is unaffected.
+        # Pre-cast Qwen2.5-VL-7B (16.6 -> 8.8 GB). Always was independent of the DiT scheme rules.
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
@@ -612,6 +613,23 @@ def _upstream_is_cached(
         return False
 
 
+def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
+    """Whether ``repo_id``'s local cache holds EVERY name in ``files``.
+
+    The same revision rule ``_upstream_is_cached`` applies, exposed for callers that need to know a
+    component is complete rather than merely started: a partial pull leaves some shards resident,
+    and "some" is not a cache hit for anything that then decides not to download the rest.
+
+    The LIVE root only. It is tempting to count the import-time root as well, since
+    ``_prefetch_files`` passes ``reuse_other_cache_root`` and would not re-fetch from it, but the
+    prefetch is not the consumer that matters here: the dense fast path this verdict unlocks calls
+    ``from_pretrained(cache_dir = hub_cache_dir())``, which is pinned to the live root and cannot
+    see the other one. A hit there would widen the plan and then download the whole transformer
+    again after eviction, which is the exact outcome the check exists to prevent.
+    """
+    return bool(files) and _upstream_is_cached(repo_id, tuple(files))
+
+
 # Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
 # byte identical, so an existing install that already pulled the repack holds the very same bytes
 # under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would
@@ -769,17 +787,132 @@ def family_prequant_repo(
     return None
 
 
-def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> None:
+# The release where diffusers' own requires-python went ">= 3.10.0", which makes 0.36.0 the newest
+# a supported Python 3.9 host can resolve.
+_DIFFUSERS_DROPPED_PY39 = "0.37.0"
+
+# First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at
+# the upstream tags and cross-checked against each release's requires-python on PyPI. An unlisted
+# class gets a version-free "a newer diffusers" instead of a number, since the ones left out are
+# older than any release in play. This exists so the remedy is true: telling a
+# 3.9 host that Z-Image needs Python >= 3.10 sends it to upgrade the interpreter when
+# ``pip install -U diffusers`` (0.36.0 there) would have been enough.
+_PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
+    "Flux2Pipeline": "0.36.0",
+    "ZImagePipeline": "0.36.0",
+    "ZImageImg2ImgPipeline": "0.36.0",
+    "HunyuanImagePipeline": "0.36.0",
+    "HunyuanVideo15Pipeline": "0.36.0",
+    "QwenImageControlNetPipeline": "0.36.0",
+    "QwenImageEditPlusPipeline": "0.36.0",
+    "Flux2KleinPipeline": "0.37.0",
+    "ZImageInpaintPipeline": "0.37.0",
+    "LTX2Pipeline": "0.37.0",
+    "Flux2KleinInpaintPipeline": "0.38.0",
+    "Ideogram4Pipeline": "0.39.0",
+    "Krea2Pipeline": "0.39.0",
+    # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED
+    # diffusers installable below 3.10, so an already-present ancient one satisfies the pin, and
+    # quoting the 0.39 floor at a family that has existed since 0.30 is the same wrong remedy.
+    "QwenImagePipeline": "0.35.0",
+    "QwenImageImg2ImgPipeline": "0.35.0",
+    "QwenImageInpaintPipeline": "0.35.0",
+    "FluxPipeline": "0.30.0",
+    "FluxImg2ImgPipeline": "0.30.0",
+    "FluxInpaintPipeline": "0.30.0",
+}
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """``"0.37.0" -> (0, 37, 0)`` for ordering. Numeric so 0.9 sorts below 0.10, which a string
+    compare gets backwards; a non-numeric part stops the parse rather than raising."""
+    out: list[int] = []
+    for part in str(v).split("."):
+        if not part.isdigit():
+            break
+        out.append(int(part))
+    return tuple(out)
+
+
+def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool]:
+    """``(minimum diffusers version, whether that minimum also needs Python >= 3.10)``.
+
+    ``None`` for a class with no entry. That is deliberately not the packaging floor: an unlisted
+    class is one old enough that no release in play lacks it (StableDiffusionXLPipeline goes back
+    past 0.29), so naming 0.39 would send a supported Python 3.9 host to upgrade its interpreter
+    for a class every diffusers it can install already has. Without an entry the refusal says
+    "a newer diffusers" and stops there, which is true whatever the class."""
+    minimum = _PIPELINE_MIN_DIFFUSERS.get(pipeline_class)
+    if minimum is None:
+        return None, False
+    return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
+
+
+def _too_old_message(pipeline_class: str, family_name: str, installed: str) -> str:
+    """The refusal text: what is missing, what is installed, and a remedy this interpreter can
+    actually carry out."""
+    minimum, needs_py310 = pipeline_class_requirement(pipeline_class)
+    if minimum is None:
+        return (
+            f"'{family_name}' needs a newer diffusers ({pipeline_class}); this environment has "
+            f"diffusers {installed}. Upgrade with: pip install -U diffusers."
+        )
+    remedy = f"Upgrade with: pip install -U 'diffusers>={minimum}'."
+    if needs_py310:
+        remedy += (
+            f" diffusers dropped Python 3.9 in {_DIFFUSERS_DROPPED_PY39}, so that release needs "
+            f"Python >= 3.10 too."
+        )
+    return (
+        f"'{family_name}' needs diffusers >= {minimum} ({pipeline_class}); this environment has "
+        f"diffusers {installed}. {remedy}"
+    )
+
+
+def _dummy_required_backends(cls: object) -> tuple[str, ...]:
+    """The backends diffusers says ``cls`` REQUIRES, when ``cls`` is one of its placeholders.
+
+    Required, not missing: ``_backends`` is the class's full requirement list, so a placeholder
+    standing in because transformers is absent still lists torch beside it. Naming them all as
+    missing, and prescribing a reinstall, is how you tell someone with a working ROCm or CUDA
+    build of torch to replace it.
+
+    With a required backend absent (torch, transformers, ...), diffusers still EXPORTS every
+    pipeline name, as a ``DummyObject``-metaclassed stand-in from ``diffusers.utils.dummy_*``
+    whose ``from_pretrained`` raises ``ImportError`` on the first call. ``hasattr`` therefore
+    answers True for a class that cannot be used, which is exactly the "importable" answer the
+    strict gate must not accept. Empty tuple for a real class."""
+    if not str(getattr(cls, "__module__", "")).startswith("diffusers.utils.dummy"):
+        return ()
+    backends = getattr(cls, "_backends", None) or ()
+    return tuple(str(b) for b in backends)
+
+
+def assert_pipeline_class_available(
+    pipeline_class: str,
+    family_name: str,
+    *,
+    strict: bool = False,
+) -> None:
     """Raise ``ValueError`` before any download when the installed diffusers has no
     ``pipeline_class``.
 
-    The newer families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) only exist from diffusers
-    0.39, and the packaging leaves an older diffusers installable on Python 3.9 -- diffusers dropped
-    3.9 in 0.38 and this project still supports it, so the 0.39 floor has to be conditional or the
-    whole extra becomes unresolvable. Without this check the getattr chain died with a bare
+    The newer families (Flux2Klein, Z-Image, Krea 2, LTX-2, HunyuanImage) only exist from a
+    diffusers newer than the 0.35 baseline, and the packaging leaves an older one installable on
+    Python 3.9 -- diffusers dropped 3.9 in 0.37 and this project still supports it, so the 0.39
+    floor has to be conditional or the whole extra becomes unresolvable. Which release a family
+    needs differs per class, so the refusal reads it from ``_PIPELINE_MIN_DIFFUSERS`` rather than
+    quoting the floor at everyone. Without this check the getattr chain died with a bare
     AttributeError deep in the load, after the checkpoint had already been fetched, which is an
     expensive way to learn the environment is too old. Krea 2 already guarded itself this way; this
     is the same check for every family, run from validation.
+
+    ``strict`` decides what an *unimportable* diffusers means. Inference (the default) stays
+    silent: it only answers "is the installed diffusers new enough", and the native sd.cpp engine
+    serves GGUF picks on a CPU or Apple host that has no diffusers at all. Training passes
+    ``strict = True``, because its child is an ``mp.get_context("spawn")`` process in the SAME
+    interpreter -- an import that fails here fails there too, only after the route has reserved the
+    training slot and freed the resident GPU models.
 
     ``ValueError``, like every other unloadable-pick refusal ``validate_load_request`` raises, so
     the routes map it to 400 with the message intact. A ``RuntimeError`` instead reached
@@ -789,26 +922,46 @@ def assert_pipeline_class_available(pipeline_class: str, family_name: str) -> No
     try:
         import diffusers
         present = hasattr(diffusers, pipeline_class)
-    except Exception:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
-        # Not this check's business: it answers "is the installed diffusers new enough for this family", and with
-        # nothing importable there is no version to judge. Refusing would also break the native sd.cpp engine, which
-        # serves GGUF picks on a CPU or Apple host without diffusers. A pick that really needs it fails later, in
-        # the loader. The one thing that must not happen is a raise: ModuleNotFoundError is not the ValueError the
-        # routes map to 400, so it escapes /images/download-plan as a bare 500 with the message lost.
+        dummy_backends = _dummy_required_backends(getattr(diffusers, pipeline_class, None))
+    except Exception as exc:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
+        # Not this check's business under the default: it answers "is the installed diffusers new enough for this
+        # family", and with nothing importable there is no version to judge. Refusing would also break the native
+        # sd.cpp engine, which serves GGUF picks on a CPU or Apple host without diffusers. A pick that really needs
+        # it fails later, in the loader. The one thing that must not happen is a raise of the wrong type:
+        # ModuleNotFoundError is not the ValueError the routes map to 400, so it escapes /images/download-plan as a
+        # bare 500 with the message lost.
         #
         # The attribute probe is inside the try for the same reason. diffusers' top level is a lazy module, so
         # ``hasattr`` is what actually imports the pipeline's submodule, and when that submodule's own dependencies
         # are unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines...") -- which hasattr does
         # NOT swallow, since it only absorbs AttributeError. A partially usable diffusers install therefore escaped
         # this guard exactly the way a missing one used to.
+        if strict:
+            raise ValueError(
+                f"'{family_name}' needs diffusers ({pipeline_class}), which this environment "
+                f"cannot import: {exc}. Install or repair it with: pip install -U diffusers."
+            ) from None
         return
+
+    if present and dummy_backends:
+        # A placeholder, not the pipeline. Under the default this is left alone like every other
+        # unusable install; strict refuses, because the trainer child imports the same placeholder
+        # and its from_pretrained raises only after the GPU residents are gone.
+        if not strict:
+            return
+        raise ValueError(
+            f"'{family_name}' needs diffusers ({pipeline_class}), but this diffusers exports it as "
+            f"a placeholder, which it does when a backend it requires is unavailable. That class "
+            f"requires: {', '.join(dummy_backends)}. Check which of those this environment is "
+            f"missing and install it."
+        )
 
     if present:
         return
     raise ValueError(
-        f"'{family_name}' needs diffusers >= 0.39.0 ({pipeline_class}); this environment has "
-        f"diffusers {getattr(diffusers, '__version__', 'unknown')}. Upgrade with: "
-        f"pip install -U diffusers (which needs Python >= 3.10; diffusers dropped 3.9 in 0.38)."
+        _too_old_message(
+            pipeline_class, family_name, str(getattr(diffusers, "__version__", "unknown"))
+        )
     )
 
 
@@ -817,7 +970,7 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
 
     The boolean twin of ``assert_pipeline_class_available``, for the listing routes: the newer
     families exist only from diffusers 0.39, and the packaging leaves an older diffusers
-    installable on Python 3.9 (diffusers dropped 3.9 in 0.38, so the 0.39 floor has to be
+    installable on Python 3.9 (diffusers dropped 3.9 in 0.37, so the 0.39 floor has to be
     conditional or the extra becomes unresolvable). Advertising Z-Image or Krea 2 in the picker
     on such an environment offers a pick that can only fail, and no `pip install -U diffusers`
     can fix it without also upgrading Python. Fails OPEN (True) when diffusers cannot be

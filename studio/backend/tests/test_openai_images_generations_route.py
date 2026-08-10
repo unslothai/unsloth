@@ -436,3 +436,26 @@ def test_signed_image_link_rejects_tampering_and_expiry(monkeypatch, tmp_path):
     monkeypatch.setattr(inference_routes, "_IMAGE_LINK_TTL", -1)
     expired = inference_routes._sign_image_id("img0")
     assert cli.get(f"{base}/img0/file-signed?token={expired}").status_code == 401
+
+
+def test_activation_shortfall_is_an_actionable_400(monkeypatch):
+    """The one exception here whose text is written FOR the caller. Sanitising it into a bare 500
+    left an OpenAI client with a server error for a request only they can fix, while the Studio
+    route showed them the resolution, the budget and the remedies."""
+    from core.inference.diffusion_memory import ImageActivationShortfallError
+
+    reason = (
+        "Generating at 2048x2048 needs about 15.55 GB of working memory, but only about "
+        "13.50 GB is usable on this device. Generate at a smaller resolution."
+    )
+    backend = _FakeBackend(generate_error = ImageActivationShortfallError(reason))
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    cli, store, _save = _make_client(backend)
+    monkeypatch.setattr(gallery_module, "save", _save)
+    resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
+    assert resp.status_code == 400
+    err = resp.json()["error"]
+    assert err["message"] == reason
+    assert err["param"] == "size"
+    # Still typed: an ordinary ValueError keeps its sanitized 500 (test above), so no other raw
+    # exception text rides out on the back of this.

@@ -125,6 +125,10 @@ def resolve_prequant_source(
     Priority: (1) explicit local ``path_override``; (2) the family's hosted repo for
     ``scheme`` (variant-specific when ``base_repo`` names a base with its own baked
     checkpoint); (3) None -> no pre-quant, caller quantises dense. Pure: no IO, no torch.
+
+    Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
+    checkpoints at the root, so there is no directory to prepend; a repo that nested them would
+    404 on the primary AND on the fallback and the load would silently fall back to dense.
     """
     override = (path_override or "").strip()
     if override:
@@ -144,6 +148,50 @@ def resolve_prequant_source(
     return None
 
 
+_LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def local_prequant_scheme(path: str) -> Optional[str]:
+    """The scheme a local pre-quant checkpoint records, or None when it cannot be read.
+
+    ``resolve_prequant_source`` hands back a ``path`` source for ANY override, whatever scheme was
+    asked for: the file is never inspected. That is fine when the caller named the scheme, but
+    under ``auto`` the ladder picks one and an override baked for a different scheme then reads as
+    an available pre-quant. Planning skips staging the dense transformer, the loader reaches the
+    same ``metadata.scheme`` check that runs at load time, refuses the file, and with no dense
+    fallback the pick silently drops to GGUF.
+
+    Cheap despite the file size: ``mmap`` plus ``map_location = "meta"`` maps the storages instead
+    of reading them, so only the pickle structure is parsed (~1s on a 34 GB checkpoint). Cached on
+    (path, mtime, size) because the auto ladder asks once per candidate scheme. ``weights_only``
+    has to be False for the torchao subclasses, which is what the loader already does, and the
+    path is allowlisted before we get here, so this opens nothing new."""
+    import os
+
+    try:
+        real = os.path.expanduser(path)
+        st = os.stat(real)
+        # Nanoseconds, not int(st_mtime): an atomic swap for a same-sized artifact inside the same
+        # second would otherwise reuse the previous scheme for the life of the process, and int8
+        # and fp8 checkpoints of one model are exactly that shape.
+        key = (real, st.st_mtime_ns, int(st.st_size))
+    except Exception:  # noqa: BLE001 -- unreadable is "unknown", handled by the caller
+        return None
+    if key in _LOCAL_PREQUANT_SCHEME:
+        return _LOCAL_PREQUANT_SCHEME[key]
+    scheme: Optional[str] = None
+    try:
+        import torch
+        obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
+        if isinstance(obj, dict) and obj.get("format") == PREQUANT_FORMAT:
+            recorded = (obj.get("metadata") or {}).get("scheme")
+            scheme = str(recorded) if recorded else None
+    except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
+        scheme = None
+    _LOCAL_PREQUANT_SCHEME[key] = scheme
+    return scheme
+
+
 def usable_prequant_source(
     fam: Any,
     scheme: str,
@@ -152,13 +200,22 @@ def usable_prequant_source(
     base_repo: Optional[str] = None,
 ) -> Optional[PrequantSource]:
     """``resolve_prequant_source``, but a local path counts only when the loader would
-    accept it: inside the allowlist AND present on disk. Otherwise resolves to None so
-    memory planning falls back to dense-fit checks up front, instead of the loader refusing
-    the path only after the resident pipeline was evicted and dense bf16 materialises under
-    a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected."""
+    accept it: inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise
+    resolves to None so memory planning falls back to dense-fit checks up front, instead of the
+    loader refusing the path only after the resident pipeline was evicted and dense bf16
+    materialises under a plan that never budgeted for it (evict-then-OOM). Hosted-repo sources are
+    unaffected.
+
+    The scheme check matters most under ``auto``, which picks a scheme the user never named: an
+    int8 override must not read as an available fp8 pre-quant just because the file exists. A
+    checkpoint whose scheme cannot be read is treated as not usable, matching every other unknown
+    here, since the loader would reject it too."""
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
-    if src is not None and src.kind == "path" and not local_prequant_path_ready(src.location):
-        return None
+    if src is not None and src.kind == "path":
+        if not local_prequant_path_ready(src.location):
+            return None
+        if local_prequant_scheme(src.location) != scheme:
+            return None
     return src
 
 
@@ -255,6 +312,7 @@ def load_prequantized_transformer(
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
     cache_dir: Optional[str] = None,
+    prepare_model: Optional[Any] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -262,6 +320,14 @@ def load_prequantized_transformer(
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
     into a root Studio no longer reads.
+
+    ``prepare_model`` (optional) is called as ``prepare_model(transformer, metadata)`` on the
+    freshly built skeleton, AFTER ``from_config`` and BEFORE ``load_state_dict``. That window is
+    the only one where a family can reshape the module to match how the checkpoint was baked (a
+    swapped submodule, a patched attention class): earlier there is no module, and later
+    ``strict=True`` has already rejected the mismatch. It gets the checkpoint's own metadata so it
+    can key on what was baked rather than on today's defaults. A raising callback falls out to the
+    outer handler below, i.e. a warning and a dense fallback, never a failed load.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -302,16 +368,33 @@ def load_prequantized_transformer(
         config = _load_transformer_config(transformer_cls, base, hf_token, cache_dir, path)
         from accelerate import init_empty_weights
 
+        metadata = ckpt.get("metadata") or {}
         with init_empty_weights():
             transformer = transformer_cls.from_config(config)
+        if prepare_model is not None:
+            prepare_model(transformer, metadata)
         # assign=True swaps in the loaded tensors instead of copying into meta (a no-op); strict=True since the saved dict is the full state dict of the same class.
         transformer.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(transformer):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
             transformer = transformer_cls.from_config(config)
+            # The retry REPLACES the module, so the hook has to run again: skipping it here would
+            # load the same state dict into a differently shaped model, and this branch is the one
+            # families with non-persistent buffers always take -- the mismatch would be the norm,
+            # not the corner case, and strict=True would surface it as a bare key error.
+            if prepare_model is not None:
+                prepare_model(transformer, metadata)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
 
         transformer = transformer.to(device)
+        # Same small-M row padding the runtime quantise path applies, and for the same reason: a
+        # checkpoint built under the current exclusion set QUANTISES the family's small-M linears,
+        # so without the wrappers they would raise inside _int_mm the moment the compiled scope
+        # reaches them. After load_state_dict, since wrapping reparents the Linears; after .to()
+        # so the granularity probe reads the device tensors the GEMM will actually see.
+        from .diffusion_transformer_quant import apply_small_m_padding
+
+        apply_small_m_padding(transformer, scheme, metadata.get("family"), logger = logger)
         # from_config starts in TRAIN mode while the dense/GGUF paths use from_pretrained (eval()'d). Match it so train/eval-sensitive layers cannot make prequant inference diverge.
         try:
             transformer.eval()
@@ -484,6 +567,37 @@ def _load_transformer_config(
     raise last  # type: ignore[misc]
 
 
+def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
+    """True unless some fp8 tensor was quantised with no activation lower bound.
+
+    Only the first quantised tensor is inspected: the builder applies one config to the whole
+    module, so the floor is uniform. A state dict with no fp8 tensor at all is left to the other
+    checks (an empty or wrong-scheme artifact is their business, not this one)."""
+    from .diffusion_transformer_quant import TQ_FP8
+
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for name, tensor in items:
+            kwargs = getattr(tensor, "act_quant_kwargs", None)
+            if kwargs is None:
+                continue
+            if getattr(kwargs, "hp_value_lb", None):
+                return True
+            _warn(
+                logger,
+                TQ_FP8,
+                ValueError(
+                    f"fp8 checkpoint has no activation scale floor on {name!r} "
+                    "(built before activation_value_lb); a zero activation row renders black. "
+                    "Rebuild it"
+                ),
+            )
+            return False
+    except Exception:  # noqa: BLE001 -- an unreadable state dict is the other checks' problem
+        return True
+    return True
+
+
 def _validate_checkpoint(
     ckpt: Any,
     scheme: str,
@@ -523,6 +637,15 @@ def _validate_checkpoint(
                 f"{FP8_GRANULARITY!r} (stale per-tensor artifact); rebuild it"
             ),
         )
+        return False
+    # fp8 also REQUIRES the activation scale floor, and this is checked on the loaded TENSORS, not
+    # on metadata. torchao's per-row activation quantiser divides by each row's amax, so a zero row
+    # (qwen's text stream emits them) gives scale 0 and NaN qdata unless activation_value_lb floors
+    # it. That floor is serialised per tensor as act_quant_kwargs.hp_value_lb, so an artifact built
+    # before the fix stays broken however it is loaded, and it predates any metadata field we could
+    # stamp -- and "absent is accepted for back-compat", the convention every check above follows,
+    # is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
+    if scheme == TQ_FP8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
         return False
     ckpt_base = meta.get("base_model_id")
     if base:
@@ -608,6 +731,60 @@ def _same_base_model(a: str, b: str) -> bool:
         return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
 
     return a == b or _tail(a) == _tail(b)
+
+
+def pin_prequantized_module(
+    manager: Any,
+    module: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Keep a pre-quantized module resident on ``device``, out of a ComponentsManager's rotation.
+
+    ``ComponentsManager.enable_auto_cpu_offload`` parks every component on the CPU and moves each
+    one onto the accelerator inside its own ``pre_forward``, i.e. from within the block that is
+    already executing. A torchao-quantized module does not survive that move: the device change
+    reaches ``return_and_correct_aliasing``, which tries to alias a CPU storage to an accelerator
+    tensor and raises ``Attempted to set the storage of a tensor on device "cuda:0" to a storage
+    on different device "cpu"``, and MiniMax-H3's denoise loop dies on its first step. Moving the
+    same module at load time, outside any executing block, works -- so the fix is to place it once
+    here and take it out of the rotation rather than to move it per forward.
+
+    That is also what a pre-quantized denoiser is for: the hosted H3 checkpoint is ~20 GB against
+    66.3 GB dense, so keeping it resident is the saving being spent. The other components keep
+    their hooks, and the strategy sizes its decisions from live free memory, so the encoder and
+    the VAEs still offload around it.
+
+    Returns True when the module was pinned. Best-effort on the hook surgery: if the manager does
+    not look the way this expects, the module is still placed on ``device`` and False is returned,
+    which is the behaviour before pinning existed.
+    """
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
+    pinned = False
+    if target is not None:
+        try:
+            # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
+            target.remove()
+            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to
+            # evict (which would move it to the CPU with no hook left to bring it back).
+            for hook in hooks:
+                others = getattr(getattr(hook, "hook", None), "other_hooks", None)
+                if others:
+                    hook.hook.other_hooks = [item for item in others if item is not target]
+            manager.model_hooks = [hook for hook in hooks if hook is not target]
+            pinned = True
+        except Exception as exc:  # noqa: BLE001 -- placement below still has to happen
+            _warn(logger, "pin:hook", exc)
+    module.to(device)
+    if logger is not None:
+        logger.info(
+            "diffusion.prequant: pre-quantized denoiser pinned on %s (offload rotation: %s)",
+            device,
+            "removed" if pinned else "unchanged",
+        )
+    return pinned
 
 
 def _has_meta_tensors(module: Any) -> bool:
