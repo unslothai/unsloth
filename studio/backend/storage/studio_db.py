@@ -1916,10 +1916,11 @@ def clear_chat_history_with_active_research_runs(
             ).fetchone()
             if completed is not None:
                 conn.commit()
-                return (
-                    list(json.loads(completed["active_research_run_ids_json"])),
-                    list(json.loads(completed["deleted_thread_ids_json"])),
-                )
+                # No run ids on a replay. The request that recorded this row signalled them on its
+                # way out, and its worker may have exited since; signalling again would only leave
+                # a cancellation event in the supervisor that nothing is left to consume. The
+                # stored list is kept for the record, not for a second round of cancellations.
+                return ([], list(json.loads(completed["deleted_thread_ids_json"])))
         _ensure_chat_attachment_inventory_current(conn)
         active_research_run_ids = _active_research_run_ids(conn)
         deleted_thread_ids = sorted(

@@ -1086,3 +1086,25 @@ def test_deleting_a_thread_signals_a_leased_research_run(tmp_path, monkeypatch):
         conn.close()
 
     assert studio_db.delete_chat_threads_with_active_research_runs(["src"]) == ["run-1"]
+
+
+def test_replaying_a_clear_does_not_signal_its_research_runs_again(tmp_path, monkeypatch):
+    # The request that recorded the operation already signalled these runs on its way out. Its
+    # worker may have exited since, so a second signal would leave a cancellation event in the
+    # supervisor that nothing is left to consume.
+    _research_thread(tmp_path, monkeypatch)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE research_runs SET lease_owner = 'worker-1', status = 'running' WHERE id = ?",
+            ("run-1",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    first = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert first == (["run-1"], ["src"])
+
+    replay = studio_db.clear_chat_history_with_active_research_runs(operation_id = "op-1")
+    assert replay == ([], ["src"])
