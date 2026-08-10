@@ -2319,14 +2319,37 @@ def _gguf_variant_stem(filename: str) -> str:
     return _GGUF_SPLIT_SUFFIX_RE.sub("", basename.rsplit(".", 1)[0]).strip()
 
 
-def _gguf_variant_token(filename: str) -> Optional[str]:
-    match = _select_known_quant_match(_gguf_variant_stem(filename))
-    if not match and "/" in filename:
+def _quant_search_stem(filename: str) -> str:
+    """The text a quant token is looked for in: the basename, less any shard suffix.
+
+    MIRROR of ``hub.utils.gguf._quant_search_stem``. Unlike ``_gguf_variant_stem`` it keeps
+    everything after the last dot, because cutting there truncates a bare ``IQ4_XS-3.53bpw`` to
+    ``IQ4_XS-3``, and bare names arrive here from ``<quant>/`` folders and stored variant keys.
+    """
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", filename.rsplit("/", 1)[-1]).strip()
+
+
+def _locate_quant_match(filename: str):
+    """The quant match naming *filename*, with the text it was found in.
+
+    MIRROR of ``hub.utils.gguf._locate_quant_match``. The basename decides; only when it names
+    no quant do parent directories, nearest first. Callers that need what trails the token (the
+    bpw modifier) need that text too, so the search order lives in one place.
+    """
+    stem = _quant_search_stem(filename)
+    match = _select_known_quant_match(stem)
+    if match:
+        return match, stem
+    if "/" in filename:
         for segment in reversed(filename.rsplit("/", 1)[0].split("/")):
             parent_match = _select_known_quant_match(segment)
             if parent_match:
-                match = parent_match
-                break
+                return parent_match, segment
+    return None, ""
+
+
+def _gguf_variant_token(filename: str) -> Optional[str]:
+    match, _ = _locate_quant_match(filename)
     return f"{match.group(1) or ''}{match.group(2)}" if match else None
 
 
@@ -2338,24 +2361,37 @@ def _gguf_variant_family(filename: str) -> str:
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
 
 
-def _gguf_bpw_suffix(filename: str) -> str:
-    """``-3.53bpw`` from whichever path segment names the quant, else ``""``.
+# MIRROR of ``hub.utils.gguf._GGUF_BPW_SUFFIX_RE``. Applied with ``match`` against the text that
+# follows the token, never ``search``: only a modifier IMMEDIATELY after the quant qualifies it,
+# so ``flux1-dev-Q8_0-fp32-08.577bpw`` keeps the bare ``Q8_0``.
+_GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw", re.IGNORECASE)
 
-    MIRROR of ``hub.utils.gguf._gguf_bpw_suffix``; see ``_gguf_variant_key``. The quant-directory
-    layout carries the modifier upstairs (``IQ4_XS-3.53bpw/model.gguf``), so the basename alone
-    gave both bpw builds one key. The walk stops at the segment that named the quant.
+# MIRROR of ``hub.utils.gguf._GGUF_BPW_TRAILING_RE``: the modifier ending a name of its own,
+# for the basename under a quant DIRECTORY (``Q6_K/model-3.5bpw.gguf``).
+_GGUF_BPW_TRAILING_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw(?=\.[A-Za-z0-9]+$|$)", re.IGNORECASE)
+
+
+def _quant_token_with_bpw(filename: str) -> Optional[str]:
+    """``_gguf_variant_token`` with the bpw modifier that trails it, when there is one.
+
+    MIRROR of ``hub.utils.gguf.quant_token_with_bpw``; see ``_gguf_variant_key``. Where the
+    modifier is found follows where the token was: adjacent to it in the basename, or, when a
+    parent directory named the quant, adjacent to it there or ending the basename instead.
     """
     path = filename.replace("\\", "/")
-    parents = path.rpartition("/")[0]
-    for segment in (_gguf_variant_family(path).rsplit("/", 1)[-1], *reversed(parents.split("/"))):
-        if not segment:
-            continue
-        match = re.search(r"-[0-9]+(?:\.[0-9]+)?bpw$", segment, re.IGNORECASE)
-        if match:
-            return match.group(0)
-        if _select_known_quant_match(segment) is not None:
-            return ""
-    return ""
+    match, text = _locate_quant_match(path)
+    if match is None:
+        return None
+    token = f"{match.group(1) or ''}{match.group(2)}"
+    adjacent = _GGUF_BPW_SUFFIX_RE.match(text[match.end() :])
+    if adjacent:
+        return f"{token}{adjacent.group(0)}"
+    stem = _quant_search_stem(path)
+    if text != stem:
+        trailing = _GGUF_BPW_TRAILING_RE.search(stem)
+        if trailing:
+            return f"{token}{trailing.group(0)}"
+    return token
 
 
 def _gguf_variant_key(filename: str) -> str:
@@ -2367,7 +2403,8 @@ def _gguf_variant_key(filename: str) -> str:
     ``tests/test_gguf_variant_rows.py`` asserts they agree.
     """
     path = filename.replace("\\", "/")
-    quant = _gguf_variant_token(path)
+    # The bpw modifier stays on, so two builds of one base quant keep two identities.
+    quant = _quant_token_with_bpw(path)
     if quant is None:
         return _gguf_variant_family(path)
     for segment in path.rpartition("/")[0].split("/"):
@@ -2375,8 +2412,7 @@ def _gguf_variant_key(filename: str) -> str:
         # directory naming something else is a different checkpoint and qualifies.
         if segment and _select_known_quant_match(segment) is None:
             return _gguf_variant_family(path)
-    # ... and the bpw modifier stays on, so two builds of one base quant keep two identities.
-    return f"{quant}{_gguf_bpw_suffix(path)}"
+    return quant
 
 
 def _qualified_variant_name(filename: str, label: str) -> str:
