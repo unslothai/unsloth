@@ -1223,21 +1223,32 @@ export function AppSidebar() {
     closeMobileIfOpen();
   }
 
-  async function handleDeleteThread(item: Parameters<typeof deleteChatItem>[0]) {
-    await deleteChatItem(item, activeThreadId, (view) => {
-      navigate({
-        to: "/chat",
-        search: item.projectId
-          ? { project: item.projectId }
-          : { new: view.newThreadNonce },
-      });
-    });
+  async function handleDeleteThread(
+    item: Parameters<typeof deleteChatItem>[0],
+    args: { deleteFiles?: boolean } = {},
+  ) {
+    await deleteChatItem(
+      item,
+      activeThreadId,
+      (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      },
+      args,
+    );
   }
 
   // Shared chat delete: same error toast and pin cleanup with or without the confirm dialog.
-  async function deleteChatWithCleanup(item: SidebarItem) {
+  async function deleteChatWithCleanup(
+    item: SidebarItem,
+    args: { deleteFiles?: boolean } = {},
+  ) {
     try {
-      await handleDeleteThread(item);
+      await handleDeleteThread(item, args);
       unpinChat(item.id);
     } catch (err) {
       toast.error(translate("shell.toast.failedToDeleteChat"), {
@@ -1395,18 +1406,36 @@ export function AppSidebar() {
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
-  const [deleteProjectFiles, setDeleteProjectFiles] = useState(false);
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
+
+  /** Always through here: a stale switch would delete an unrelated sandbox. */
+  function openDeleteDialog(target: DeleteTarget) {
+    setDeleteFilesOnDelete(false);
+    setConfirmingDelete(target);
+  }
+
+  /** Only where a sandbox can actually be removed. A training run has none.
+   *  A chat in a project still has one: anything it wrote before the move is in
+   *  its own folder, and deletion never touches the project workspace. */
+  function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
+    if (!target) return false;
+    return target.kind === "project" || target.kind === "chat";
+  }
 
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
     const shouldDeleteProjectFiles =
-      target.kind === "project" && deleteProjectFiles;
+      target.kind === "project" && deleteFilesOnDelete;
+    const shouldDeleteChatFiles =
+      deleteTargetHasFiles(target) && target.kind === "chat" && deleteFilesOnDelete;
     setConfirmingDelete(null);
-    // Reset so the next project delete never inherits this checkbox.
-    setDeleteProjectFiles(false);
+    // Reset so the next delete never inherits this switch.
+    setDeleteFilesOnDelete(false);
     if (target.kind === "chat") {
-      await deleteChatWithCleanup(target.item);
+      await deleteChatWithCleanup(target.item, {
+        deleteFiles: shouldDeleteChatFiles,
+      });
       return;
     }
     if (target.kind === "project") {
@@ -1803,7 +1832,7 @@ export function AppSidebar() {
               variant="destructive"
               onSelect={() =>
                 confirmDeleteChats
-                  ? setConfirmingDelete({ kind: "chat", item })
+                  ? openDeleteDialog({ kind: "chat", item })
                   : void deleteChatWithCleanup(item)
               }
             >
@@ -2318,9 +2347,7 @@ export function AppSidebar() {
                                 variant="destructive"
                                 onSelect={() => {
                                   // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                  // dialog onOpenChange reset.
-                                  setDeleteProjectFiles(false);
-                                  setConfirmingDelete({ kind: "project", project });
+                                  openDeleteDialog({ kind: "project", project });
                                 }}
                               >
                                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2480,7 +2507,7 @@ export function AppSidebar() {
                               variant="destructive"
                               disabled={run.status === "running"}
                               onSelect={() =>
-                                setConfirmingDelete({ kind: "run", run })
+                                openDeleteDialog({ kind: "run", run })
                               }
                             >
                               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
@@ -2754,7 +2781,7 @@ export function AppSidebar() {
       onOpenChange={(open) => {
         if (!open) {
           setConfirmingDelete(null);
-          setDeleteProjectFiles(false);
+          setDeleteFilesOnDelete(false);
         }
       }}
     >
@@ -2791,23 +2818,24 @@ export function AppSidebar() {
             ) : null}
           </DialogDescription>
         </DialogHeader>
-        {confirmingDelete?.kind === "project" ? (
+        {deleteTargetHasFiles(confirmingDelete) ? (
           <div className="flex items-start justify-between gap-4 rounded-md border border-border/60 bg-muted/35 px-3 py-2.5">
-            <label htmlFor="delete-project-files" className="min-w-0 space-y-1">
+            <label htmlFor="delete-files-on-delete" className="min-w-0 space-y-1">
               <span className="block text-sm font-medium text-foreground">
                 Delete files and sandbox folder
               </span>
               <span className="block break-words text-xs leading-5 text-muted-foreground">
-                {confirmingDelete.project.rootPath
-                  ? confirmingDelete.project.rootPath
-                  : "The project workspace folder will be removed from disk."}
+                {confirmingDelete?.kind === "project"
+                  ? (confirmingDelete.project.rootPath ??
+                    "The project workspace folder will be removed from disk.")
+                  : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
               </span>
             </label>
             <Switch
-              id="delete-project-files"
-              checked={deleteProjectFiles}
-              onCheckedChange={setDeleteProjectFiles}
-              aria-label="Delete project files and sandbox folder"
+              id="delete-files-on-delete"
+              checked={deleteFilesOnDelete}
+              onCheckedChange={setDeleteFilesOnDelete}
+              aria-label="Delete files and sandbox folder"
             />
           </div>
         ) : null}
@@ -2824,7 +2852,7 @@ export function AppSidebar() {
             variant="destructive"
             onClick={() => void commitDelete()}
           >
-            {confirmingDelete?.kind === "project" && deleteProjectFiles
+            {deleteTargetHasFiles(confirmingDelete) && deleteFilesOnDelete
               ? "Delete all"
               : t("common.delete")}
           </Button>

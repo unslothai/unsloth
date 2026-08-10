@@ -124,6 +124,78 @@ def _ensure_project_workspace(root_path: str) -> str:
     return str(root_resolved)
 
 
+def sandbox_is_referenced_elsewhere(
+    session_id: str, exclude_thread_id: "str | None" = None
+) -> bool:
+    """Whether a surviving chat still shows file cards for this sandbox.
+
+    Forking clones the message content verbatim, so the fork's cards keep the
+    source chat's session id. Deleting the source's files would leave those
+    cards downloading nothing, in a chat the user did not delete.
+    """
+    if not session_id:
+        return False
+    conn = get_connection()
+    try:
+        # The LIKE only narrows, on the id as JSON writes it, so a quote or a
+        # backslash is still found. Every hit is parsed and the id has to be a
+        # sessionId value: a short one is a substring of ordinary prose.
+        escaped = json.dumps(session_id)[1:-1]
+        rows = conn.execute(
+            """
+            SELECT content_json FROM chat_messages
+            WHERE (? IS NULL OR thread_id != ?) AND content_json LIKE ? ESCAPE '\\'
+            """,
+            (exclude_thread_id, exclude_thread_id, f"%{_like_escape(escaped)}%"),
+        )
+        for row in rows:
+            if _mentions_session(row["content_json"], session_id):
+                return True
+        return False
+    except sqlite3.Error:
+        # A locked database is not an answer, and every caller reads False as
+        # "nothing shows these files any more" before deleting them. Kept, so
+        # the worst case is a folder collected on the next delete.
+        logger.warning("Could not check references for sandbox %s; keeping it", session_id)
+        return True
+    finally:
+        conn.close()
+
+
+def _mentions_session(content_json: str, session_id: str) -> bool:
+    """Whether this message's content names *session_id* as a sandbox."""
+    try:
+        content = json.loads(content_json)
+    except (TypeError, ValueError):
+        return False
+    stack = [content]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("sessionId") == session_id:
+                return True
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
+
+
+def _like_escape(value: str) -> str:
+    for char in ("\\", "%", "_"):
+        value = value.replace(char, "\\" + char)
+    return value
+
+
+def delete_project_workspace(project: dict) -> None:
+    """Remove a deleted project's workspace directory.
+
+    Separate from the row delete so the caller can stop the tool calls running
+    in there first: pulling the working directory out from under a live
+    subprocess is how a half-written file ends up outside any project.
+    """
+    _delete_project_workspace(project)
+
+
 def _delete_project_workspace(project: dict) -> None:
     root_path = project.get("rootPath")
     if not root_path:
@@ -1755,15 +1827,30 @@ def delete_chat_threads(ids: list[str]) -> None:
         conn.close()
 
 
-def clear_chat_history() -> None:
+def clear_chat_history() -> "tuple[list[str], list[str]]":
+    """Delete every chat thread. Returns (thread ids removed, research runs cascaded).
+
+    Both taken inside the same transaction: another process can add a thread
+    between a listing and this call, its sandbox has to be cleaned up too, and
+    after the cascade nothing can tell the supervisor which runs to stop.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
+        removed = [str(row[0]) for row in conn.execute("SELECT id FROM chat_threads")]
+        active_runs = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT id FROM research_runs "
+                "WHERE status NOT IN ('cancelled', 'completed', 'failed')"
+            )
+        ]
         conn.execute("DELETE FROM chat_attachment_tombstones")
         conn.execute("DELETE FROM chat_threads")
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
+        return removed, active_runs
     finally:
         conn.close()
 
@@ -1901,6 +1988,23 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
                 (id,),
             )
         }
+        # Read before the cascade removes them: afterwards nothing can tell the
+        # supervisor which runs to stop, and a worker keeps doing model, web and
+        # RAG work for a project that is gone.
+        active_runs = (
+            [
+                row["id"]
+                for row in conn.execute(
+                    "SELECT id FROM research_runs WHERE thread_id IN ({}) "
+                    "AND status NOT IN ('cancelled', 'completed', 'failed')".format(
+                        ",".join("?" for _ in thread_ids) or "NULL"
+                    ),
+                    tuple(thread_ids),
+                )
+            ]
+            if thread_ids
+            else []
+        )
         _reparent_surviving_forks(conn, thread_ids)
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (id,))
         conn.execute("DELETE FROM chat_projects WHERE id = ?", (id,))
@@ -1908,6 +2012,11 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         conn.commit()
         if delete_files:
             _delete_project_workspace(project)
+        # The membership this transaction actually deleted, which is not the
+        # caller's earlier listing when a chat was moved in between the two.
+        project = dict(project)
+        project["memberIds"] = sorted(thread_ids)
+        project["activeResearchRunIds"] = active_runs
         return project
     except Exception:
         conn.rollback()

@@ -21,6 +21,11 @@ import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
+import {
+  SANDBOX_FILE_TOOLS,
+  extractCreatedFiles,
+  type SandboxFile,
+} from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
@@ -966,6 +971,77 @@ export interface McpImageToolResult {
   images: { data: string; mimeType: string }[];
 }
 
+/**
+ * A python/terminal result carrying the chat's sandbox context alongside the
+ * text the model actually saw.
+ */
+/** ``files`` as the cards need it: absent, or entries with a usable name. */
+export function isSandboxFileList(val: unknown): boolean {
+  if (val === undefined || val === null) return true;
+  if (!Array.isArray(val)) return false;
+  return val.every(
+    (entry) =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof (entry as { name?: unknown }).name === "string",
+  );
+}
+
+export function isSandboxToolResult(
+  val: unknown,
+): val is { text: string; sessionId: string } {
+  if (typeof val !== "object" || val === null) return false;
+  const v = val as {
+    text?: unknown;
+    sessionId?: unknown;
+    images?: unknown;
+    files?: unknown;
+  };
+  // images too: it is always in Studio's own wrapper, and a tool result that
+  // merely has text and sessionId is someone else's, whose other fields would
+  // be dropped on export.
+  return (
+    typeof v.text === "string" &&
+    typeof v.sessionId === "string" &&
+    Array.isArray(v.images) &&
+    // Persisted content can carry anything: the cards map over this and read
+    // name off each entry, so anything else takes the whole chat view down.
+    isSandboxFileList(v.files)
+  );
+}
+
+/**
+ * The text the model actually saw, for a result that may be wrapped.
+ *
+ * Chat replay and every export path have to agree on this: exports feed
+ * fine-tuning datasets, so a wrapper serialized whole would train on the card's
+ * sessionId/images/files instead of the tool's output.
+ */
+export function toolResultModelText(
+  result: unknown,
+  toolName?: string,
+): unknown {
+  if (isMcpImageToolResult(result) || isSandboxWrapper(result, toolName)) {
+    return result.text;
+  }
+  return result;
+}
+
+/**
+ * A wrapper this app put around a result, rather than a result shaped like one.
+ *
+ * The shape is only that: an MCP or custom tool answering with text, sessionId
+ * and images is someone else's, and unwrapping it drops every other field it
+ * returned. The backend gates the same strip on the tool name.
+ */
+function isSandboxWrapper(
+  result: unknown,
+  toolName?: string,
+): result is { text: string; sessionId: string } {
+  if (toolName !== undefined && !SANDBOX_FILE_TOOLS.has(toolName)) return false;
+  return isSandboxToolResult(result);
+}
+
 export function isMcpImageToolResult(
   val: unknown,
 ): val is McpImageToolResult {
@@ -1007,7 +1083,12 @@ function serializeToolResultPart(
     // content; serialise a sentinel JSON so legitimately empty tool
     // outputs still round-trip the follow-up turn to the provider.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
-  } else if (isMcpImageToolResult(result)) {
+  } else if (
+    isMcpImageToolResult(result) ||
+    isSandboxWrapper(result, tc.toolName ?? "")
+  ) {
+    // Replay the stdout the model saw, not the card's sessionId/images/files:
+    // stringifying the wrapper feeds it internal metadata instead of the output.
     content = result.text.length > 0 ? result.text : JSON.stringify({ result: "" });
   } else {
     try {
@@ -5284,14 +5365,26 @@ export function createOpenAIStreamAdapter(
                     (p) => p.toolCallId === id,
                   );
                   if (idx !== -1) {
-                    const rawResult = (toolEvent.result as string) ?? "";
+                    const rawEvent = (toolEvent.result as string) ?? "";
+                    // Pulled out first, ahead of __IMAGES__, so the image
+                    // slice below is unchanged. Only from the tools that emit
+                    // it: elsewhere that line is content, not an envelope.
+                    const { text: rawResult, files: createdFiles } =
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                        ? extractCreatedFiles(rawEvent)
+                        : { text: rawEvent, files: [] as SandboxFile[] };
                     const imgMarker = "\n__IMAGES__:";
                     const imgIdx = rawResult.lastIndexOf(imgMarker);
                     const mcpImgMarker = "\n__MCP_IMAGES__:";
                     const mcpImgIdx = rawResult.lastIndexOf(mcpImgMarker);
                     let parsedResult:
                       | string
-                      | { text: string; images: string[]; sessionId: string }
+                      | {
+                          text: string;
+                          images: string[];
+                          sessionId: string;
+                          files?: SandboxFile[];
+                        }
                       | McpImageToolResult
                       | {
                           image_b64: string;
@@ -5348,10 +5441,24 @@ export function createOpenAIStreamAdapter(
                         const images = JSON.parse(
                           rawResult.slice(imgIdx + imgMarker.length),
                         ) as string[];
-                        parsedResult = { text, images, sessionId };
+                        parsedResult = {
+                          text,
+                          images,
+                          sessionId,
+                          files: createdFiles,
+                        };
                       } catch {
                         parsedResult = rawResult;
                       }
+                    } else if (createdFiles.length > 0) {
+                      // Files but no images: still structured, so the card can
+                      // offer downloads.
+                      parsedResult = {
+                        text: rawResult,
+                        images: [],
+                        sessionId: sandboxSessionId || "_default",
+                        files: createdFiles,
+                      };
                     } else {
                       parsedResult = rawResult;
                     }
