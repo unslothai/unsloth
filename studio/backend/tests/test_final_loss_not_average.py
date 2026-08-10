@@ -89,3 +89,75 @@ def test_the_shipped_call_sites_no_longer_fall_back_to_train_loss():
     for rel in ("core/training/trainer.py", "core/training/worker.py"):
         text = (_BACKEND / rel).read_text(encoding = "utf-8")
         assert 'logs.get("loss", logs.get("train_loss", None))' not in text, rel
+
+
+def test_the_terminal_summary_still_reports_elapsed_time():
+    # The summary record has no step loss, so the progress filter dropped it; the
+    # elapsed time it carries (final eval, checkpoint save, best-model reload) is the
+    # run's real duration and must still reach the parent.
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.training.worker import _create_trainer_progress_callback
+
+    class _P:
+        step = 30
+        total_steps = 30
+        loss = None
+        eval_loss = None
+        epoch = 3.0
+        learning_rate = 0.0
+        elapsed_seconds = 412.5
+        eta_seconds = None
+        grad_norm = None
+        num_tokens = 12345
+        status_message = ""
+        warnings: list = []
+
+    events = []
+
+    class _Q:
+        def put(self, e):
+            events.append(e)
+
+    _create_trainer_progress_callback(_Q())(_P())
+    progress = [e for e in events if e.get("type") == "progress"]
+    assert progress, events
+    assert progress[0]["elapsed_seconds"] == 412.5
+    assert progress[0]["loss"] is None
+
+
+def test_a_lossless_mid_run_record_is_still_dropped():
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    if str(backend) not in sys.path:
+        sys.path.insert(0, str(backend))
+    from core.training.worker import _create_trainer_progress_callback
+
+    class _P:
+        step = 12
+        total_steps = 30
+        loss = None
+        eval_loss = None
+        epoch = 1.0
+        learning_rate = 0.0
+        elapsed_seconds = 40.0
+        eta_seconds = None
+        grad_norm = None
+        num_tokens = 1
+        status_message = ""
+        warnings: list = []
+
+    events = []
+
+    class _Q:
+        def put(self, e):
+            events.append(e)
+
+    _create_trainer_progress_callback(_Q())(_P())
+    assert [e for e in events if e.get("type") == "progress"] == []

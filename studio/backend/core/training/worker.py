@@ -4520,7 +4520,17 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
     def _on_progress(progress: TrainingProgress) -> None:
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
+        # The end-of-run summary carries no loss (it is the mean, not a step), but it
+        # does carry the elapsed time including the final evaluation, checkpoint save
+        # and best-model reload. Without this the run's recorded duration stops at the
+        # last step log and under-reports how long the run actually took.
+        is_terminal = progress.total_steps > 0 and progress.step >= progress.total_steps
+        if (
+            (progress.step == 0 and progress.total_steps > 0)
+            or has_train_loss
+            or has_eval_loss
+            or is_terminal
+        ):
             event_queue.put(
                 {
                     "type": "progress",
