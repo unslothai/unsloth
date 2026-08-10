@@ -530,9 +530,8 @@ pub fn open_path_token(
 
 // Covers the largest client-side limit (audio, 25 MB).
 const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
-// Images have to stop here rather than at the audio limit: the composer rejects
-// them over 20 MB by throwing without a toast, and the drop drain swallows that
-// as "the adapter already reported it", so a larger read loses them silently.
+// Images stop lower: the composer throws over 20 MB without a toast and the
+// drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Serialize)]
@@ -693,8 +692,7 @@ mod tests {
         (state, entry)
     }
 
-    // Classification alone is not enough: the reader maps its own mime types,
-    // and an unmapped one refuses the file after it was already accepted.
+    // The reader maps its own mime types; an unmapped one refuses an accepted file.
     #[test]
     fn audio_read_round_trips_with_its_mime_type() {
         for (ext, mime) in [
@@ -754,9 +752,8 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    // The composer throws on images over its own 20 MB limit without toasting,
-    // and the drop drain swallows that, so reading past the image cap here would
-    // make the file disappear instead of reporting it.
+    // Reading past the image cap would make the file disappear instead of
+    // reporting it.
     #[test]
     fn image_read_refuses_more_than_the_image_cap() {
         let path = temp_path("huge").with_extension("png");

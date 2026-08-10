@@ -348,8 +348,8 @@ test("ownership recorded after a claim is still picked up", () => {
 });
 
 test("document, image and audio drop extensions stay disjoint", () => {
-  // classifyDropPaths sums the three filters, so an overlap double-counts and
-  // silently turns a perfectly good drop into "unsupported".
+  // classifyDropPaths sums the three filters; an overlap double-counts and
+  // turns a good drop into "unsupported".
   const exts = [RAG_UPLOAD_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_AUDIO_DROP_ACCEPT]
     .flatMap((accept) => accept.split(","))
     .map((ext) => ext.trim().toLowerCase());
@@ -359,8 +359,7 @@ test("document, image and audio drop extensions stay disjoint", () => {
   );
 });
 
-// The composer already takes audio uploads, so a dropped clip has to reach the
-// same adapter instead of being reported as an unsupported file type.
+// A dropped clip has to reach the same adapter an upload does.
 test("a single audio file routes to chat audio attachments", () => {
   const dropped = classifyDropPaths(["/clips/take.WAV"]);
   assert.equal(dropped.kind, "audio");
@@ -369,8 +368,7 @@ test("a single audio file routes to chat audio attachments", () => {
   ]);
 });
 
-// The adapter attaches one clip per message, so a larger batch has to be turned
-// away up front rather than registered and read for attachments that cannot land.
+// One clip per message, so a larger batch is turned away before it is read.
 test("multi-audio drops are rejected before they are routed", () => {
   const dropped = classifyDropPaths([
     "/clips/take.WAV",
@@ -422,8 +420,8 @@ test("frontend and Rust accept the same chat audio extensions", () => {
   assert.deepEqual(rust, frontend);
 });
 
-// Same seam as the vision check: Rust stamps the File's MIME type and the
-// composer routes by it, so an unclaimed audio type lands nowhere.
+// Same seam as the vision check: an audio MIME the adapter does not claim
+// lands nowhere.
 test("every audio MIME Rust stamps is one the audio adapter claims", () => {
   const rustSource = readFileSync(
     new URL("../../src-tauri/src/native_intents.rs", import.meta.url),

@@ -2199,16 +2199,14 @@ const Composer: FC<{
     (s) => (nativeAttachmentTargetKey ? s.audioDropFailures[nativeAttachmentTargetKey] : 0) ?? 0,
   );
   const seenAudioDropFailuresRef = useRef(audioDropFailures);
-  // Same for audio: the registration holds the gate, so a failure there has to
-  // cancel the parked send before `endAudioDropRegistration` reopens it.
+  // Cancel the parked send before `endAudioDropRegistration` reopens the gate.
   useEffect(() => {
     if (seenAudioDropFailuresRef.current === audioDropFailures) return;
     seenAudioDropFailuresRef.current = audioDropFailures;
     cancelQueuedSendRef.current?.();
   }, [audioDropFailures]);
-  // Audio rides the same composer adapter as an uploaded file, but the drop
-  // still has to hold the send gate: registering and reading the clip is async,
-  // and the composer sees nothing until `addAttachment` lands.
+  // Registering and reading a dropped clip is async, so hold the send gate:
+  // the composer sees nothing until `addAttachment` lands.
   useEffect(() => {
     if (!nativeAttachmentTargetKey) {
       return;
@@ -2221,12 +2219,10 @@ const Composer: FC<{
     let disposed = false;
     let draining = false;
 
-    // A fresh chat re-keys under the same composer, so follow it; a real thread
-    // switch parks the clip back on the chat that received the drop.
+    // A re-key follows the same composer; a thread switch parks the clip back.
     const stillThisComposer = () =>
       composerIdentityRef.current === identityAtSetup;
-    // A fresh chat persisting remounts this composer, so the key it moves to is
-    // not visible here. Tag the batch instead; the next instance claims it.
+    // A remount hides the new key, so tag the batch; the next instance claims it.
     const requeue = (intents: NativeIntent[]) => {
       const key = stillThisComposer()
         ? (nativeAttachmentTargetKeyRef.current ?? targetKey)
@@ -2259,13 +2255,11 @@ const Composer: FC<{
                 description:
                   error instanceof Error ? error.message : String(error),
               });
-              // A send parked on this clip must not go out as bare text once the
-              // flag clears: the user is owed the toast and their draft.
+              // Do not let a send parked on this clip go out as bare text.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               continue;
             }
-            // The read is async: a chat switch in that window must not drop the
-            // clip into whichever composer happens to be current now.
+            // The read is async; a chat switch in that window must not steal the clip.
             if (
               disposed ||
               nativeAttachmentTargetKeyRef.current !== targetKey
@@ -2276,9 +2270,8 @@ const Composer: FC<{
             try {
               await aui.composer().addAttachment(file);
             } catch {
-              // Chat-wide, not per file (no audio model, over the size limit, or
-              // a clip already attached). Every one of those adapter paths
-              // toasted, and the rest would fail alike: stop quietly.
+              // Chat-wide, not per file (no audio model, too large, already
+              // attached), and every adapter path toasted: stop quietly.
               if (stillThisComposer()) cancelQueuedSendRef.current?.();
               return;
             }
@@ -2286,17 +2279,16 @@ const Composer: FC<{
         }
       } finally {
         draining = false;
-        // A drain for a target the composer has already left must not touch the
-        // flag: cleanup cleared it, and the live target may have set it again.
+        // A drain for a target already left must not touch the flag; cleanup
+        // cleared it, and the live target may have set it again.
         if (!disposed) {
-          // The early returns above requeue and bail mid-batch, and a drop can
-          // land while `draining` gated the subscription.
+          // The early returns requeue mid-batch, and a drop can land while
+          // `draining` gated the subscription.
           const pending =
             useNativeIntentStore.getState().pendingAudioAttachments[targetKey]
               ?.length ?? 0;
-          // Only the instance still owning this composer picks the batch back
-          // up; otherwise it stays parked for whichever one does, rather than
-          // being re-read in a loop this instance can never finish.
+          // Only the instance still owning this composer re-drains; otherwise
+          // the batch stays parked rather than looping here forever.
           if (pending > 0 && stillThisComposer()) {
             void drainPendingAudio();
           } else {
@@ -2307,8 +2299,7 @@ const Composer: FC<{
     };
 
     const unsubscribe = useNativeIntentStore.subscribe((state) => {
-      // The predecessor's requeue can land after the claim at setup, so keep
-      // watching rather than claiming once.
+      // A predecessor's requeue can land after setup, so keep watching.
       const orphaned = Object.entries(state.audioDropOwners).some(
         ([key, owner]) => owner === identityAtSetup && key !== targetKey,
       );
@@ -3018,8 +3009,8 @@ const Composer: FC<{
     [cancelQueuedSend],
   );
 
-  // A materializing image or audio clip is a wait, not a refusal: park the send.
-  // Both gates route through here so they cannot disagree on what is recoverable.
+  // A materializing image or clip is a wait, not a refusal: park the send.
+  // Both gates share this so they cannot disagree on what is recoverable.
   const parkIfWaitingOnAttachments = useCallback(() => {
     if (
       disabled ||

@@ -51,8 +51,7 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   if (docs.length + images.length + audio.length !== paths.length) {
     return { kind: "unsupported" };
   }
-  // The composer's audio adapter takes one clip per message, so a larger batch
-  // would register and read files that can never attach.
+  // The audio adapter takes one clip per message; a larger batch never attaches.
   if (audio.length > 1) {
     return { kind: "unsupported" };
   }

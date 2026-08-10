@@ -17,8 +17,8 @@ interface NativeIntentState {
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
   registeringImageDrops: number;
-  // Same, for audio drops: the send gate has to cover the register-and-read
-  // window, or a fast submit goes out without the clip.
+  // Same for audio: cover the register-and-read window or a fast submit
+  // goes out without the clip.
   registeringAudioDrops: number;
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
@@ -27,8 +27,8 @@ interface NativeIntentState {
   // Owner of a queued image batch, by composer identity. A remount means the
   // outgoing instance cannot hand the batch over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
-  // Same, for audio: a new chat materializing mid-read re-keys the composer, and
-  // without a note the clip stays parked under the key it was dropped on.
+  // Same for audio: a new chat re-keys mid-read, so the clip needs a note
+  // to follow the composer.
   audioDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;

@@ -269,8 +269,7 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
               store.failAudioDropRegistration(failureKey);
             }
             // A failed document cancels a send parked behind the image or audio
-            // gate too: the draft would otherwise go out holding only the files
-            // that survived, right after the user watched the others fail.
+            // gate too, or the draft goes out with only what survived.
             if (registered.docsFailed > 0 && failureKey) {
               if (needsImages) store.failImageDropRegistration(failureKey);
               if (needsAudio) store.failAudioDropRegistration(failureKey);

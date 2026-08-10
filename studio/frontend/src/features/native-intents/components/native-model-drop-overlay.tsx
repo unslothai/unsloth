@@ -10,8 +10,7 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
     };
   }
   if (state.status === "attach") {
-    // Only documents are indexed; images and audio ride the next message, so
-    // mixed says both.
+    // Only documents are indexed; images and audio ride the next message.
     const description =
       state.kind === "images" || state.kind === "audio"
         ? "Attached to your next message."
