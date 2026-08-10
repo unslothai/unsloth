@@ -395,10 +395,93 @@ def test_find_sd_cpp_binary_honors_studio_home(tmp_path, monkeypatch):
     monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
     studio_home = tmp_path / "studio_root"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
-    binary = tmp_path / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
+    binary = studio_home / "stable-diffusion.cpp" / "build" / "bin" / "sd-cli"
     binary.parent.mkdir(parents = True)
     binary.write_bytes(b"x")
     assert eng.find_sd_cpp_binary() == str(binary)
+
+
+def test_managed_root_is_under_the_studio_home_like_every_other_component(tmp_path, monkeypatch):
+    """The sd.cpp tree installs *under* the Studio home, not beside it.
+
+    llama.cpp (``default_managed_llama_dir``), whisper.cpp and node all place their tree at
+    ``<studio home>/<component>``. sd.cpp used the home's *parent*, which put the tree outside the
+    home the user chose."""
+    from core.inference import sd_cpp_engine as eng
+
+    studio_home = tmp_path / "sxs" / "studio_a"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    assert default_install_dir() == studio_home / "stable-diffusion.cpp"
+    # The installer and the engine must agree, or one installs where the other never looks.
+    assert eng.managed_install_root() == default_install_dir()
+
+
+def test_a_relative_studio_home_does_not_put_the_install_in_the_working_directory(
+    tmp_path, monkeypatch
+):
+    """A relative ``UNSLOTH_STUDIO_HOME`` used to collapse to the working directory.
+
+    ``Path("home").parent`` is ``Path(".")``, so the managed root became ``./stable-diffusion.cpp``
+    -- exactly the name ``git clone`` of the upstream project produces. A checkout sitting in the
+    working directory then shadowed the managed install and the installer refused to run, because
+    the target was a pre-existing non-empty directory without the ownership marker."""
+    from core.inference import sd_cpp_engine as eng
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "stable-diffusion.cpp").mkdir()
+    (tmp_path / "stable-diffusion.cpp" / "README.md").write_text("someone else's checkout")
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "relative_home")
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+
+    for root in (default_install_dir(), eng.managed_install_root()):
+        assert root.is_absolute(), "a relative home must not leave the root relative"
+        assert root == (tmp_path / "relative_home" / "stable-diffusion.cpp").resolve()
+        assert root != (tmp_path / "stable-diffusion.cpp").resolve()
+
+
+def test_the_legacy_sibling_tree_is_adopted_only_when_it_carries_the_marker(tmp_path, monkeypatch):
+    """An install an older build really made is still found; a bare checkout is not.
+
+    Back-compat is marker-gated on purpose: the old location is ``<home>/../stable-diffusion.cpp``,
+    which for a relative home is the working directory, so an unmarked match there is far more
+    likely to be someone's clone than a previous Studio install."""
+    from core.inference import sd_cpp_engine as eng
+
+    monkeypatch.delenv("SD_CLI_PATH", raising = False)
+    monkeypatch.delenv("UNSLOTH_SD_CPP_PATH", raising = False)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    sibling = tmp_path / "stable-diffusion.cpp"
+    binary = sibling / "build" / "bin" / "sd-cli"
+    binary.parent.mkdir(parents = True)
+    binary.write_bytes(b"x")
+
+    # Unmarked: not ours, so neither discovered nor treated as replaceable.
+    assert eng.legacy_sibling_install_root() is None
+    assert eng.find_sd_cpp_binary() is None
+    assert eng.is_managed_binary(str(binary)) is False
+
+    # Marked by a previous install: found again, and still replaceable.
+    (sibling / eng.OWNER_MARKER).touch()
+    assert eng.legacy_sibling_install_root() == sibling
+    assert eng.find_sd_cpp_binary() == str(binary)
+    assert eng.is_managed_binary(str(binary)) is True
+
+
+def test_the_legacy_default_studio_home_keeps_its_install_dir(tmp_path, monkeypatch):
+    """``UNSLOTH_STUDIO_HOME=~/.unsloth/studio`` is the documented default, not a custom home:
+    it must keep resolving to ``~/.unsloth/stable-diffusion.cpp`` rather than moving the tree to
+    ``~/.unsloth/studio/stable-diffusion.cpp`` and orphaning every existing install."""
+    from core.inference import sd_cpp_engine as eng
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".unsloth" / "studio").mkdir(parents = True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(fake_home / ".unsloth" / "studio"))
+    monkeypatch.delenv("STUDIO_HOME", raising = False)
+    expected = fake_home / ".unsloth" / "stable-diffusion.cpp"
+    assert default_install_dir() == expected
+    assert eng.managed_install_root() == expected
 
 
 # ── Unsloth mirror: default source + the CPU/Apple asset set it publishes ─────
@@ -1018,6 +1101,38 @@ def test_a_cpu_install_is_reinstalled_when_cuda_is_requested(tmp_path, monkeypat
     # Now that the record says cuda, the next load reuses it instead of reinstalling.
     assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
     assert len(installs) == 1
+
+
+def test_a_legacy_sibling_install_is_read_from_its_own_root(tmp_path, monkeypatch):
+    """The accelerator record belongs to the tree the binary is in.
+
+    A tree an older build installed BESIDE the Studio home is still found by the finder, but the
+    current managed root is now under the home and holds nothing. Reading the record from there
+    reports the install as unrecorded, and unrecorded reads as a mismatch for a GPU target: the
+    matching CUDA bundle already on disk would be downloaded again on every load."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"  # where the old build put it
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()  # the record must be read off disk, not memoised
+
+    server = legacy / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    installs: list = []
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") == str(server)
+    assert (
+        installs == []
+    ), "the CUDA build recorded in the legacy root is already what was asked for"
 
 
 def test_asking_for_the_cpu_build_never_reinstalls(tmp_path, monkeypatch):
@@ -1757,6 +1872,7 @@ def test_an_unwritable_record_does_not_cost_the_install_or_repeat_it(tmp_path, m
     root.mkdir()
     (root / sdmod.INSTALL_RECORD).mkdir()  # a directory where the record file goes: open() fails
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t")
     assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
@@ -1772,6 +1888,7 @@ def test_a_stale_unwritable_record_does_not_outrank_what_was_just_installed(tmp_
     with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
         json.dump({"accelerator": "cpu", "repo": "r", "tag": "old"}, f)
     sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
 
     real_open = builtins.open
 
@@ -2352,3 +2469,217 @@ def test_a_superseded_load_unpublishes_the_server_it_stops(tmp_path, monkeypatch
     assert backend._pending_server is None
     assert backend._stopping_servers == 0
     assert not bk._tree_in_use(backend)
+
+
+def test_the_legacy_lookup_uses_the_lexical_parent_of_a_symlinked_home(tmp_path, monkeypatch):
+    """The old code took Path(home).parent, which does not resolve symlinks. For a home that IS a
+    link, the tree an older build created sits next to the LINK, so resolving first looked in the
+    wrong place: a needless re-download, and the old install left orphaned from uninstall too."""
+    import core.inference.sd_cpp_engine as eng
+
+    target = tmp_path / "elsewhere" / "studio"
+    target.mkdir(parents = True)
+    home = tmp_path / "studio-home"
+    home.symlink_to(target, target_is_directory = True)
+    legacy = tmp_path / "stable-diffusion.cpp"  # beside the LINK, where the old build put it
+    legacy.mkdir()
+    (legacy / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+
+    # Resolving first lands in <tmp>/elsewhere, which holds nothing.
+    assert not (tmp_path / "elsewhere" / "stable-diffusion.cpp").exists()
+    assert eng.legacy_sibling_install_root() == legacy
+
+
+def test_a_serverless_install_does_not_fall_back_to_the_legacy_server(tmp_path, monkeypatch):
+    """The finder also probes the tree beside the Studio home, so when the bundle just installed
+    ships no sd-server the hit can be the legacy one, built for another accelerator. Returning it
+    ran a forced CUDA load on the old CPU build instead of the one-shot CLI."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    # The install "succeeds" but ships only the CLI, so the finder still sees the legacy server.
+    monkeypatch.setattr(sdmod, "install", lambda **_kw: None)
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+
+
+def test_a_serverless_install_is_not_downloaded_again_on_every_later_load(tmp_path, monkeypatch):
+    """Rejecting the legacy server is only half the answer. The tree beside the Studio home keeps
+    that mismatched server, so the next load found it again, judged the accelerator changed and
+    reinstalled the bundle already sitting in the current root -- once per model load, forever.
+    The completed matching install in that root is the authoritative one: serverless, not stale."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+    # The current root already holds the cuda bundle, and that bundle shipped no sd-server.
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t", ships_server = False)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    installs: list[dict] = []
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert installs == []  # the bundle is already here; nothing to download
+    # ... and with installs switched off the answer is the same, not the wrong-build server.
+    assert bk.ensure_sd_server_binary(accelerator = "cuda", allow_install = False) is None
+    # ... and while the managed tree is busy, where _accelerator_changed reports "unchanged"
+    # because an install would overwrite a running binary.
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    assert bk.ensure_sd_server_binary(accelerator = "cuda") is None
+    assert installs == []
+
+
+def test_a_matching_legacy_server_is_still_preferred_over_the_one_shot_cli(tmp_path, monkeypatch):
+    """The serverless guard must fire only on a MISMATCHED legacy server. One built for the
+    accelerator being asked for is a working resident server, and dropping to the one-shot CLI
+    would re-run the model load on every single generation."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    server = legacy / "sd-bin" / "sd-server"
+    server.write_bytes(b"cpu-build")
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(current, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+
+    assert bk.ensure_sd_server_binary(accelerator = "cpu") == str(server)
+
+
+def test_a_deleted_server_still_reinstalls_rather_than_reading_as_serverless(tmp_path, monkeypatch):
+    """A missing sd-server is not proof the bundle never had one: the runnability repair unlinks a
+    broken managed server precisely so the next load puts it back. Only a record that positively
+    says the bundle shipped none may suppress that reinstall, so an install predating the field
+    keeps repairing itself."""
+    import core.inference.sd_cpp_backend as bk
+
+    home = tmp_path / "sd-home" / "studio"
+    home.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    legacy = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (legacy / "sd-bin").mkdir(parents = True)
+    (legacy / ".unsloth-studio-owned").touch()
+    sdmod._write_install_record(legacy, accelerator = "cpu", repo = "r", tag = "t")
+    old_server = legacy / "sd-bin" / "sd-server"
+    old_server.write_bytes(b"cpu-build")
+    current = home / "stable-diffusion.cpp"
+    current.mkdir()
+    (current / ".unsloth-studio-owned").touch()
+    # A record from before ships_server existed: the bundle's server capability is unknown.
+    sdmod._write_install_record(current, accelerator = "cuda", repo = "r", tag = "t")
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+    assert sdmod.installed_ships_server(current) is None
+
+    installs: list[dict] = []
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(old_server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(sdmod, "install", lambda **kw: installs.append(kw))
+
+    bk.ensure_sd_server_binary(accelerator = "cuda")
+    assert [kw["accelerator"] for kw in installs] == ["cuda"]
+
+
+def test_install_records_that_the_bundle_shipped_no_server(tmp_path, monkeypatch):
+    """The capability comes off the archive member list during install(), so a later load reads it
+    as fact. Without it, "no sd-server in the tree" is indistinguishable from one that was deleted
+    and the reinstall that would repair it gets suppressed."""
+    zb = _zip_with_sd_cli()  # sd-cli only
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    install(install_dir = tmp_path)
+    assert sdmod.installed_ships_server(tmp_path) is False
+
+
+def test_install_records_that_the_bundle_shipped_a_server(tmp_path, monkeypatch):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("build/bin/sd-cli", b"#!/bin/sh\necho sd-cli\n")
+        zf.writestr("build/bin/sd-server", b"#!/bin/sh\necho sd-server\n")
+    zb = buf.getvalue()
+    _stub_release(monkeypatch, zip_bytes = zb, digest = "sha256:" + hashlib.sha256(zb).hexdigest())
+    install(install_dir = tmp_path)
+    assert sdmod.installed_ships_server(tmp_path) is True
+
+
+def test_an_unwritable_record_still_remembers_the_server_capability(tmp_path):
+    """Memoised alongside the accelerator or not at all. With only half of it remembered, an
+    unwritable record leaves a serverless install looking server-capable to the very guard the
+    accelerator memo exists to serve, and the load keeps re-downloading the bundle."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    (root / sdmod.INSTALL_RECORD).mkdir()  # a directory where the record file goes: open() fails
+    sdmod._INSTALLED_ACCELERATOR_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+
+    sdmod._write_install_record(root, accelerator = "cuda", repo = "r", tag = "t", ships_server = False)
+    assert sdmod.read_install_record(root) == {}  # nothing on disk, as expected
+    assert sdmod.installed_accelerator(root) == "cuda"
+    assert sdmod.installed_ships_server(root) is False  # ... and not "unknown"
+
+
+def test_a_stale_record_does_not_outrank_the_server_capability_just_installed(tmp_path):
+    """The readable-but-unreplaceable shape: an older record saying the bundle shipped a server
+    must not survive an install of one that does not."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    with open(root / sdmod.INSTALL_RECORD, "w", encoding = "utf-8") as f:
+        json.dump({"accelerator": "cpu", "repo": "r", "tag": "old", "ships_server": True}, f)
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO.clear()
+    sdmod._INSTALLED_SHIPS_SERVER_MEMO[str(root)] = False
+    assert sdmod.installed_ships_server(root) is False
+
+
+def test_the_install_record_remembers_whether_the_bundle_shipped_a_server(tmp_path):
+    """Read off the archive member list at install time, so no later load has to guess."""
+    root = tmp_path / "sd"
+    root.mkdir()
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
+    assert sdmod.installed_ships_server(root) is None  # unrecorded stays unknown
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t", ships_server = True)
+    assert sdmod.installed_ships_server(root) is True
+    sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t", ships_server = False)
+    assert sdmod.installed_ships_server(root) is False
+    assert sdmod.installed_accelerator(root) == "cpu"

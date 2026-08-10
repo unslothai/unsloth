@@ -769,3 +769,322 @@ def test_the_dense_placement_is_fenced_on_the_load_token():
     assert (
         load_components < fence < placement
     ), "the token fence must sit between load_components and the placement it guards"
+
+
+# ── auto falls back to the hosted denoiser only where the released one cannot stay resident ──
+
+
+def _h3_family():
+    from core.inference.video_families import detect_video_family
+    return detect_video_family("minimax-h3")
+
+
+def test_the_planned_sizing_matches_the_measured_one_it_stands_in_for():
+    """The pre-load prediction and the post-load pin have to describe the same load.
+
+    They are separate functions for a real reason -- the seeding decision runs before any module
+    exists, the pin runs after -- but if their arithmetic drifts, auto can seed a checkpoint on a
+    card that would have held the released denoiser, or leave the released one on a card that
+    cannot. Only the DENOISER term may differ (table vs built module); everything else must agree
+    exactly."""
+    import torch
+
+    from core.inference.video import (
+        _h3_dense_denoiser_resident_bytes,
+        _h3_planned_denoiser_bytes,
+    )
+
+    fam = _h3_family()
+
+    class _Dense:
+        def parameters(self):
+            # The released denoiser, at the size the family table quotes for it.
+            n = int(fam.bf16_components_gb[0] * 1000**3 // 2)
+            return [torch.zeros(n, dtype = torch.bfloat16)]
+
+        def buffers(self):
+            return []
+
+    for te_scheme in (None, "int8"):
+        planned = _h3_planned_denoiser_bytes(fam, te_scheme = te_scheme, dtype = torch.bfloat16)
+        measured = _h3_dense_denoiser_resident_bytes(
+            fam, denoiser = _Dense(), te_scheme = te_scheme, dtype = torch.bfloat16
+        )
+        assert planned is not None and measured is not None
+        assert planned[1] == measured[1], f"the others term drifted for te_scheme={te_scheme}"
+        # And the denoiser term agrees to within rounding on the same released weights.
+        assert abs(planned[0] - measured[0]) < 1_000_000_000
+
+    # An fp32 promotion doubles it on both sides, so the comparison is not accidentally bf16-only.
+    fp32 = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.float32)
+    bf16 = _h3_planned_denoiser_bytes(fam, te_scheme = None, dtype = torch.bfloat16)
+    assert fp32 is not None and bf16 is not None and fp32[0] == bf16[0] * 2
+
+
+def test_auto_keeps_the_released_denoiser_on_a_card_that_can_hold_it(monkeypatch):
+    """The whole point of making this conditional. A card with room gets exactly what it got
+    before: the released weights and the same picture, because the pin plus the regional compile
+    make it fast without changing a single value."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    # Comfortably more free memory than the released denoiser plus everything beside it.
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 500 * 1000**3)
+
+    assert (
+        vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+        )
+        is None
+    )
+
+
+def test_auto_takes_the_hosted_denoiser_when_the_released_one_cannot_stay_resident(monkeypatch):
+    """The bug users hit. Below the fit line the released denoiser rides the CPU-offload rotation,
+    and a module that moves cannot be compiled, so the regional compile goes with it: 194 s against
+    23.7 s on the same 8-step job. Auto now takes the hosted checkpoint instead of the cliff."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    # An 80 GB card: under the 113.5 GB the released denoiser plus its companions need, over the
+    # 67.5 GB the hosted one needs, which is the band where the substitution buys anything.
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+
+    assert (
+        vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+        )
+        == vid.H3_AUTO_FALLBACK_SCHEME
+    )
+
+
+def test_the_auto_fallback_is_declined_when_nothing_can_answer(monkeypatch):
+    """Every unanswerable question keeps the released weights. A missing reading is not evidence of
+    a shortfall, and guessing wrong here silently changes the picture a user gets.
+
+    The partition gate is the same rule the explicit path applies: a task with no hosted checkpoint
+    has no fallback, and serving the other partition's would generate the wrong thing."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+
+    def ask(**over):
+        kw = dict(
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+        )
+        kw.update(over)
+        return vid._h3_auto_denoiser_scheme(fam, **kw)
+
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+
+    # A host the hosted components were never measured on stays on the released denoiser.
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: False, raising = False)
+    assert ask() is None
+
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    # An unreadable card decides nothing.
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
+    assert ask() is None
+    # Neither does an unanswerable size estimate.
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(vid, "_h3_planned_denoiser_bytes", lambda *a, **k: None)
+    assert ask() is None
+    monkeypatch.undo()
+
+    # And a partition with no hosted checkpoint for the fallback scheme keeps the released one.
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(
+        vid, "video_family_prequant_available", lambda *a, **k: False, raising = False
+    )
+    assert ask() is None
+
+
+def test_an_explicit_speed_off_keeps_the_released_denoiser(monkeypatch):
+    """speed_mode="off" is the bit-exact contract, and the hosted checkpoints re-roll the sample.
+
+    The conventional loader rewrites an unset precision to "off" under speed off for exactly this
+    reason; the modular workflow returns above that rewrite, so the fallback has to decline it
+    itself or "off" stops meaning bit-exact on precisely the cards this fallback targets."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+
+    def ask(speed_mode):
+        return vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = fam.base_repo,
+            speed_mode = speed_mode,
+        )
+
+    assert ask("off") is None
+    assert ask("OFF ") is None, "the request is read the same way the conventional loader reads it"
+    # Every other speed profile is the one this fallback was measured for.
+    assert ask(None) == vid.H3_AUTO_FALLBACK_SCHEME
+    assert ask("default") == vid.H3_AUTO_FALLBACK_SCHEME
+
+
+def test_the_automatic_substitution_needs_the_exact_base_model(monkeypatch):
+    """A derivative is not a precision choice.
+
+    ``video_family_prequant_repo`` falls back to the family default for any base it has no variant
+    row for, and the checkpoint validator's base compare accepts a matching final path segment, so
+    someone/MiniMax-H3 would take MiniMaxAI/MiniMax-H3's denoiser and silently generate from
+    someone else's weights -- for a user who never asked for a scheme at all. Same bar as the
+    conditioner's index gate: exact identity, mirrors folded, nothing else."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+
+    def ask(base_repo):
+        return vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = "int8",
+            task = "fl2va",
+            base_repo = base_repo,
+        )
+
+    assert ask(fam.base_repo) == vid.H3_AUTO_FALLBACK_SCHEME
+    assert ask("someone/MiniMax-H3") is None, "a derivative keeps its own denoiser"
+    assert ask("/models/MiniMax-H3") is None, "and so does a local re-save this cannot identify"
+    assert ask(None) is None
+
+
+def test_the_fallback_is_declined_when_the_hosted_denoiser_cannot_be_pinned(monkeypatch):
+    """Taking the hosted checkpoint means PINNING it -- a torchao module does not survive the
+    offload rotation's mid-block move -- and a pinned denoiser turns the memory floor from a max
+    into a sum.
+
+    With text_encoder_quant="none" the conditioner stays dense, so that sum is BIGGER than the
+    rotation it replaces: the card renders today and would refuse every generation afterwards.
+    Where the replacement does not fit either, the released denoiser in the rotation is the
+    configuration that still runs, so auto keeps it."""
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
+
+    def ask(te_scheme):
+        return vid._h3_auto_denoiser_scheme(
+            fam,
+            target = None,
+            dtype = torch.bfloat16,
+            device = "cuda",
+            te_scheme = te_scheme,
+            task = "fl2va",
+            base_repo = fam.base_repo,
+        )
+
+    # Dense conditioner: 107.1 GB pinned against 80 GB free, so the substitution buys a refusal.
+    assert ask(None) is None
+    # Quantized conditioner: 67.5 GB pinned, which is what the fallback exists for.
+    assert ask("int8") == vid.H3_AUTO_FALLBACK_SCHEME
+
+
+def test_the_fallback_is_resolved_before_the_download_is_planned(monkeypatch):
+    """Decided only inside the loader, the fallback is decided after the pull it exists to shrink.
+
+    ``_denoiser_prequant_covered`` answers False for an unset request, so the plan stages the
+    66.3 GB dense denoiser this load will never open and the 20.3 GB replacement then arrives
+    inline -- outside the progress plan, the cancel path and the disk preflight that just passed.
+    The planner resolves the same choice up front, against the card's CAPACITY: the free reading
+    is polluted at plan time (the previous pipeline is still resident) and capacity is an upper
+    bound on it, so a "does not fit" here still holds when the loader re-measures."""
+    import inspect
+    import types
+
+    import torch
+
+    from core.inference import video as vid
+
+    fam = _h3_family()
+    backend = vid.VideoBackend.__new__(vid.VideoBackend)
+
+    monkeypatch.setattr(vid, "_h3_auto_precision_ok", lambda target = None: True, raising = False)
+    monkeypatch.setattr(
+        vid,
+        "resolve_diffusion_device_target",
+        lambda *a, **k: types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16),
+        raising = False,
+    )
+    # CAPACITY, not the live free reading: an 80 GB card cannot hold the released denoiser
+    # resident whatever else is or is not on it right now.
+    monkeypatch.setattr(vid, "_h3_device_capacity_bytes", lambda device: 80 * 1000**3)
+    monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: None)
+
+    def plan(**over):
+        kw = dict(
+            base = fam.base_repo,
+            transformer_quant = None,
+            text_encoder_quant = None,
+            speed_mode = None,
+            h3_task = "fl2va",
+        )
+        kw.update(over)
+        return backend._h3_planned_auto_denoiser_scheme(fam, **kw)
+
+    assert plan() == vid.H3_AUTO_FALLBACK_SCHEME
+    # An explicit request is not the planner's business, in either direction.
+    assert plan(transformer_quant = "none") is None
+    assert plan(transformer_quant = "int8") is None
+    assert plan(speed_mode = "off") is None
+
+    # And the scheme it returns is what makes the pull drop the dense shards: the same probe
+    # answers False for the unset request the planner replaces.
+    assert not vid.VideoBackend._denoiser_prequant_covered(fam, None, fam.base_repo, "fl2va")
+    assert vid.VideoBackend._denoiser_prequant_covered(
+        fam, vid.H3_AUTO_FALLBACK_SCHEME, fam.base_repo, "fl2va"
+    )
+
+    # The wiring: the planner has to run BEFORE the verification that drops the shards, which runs
+    # before the pull. Ordering is the whole point, so it is asserted rather than assumed.
+    src = inspect.getsource(vid.VideoBackend._run_load)
+    planned = src.index("_h3_planned_auto_denoiser_scheme")
+    verified = src.index("_denoiser_prequant_verified")
+    predownload = src.index("_predownload_base")
+    assert planned < verified < predownload
+    assert 'h3_auto_denoiser or kwargs.get("transformer_quant")' in src
