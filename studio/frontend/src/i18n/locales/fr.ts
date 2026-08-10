@@ -86,6 +86,8 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
+      videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
       newBadge: "Nouveau",
@@ -1415,6 +1417,7 @@ export const fr = {
       history: "Historique",
     },
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
+    checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
     sections: {
       model: "Modèle",

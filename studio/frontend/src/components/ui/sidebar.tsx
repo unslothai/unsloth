@@ -661,12 +661,15 @@ function SidebarMenuButton({
   variant = "default",
   size = "default",
   tooltip,
+  alwaysTooltip = false,
   className,
   ...props
 }: React.ComponentProps<"button"> & {
   asChild?: boolean
   isActive?: boolean
   tooltip?: string | React.ComponentProps<typeof TooltipContent>
+  /** Show the tooltip while expanded and enabled, not only on the collapsed rail. */
+  alwaysTooltip?: boolean
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
@@ -713,7 +716,9 @@ function SidebarMenuButton({
         align="center"
         // Enabled items only show the tooltip when collapsed (icon labels);
         // a disabled item shows it while expanded too, since it explains why.
-        hidden={isMobile || (!isDisabled && state !== "collapsed")}
+        // alwaysTooltip is the third case: an enabled row whose tooltip is a
+        // status, not a label repeat, e.g. a capability still being measured.
+        hidden={isMobile || (!isDisabled && !alwaysTooltip && state !== "collapsed")}
         {...tooltip}
       />
     </Tooltip>

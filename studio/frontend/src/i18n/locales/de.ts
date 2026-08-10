@@ -86,6 +86,8 @@ export const de = {
       recipes: "Rezepte",
       images: "Bilder",
       video: "Video",
+      trainChecking: "Dieser Rechner wird auf Trainingsunterstützung geprüft...",
+      videoChecking: "Dieser Rechner wird auf Video-Unterstützung geprüft...",
       more: "Mehr",
       customizeSidebar: "Seitenleiste anpassen",
       newBadge: "Neu",
@@ -1413,6 +1415,7 @@ export const de = {
       history: "Verlauf",
     },
     loadingRuntime: "Trainingsumgebung wird geladen...",
+    checkingSupport: "Dieser Rechner wird auf Trainingsunterstützung geprüft...",
     backToHistory: "Zurück zum Verlauf",
     sections: {
       model: "Modell",

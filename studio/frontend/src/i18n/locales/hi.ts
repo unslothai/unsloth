@@ -86,6 +86,8 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      trainChecking: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
+      videoChecking: "इस मशीन पर वीडियो सपोर्ट की जाँच हो रही है...",
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
       newBadge: "नया",
@@ -1375,6 +1377,7 @@ export const hi = {
       history: "इतिहास",
     },
     loadingRuntime: "ट्रेनिंग रनटाइम लोड हो रहा है...",
+    checkingSupport: "इस मशीन पर ट्रेनिंग सपोर्ट की जाँच हो रही है...",
     backToHistory: "इतिहास पर वापस जाएं",
     sections: {
       model: "मॉडल",
