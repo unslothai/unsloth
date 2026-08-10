@@ -1037,6 +1037,18 @@ jobs:
             "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
             "$appimage"
+
+          # Portable build for hosts without WebKitGTK. The thin AppImage above
+          # needs libwebkit2gtk-4.1 from the host and prints an apt command when
+          # it is absent -- which an immutable distro cannot run. SteamOS is the
+          # concrete case: it ships libgtk-3 and libsoup-3 but no WebKit and no
+          # apt, so the thin bundle cannot start there at all.
+          portable="$output_dir/unsloth-studio_${APP_VERSION}_amd64-portable.AppImage"
+          studio/src-tauri/linux/build-portable-appimage.sh \
+            "$deb_path" \
+            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
+            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
+            "$portable"
           signature="${appimage}.sig"
           # The signer writes ${appimage}.sig itself; stdout is human-readable diagnostics.
           npx --prefix studio tauri signer sign "$appimage"
