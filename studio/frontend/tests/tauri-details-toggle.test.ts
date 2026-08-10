@@ -23,22 +23,30 @@ function summaryForLabel(sourceText: string, label: string): string {
 }
 
 test("Tauri detail toggles put a custom down chevron after their labels", async () => {
+  const label = "Show {label} details";
+  const summary = summaryForLabel(await source("setup-log.tsx"), label);
+
+  assert.match(summary, /\blist-none\b/);
+  assert.match(summary, /\[&::\-webkit-details-marker\]:hidden/);
+  assert.match(summary, /\bflex\b/);
+  assert.ok(
+    summary.indexOf("<HugeiconsIcon") > summary.indexOf(label) &&
+      summary.includes("icon={ChevronDownIcon}"),
+    "chevron must be on the right",
+  );
+
+  // The three screens reach that summary through the one shared toggle.
   const startup = await source("startup-screen.tsx");
   const update = await source("update-screen.tsx");
-
-  for (const [sourceText, label] of [
-    [startup, "Show installation details"],
-    [startup, "Show setup details"],
-    [update, "Show update details"],
+  for (const [sourceText, name] of [
+    [startup, "installation"],
+    [startup, "setup"],
+    [update, "update"],
   ] as const) {
-    const summary = summaryForLabel(sourceText, label);
-    assert.match(summary, /\blist-none\b/);
-    assert.match(summary, /\[&::\-webkit-details-marker\]:hidden/);
-    assert.match(summary, /\bflex\b/);
-    assert.ok(
-      summary.indexOf("<HugeiconsIcon") > summary.indexOf(label) &&
-        summary.includes("icon={ChevronDownIcon}"),
-      `${label} chevron must be on the right`,
+    assert.match(
+      sourceText,
+      new RegExp(`<SetupLogDetails\\b[^>]*\\blabel="${name}"`),
+      `${name} toggle is missing`,
     );
   }
 });
