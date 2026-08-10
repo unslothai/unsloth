@@ -87,7 +87,6 @@ def _variant_keys(repo_info, variant: str) -> set[str]:
     last checkpoint of a repo read as if a sibling survived, so its companions were described as
     retained rather than freed."""
     from hub.services.models.deletion import _variant_keys_to_delete
-
     return {key.lower() for key in _variant_keys_to_delete(repo_info, variant)}
 
 
