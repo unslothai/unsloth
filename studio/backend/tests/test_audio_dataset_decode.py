@@ -159,15 +159,17 @@ def test_the_audio_trainer_paths_install_the_decoder():
     # importing the trainer drags in the whole torch/unsloth stack for it.
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
-    ).read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
     assert "ensure_audio_decoding()" in source
     # Guarded so a text-only run never pays for the probe.
     assert "if self._audio_type or self.is_audio_vlm:" in source
 
 
-def test_a_concurrent_first_install_captures_the_original_encode_once(monkeypatch, broken_torchcodec):
+def test_a_concurrent_first_install_captures_the_original_encode_once(
+    monkeypatch, broken_torchcodec
+):
     """Two first-time callers must not both capture Audio.encode_example.
 
     The loser used to capture the already-installed shim as _ORIGINAL_ENCODE, so
