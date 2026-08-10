@@ -1659,23 +1659,39 @@ jobs:
             echo "  Tag main and publish it first, then re-dispatch this workflow." >&2
             exit 1
           fi
+          # A carried-forward manifest for an older version is expected here (see
+          # publish-desktop-updater.yml), so read it rather than judge by name alone.
+          mkdir -p "$RUNNER_TEMP/target-manifest"
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
+            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
-          release = json.loads(
-              pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release-publish.json').read_text()
-          )
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release-publish.json').read_text())
           tag = os.environ['DESKTOP_RELEASE_TAG']
           # Checked here, not at promotion: GitHub refuses to mark a prerelease
           # latest, and by then the bundles are already public.
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
           prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
-              if asset.get('name') == 'latest.json' or str(asset.get('name', '')).startswith(prefix)
+              if str(asset.get('name', '')).startswith(prefix)
           )
+          manifest_path = runner / 'target-manifest' / 'latest.json'
+          if manifest_path.is_file():
+              try:
+                  version = json.loads(manifest_path.read_text()).get('version')
+              except json.JSONDecodeError:
+                  version = None
+              # Only this version's own manifest is a clash; anything else is the
+              # pointer being carried forward and is overwritten on upload.
+              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
+                  clashing.append('latest.json')
+
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
