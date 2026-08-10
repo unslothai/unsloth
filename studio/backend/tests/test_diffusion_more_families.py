@@ -114,6 +114,28 @@ def test_zimage_base_has_no_hosted_prequant_to_inherit():
         assert family_prequant_repo(fam, scheme, base_repo = "  tongyi-mai/Z-IMAGE ") is None
 
 
+def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
+    # family_prequant_repo is shared with the VIDEO loader, whose VideoFamily has no
+    # prequant_excluded_bases. A plain attribute read raises AttributeError here, and the only
+    # caller wraps this in a bare except that turns any raise into "no hosted checkpoint", so
+    # every video family would quietly drop to the dense path whenever a base_repo is passed.
+    from core.inference.diffusion_families import family_prequant_repo
+    from core.inference.diffusion_prequant import resolve_prequant_source
+    from core.inference.video_families import detect_video_family
+
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert h3 is not None
+    assert not hasattr(h3, "prequant_excluded_bases")
+    for scheme in ("int8", "fp8"):
+        # The base_repo argument is the trigger: an empty base short-circuits before the read.
+        assert (
+            family_prequant_repo(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+            == "unsloth/MiniMax-H3-FP8"
+        )
+        source = resolve_prequant_source(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
+        assert source is not None and source.location == "unsloth/MiniMax-H3-FP8"
+
+
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
     # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
     # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.

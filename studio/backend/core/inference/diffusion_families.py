@@ -792,7 +792,11 @@ def family_prequant_repo(
     # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
-        if base in fam.prequant_excluded_bases:
+        # getattr, because the video loader calls this with a VideoFamily, which has no such
+        # field. A plain attribute read raises AttributeError, resolve_prequant_source swallows it
+        # in its bare except and hands back None, and every video family silently loses its hosted
+        # prequant checkpoint to the dense path whenever a base_repo is passed.
+        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
             return None
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
