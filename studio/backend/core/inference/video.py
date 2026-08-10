@@ -2374,6 +2374,15 @@ class VideoBackend:
         import diffusers
         import torch
 
+        # Same reason as diffusion.py: diffusers hard-codes _tqdm_active = True at
+        # import and honours no env var, so setup_logging cannot reach it and its
+        # "Loading pipeline components..." bar lands on the structured stream.
+        try:
+            from loggers.config import quiet_third_party_progress_bars
+            quiet_third_party_progress_bars()
+        except Exception:  # noqa: BLE001 - never let log tidying stop a load
+            pass
+
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
 
         with self._lock:
