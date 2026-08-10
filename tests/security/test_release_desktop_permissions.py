@@ -240,8 +240,7 @@ def test_publishing_draft_validates_normal_release_without_rebuilding():
         if step.get("name") == "Bridge legacy desktop-latest clients once"
     )
     assert "inputs.bridge_legacy_channel" in bridge["if"]
-    # The bridge reads the manifest that the download step, gated on this same
-    # output, fetches: without it a bridging repair run dies on a missing file.
+    # Without it the bridge reads a manifest that the gated download step never fetched.
     assert "steps.gate.outputs.proceed == 'true'" in bridge["if"]
     assert "gh release create desktop-latest" not in bridge["run"]
     assert "gh release upload desktop-latest" in bridge["run"]
@@ -292,8 +291,7 @@ def test_the_updater_workflow_validates_the_target_before_deleting_its_assets():
     remove = order.index("Remove standalone signature assets")
     for name in ("Validate updater metadata", "Prevent GitHub latest downgrade"):
         assert order.index(name) < remove, name
-    # Still swept before the release becomes the pointer clients resolve, and
-    # still ahead of the promotion that reads the source-release.json it refreshes.
+    # Still ahead of the promotion, which points clients here and reads the JSON it refreshes.
     assert remove < order.index("Mark published release as GitHub latest")
 
 
@@ -306,14 +304,12 @@ def test_the_updater_workflow_is_manual_dispatch_only():
     assert set(triggers) == {"workflow_dispatch"}, triggers
 
     job = workflow["jobs"]["publish-updater"]
-    # A leftover github.event.release reference is null under dispatch, so every
-    # condition has to resolve against inputs instead of being silently false.
+    # A leftover github.event.release ref is null under dispatch: silently false, not an error.
     conditions = [job["if"]] + [step["if"] for step in job["steps"] if "if" in step]
     for condition in conditions:
         assert "github.event" not in condition, condition
 
-    # Removing the release trigger is only safe while the pointer repair stays
-    # reachable, so it must not become dead code.
+    # Dropping the release trigger is only safe while the pointer repair stays reachable.
     carry = next(
         step for step in job["steps"] if step.get("name") == "Carry desktop metadata forward"
     )

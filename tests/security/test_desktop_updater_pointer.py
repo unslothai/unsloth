@@ -234,10 +234,9 @@ def test_a_manifest_without_a_usable_version_is_refused(tmp_path):
 
 
 def test_a_draft_or_prerelease_target_is_refused(tmp_path):
-    # /releases/latest resolves only to a non-draft, non-prerelease release, so
-    # carrying a manifest onto one of those cannot repair the endpoint. The source
-    # filter already refuses them; the target is held to the same rule rather than
-    # reporting a repair it could never deliver.
+    # /releases/latest never resolves to a draft or prerelease, so carrying a manifest
+    # onto one cannot repair the endpoint. The source filter already refuses them; the
+    # target is held to the same rule.
     for state in ("draft", "prerelease"):
         target = _release("v0.1.53-beta", has_manifest = False)
         target[state] = True
@@ -253,11 +252,10 @@ def test_a_draft_or_prerelease_target_is_refused(tmp_path):
 
 
 def test_a_target_missing_from_the_release_listing_is_refused(tmp_path):
-    # The listing is the only view that shows the target's draft state at all:
-    # /releases/tags/{tag} answers 404 for a draft, which has no git tag until it
-    # is published. So a target absent from the single page fetched above has an
-    # unverifiable state, and the draft/prerelease refusal degrades into no check.
-    # Refuse rather than report a repair /releases/latest may never resolve to.
+    # The listing is the only view of the target's draft state: /releases/tags/{tag}
+    # answers 404 for a draft, which has no git tag until it is published. A target
+    # absent from that single page has an unverifiable state, so the draft/prerelease
+    # refusal above would degrade into no check. Fail closed instead.
     result, commands = _run(
         tmp_path,
         release_tag = "v0.1.53-beta",
