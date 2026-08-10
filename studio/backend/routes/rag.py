@@ -414,14 +414,10 @@ def _discard_document(document_id: str) -> None:
         store.delete_document(conn, document_id)
     finally:
         conn.close()
-    stored = document.get("stored_path")
-    if not stored:
-        return
-    uploads = os.path.realpath(str(rag_uploads_root()))
-    target = os.path.realpath(stored)
-    # confined to the uploads root, matching the project delete cleanup
-    if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
-        os.remove(target)
+    # Same uploads-root confinement as every other cleanup path, and best-effort for the same
+    # reason: on Windows commonpath raises across drives and os.remove raises while the ingestion
+    # worker still holds the file, neither of which should turn this into a 500.
+    _remove_stored_upload(document.get("stored_path"))
 
 
 @router.post("/projects/{project_id}/documents")

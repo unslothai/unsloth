@@ -100,13 +100,16 @@ export function awaitStoredChatThreadWrites(threadId: string): Promise<void> {
   return threadRecordWrites.settleCurrent(threadId);
 }
 
-/** Start one background initializer for an id so the first message can render at once. */
+/** Start one background initializer for an id so the first message can render at once.
+ * Returns the tracked write so a retry can adopt its outcome; callers that only start one
+ * ignore it, and the rejection is always handled below. */
 export function trackStoredChatThreadRecord(
   threadId: string,
   createRecord: () => Promise<void>,
-): void {
-  if (initializingThreadRecords.has(threadId)) {
-    return;
+): Promise<void> {
+  const inFlight = initializingThreadRecords.get(threadId);
+  if (inFlight) {
+    return inFlight;
   }
   const epoch = threadRecordClearEpoch;
   const work = threadRecordWrites.observe(
@@ -132,6 +135,7 @@ export function trackStoredChatThreadRecord(
       }
     },
   );
+  return work;
 }
 
 interface ExportedChat {
@@ -627,10 +631,13 @@ async function retryFailedThreadRecord(
   }
   if (createRecord) {
     failedThreadRecordByThreadId.delete(threadId);
-    // through the same initializer path, so a retry that fails again stays retryable
-    trackStoredChatThreadRecord(threadId, createRecord);
+    // Through the same initializer path, so a retry that fails again stays retryable, and
+    // rethrowing on purpose: a caller handed undefined reads it as "no row to update" and drops
+    // its patch, which is how the prompt queue loses its model correction.
+    await trackStoredChatThreadRecord(threadId, createRecord);
+  } else {
+    await awaitStoredChatThreadWrites(threadId);
   }
-  await awaitStoredChatThreadWrites(threadId);
   return (await getChatThread(threadId)) ?? undefined;
 }
 

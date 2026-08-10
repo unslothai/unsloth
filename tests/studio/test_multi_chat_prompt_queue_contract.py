@@ -759,6 +759,20 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert "threadRecordWrites.confirmFinalState(idsToFence);" in CHAT_HISTORY_STORAGE
 
 
+def test_a_failed_thread_row_write_surfaces_to_the_patch_caller():
+    """A retry that reports undefined reads as "no row to update", so the queued run's
+    model correction is dropped and never retried: thread.tsx clears
+    shouldCorrectPersistedModel right after the awaited updateStoredChatThread."""
+    retry = _between(
+        CHAT_HISTORY_STORAGE,
+        "async function retryFailedThreadRecord(",
+        "export async function listStoredChatMessages(",
+    )
+    # awaiting the tracked write, not the settle-all helper, is what propagates the failure
+    assert "await trackStoredChatThreadRecord(threadId, createRecord);" in retry
+    assert "await awaitStoredChatThreadWrites(threadId);\n  return" not in retry
+
+
 def test_noop_setting_refreshes_do_not_invalidate_pending_queues():
     assert "shouldAdvanceQueuedSettingsEpoch(" in CHAT_RUNTIME_STORE
     set_params = _between(CHAT_RUNTIME_STORE, "setParams: (params, options)", "setCustomPresets:")
