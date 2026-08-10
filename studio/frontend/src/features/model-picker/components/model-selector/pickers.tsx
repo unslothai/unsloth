@@ -4479,13 +4479,20 @@ export function HubModelPicker({
     const optionKey = makeModelOptionKey("additional-on-device", model.id);
     const isSelected = value === model.id;
     const pipelineTag = typeof task === "string" ? task : (task?.[0] ?? null);
+    // A checkpoint trained here is identified by its directory, not a repo id, so
+    // show the name and drop the Hub link -- the raw path reads as neither.
+    const isLocalPath = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(model.id);
     return (
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={model.id}
-            hubUrl={hubRepoUrl(model.id)}
-            meta={`${model.isGguf === true ? "GGUF" : "Safetensors"}${model.deviceSize ? ` · ${model.deviceSize}` : ""}`}
+            label={isLocalPath ? model.name : model.id}
+            hubUrl={isLocalPath ? undefined : hubRepoUrl(model.id)}
+            meta={
+              isLocalPath
+                ? (model.description ?? "Trained here")
+                : `${model.isGguf === true ? "GGUF" : "Safetensors"}${model.deviceSize ? ` · ${model.deviceSize}` : ""}`
+            }
             quantChip={model.deviceQuant}
             selected={isSelected}
             loaded={model.deviceLoaded === true}
