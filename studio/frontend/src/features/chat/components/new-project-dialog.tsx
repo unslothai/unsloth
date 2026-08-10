@@ -53,6 +53,9 @@ export function NewProjectDialog({
   const [name, setName] = useState("");
   const [staged, setStaged] = useState<StagedSource[]>([]);
   const [busy, setBusy] = useState(false);
+  // A desktop drop reaches `staged` only once its native registration settles.
+  // Creating before then would upload without the files the user just dropped.
+  const [stagingDrop, setStagingDrop] = useState(false);
   // Uploads outlive this component, so a slow one must not yank the user to the
   // new project after they have navigated away.
   const mounted = useRef(true);
@@ -68,6 +71,7 @@ export function NewProjectDialog({
   function reset() {
     setName("");
     setStaged([]);
+    setStagingDrop(false);
   }
 
   // Every close path routes through here: callers keep this mounted, so a draft
@@ -80,7 +84,7 @@ export function NewProjectDialog({
 
   async function commitCreate() {
     const trimmed = name.trim();
-    if (!trimmed || busy) return;
+    if (!trimmed || busy || stagingDrop) return;
     setBusy(true);
     // Sidebar callers keep this mounted across routes, so unmounting alone
     // cannot tell whether the user has moved on during a slow upload.
@@ -157,6 +161,7 @@ export function NewProjectDialog({
           staged={staged}
           onChange={setStaged}
           disabled={busy}
+          onPendingChange={setStagingDrop}
         />
         <DialogFooter className="flex-wrap gap-2 sm:justify-end">
           <Button type="button" variant="ghost" disabled={busy} onClick={close}>
@@ -165,9 +170,9 @@ export function NewProjectDialog({
           <Button
             type="button"
             onClick={() => void commitCreate()}
-            disabled={!name.trim() || busy}
+            disabled={!name.trim() || busy || stagingDrop}
           >
-            {busy ? "Creating…" : submitLabel}
+            {busy ? "Creating…" : stagingDrop ? "Adding sources…" : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

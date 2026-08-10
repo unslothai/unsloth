@@ -29,7 +29,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
-  BrainIcon,
+  AiBrain01Icon,
   Database02Icon,
   FloppyDiskIcon,
   Settings05Icon,
@@ -286,7 +286,7 @@ export function TrainingWizard({
       <SectionBox
         title={t("studio.wizard.modelTitle")}
         description={t("studio.wizard.modelDescription")}
-        icon={BrainIcon}
+        icon={AiBrain01Icon}
         chipTint="var(--chart-1)"
       >
         <ModelPanel />

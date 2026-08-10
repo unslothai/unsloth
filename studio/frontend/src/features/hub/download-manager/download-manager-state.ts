@@ -77,6 +77,9 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     value.scopedFiles.every((f) => typeof f === "string")
       ? { scopedFiles: value.scopedFiles as string[] }
       : {}),
+    ...(typeof value.checkpoint === "boolean"
+      ? { checkpoint: value.checkpoint }
+      : {}),
     ...(isResolvedTransport(value.transport)
       ? { transport: value.transport }
       : {}),
@@ -122,6 +125,7 @@ function toPersistedJob(
       ? { serverGeneration: job.serverGeneration }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
+    ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
     ...(job.transport !== undefined ? { transport: job.transport } : {}),
     // Alongside the transport, never instead of it: a fallback run reads as
     // plain HTTP without this and the reloaded card offers Pause for a stop

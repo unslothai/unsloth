@@ -1,6 +1,7 @@
 
 
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -219,7 +220,9 @@ export async function validateSttModel(
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  return queueSttLifecycle(async () => {
+  // Announced so the indicator shows the load immediately, as the toast does.
+  return queueSttLifecycle(() =>
+    withModelLoadNotice("stt", model, async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -232,7 +235,8 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const detail = body?.detail ?? `HTTP ${response.status}`;
       throw sttRequestError(response.status, detail);
     }
-  });
+    }),
+  );
 }
 
 /** Start a background download of a dictation model. */

@@ -145,6 +145,9 @@ export type ResearchEventType =
   | "run.started"
   | "plan.ready"
   | "run.approved"
+  | "phase.started"
+  | "phase.progress"
+  | "phase.ended"
   | "reasoning.updated"
   | "step.started"
   | "source.added"
@@ -165,6 +168,7 @@ export interface ResearchEventData {
   resumed?: boolean;
   phase?: ResearchPhase;
   callId?: string;
+  label?: string;
   reasoningDelta?: string;
   reasoningOffset?: number;
   position?: number;

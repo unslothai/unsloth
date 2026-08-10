@@ -18,6 +18,7 @@ import { type ReactElement, useEffect } from "react";
 import {
   ensureResearchRunFollowed,
   ingestResearchUpdate,
+  runningResearchActivityTitle,
   useResearchRunStore,
 } from "../stores/research-run-store";
 import type { ResearchMessageMetadata } from "../types/research";
@@ -117,6 +118,11 @@ export function ResearchMessage(): ReactElement {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
+  // Name the current model call, so the long silent phases read as work rather than a stall.
+  const liveDetail =
+    runningResearchActivityTitle(session?.activities) ??
+    run.plan?.title ??
+    "Building a rigorous research plan…";
   return (
     <div
       className={cn(
@@ -159,7 +165,7 @@ export function ResearchMessage(): ReactElement {
                   ? "Review the approach before the agent starts gathering evidence."
                   : cancelled
                     ? "The activity gathered so far is still available."
-                    : (run.plan?.title ?? "Building a rigorous research plan…")}
+                    : liveDetail}
           </p>
           <Button
             size="sm"

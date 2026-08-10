@@ -1,16 +1,23 @@
 
 
 
+import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 // Same plan shape as the images backend: both /download-plan routes share a response model.
 import type { DiffusionDownloadPlan } from "@/features/images/api";
+import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance for the "Auto: X" badges, same shape as the diffusion status.
-// `value` is the engaged value (string, null when off, or boolean); `source` is "auto" or "explicit"; `reason` is the tooltip.
+// One Advanced control's resolved value + provenance, same shape as the diffusion status. `value` is the engaged value
+// (string, null when off, or boolean), `requested` is what the caller asked for (null = left to the backend), `source` is
+// "auto" or "explicit", `status` says whether the ask survived, and `reason` is the tooltip.
 export interface VideoResolvedControl {
   value: string | boolean | null;
+  // Absent on backends predating the requested/actual split.
+  requested?: string | boolean | null;
   source: "auto" | "explicit";
+  // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
+  status?: "applied" | "fell_back" | "unsupported";
   reason: string;
 }
 
@@ -20,12 +27,22 @@ export interface VideoGenerationDefaults {
   guidance: number;
   num_frames: number;
   fps: number;
-  // Temporal lattice: valid frame counts are k * frame_step + 1.
+  // Temporal lattice: valid frame counts are k * frame_step + frame_offset.
   frame_step: number;
+  frame_offset: number;
+  duration_presets: number[];
   // Width/height must be divisible by this.
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
   resolution_presets: Array<[number, number]>;
+  // Backend-owned keyframe canvas rule, or null when unsupported.
+  canvas_short_edge?: number | null;
+  canvas_max_pixels?: number | null;
+  // Released schedule shifts, or null when unsupported.
+  flow_shift?: number | null;
+  audio_flow_shift?: number | null;
+  // Whether the active engine can apply audio_flow_shift.
+  supports_audio_flow_shift?: boolean;
 }
 
 export interface VideoStatus {
@@ -37,6 +54,9 @@ export interface VideoStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Null when not loaded.
   model_kind?: string | null;
+  engine?: "diffusers" | "sd_cpp" | null;
+  // Selected GGUF quant. Newer backends report this separately from the compute dtype.
+  gguf_variant?: string | null;
   // Resolved offload policy: none | group | model | sequential.
   offload_policy?: string | null;
   vae_tiling: boolean;
@@ -48,8 +68,16 @@ export interface VideoStatus {
   transformer_cache?: string | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
+  text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
   has_audio: boolean;
+  supports_cfg: boolean;
+  // Conditioning supported by the loaded checkpoint.
+  supports_keyframes?: boolean;
+  supports_references?: boolean;
+  // Resident MiniMax-H3 denoiser partition, if any.
+  h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
   // Per-control provenance keyed by control name (memory_mode, speed_mode, attention_backend, transformer_cache), read by
@@ -59,7 +87,7 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
+  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;
@@ -107,12 +135,26 @@ export interface VideoLoadRequest {
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16). GGUF / single-file checkpoints carry their own.
   transformer_quant?: "none" | "fp8" | "int8" | "nvfp4" | "mxfp8";
+  // Pipeline denoiser partition. GGUF filenames already identify theirs.
+  h3_task?: "fl2va" | "ref2va";
+  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+}
+
+/** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
+export interface VideoReferenceVideo {
+  // Base64/data-URL video file, 2 to 15 seconds.
+  video: string;
+  // Base64/data-URL soundtrack for THIS video; omitted takes the one embedded in the file.
+  audio?: string;
 }
 
 export interface VideoGenerateRequest {
   prompt: string;
   negative_prompt?: string;
-  // Width/height/num_frames/fps default per loaded family (the backend snaps them to its lattice), so they are optional.
+  // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they must match that family's
+  // rules -- width/height one of status.defaults.resolution_presets, num_frames on the k*frame_step+1 lattice -- or the
+  // backend answers 422 with the supported shapes (the same rules the video page's selects are built from).
   width?: number;
   height?: number;
   num_frames?: number;
@@ -120,6 +162,18 @@ export interface VideoGenerateRequest {
   steps?: number;
   guidance?: number;
   seed?: number;
+  // MiniMax-H3 keyframes as data URLs. Omit both dimensions to match the source aspect.
+  first_frame?: string;
+  last_frame?: string;
+  // Ref2VA references, grouped in the model's image, video, then audio order.
+  reference_images?: string[];
+  reference_videos?: VideoReferenceVideo[];
+  reference_audios?: string[];
+  // "max" uses Diffusers' 2048px short-edge policy; "match" uses the clip area.
+  reference_image_size?: "match" | "max";
+  // Sigma shift of the video schedule, and of the audio one (Diffusers engine only).
+  flow_shift?: number;
+  audio_flow_shift?: number;
 }
 
 // A persisted clip's full generation recipe (the JSON sidecar of the MP4).
@@ -138,7 +192,19 @@ export interface GalleryVideo {
   guidance: number;
   seed: number;
   has_audio: boolean;
+  // MiniMax-H3 task name, absent on older clips.
+  conditioning?: string | null;
+  flow_shift?: number | null;
+  audio_flow_shift?: number | null;
   model?: string | null;
+  // The load-time BUILD, all ENGAGED values, so a clip's recipe still names the precision it ran at
+  // once the model is unloaded. Absent on sidecars written before this existed.
+  model_kind?: string | null;
+  gguf_filename?: string | null;
+  transformer_quant?: string | null;
+  text_encoder_quant?: string | null;
+  memory_mode?: string | null;
+  offload_policy?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
 }
@@ -157,12 +223,18 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getVideoStatus(): Promise<VideoStatus> {
-  return parseJson(await authFetch("/api/inference/video/status"));
+export async function getVideoStatus(
+  signal?: AbortSignal,
+): Promise<VideoStatus> {
+  return parseJson(await authFetch("/api/inference/video/status", { signal }));
 }
 
-export async function getVideoLoadProgress(): Promise<VideoLoadProgress> {
-  return parseJson(await authFetch("/api/inference/video/load-progress"));
+export async function getVideoLoadProgress(
+  signal?: AbortSignal,
+): Promise<VideoLoadProgress> {
+  return parseJson(
+    await authFetch("/api/inference/video/load-progress", { signal }),
+  );
 }
 
 export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress> {
@@ -170,12 +242,20 @@ export async function getVideoGenerateProgress(): Promise<VideoGenerateProgress>
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {
-  return parseJson(
-    await authFetch("/api/inference/video/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+  // Announced so the indicator shows the load while the toast does, and settled
+  // from load-progress because this POST only starts it. See images.
+  return withBackgroundLoadNotice(
+    "video",
+    body.model_path,
+    async () =>
+      parseJson<VideoStatus>(
+        await authFetch("/api/inference/video/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
+    async (signal) => (await getVideoLoadProgress(signal)).phase,
   );
 }
 
@@ -245,7 +325,9 @@ export async function fetchGalleryVideoSignedUrl(id: string): Promise<string> {
   if (!res.ok) throw new Error(await readFastApiError(res));
   const body = (await res.json()) as { url?: string };
   if (!body.url) throw new Error("The server returned no video link.");
-  return body.url;
+  // Absolute because consumers bypass authFetch, and a relative path under Tauri
+  // resolves against the webview origin. No-op in the browser (empty apiBase).
+  return apiUrl(body.url);
 }
 
 /** Server-side transcode for the Download menu (WebM / GIF). The backend 501s with a readable message when the codec is unavailable. */

@@ -82,6 +82,8 @@ export function DatasetStep() {
     setDatasetSplit,
     datasetEvalSplit,
     setDatasetEvalSplit,
+    setManualDatasetOptionsValid,
+    markManualDatasetOptionsEdited,
     uploadedFile,
     selectLocalDataset,
   } = useTrainingConfigStore(
@@ -99,6 +101,8 @@ export function DatasetStep() {
       setDatasetSplit: state.setDatasetSplit,
       datasetEvalSplit: state.datasetEvalSplit,
       setDatasetEvalSplit: state.setDatasetEvalSplit,
+      setManualDatasetOptionsValid: state.setManualDatasetOptionsValid,
+      markManualDatasetOptionsEdited: state.markManualDatasetOptionsEdited,
       uploadedFile: state.uploadedFile,
       selectLocalDataset: state.selectLocalDataset,
     })),
@@ -166,6 +170,9 @@ export function DatasetStep() {
           setDatasetSplit={setDatasetSplit}
           datasetEvalSplit={datasetEvalSplit}
           setDatasetEvalSplit={setDatasetEvalSplit}
+          datasetStreaming={datasetStreaming}
+          setManualDatasetOptionsValid={setManualDatasetOptionsValid}
+          markManualDatasetOptionsEdited={markManualDatasetOptionsEdited}
         />
       )}
 

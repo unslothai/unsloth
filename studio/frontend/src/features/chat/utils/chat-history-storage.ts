@@ -666,8 +666,8 @@ export async function updateStoredChatProject(
 export async function deleteStoredChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
-  await deleteChatProject(projectId, args);
+): Promise<string[]> {
+  return deleteChatProject(projectId, args);
 }
 
 export async function moveStoredChatItemToProject(
@@ -731,15 +731,18 @@ export async function updateStoredChatThread(
   return updateChatThread(threadId, patch);
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function deleteStoredChatThreads(
   idsToDelete: string[],
-): Promise<void> {
-  // Incognito threads were never stored, so there's nothing to delete --
-  // drop them to skip the no-op backend DELETE (and the history-refresh
-  // event it would fire) when the active temporary chat is closed.
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  // An incognito chat stores no history row, but a tool call it made sent this
+  // id as the sandbox session, so closing it is the last thing that can name
+  // that folder. Only the Dexie work below is skipped: it holds nothing.
   const ids = idsToDelete.filter((id) => !isThreadIncognito(id));
-  if (ids.length === 0) return;
-  await deleteChatThreads(ids);
+  if (idsToDelete.length === 0) return [];
+  const kept = await deleteChatThreads(idsToDelete, args);
+  if (ids.length === 0) return kept;
   await db
     .transaction("rw", db.threads, db.messages, async () => {
       await db.messages.where("threadId").anyOf(ids).delete();
@@ -747,6 +750,7 @@ export async function deleteStoredChatThreads(
     })
     .catch(() => undefined);
   markChatThreadsDeleted(ids);
+  return kept;
 }
 
 export async function countStoredChats(): Promise<number> {
@@ -758,6 +762,8 @@ export interface ClearStoredChatsResult {
   legacy: "cleared" | "failed" | "skipped";
   deletedThreadIds: string[];
   failedThreadIds: string[];
+  /** Ids whose sandbox still holds files, so the offer can be made once. */
+  sandboxesKept: string[];
 }
 
 export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
@@ -783,11 +789,12 @@ export async function clearStoredChats(): Promise<ClearStoredChatsResult> {
     legacy: "skipped",
     deletedThreadIds: [],
     failedThreadIds: [],
+    sandboxesKept: [],
   };
   try {
     // Defer the history refresh until Dexie clear and tombstones finalize,
     // so listeners never observe the composite clear mid-flight.
-    await clearBackendChats({ notify: false });
+    result.sandboxesKept = await clearBackendChats({ notify: false });
     result.backend = "cleared";
   } catch (error) {
     result.backend = "failed";

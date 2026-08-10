@@ -16,6 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import {
+  LOADED_MODELS_PREFERENCE_KEYS,
+  setShowLoadedModels,
+  useShowLoadedModels,
+} from "@/features/loaded-models";
+import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
@@ -125,6 +130,10 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_monitor_overlay",
+  LOADED_MODELS_PREFERENCE_KEYS.show,
+  LOADED_MODELS_PREFERENCE_KEYS.collapsed,
+  LOADED_MODELS_PREFERENCE_KEYS.position,
+  LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
 ];
@@ -163,6 +172,7 @@ export function GeneralTab() {
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showLoadedModels = useShowLoadedModels();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -647,6 +657,17 @@ export function GeneralTab() {
       ) : null}
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLoadedModels")}
+          description={t(
+            "settings.general.notifications.showLoadedModelsDescription",
+          )}
+        >
+          <Switch
+            checked={showLoadedModels}
+            onCheckedChange={setShowLoadedModels}
+          />
+        </SettingsRow>
         <SettingsRow
           label={t("settings.general.notifications.showLlamaUpdates")}
           description={t(

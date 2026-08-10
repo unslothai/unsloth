@@ -32,6 +32,7 @@ import {
   downloadChatExport,
   exportFineTuneJsonl,
   importConversationsFromFile,
+  offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
   useChatSidebarItems,
@@ -318,6 +319,8 @@ export function DataTab() {
     try {
       const result = await clearAllChats();
       const clearedCount = result.deletedThreadIds.length;
+      // Clear-all has no switch, so the same offer the sidebar makes.
+      offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
       if (!hasFailedStore && result.failedThreadIds.length === 0) {

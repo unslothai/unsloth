@@ -59,6 +59,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -382,8 +383,15 @@ export function ModelsPage() {
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  // Resident, not merely picked. An image or video load evicts the chat model
+  // and leaves the pick alone, so the cards kept saying "Loaded" for weights the
+  // backend had already released. `undefined` is "no status read yet", which
+  // stays as it was rather than flashing "On device" on every launch.
   const activeCheckpoint =
-    checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
+    checkpoint && !isExternalModelId(checkpoint) && residentCheckpoint !== null
+      ? checkpoint
+      : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeGgufContextLength = useChatRuntimeStore(
     (s) => s.ggufContextLength,
@@ -567,6 +575,7 @@ export function ModelsPage() {
   const [inventoryTypeFilter, setInventoryTypeFilter] =
     useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
+  const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
@@ -1226,6 +1235,7 @@ export function ModelsPage() {
     () => setFoldersDialogOpen(true),
     [],
   );
+  const handleFreeUpSpace = useCallback(() => setFreeUpSpaceOpen(true), []);
   const handleSwitchDevice = useCallback(
     () => handleTabChange("downloaded"),
     [handleTabChange],
@@ -1877,6 +1887,7 @@ export function ModelsPage() {
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
+          onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
         />
       </HubTopBar>
@@ -1984,6 +1995,11 @@ export function ModelsPage() {
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
         onInventoryChange={refreshInventory}
+      />
+      <FreeUpSpaceDialog
+        open={freeUpSpaceOpen}
+        onOpenChange={setFreeUpSpaceOpen}
+        onChange={refreshInventory}
       />
       <ExternalLinkConfirmDialog />
     </div>

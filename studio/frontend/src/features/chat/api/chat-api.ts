@@ -1,6 +1,7 @@
 
 
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -10,7 +11,7 @@ import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
  
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type {
   MessageRecord,
   ModelType,
@@ -84,14 +85,7 @@ function notifyChatProjectsUpdated(): void {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
 }
 
 /**
@@ -146,8 +140,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -199,17 +195,22 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
+  // Announced after the token prompt, so a cancelled load never shows a row.
+  // The indicator otherwise had nothing to show until its next 5s poll, while
+  // the toast reported the load immediately.
+  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
+    const response = await authFetch("/api/inference/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    });
+    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
   });
-  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function countChatInputTokens(payload: {
@@ -802,15 +803,20 @@ export async function getForkCount(
   return data.count;
 }
 
-export async function deleteChatThreads(threadIds: string[]): Promise<void> {
-  if (threadIds.length === 0) return;
+/** Thread ids whose sandbox still holds files, for a caller that never asked. */
+export async function deleteChatThreads(
+  threadIds: string[],
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  if (threadIds.length === 0) return [];
   const response = await authFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds }),
+    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatProjects(
@@ -867,10 +873,11 @@ export async function updateChatProject(
   return project;
 }
 
+/** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
@@ -878,8 +885,11 @@ export async function deleteChatProject(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<ProjectRecord>(response);
+  const data = await parseJsonOrThrow<
+    ProjectRecord & { sandboxes_kept?: string[] }
+  >(response);
   notifyChatProjectsUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatMessages(
@@ -977,14 +987,19 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
-): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
-  await parseJsonOrThrow<unknown>(response);
+  options: { notify?: boolean; deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  const response = await authFetch(
+    `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
+    { method: "DELETE" },
+  );
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function buildBackendChatExport(): Promise<{

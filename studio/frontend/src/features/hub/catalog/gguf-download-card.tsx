@@ -89,6 +89,7 @@ import {
   GgufDownloadStatusCard,
   GgufDownloadingFallbackCard,
 } from "./gguf-status-cards";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useDeleteConfirmAction } from "./use-delete-confirm-action";
 import { useDownloadCardState } from "./use-download-card-state";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
@@ -787,6 +788,7 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
+  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -899,6 +901,7 @@ export function GgufDownloadCard({
               }}
               title="Delete quantization?"
               deleting={deleting}
+              blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
               onConfirm={() => void runDelete()}
               description={
                 <>
@@ -907,6 +910,7 @@ export function GgufDownloadCard({
                     {repoId} ({deleteTargetLabel})
                   </span>{" "}
                   from disk. You can re-download it later.
+                  <DeleteImpactSummary impact={deleteImpact} />
                 </>
               }
             />

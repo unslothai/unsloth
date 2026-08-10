@@ -1,12 +1,20 @@
 
 
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 
 export function SettingsRow({
   label,
   description,
+  hint,
   icon,
   children,
   destructive,
@@ -15,6 +23,11 @@ export function SettingsRow({
 }: {
   label: string;
   description?: ReactNode;
+  /**
+   * Long-form explanation, shown on hover behind an info icon so `description`
+   * can stay to one line. Plain text: it doubles as the trigger's aria-label.
+   */
+  hint?: string;
   icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
@@ -47,8 +60,38 @@ export function SettingsRow({
             {icon}
           </span>
         ) : null}
-        <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="text-sm font-medium text-foreground">{label}</span>
+        <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
+          {/* Flex only when hinted, so every other row's label renders exactly
+              as before. */}
+          <span
+            className={cn(
+              "text-sm font-medium text-foreground",
+              hint && "flex items-center gap-1.5",
+            )}
+          >
+            {label}
+            {hint ? (
+              <Tooltip>
+                <TooltipTrigger asChild={true}>
+                  {/* Focusable and labelled, so keyboard users reach the
+                      text too. Matches the secure-HTTPS hint. */}
+                  <button
+                    type="button"
+                    aria-label={hint}
+                    className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  >
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3.5"
+                    />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[300px] text-ui-11 leading-snug">
+                  {hint}
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+          </span>
           {description ? (
             <span className="text-xs text-muted-foreground leading-snug">
               {description}
