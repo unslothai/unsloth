@@ -53,6 +53,7 @@ if [ "$1" = "api" ]; then
     esac
   done
   case "$endpoint" in
+    */commits/*) printf '%s\n' "$SOURCE_COMMIT_SHA"; exit 0 ;;
     */releases/tags/*) status="$TARGET_HTTP_STATUS" ;;
     *) exit 0 ;;
   esac
@@ -70,6 +71,23 @@ if [ "$1" = "api" ]; then
   exit 1
 fi
 
+if [ "$1" = "release" ] && [ "$2" = "download" ]; then
+  if [ "$TARGET_HAS_DESKTOP_ASSETS" != "1" ]; then
+    echo "release not found" >&2
+    exit 1
+  fi
+  directory=""
+  want_directory=0
+  for argument in "$@"; do
+    if [ "$want_directory" = "1" ]; then directory="$argument"; want_directory=0; continue; fi
+    [ "$argument" = "--dir" ] && want_directory=1
+  done
+  [ -n "$directory" ] || directory="."
+  mkdir -p "$directory"
+  printf '{"version":"%s","platforms":{}}\n' "$TARGET_MANIFEST_VERSION" > "$directory/latest.json"
+  exit 0
+fi
+
 exit 0
 """,
         encoding = "utf-8",
@@ -85,6 +103,7 @@ def _run_step(
     *,
     target_http_status: int = 200,
     target_has_desktop_assets: bool = False,
+    target_manifest_version: str = RELEASE_TAG,
     extra_env: dict[str, str] | None = None,
 ):
     fake_bin = tmp_path / "bin"
@@ -104,8 +123,10 @@ def _run_step(
             "PATH": f"{fake_bin}:{env['PATH']}",
             "ASSET_VERSION": "0_1_50_beta",
             "RUNNER_TEMP": str(tmp_path),
+            "SOURCE_COMMIT_SHA": SOURCE_SHA,
             "TARGET_HAS_DESKTOP_ASSETS": "1" if target_has_desktop_assets else "0",
             "TARGET_HTTP_STATUS": str(target_http_status),
+            "TARGET_MANIFEST_VERSION": target_manifest_version,
         }
     )
     env.update(extra_env or {})
@@ -336,8 +357,24 @@ def test_versioned_uploads_never_clobber_or_mutate_the_legacy_channel():
     assert len(versioned) == 2, uploads
     assert channel == [], uploads
 
+    # latest.json is the moving updater pointer and may already hold a carried
+    # forward manifest, so only it may be replaced. Bundles stay immutable.
     for line in versioned:
-        assert "--clobber" not in line, line
+        if "latest.json" not in line:
+            assert "--clobber" not in line, line
+
+
+def test_a_carried_forward_manifest_does_not_block_the_guard(tmp_path):
+    workflow = _workflow()
+    result, _ = _run_step(
+        workflow,
+        "prepare-version",
+        "Guard against republishing an existing version",
+        tmp_path,
+        target_has_desktop_assets = True,
+        target_manifest_version = "v0.1.49-beta",
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_a_validation_only_run_touches_nothing_public():

@@ -68,6 +68,77 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # /releases/latest is repo-wide, so publishing a v... release that carries no
+      # desktop bundles moves that pointer to a release with no latest.json and
+      # every client's update check 404s until the next desktop build. Copy the
+      # newest desktop manifest onto this release instead, so discovery follows
+      # desktop metadata rather than release order. The manifest keeps its own
+      # version and its URLs keep pointing at the immutable release that built it.
+      - name: Carry desktop metadata forward
+        if: ${{ github.event_name == 'release' && steps.gate.outputs.proceed == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "${RELEASE_TAG} is not a v{SemVer} release; leaving the updater pointer alone."
+            exit 0
+          fi
+          # 100 most recent releases: far more than the gap between desktop builds,
+          # and one page keeps this to a single API call.
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          source_tag="$(python3 - "$RUNNER_TEMP/releases.json" <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          semver = re.compile(r'^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$')
+          releases = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          candidates = [
+              release for release in releases
+              if semver.fullmatch(release.get('tag_name') or '')
+              and release.get('tag_name') != os.environ['RELEASE_TAG']
+              and not release.get('draft') and not release.get('prerelease')
+              and any(asset.get('name') == 'latest.json' for asset in release.get('assets', []))
+          ]
+          # Newest by publish time. A downgrade here only withholds an update
+          # prompt, never offers an older build: clients compare versions.
+          candidates.sort(key=lambda release: release.get('published_at') or '', reverse=True)
+          print(candidates[0]['tag_name'] if candidates else '')
+          PY
+          )"
+          if [ -z "$source_tag" ]; then
+            echo "No published release carries latest.json yet; nothing to carry forward."
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/carry-forward"
+          gh release download "$source_tag" --pattern latest.json \
+            --dir "$RUNNER_TEMP/carry-forward" --clobber
+          SOURCE_TAG="$source_tag" python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          source_tag = os.environ['SOURCE_TAG']
+          data = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'carry-forward', 'latest.json').read_text())
+          version = data.get('version')
+          if not isinstance(version, str) or version.removeprefix('v') != source_tag.removeprefix('v'):
+              sys.exit(f'{source_tag} latest.json declares version {version!r}; refusing to carry it forward')
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{source_tag}/'
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit(f'{source_tag} latest.json has no platforms')
+          for platform, entry in platforms.items():
+              url = (entry or {}).get('url')
+              if not isinstance(url, str) or not url.startswith(expected_prefix):
+                  sys.exit(f'{source_tag} latest.json {platform} URL is not pinned to that release: {url}')
+          PY
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/carry-forward/latest.json" --clobber
+          echo "Carried ${source_tag} updater metadata onto ${RELEASE_TAG}."
+
       - name: Download updater metadata
         if: steps.gate.outputs.proceed == 'true'
         env:

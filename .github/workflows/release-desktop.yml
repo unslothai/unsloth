@@ -102,8 +102,11 @@ jobs:
       pypi_version: ${{ steps.prepare.outputs.pypi_version }}
 
     steps:
+      # studio_version names an existing tag, so the backend pin and stamp check
+      # have to come from that tag, not from a dispatch ref that has moved on.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.studio_version }}
           persist-credentials: false
 
       - name: Validate release versions
@@ -236,21 +239,39 @@ jobs:
             exit 1
           fi
           gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}" > "$RUNNER_TEMP/target-release.json"
+          # A carried-forward manifest for an older version is expected here (see
+          # publish-desktop-updater.yml), so read it rather than judge by name alone.
+          mkdir -p "$RUNNER_TEMP/target-manifest"
+          gh release download "$DESKTOP_RELEASE_TAG" --pattern latest.json \
+            --dir "$RUNNER_TEMP/target-manifest" --clobber 2>/dev/null || true
           python3 <<'PY'
           import json, os, pathlib, sys
 
-          release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'target-release.json').read_text())
+          runner = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((runner / 'target-release.json').read_text())
           tag = os.environ['DESKTOP_RELEASE_TAG']
           # Checked here, not at promotion: GitHub refuses to mark a prerelease
           # latest, and by then the bundles are already public.
           if release.get('prerelease'):
               sys.exit(f'Release {tag} is a prerelease; GitHub cannot mark it latest.')
+
           prefix = f'Unsloth-Desktop-{os.environ["ASSET_VERSION"]}'
           clashing = sorted(
               asset['name']
               for asset in release.get('assets', [])
-              if asset.get('name') == 'latest.json' or str(asset.get('name', '')).startswith(prefix)
+              if str(asset.get('name', '')).startswith(prefix)
           )
+          manifest_path = runner / 'target-manifest' / 'latest.json'
+          if manifest_path.is_file():
+              try:
+                  version = json.loads(manifest_path.read_text()).get('version')
+              except json.JSONDecodeError:
+                  version = None
+              # Only this version's own manifest is a clash; anything else is the
+              # pointer being carried forward and is overwritten on upload.
+              if not isinstance(version, str) or version.removeprefix('v') == tag.removeprefix('v'):
+                  clashing.append('latest.json')
+
           if clashing:
               print(f'Refusing to republish {tag}: it already carries desktop assets.', file=sys.stderr)
               for name in clashing:
@@ -1664,8 +1685,16 @@ jobs:
 
       - name: Generate versioned updater metadata and provenance
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The build checked out the tag, so provenance records the tag's commit
+          # rather than this job's dispatch-scoped GITHUB_SHA.
+          # commits/{tag} resolves annotated and lightweight tags alike, so this is
+          # the commit the build compiled, not an intermediate tag object.
+          RELEASE_TAG_SHA="$(gh api "repos/${GH_REPO}/commits/${DESKTOP_RELEASE_TAG}" --jq '.sha')"
+          export RELEASE_TAG_SHA
           python3 <<'PY'
           import base64
           import binascii
@@ -1736,7 +1765,7 @@ jobs:
           body_file="$RUNNER_TEMP/desktop-release-body.md"
           {
             printf '### Desktop build provenance\n\n'
-            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
+            printf 'Source commit: %s\n\n' "$RELEASE_TAG_SHA"
             printf 'Asset SHA-256:\n\n```\n'
             (
               cd "$RUNNER_TEMP/desktop-release-assets"
@@ -1777,7 +1806,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
+          # --clobber only for latest.json: it may already hold an older version's
+          # pointer. The bundles above are still uploaded without it.
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
 
       # After the uploads, so a retry that follows a partial upload records the
       # digests actually published. Any earlier section is replaced, never kept.
