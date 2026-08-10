@@ -85,14 +85,18 @@ def save(image: Any, meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record(
-    image_id: str, meta: dict[str, Any], flags: Optional[dict[str, dict[str, Any]]] = None
+    image_id: str,
+    meta: dict[str, Any],
+    flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     # Flags are library state, not recipe: they come from the sidecar store, never the PNG chunk.
     return {
         **meta,
         "id": image_id,
         "url": f"/api/inference/images/gallery/{image_id}/file",
-        **gallery_flags.flags_for(flags if flags is not None else gallery_flags.read(gallery_dir()), image_id),
+        **gallery_flags.flags_for(
+            flags if flags is not None else gallery_flags.read(gallery_dir()), image_id
+        ),
     }
 
 
@@ -205,7 +209,10 @@ def list_images(
 
 
 def set_flags(
-    image_id: str, *, pinned: Optional[bool] = None, archived: Optional[bool] = None
+    image_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
     """Patch one image's pin/archive flags and return its updated record, or None when the id is
     not a Studio-owned image. Ownership-gated like delete: a guessed stem for a hand-dropped

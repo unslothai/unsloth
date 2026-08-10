@@ -70,8 +70,8 @@ def test_pin_rank_orders_most_recently_pinned_first(gdir):
     "raw",
     [
         "not json at all",
-        "[]",                                   # right type, wrong shape
-        '{"version": 1, "items": []}',          # items must be a mapping
+        "[]",  # right type, wrong shape
+        '{"version": 1, "items": []}',  # items must be a mapping
         '{"version": 99, "items": {"a": {}}}',  # unknown schema version
     ],
 )

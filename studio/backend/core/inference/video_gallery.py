@@ -58,14 +58,18 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _record(
-    video_id: str, meta: dict[str, Any], flags: Optional[dict[str, dict[str, Any]]] = None
+    video_id: str,
+    meta: dict[str, Any],
+    flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     # Flags are library state, not recipe: they come from the .flags.json store, never the sidecar.
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
-        **gallery_flags.flags_for(flags if flags is not None else gallery_flags.read(gallery_dir()), video_id),
+        **gallery_flags.flags_for(
+            flags if flags is not None else gallery_flags.read(gallery_dir()), video_id
+        ),
     }
 
 
@@ -360,7 +364,10 @@ def list_videos(
 
 
 def set_flags(
-    video_id: str, *, pinned: Optional[bool] = None, archived: Optional[bool] = None
+    video_id: str,
+    *,
+    pinned: Optional[bool] = None,
+    archived: Optional[bool] = None,
 ) -> Optional[dict[str, Any]]:
     """Patch one clip's pin/archive flags and return its updated record, or None when the id is
     not a Studio-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
