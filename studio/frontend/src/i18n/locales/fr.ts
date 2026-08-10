@@ -1004,6 +1004,10 @@ export const fr = {
       archivedChats: "Discussions archivées",
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",
+      archivedImages: "Images archivées",
+      archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
+      archivedVideos: "Vidéos archivées",
+      archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",

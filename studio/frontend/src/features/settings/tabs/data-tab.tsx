@@ -65,6 +65,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
+import { ArchivedMediaView } from "../components/archived-media-dialog";
 import {
   createFineTuneRecipeFromChats,
   loadFineTuneDatasetInTrainTab,
@@ -81,21 +82,26 @@ import {
 // display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
+// Which subpage an "open the archive" request lands on.
+const SUBPAGE_FOR_SHELF = {
+  chats: "archived",
+  images: "archived-images",
+  videos: "archived-videos",
+} as const;
+
 export function DataTab() {
   const t = useT();
   const navigate = useNavigate();
-  const archivedChatsRequested = useSettingsDialogStore(
-    (s) => s.archivedChatsRequested,
-  );
+  const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
-  const [subpage, setSubpage] = useState<"main" | "archived" | "files">(
-    archivedChatsRequested ? "archived" : "main",
-  );
+  const [subpage, setSubpage] = useState<
+    "main" | "archived" | "archived-images" | "archived-videos" | "files"
+  >(archivedRequested ? SUBPAGE_FOR_SHELF[archivedRequested] : "main");
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
@@ -131,17 +137,17 @@ export function DataTab() {
   // Requests can arrive after Data is already mounted (for example from the
   // archive-all toast), so always switch before consuming the flag.
   useEffect(() => {
-    if (!archivedChatsRequested) return;
+    if (!archivedRequested) return;
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
-      setSubpage("archived");
+      setSubpage(SUBPAGE_FOR_SHELF[archivedRequested]);
       consumeArchivedChatsRequest();
     });
     return () => {
       cancelled = true;
     };
-  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
+  }, [archivedRequested, consumeArchivedChatsRequest]);
 
   useEffect(() => {
     if (!ragAvailabilityUnknown) return;
@@ -460,6 +466,40 @@ export function DataTab() {
     );
   }
 
+  if (subpage === "archived-images" || subpage === "archived-videos") {
+    const isImages = subpage === "archived-images";
+    return (
+      <div className="flex flex-col gap-6">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSubpage("main")}
+            aria-label={t("settings.data.backToData")}
+            className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          </button>
+          <h1 className="text-xl font-semibold font-heading">
+            {t("settings.data.title")}
+          </h1>
+        </header>
+        <div className="flex flex-col gap-1">
+          <h2 className="text-sm font-semibold">
+            {isImages
+              ? t("settings.data.archivedImages")
+              : t("settings.data.archivedVideos")}
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            {isImages
+              ? t("settings.data.archivedImagesDescription")
+              : t("settings.data.archivedVideosDescription")}
+          </p>
+        </div>
+        <ArchivedMediaView kind={isImages ? "images" : "videos"} />
+      </div>
+    );
+  }
+
   if (subpage === "files") {
     return (
       <div className="flex flex-col gap-6">
@@ -571,6 +611,32 @@ export function DataTab() {
             variant="outline"
             size="sm"
             onClick={() => setSubpage("archived")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.archivedImages")}
+          description={t("settings.data.archivedImagesDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("archived-images")}
+          >
+            {t("settings.data.manageAction")}
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.archivedVideos")}
+          description={t("settings.data.archivedVideosDescription")}
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSubpage("archived-videos")}
           >
             {t("settings.data.manageAction")}
           </Button>

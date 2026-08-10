@@ -12,6 +12,7 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
+  PinIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -63,7 +64,10 @@ import type {
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { MediaPageLink } from "@/components/media-page-link";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { applyPin, nextSelectedId, removeGalleryItem } from "@/lib/gallery-flags";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
 import { WORKFLOW_TABS } from "./workflows";
@@ -121,6 +125,7 @@ import {
   getGenerateProgress,
   listDiffusionControlNets,
   listDiffusionLoras,
+  setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
   unloadDiffusionModel,
@@ -1535,25 +1540,87 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await deleteGalleryImage(id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete image");
-      return;
+  // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
+  // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
+  // archived image keeps both, since the archived view shows the same thumbnail.
+  const dropFromStrip = useCallback((id: string, discardBlob: boolean) => {
+    if (discardBlob) {
+      galleryCache.srcById.delete(id); // revokes the URL with the entry
+      galleryCache.deleted.add(id);
+      setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
-    galleryCache.srcById.delete(id); // revokes the URL with the entry
     visibleIds.current.delete(id);
-    // A fetch still in flight for this id must discard its blob rather than cache it.
-    galleryCache.deleted.add(id);
-    setSrcById((prev) => {
-      const next = { ...prev };
-      delete next[id];
+    // Read the list from the cache (kept in sync with state every render) rather than nesting a
+    // setSelectedId inside a setImages updater, which would run a side effect during dispatch.
+    const at = galleryCache.images.findIndex((i) => i.id === id);
+    const next = removeGalleryItem(galleryCache.images, id);
+    galleryCache.images = next;
+    setImages(next);
+    setSelectedId((cur) => nextSelectedId(next, id, cur, at));
+  }, []);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        await deleteGalleryImage(id);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to delete image");
+        return;
+      }
+      dropFromStrip(id, true);
+    },
+    [dropFromStrip],
+  );
+
+  const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
+    // Optimistic: the reorder should land on the click, not a round trip later.
+    setImages((prev) => {
+      const next = applyPin(prev, id, pinned);
+      galleryCache.images = next;
       return next;
     });
-    setImages((prev) => prev.filter((i) => i.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
+    try {
+      await setGalleryImageFlags(id, { pinned });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to pin image");
+      // Put the old order back rather than leave the strip lying about server state.
+      setImages((prev) => {
+        const next = applyPin(prev, id, !pinned);
+        galleryCache.images = next;
+        return next;
+      });
+    }
   }, []);
+
+  const handleArchive = useCallback(
+    async (id: string) => {
+      try {
+        await setGalleryImageFlags(id, { archived: true });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to archive image");
+        return;
+      }
+      dropFromStrip(id, false);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("images");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived images in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropFromStrip],
+  );
 
   // Load an image's recipe back into the form inputs.
   const restoreSettings = useCallback((image: GalleryImage) => {
@@ -3832,20 +3899,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Delete image"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => void handleDelete(selected.id)}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
+                  <GalleryItemMenu
+                    noun="image"
+                    active={active}
+                    pinned={Boolean(selected.pinned)}
+                    archived={Boolean(selected.archived)}
+                    onTogglePin={() =>
+                      void handleTogglePin(selected.id, !selected.pinned)
+                    }
+                    onToggleArchive={() => void handleArchive(selected.id)}
+                    onDelete={() => void handleDelete(selected.id)}
+                  />
                 </div>
               </>
             ) : selected ? (
@@ -3909,30 +3973,55 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
+              {/* The tile is a wrapper, not a button: the actions menu has to be the select
+                  button's SIBLING, since a button inside a button is invalid and would swallow
+                  its own clicks. data-image-id rides the wrapper so the observer still sees it. */}
               {images.map((image) => (
-                <button
+                <div
                   key={image.id}
-                  type="button"
                   data-image-id={image.id}
-                  onClick={() => setSelectedId(image.id)}
-                  className="relative size-16 shrink-0 overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="group relative size-16 shrink-0"
                 >
-                  {srcById[image.id] ? (
-                    <img
-                      src={srcById[image.id]}
-                      alt={image.prompt}
-                      className="size-full object-cover"
-                    />
-                  ) : (
-                    <span className="flex size-full items-center justify-center">
-                      <Spinner className="size-4 text-muted-foreground" />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedId(image.id)}
+                    className="relative size-full overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    {srcById[image.id] ? (
+                      <img
+                        src={srcById[image.id]}
+                        alt={image.prompt}
+                        className="size-full object-cover"
+                      />
+                    ) : (
+                      <span className="flex size-full items-center justify-center">
+                        <Spinner className="size-4 text-muted-foreground" />
+                      </span>
+                    )}
+                    {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
+                    {image.id === selected?.id && (
+                      <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
+                    )}
+                  </button>
+                  {/* Pin marker, bottom-left so it never sits under the menu. */}
+                  {image.pinned && (
+                    <span className="pointer-events-none absolute bottom-0.5 left-0.5 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
+                      <HugeiconsIcon icon={PinIcon} className="size-3" />
                     </span>
                   )}
-                  {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
-                  {image.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
-                  )}
-                </button>
+                  <div className="absolute right-0.5 top-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    <GalleryItemMenu
+                      variant="overlay"
+                      noun="image"
+                      active={active}
+                      pinned={Boolean(image.pinned)}
+                      archived={Boolean(image.archived)}
+                      onTogglePin={() => void handleTogglePin(image.id, !image.pinned)}
+                      onToggleArchive={() => void handleArchive(image.id)}
+                      onDelete={() => void handleDelete(image.id)}
+                    />
+                  </div>
+                </div>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (

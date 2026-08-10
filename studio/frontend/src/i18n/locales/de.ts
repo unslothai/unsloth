@@ -1006,6 +1006,10 @@ export const de = {
       archivedChats: "Archivierte Chats",
       archivedChatsDescription:
         "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",
+      archivedImages: "Archivierte Bilder",
+      archivedImagesDescription: "Bilder anzeigen und verwalten, die du archiviert hast.",
+      archivedVideos: "Archivierte Videos",
+      archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",

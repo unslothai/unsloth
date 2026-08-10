@@ -8,13 +8,17 @@ import {
   FlimSlateIcon,
   Image03Icon,
   InformationCircleIcon,
+  PinIcon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
+import { GalleryItemMenu } from "@/components/gallery-item-menu";
 import { ImageDropzone } from "@/components/image-dropzone";
 import { MediaPageLink } from "@/components/media-page-link";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { applyPin, nextSelectedId, removeGalleryItem } from "@/lib/gallery-flags";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
@@ -106,6 +110,7 @@ import {
   cancelVideoGeneration,
   clearVideoGallery,
   deleteGalleryVideo,
+  setGalleryVideoFlags,
   fetchGalleryVideoExport,
   fetchGalleryVideoSignedUrl,
   generateVideo,
@@ -1275,25 +1280,87 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [],
   );
 
-  const handleDelete = useCallback(async (id: string) => {
-    try {
-      await deleteGalleryVideo(id);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to delete video");
-      return;
+  // Drop a clip from the strip. `discardLink` is for a real delete: the bytes are gone, so the
+  // cached link must go and any mint in flight must throw its result away. An archived clip keeps
+  // both, since the archived view plays the same file.
+  const dropFromStrip = useCallback((id: string, discardLink: boolean) => {
+    if (discardLink) {
+      galleryCache.srcById.delete(id);
+      galleryCache.refreshed.delete(id);
+      galleryCache.deleted.add(id);
+      setSrcById((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
     }
-    galleryCache.srcById.delete(id);
-    galleryCache.refreshed.delete(id);
-    // A mint still in flight for this id must throw its link away rather than cache it.
-    galleryCache.deleted.add(id);
-    setSrcById((prev) => {
-      const next = { ...prev };
-      delete next[id];
+    // Read the list from the cache (kept in sync with state every render) rather than nesting a
+    // setSelectedId inside a setVideos updater, which would run a side effect during dispatch.
+    const at = galleryCache.videos.findIndex((v) => v.id === id);
+    const next = removeGalleryItem(galleryCache.videos, id);
+    galleryCache.videos = next;
+    setVideos(next);
+    setSelectedId((cur) => nextSelectedId(next, id, cur, at));
+  }, []);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        await deleteGalleryVideo(id);
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to delete video");
+        return;
+      }
+      dropFromStrip(id, true);
+    },
+    [dropFromStrip],
+  );
+
+  const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
+    // Optimistic: the reorder should land on the click, not a round trip later.
+    setVideos((prev) => {
+      const next = applyPin(prev, id, pinned);
+      galleryCache.videos = next;
       return next;
     });
-    setVideos((prev) => prev.filter((v) => v.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
+    try {
+      await setGalleryVideoFlags(id, { pinned });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to pin video");
+      // Put the old order back rather than leave the strip lying about server state.
+      setVideos((prev) => {
+        const next = applyPin(prev, id, !pinned);
+        galleryCache.videos = next;
+        return next;
+      });
+    }
   }, []);
+
+  const handleArchive = useCallback(
+    async (id: string) => {
+      try {
+        await setGalleryVideoFlags(id, { archived: true });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to archive video");
+        return;
+      }
+      dropFromStrip(id, false);
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedMedia("videos");
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived videos in Settings
+        </button>,
+        { closeButton: true },
+      );
+    },
+    [dropFromStrip],
+  );
 
   const handleClearAll = useCallback(async () => {
     try {
@@ -3154,20 +3221,17 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild={true}>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        aria-label="Delete video"
-                        className="text-muted-foreground hover:text-destructive"
-                        onClick={() => void handleDelete(selected.id)}
-                      >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Delete</TooltipContent>
-                  </Tooltip>
+                  <GalleryItemMenu
+                    noun="video"
+                    active={active}
+                    pinned={Boolean(selected.pinned)}
+                    archived={Boolean(selected.archived)}
+                    onTogglePin={() =>
+                      void handleTogglePin(selected.id, !selected.pinned)
+                    }
+                    onToggleArchive={() => void handleArchive(selected.id)}
+                    onDelete={() => void handleDelete(selected.id)}
+                  />
                 </div>
               </>
             ) : selected ? (
@@ -3229,14 +3293,21 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   <Spinner className="size-5 text-muted-foreground" />
                 </div>
               )}
+              {/* The card is a wrapper, not a button: the actions menu has to be the select
+                  button's SIBLING, since a button inside a button is invalid and would swallow
+                  its own clicks. data-clip-id rides the wrapper so the observer still sees it. */}
               {videos.map((video) => (
-                <Tooltip key={video.id}>
+                <div
+                  key={video.id}
+                  data-clip-id={video.id}
+                  className="group relative h-16 w-24 shrink-0"
+                >
+                <Tooltip>
                 <TooltipTrigger asChild={true}>
                 <button
                   type="button"
-                  data-clip-id={video.id}
                   onClick={() => setSelectedId(video.id)}
-                  className="relative flex h-16 w-24 shrink-0 flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
+                  className="relative flex size-full flex-col justify-end overflow-hidden rounded-[10px] bg-muted/40 outline-none ring-1 ring-transparent transition-shadow hover:ring-border focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {srcById[video.id] ? (
                     // Muted, preload="metadata" so the first frame renders as a poster without playing every card at once.
@@ -3273,6 +3344,25 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
                   </span>
                 </TooltipContent>
                 </Tooltip>
+                {/* Pin marker, top-left so it clears both the caption and the menu. */}
+                {video.pinned && (
+                  <span className="pointer-events-none absolute left-0.5 top-0.5 z-30 rounded-full bg-background/80 p-0.5 text-foreground shadow-sm ring-1 ring-border backdrop-blur">
+                    <HugeiconsIcon icon={PinIcon} className="size-3" />
+                  </span>
+                )}
+                <div className="absolute right-0.5 top-0.5 z-30 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  <GalleryItemMenu
+                    variant="overlay"
+                    noun="video"
+                    active={active}
+                    pinned={Boolean(video.pinned)}
+                    archived={Boolean(video.archived)}
+                    onTogglePin={() => void handleTogglePin(video.id, !video.pinned)}
+                    onToggleArchive={() => void handleArchive(video.id)}
+                    onDelete={() => void handleDelete(video.id)}
+                  />
+                </div>
+                </div>
               ))}
               {/* Tail spinner while older pages stream in on scroll. */}
               {hasMore && (

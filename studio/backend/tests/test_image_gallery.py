@@ -12,6 +12,7 @@ import os
 
 import pytest
 
+import core.inference.gallery_flags as gallery_flags
 import core.inference.image_gallery as gallery
 
 PIL = pytest.importorskip("PIL")
@@ -218,3 +219,115 @@ def test_save_is_atomic_no_partial_png_on_publish_failure(monkeypatch):
     # No final PNG surfaced, and the hidden temp was cleaned up.
     assert list(gallery.gallery_dir().glob("*.png")) == []
     assert list(gallery.gallery_dir().iterdir()) == []
+
+
+# --- pin / archive flags ---------------------------------------------------------------------
+
+
+def test_records_carry_default_flags():
+    _save_with_mtime("a", 100.0)
+    record = gallery.list_images()[0]
+    assert record["pinned"] is False and record["archived"] is False
+
+
+def test_pinned_images_sort_ahead_of_newer_ones():
+    old = _save_with_mtime("old", 100.0)
+    _save_with_mtime("new", 200.0)
+    gallery.set_flags(old["id"], pinned = True)
+    assert [r["prompt"] for r in gallery.list_images()] == ["old", "new"]
+    assert gallery.list_images()[0]["pinned"] is True
+
+
+def test_most_recently_pinned_leads_the_pinned_group():
+    first = _save_with_mtime("first", 100.0)
+    second = _save_with_mtime("second", 200.0)
+    gallery.set_flags(second["id"], pinned = True)
+    gallery.set_flags(first["id"], pinned = True)  # pinned later, so it leads
+    assert [r["prompt"] for r in gallery.list_images()] == ["first", "second"]
+
+
+def test_unpinning_returns_an_image_to_newest_first_order():
+    old = _save_with_mtime("old", 100.0)
+    _save_with_mtime("new", 200.0)
+    gallery.set_flags(old["id"], pinned = True)
+    gallery.set_flags(old["id"], pinned = False)
+    assert [r["prompt"] for r in gallery.list_images()] == ["new", "old"]
+
+
+def test_archived_images_leave_the_default_listing():
+    keep = _save_with_mtime("keep", 100.0)
+    shelved = _save_with_mtime("shelved", 200.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    assert [r["id"] for r in gallery.list_images()] == [keep["id"]]
+    # The archived shelf is its own listing, not a superset of the active one.
+    archived = gallery.list_images(archived = True)
+    assert [r["id"] for r in archived] == [shelved["id"]]
+    assert archived[0]["archived"] is True
+
+
+def test_restoring_puts_an_image_back_on_the_strip():
+    record = _save_with_mtime("a", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    gallery.set_flags(record["id"], archived = False)
+    assert [r["id"] for r in gallery.list_images()] == [record["id"]]
+
+
+def test_archived_images_do_not_consume_a_page_slot():
+    # Pagination counts over the shelf being listed, so has_more probes stay truthful.
+    for i in range(4):
+        record = _save_with_mtime(f"a{i}", 100.0 + i)
+        if i % 2 == 0:
+            gallery.set_flags(record["id"], archived = True)
+    assert [r["prompt"] for r in gallery.list_images(limit = 2)] == ["a3", "a1"]
+    # Only two active records exist, so a limit+1 probe must not invent a third.
+    assert len(gallery.list_images(limit = 3)) == 2
+    assert [r["prompt"] for r in gallery.list_images(archived = True)] == ["a2", "a0"]
+
+
+def test_pinning_survives_pagination():
+    oldest = _save_with_mtime("oldest", 100.0)
+    for i in range(1, 4):
+        _save_with_mtime(f"a{i}", 100.0 + i)
+    gallery.set_flags(oldest["id"], pinned = True)
+    # The pin must reach page 0 rather than waiting for the page its mtime belongs to.
+    assert gallery.list_images(limit = 1, offset = 0)[0]["prompt"] == "oldest"
+
+
+def test_set_flags_refuses_a_foreign_or_unknown_id():
+    assert gallery.set_flags("does-not-exist", pinned = True) is None
+    foreign = gallery.gallery_dir() / "foreign.png"
+    _img().save(foreign, format = "PNG")  # no recipe chunk, so not ours
+    assert gallery.set_flags("foreign", pinned = True) is None
+
+
+def test_delete_prunes_the_flag_entry():
+    record = _save_with_mtime("a", 100.0)
+    gallery.set_flags(record["id"], pinned = True)
+    assert gallery.delete(record["id"]) is True
+    assert gallery_flags.read(gallery.gallery_dir()) == {}
+
+
+def test_clear_spares_archived_images():
+    active = _save_with_mtime("active", 100.0)
+    shelved = _save_with_mtime("shelved", 200.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    assert gallery.clear() == 1
+    assert [r["id"] for r in gallery.list_images(archived = True)] == [shelved["id"]]
+    # The cleared image's flags go with it; the archived one keeps its own.
+    assert set(gallery_flags.read(gallery.gallery_dir())) == {shelved["id"]}
+    assert gallery.image_path(active["id"]) is None
+
+
+def test_clear_can_include_archived_images():
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    assert gallery.clear(include_archived = True) == 1
+    assert gallery.list_images(archived = True) == []
+    assert gallery_flags.read(gallery.gallery_dir()) == {}
+
+
+def test_flags_are_not_required_recipe_keys():
+    # Flags live beside the PNG, so an image written before they existed must still list.
+    record = _save_with_mtime("older-schema", 100.0)
+    assert "pinned" not in gallery._read_meta(gallery.image_path(record["id"]))
+    assert [r["id"] for r in gallery.list_images()] == [record["id"]]

@@ -31,6 +31,7 @@ from auth.authentication import get_current_subject
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
+    GalleryFlagsPatch,
     GalleryVideo,
     VideoGalleryListResponse,
     VideoGenerateProgressResponse,
@@ -374,6 +375,7 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
 async def list_gallery_videos(
     limit: int = 50,
     offset: int = 0,
+    archived: bool = False,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import video_gallery
@@ -391,7 +393,11 @@ async def list_gallery_videos(
 
     # Fetch one extra to learn whether more remain, without a second scan.
     records = await asyncio.to_thread(
-        video_gallery.list_videos, limit + 1, offset, valid = _valid_gallery_video
+        video_gallery.list_videos,
+        limit + 1,
+        offset,
+        valid = _valid_gallery_video,
+        archived = archived,
     )
     has_more = len(records) > limit
     videos = [GalleryVideo(**r) for r in records[:limit]]
@@ -537,6 +543,23 @@ def _forget_terminal_video(video_id: Optional[str]) -> None:
         get_video_backend().forget_terminal_video(video_id)
     except Exception as e:  # noqa: BLE001 -- never fail a delete over progress bookkeeping
         logger.debug(f"Could not clear the terminal video record for {video_id!r}: {e}")
+
+
+@router.patch("/video/gallery/{video_id}", response_model = GalleryVideo)
+async def update_gallery_video_flags(
+    video_id: str,
+    patch: GalleryFlagsPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Pin/unpin or archive/restore one clip. Omitted fields are left alone."""
+    from core.inference import video_gallery
+
+    record = await asyncio.to_thread(
+        video_gallery.set_flags, video_id, pinned = patch.pinned, archived = patch.archived
+    )
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Video not found.")
+    return GalleryVideo(**record)
 
 
 @router.delete("/video/gallery/{video_id}")

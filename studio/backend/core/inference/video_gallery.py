@@ -18,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
+from core.inference import gallery_flags
 from loggers import get_logger
 from utils.paths import ensure_dir, studio_root
 
@@ -56,11 +57,15 @@ def save(mp4_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
     return _record(video_id, meta)
 
 
-def _record(video_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+def _record(
+    video_id: str, meta: dict[str, Any], flags: Optional[dict[str, dict[str, Any]]] = None
+) -> dict[str, Any]:
+    # Flags are library state, not recipe: they come from the .flags.json store, never the sidecar.
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
+        **gallery_flags.flags_for(flags if flags is not None else gallery_flags.read(gallery_dir()), video_id),
     }
 
 
@@ -314,11 +319,16 @@ def list_videos(
     offset: int = 0,
     *,
     valid: Optional[Callable[[dict[str, Any]], bool]] = None,
+    archived: bool = False,
 ) -> list[dict[str, Any]]:
-    """A newest-first window of videos for infinite scroll.
+    """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
+    newest-first by MP4 mtime.
 
-    Ordered by MP4 mtime (a cheap stat ~= generation order); only the window's sidecars are read.
-    limit=None returns everything from ``offset`` on. A file without its pair is skipped.
+    mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
+    returns everything from ``offset`` on. A file without its pair is skipped.
+
+    ``archived`` selects WHICH shelf to page over, it does not widen one: False lists only active
+    clips, True lists only archived ones. The archived section needs its own scrollable page.
 
     ``valid`` (optional) filters records BEFORE pagination, so ``offset`` / ``limit`` and has_more
     all count over the accepted-record domain. Pass the route's schema validator: a sidecar that
@@ -328,7 +338,11 @@ def list_videos(
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return []
-    paths.sort(key = _mtime, reverse = True)
+    flags = gallery_flags.read(gallery_dir())
+    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one
+    # dict lookup per file and leave the early break below intact.
+    paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
+    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
     # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop valid videos and make has_more wrong.
     want = None if limit is None else offset + limit
     records = []
@@ -336,13 +350,28 @@ def list_videos(
         meta = _read_meta(_sidecar_path(path.stem))
         if meta is None:  # orphan mp4 (no readable sidecar)
             continue
-        record = _record(path.stem, meta)
+        record = _record(path.stem, meta, flags)
         if valid is not None and not valid(record):  # parses but schema-invalid
             continue
         records.append(record)
         if want is not None and len(records) >= want:
             break
     return records[offset:] if limit is None else records[offset : offset + limit]
+
+
+def set_flags(
+    video_id: str, *, pinned: Optional[bool] = None, archived: Optional[bool] = None
+) -> Optional[dict[str, Any]]:
+    """Patch one clip's pin/archive flags and return its updated record, or None when the id is
+    not a Studio-owned clip. Ownership-gated like delete: a guessed stem for a hand-dropped or
+    orphan MP4 must not become flaggable."""
+    if owned_video_path(video_id) is None:
+        return None
+    gallery_flags.set_flags(gallery_dir(), video_id, pinned = pinned, archived = archived)
+    meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(video_id, meta)
 
 
 def delete(video_id: str) -> bool:
@@ -365,11 +394,17 @@ def delete(video_id: str) -> bool:
         _sidecar_path(video_id).unlink()
     except OSError:
         pass
+    # Drop the flags with the pair, so the id cannot hand a stale pin to anything.
+    gallery_flags.forget(gallery_dir(), [video_id])
     return True
 
 
-def clear() -> int:
-    """Delete every Studio-owned gallery pair (readable sidecar); return how many were removed.
+def clear(include_archived: bool = False) -> int:
+    """Delete Studio-owned gallery pairs (readable sidecar); return how many were removed.
+
+    Archived clips are SPARED by default: archiving is how a user sets something aside, so a
+    "clear the gallery" action that destroyed the archive would defeat it. Pass
+    include_archived=True to remove those too.
 
     Foreign/orphan MP4s are preserved: list_videos already hides them, so clear must not destroy them."""
     removed = 0
@@ -377,8 +412,12 @@ def clear() -> int:
         paths = list(gallery_dir().glob("*.mp4"))
     except OSError:
         return 0
+    flags = gallery_flags.read(gallery_dir())
+    cleared: list[str] = []
     for path in paths:
         if _read_meta(_sidecar_path(path.stem)) is None:  # orphan / not ours
+            continue
+        if not include_archived and gallery_flags.is_archived(flags, path.stem):
             continue
         # mp4 first; if it can't be unlinked, leave the sidecar so the video stays listable.
         try:
@@ -386,8 +425,10 @@ def clear() -> int:
         except OSError:
             continue
         removed += 1
+        cleared.append(path.stem)
         try:
             _sidecar_path(path.stem).unlink()
         except OSError:
             pass
+    gallery_flags.forget(gallery_dir(), cleared)
     return removed
