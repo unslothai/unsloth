@@ -614,6 +614,22 @@ def _h3_dense_denoiser_resident_bytes(
         return None
 
 
+def _h3_dense_denoiser_fits(
+    sizes: Optional[tuple[int, int]], free_bytes: Optional[int]
+) -> bool:
+    """Whether the released denoiser can come OUT of the offload rotation and stay resident.
+
+    Its own bytes plus everything that still has to run beside it, against the live free reading.
+    A separate function only so the decision can be tested without standing up a modular load:
+    the sizing helper above can be exercised on its own, but the comparison is what authorises a
+    pin, and a pin that should not have happened is an OOM rather than a slow generation. No
+    reading means no pin, which is today's behaviour."""
+    if sizes is None or free_bytes is None:
+        return False
+    denoiser_bytes, others_bytes = sizes
+    return int(free_bytes) >= int(denoiser_bytes) + int(others_bytes)
+
+
 def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
     return {"phase": phase, **extra}
 
@@ -3393,7 +3409,7 @@ class VideoBackend:
                         free_bytes = None
                 if sizes is not None and free_bytes is not None:
                     denoiser_bytes, others_bytes = sizes
-                    if free_bytes >= denoiser_bytes + others_bytes:
+                    if _h3_dense_denoiser_fits(sizes, free_bytes):
                         from .diffusion_prequant import pin_prequantized_module
                         denoiser_pinned = pin_prequantized_module(
                             manager,

@@ -401,3 +401,22 @@ def test_the_dense_denoiser_is_pinned_only_when_it_actually_fits():
     assert dense_sizes is not None and dense_sizes[1] - others > 38 * 1000**3
     # And it is never just the weights: the activation headroom is in there too.
     assert others > (27.2 + fam.bf16_components_gb[2]) * 1000**3
+
+
+def test_the_pin_decision_itself_refuses_a_card_that_cannot_hold_it():
+    """The sizing above is only half of it. This is the comparison that authorises the pin, and
+    getting it wrong is an OOM rather than a slow generation, so it is asserted separately from
+    the estimate that feeds it."""
+    from core.inference.video import _h3_dense_denoiser_fits
+
+    sizes = (66_300_000_000, 33_000_000_000)  # denoiser, everything else
+    need = sizes[0] + sizes[1]
+
+    assert _h3_dense_denoiser_fits(sizes, need) is True  # exactly enough still fits
+    assert _h3_dense_denoiser_fits(sizes, need + 1) is True
+    assert _h3_dense_denoiser_fits(sizes, need - 1) is False  # one byte short does not
+    # The denoiser alone fitting is NOT enough: the conditioner and the VAEs still have to run.
+    assert _h3_dense_denoiser_fits(sizes, sizes[0]) is False
+    # No estimate and no reading both keep the rotation, which is today's behaviour.
+    assert _h3_dense_denoiser_fits(None, need) is False
+    assert _h3_dense_denoiser_fits(sizes, None) is False

@@ -722,6 +722,14 @@ def _clear_runtime_cache():
 def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch):
     from core.inference import diffusion_speed as ds_mod
 
+    # compile_eligible reads torch to test the dtype, and without the stub it returns False for
+    # every input -- which would make the assertions below pass whatever the gate did.
+    _stub_torch(monkeypatch)
+    _clear_runtime_cache()
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    # The positive control. Without it the two `is False` lines below prove nothing.
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
+
     _clear_runtime_cache()
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "1")
     assert ds_mod.torch_compile_runtime_available() is False
@@ -729,6 +737,7 @@ def test_torchdynamo_disable_is_honored_on_every_platform(monkeypatch):
     _clear_runtime_cache()
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "0")
     assert ds_mod.torch_compile_runtime_available() is True
+    assert ds_mod.compile_eligible(_target(), is_gguf = False, family = _family()) is True
     _clear_runtime_cache()
 
 
