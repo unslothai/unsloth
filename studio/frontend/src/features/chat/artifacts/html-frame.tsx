@@ -14,11 +14,11 @@ import { hashArtifactCode } from "./types";
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
 const BLOCKED_HOSTS_SHOWN = 3;
-// Far above what a real page trips, so the banner's count stays exact in
-// practice; it only saturates for a canvas manufacturing violations.
+// Entries are per URL, not per host, so a page pulling a whole CDN directory
+// counts each file. Still far above what a real one trips.
 const BLOCKED_URIS_TRACKED = 100;
-// Generous next to a real report, which is just an origin, and it bounds both
-// the stored string and the host derived from it.
+// A report carries the full URL, so this is generous next to a real one, and it
+// bounds both the stored string and the host derived from it.
 const BLOCKED_URI_MAX_CHARS = 2048;
 
 // The only directives the network CSP leaves at 'none'. Kept in step by
@@ -52,7 +52,14 @@ function appendBlocked(
   };
 }
 
+// A non-HTTP(S) violation is reported as a bare scheme or keyword ("eval",
+// "blob"), which the permissive CSP widens too. Dropping those left the canvas
+// blank with no prompt, the failure the banner exists to prevent, so label them
+// with the token itself.
+const BLOCKED_KEYWORD = /^[a-z-]+$/;
+
 function blockedHost(uri: string): string | null {
+  if (BLOCKED_KEYWORD.test(uri)) return uri;
   try {
     return new URL(uri).host || null;
   } catch {
@@ -155,12 +162,10 @@ export function ArtifactHtmlFrame({
         // already navigated away from.
         if (event.data.v !== codeVersion) return;
         const uri = event.data.blockedURI;
-        // A genuine report is only an origin: a cross-origin blockedURI is
-        // stripped to scheme+host+port, and this frame's origin is opaque, so
-        // every http(s) resource is cross-origin. Anything longer is forged by
-        // the canvas, which can post these directly. The entry cap bounds how
-        // many are kept but not their size, so bound it here or a handful of
-        // reports can park megabytes in parent state.
+        // A report carries the full URL, and the canvas can post these directly
+        // rather than going through the CSP. The entry cap bounds how many are
+        // kept but not their size, so bound it here or a handful of reports can
+        // park megabytes in parent state.
         if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
           return;
         }

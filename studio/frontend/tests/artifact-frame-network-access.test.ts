@@ -231,14 +231,14 @@ const URI_CAP = /\buris\.length >= BLOCKED_URIS_TRACKED/;
 const URI_DUPLICATE = /\buris\.includes\(uri\)/;
 const BAILS_OUT = /\bcurrent\b/;
 
-/** Body of the `appendBlocked` reducer the blocked-state updater delegates to. */
-function readBlockedAppendUpdater(): string {
+/** Body of a function declared in the frame, by name. */
+function readFunctionBody(name: string): string {
   const source = sourceFile(FRAME);
   let text: string | undefined;
   const visit = (node: ts.Node): void => {
     if (
       ts.isFunctionDeclaration(node) &&
-      node.name?.getText() === "appendBlocked" &&
+      node.name?.getText() === name &&
       node.body
     ) {
       text = node.body.getText();
@@ -246,7 +246,7 @@ function readBlockedAppendUpdater(): string {
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
-  if (!text) throw new Error("appendBlocked not found in the frame");
+  if (!text) throw new Error(`${name} not found in the frame`);
   return text;
 }
 
@@ -293,6 +293,15 @@ test("oversized blocked URIs are dropped before anything is stored", () => {
   assert.ok(bounded, "an oversized blockedURI is not rejected");
 });
 
+// A non-HTTP(S) violation reports a bare token, not a URL: eval() reports
+// "eval" and a blob Worker reports "blob" (verified in Chromium). new URL() has
+// no host for either, so they were dropped and a canvas broken only by those
+// stayed blank, even though the permissive CSP widens both.
+test("a hostless blocked URI still reaches the banner", () => {
+  assert.match(readFunctionBody("blockedHost"), /BLOCKED_KEYWORD\.test\(uri\)/);
+  assert.equal(readConst("BLOCKED_KEYWORD"), "/^[a-z-]+$/");
+});
+
 // object-src, base-uri and form-action stay at 'none' in the permissive policy,
 // so granting network cannot fix them. Prompting anyway walks the user into
 // widening the policy for nothing, and the banner then hides itself because the
@@ -324,7 +333,7 @@ test("the grant is not offered for directives it cannot fix", () => {
 // checked BEFORE the duplicate scan so that past the cap the work is O(1) too,
 // not a rescan of every stored string per message.
 test("blocked-resource state is capped against the untrusted canvas", () => {
-  const updater = readBlockedAppendUpdater();
+  const updater = readFunctionBody("appendBlocked");
   assert.match(updater, URI_CAP);
   assert.match(updater, URI_DUPLICATE);
   assert.ok(
