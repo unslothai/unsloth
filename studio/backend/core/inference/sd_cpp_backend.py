@@ -473,6 +473,26 @@ def _accelerator_changed(binary: str, accelerator: str) -> bool:
         return False
 
 
+def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
+    """The accelerator class recorded for the managed install ``binary`` belongs to.
+
+    None for a binary the installer does not own (SD_CLI_PATH, UNSLOTH_SD_CPP_PATH, an in-tree
+    build, PATH) and for a record that cannot be read: neither is an answer, and the only caller
+    uses this to notice that the answer CHANGED, never to decide what to install.
+
+    Deliberately not ``_accelerator_changed``: that one answers "should an install run", so it
+    stands down while the tree is in use and while an upgrade for this accelerator has already
+    failed, and a load that keeps a usable wrong-accelerator build on purpose would be refused by
+    it on every single load. What the load needs is narrower -- did the tree it resolved this
+    binary out of get replaced underneath it."""
+    if not is_managed_binary(binary):
+        return None
+    try:
+        return _installer_module().installed_accelerator(managed_install_root())
+    except Exception:  # noqa: BLE001 -- cannot tell; the comparison sees None on both sides
+        return None
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed.
 
@@ -987,6 +1007,13 @@ class SdCppDiffusionBackend:
                     if not usable:
                         raise RuntimeError("sd-server binary is present but not runnable.")
                     mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+            # The accelerator the managed tree held when THIS binary was chosen, taken where the
+            # choice is made rather than sampled again later. The asset download below runs for
+            # minutes with no claim on the tree, and an install that lands in that window replaces
+            # sd-server in place: same path, still runnable, a different build. "It exists and it
+            # runs" is therefore not evidence that it is the build this load resolved its device
+            # and offload policy for, so the answer is re-asked under the reader claim.
+            server_accelerator = _installed_accelerator_of(server_binary)
             if mode == "oneshot":
                 # version() is None when a present binary can't run; fail now, not on the first generation.
                 assert engine is not None
@@ -1061,6 +1088,10 @@ class SdCppDiffusionBackend:
                     upgraded = self._upgrade_server_after_teardown(server_binary)
                     if mode == "server":
                         server_binary = upgraded
+                    # This load's own install just rewrote the tree, under the install claim, so
+                    # what it left behind IS the decision here -- comparing against the answer
+                    # from before it would fail the load on the upgrade it asked for.
+                    server_accelerator = _installed_accelerator_of(server_binary)
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about this graph.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
@@ -1097,6 +1128,20 @@ class SdCppDiffusionBackend:
                                 "falling back to one-shot sd-cli."
                             )
                             mode, server_binary, engine = "oneshot", None, self._resolve_engine()
+                        elif _installed_accelerator_of(server_binary) != server_accelerator:
+                            # Runnable, and at the same path -- and still not the build this load
+                            # resolved. An install that landed during the download (an H3 load
+                            # putting the CPU fallback in, say) leaves a server that starts
+                            # perfectly well on a device this load has already committed elsewhere,
+                            # so it would generate on the CPU while the GPU offload policy and the
+                            # arbiter's accounting both describe a GPU run. Asked here, inside the
+                            # claim, where no further install can start: refusing costs a retry
+                            # that re-resolves device, accelerator and install from scratch.
+                            raise RuntimeError(
+                                "The stable-diffusion.cpp server binary was replaced by an install "
+                                "for a different accelerator while this model was loading. Try the "
+                                "load again."
+                            )
                         else:
                             server = SdCppServer(server_binary)
                             started = server

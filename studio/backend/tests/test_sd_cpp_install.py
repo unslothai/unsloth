@@ -2122,3 +2122,105 @@ def test_a_failure_before_the_sweep_is_an_ordinary_install_failure(tmp_path, mon
         install(install_dir = tmp_path)
     assert not isinstance(exc.value, sdmod.SupersededBinaryError)
     assert "cudart 404" in str(exc.value)
+
+
+def _server_load_backend(tmp_path, monkeypatch, root, server, on_fetch):
+    """A native image backend wired to load out of ``root`` with the download stubbed.
+
+    ``on_fetch`` stands in for the multi-GB asset pull: minutes during which this load holds no
+    claim on the tree, which is exactly where an install lands."""
+    import core.inference.sd_cpp_backend as bk
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: str(server))
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "_failed_accelerator_upgrades", set())
+    monkeypatch.setattr(bk, "_install_allowed", lambda: False)
+    monkeypatch.setattr(bk, "_sd_cpp_backend", None)
+    monkeypatch.setattr(
+        bk,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda"),
+    )
+    started: list = []
+
+    class _Server:
+        def __init__(self, binary):
+            self.binary = binary
+            started.append(binary)
+
+        def start(self, *_a, **_k):
+            return None
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(bk, "SdCppServer", _Server)
+
+    fam = detect_family("z-image")
+    backend = bk.SdCppDiffusionBackend()
+    monkeypatch.setattr(backend, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(backend, "_set_expected_bytes", lambda *a, **k: None)
+
+    def _fetch(*_a, **_k):
+        on_fetch()
+        return {"diffusion_model": "/m/z.gguf"}
+
+    monkeypatch.setattr(backend, "_fetch_assets", _fetch)
+    backend._load_token = 1
+    backend._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
+
+    def _run():
+        backend._run_load(
+            repo_id = "unsloth/Z-Image-Turbo-GGUF",
+            gguf_filename = "z.gguf",
+            base = fam.base_repo,
+            fam = fam,
+            hf_token = None,
+            _load_token = 1,
+        )
+
+    return backend, started, _run
+
+
+def test_a_same_path_accelerator_swap_is_refused_before_the_server_starts(tmp_path, monkeypatch):
+    """The asset download runs for minutes with no claim on the tree, so an install can replace
+    sd-server IN PLACE while it does: same path, still runnable, a different build. The re-resolve
+    under the reader claim asks ensure_sd_server_binary, and with allow_install=False that returns
+    whatever it found, mismatch included -- so the CPU server was published and started while this
+    load had already committed the CUDA device and its offload policy. Existence is not identity."""
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+
+    def _an_h3_load_installs_the_cpu_fallback():
+        server.write_bytes(b"cpu-build")
+        sdmod._write_install_record(root, accelerator = "cpu", repo = "r", tag = "t")
+
+    backend, started, run = _server_load_backend(
+        tmp_path, monkeypatch, root, server, _an_h3_load_installs_the_cpu_fallback
+    )
+    run()
+
+    assert started == [], "a CPU server may not be started for a load that committed CUDA"
+    assert backend._state is None
+    assert backend._pending_server is None
+    err = backend.load_progress()["error"] or ""
+    assert "different accelerator" in err
+
+
+def test_an_untouched_tree_still_starts_the_server_after_the_download(tmp_path, monkeypatch):
+    """The other side of it: nothing replaced the binary, so the re-validation must be invisible.
+    A load refused because the tree merely stayed the same would take the server away entirely."""
+    root = _managed_tree(tmp_path, monkeypatch, accelerator = "cuda")
+    server = root / "sd-bin" / "sd-server"
+    server.write_bytes(b"cuda-build")
+
+    backend, started, run = _server_load_backend(
+        tmp_path, monkeypatch, root, server, lambda: None
+    )
+    run()
+
+    assert started == [str(server)]
+    assert backend._state is not None and backend._state.mode == "server"
+    assert backend.load_progress()["error"] is None

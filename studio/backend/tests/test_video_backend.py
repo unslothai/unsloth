@@ -2539,6 +2539,112 @@ def test_h3_native_reused_cpu_binary_still_commits_to_cpu(monkeypatch, tmp_path)
     assert gpu_arbiter.current_owner() is None
 
 
+def _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, *, swap_on_fallback):
+    """An H3 native load on a CUDA target whose first probe drops it to the CPU build.
+
+    The binary is a MANAGED one, i.e. one an install may replace at the same path.
+    ``swap_on_fallback`` makes that install land the moment the fallback's ensure returns, which
+    is the window the second probe used to be sampled in."""
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    root = tmp_path / "sd-home" / "stable-diffusion.cpp"
+    (root / "sd-bin").mkdir(parents = True)
+    (root / ".unsloth-studio-owned").touch()
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "sd-home" / "studio"))
+    managed = root / "sd-bin" / "sd-cli"
+    managed.write_bytes(b"the cpu build the fallback asked for")
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "cuda", device = "cuda", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
+
+    swapped: list = []
+
+    def _ensure(*, allow_install, accelerator):
+        if accelerator == "cpu" and swap_on_fallback:
+            # The CPU bundle this call asked for is what came back; the install that replaces it
+            # with a GPU build lands immediately afterwards, before anything probes it again.
+            swapped.append(True)
+        return str(managed)
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", _ensure)
+
+    def _probe(_binary, *args):
+        if args == ("--list-devices",):
+            if swapped:
+                return "CUDA0\tNVIDIA H100 PCIe\nCPU\tIntel(R) Xeon(R) Platinum 8559C\n"
+            return "CPU\tIntel(R) Xeon(R) Platinum 8559C\n"
+        return "  --ref-video   MiniMax-H3 Ref2VA reference video frame directory at 24 fps\n"
+
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", _probe)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "stub-version"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+
+    def _run():
+        backend._run_load_h3_native(
+            fam = fam,
+            token = None,
+            cancel_event = threading.Event(),
+            repo_id = "leejet/MiniMax-H3-GGUF",
+            gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        )
+
+    return backend, _run
+
+
+def test_h3_native_cpu_fallback_refuses_a_gpu_build_that_replaced_it(monkeypatch, tmp_path):
+    """The CPU fallback's baseline is the DECISION, not a second probe. Sampling the binary again
+    after the fallback's ensure records whatever an install has just put at that path, so the
+    re-check under the reader claim compared a CUDA executable against itself and passed -- with
+    native_device already forced to "cpu" and CPU resource accounting committed around a build
+    that runs on VRAM nothing accounted for."""
+    backend, run = _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, swap_on_fallback = True)
+    with pytest.raises(RuntimeError, match = "different accelerator"):
+        run()
+    assert backend._state is None
+
+
+def test_h3_native_cpu_fallback_still_commits_to_a_managed_cpu_build(monkeypatch, tmp_path):
+    """The control: nothing replaced the binary, so the fallback has to load exactly as before.
+    A CPU fallback refused for the accelerator it deliberately chose would take H3 away from every
+    GPU host with no matching prebuilt, which is the common case this fallback exists for."""
+    backend, run = _h3_managed_cpu_fallback_load(monkeypatch, tmp_path, swap_on_fallback = False)
+    run()
+    assert backend._state is not None
+    assert backend._state.device == "cpu"
+    assert backend._state.offload_policy == "none"
+
+
 def test_h3_native_load_publishes_the_companion_repos_while_downloading(monkeypatch, tmp_path):
     """The in-flight twin of loaded_repo_ids(). An H3 load downloads from the GGUF and component
     companion repos as well as repo_id, but loading_repo_ids() reported only repo_id and base_repo,

@@ -1213,7 +1213,14 @@ class VideoBackend:
             # next chat/image acquire evicted a model to make room for one that was never there.
             binary = ensure_h3_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
-            listed_accelerator = sd_cpp_lists_accelerator_device(binary)
+            # The baseline this branch is compared against is the DECISION, not a fresh probe of
+            # what came back. An install can replace the returned CPU binary with a GPU build
+            # between that ensure and this line, and probing here would record ITS answer -- after
+            # which the re-check under the claim below compares the replacement against itself,
+            # passes, and commits CPU resource accounting around a CUDA executable that runs on
+            # VRAM nothing accounted for. native_device is "cpu" precisely because the build must
+            # offer no accelerator device, so that -- False -- is what the claim has to still find.
+            listed_accelerator = False
         engine = SdCppEngine(binary)
         # Re-vet and take the identity under ONE reader claim. ensure_h3_sd_cpp_binary checked the
         # file it returned, but an install can start between that return and this line, and an
