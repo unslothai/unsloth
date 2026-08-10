@@ -400,3 +400,19 @@ def test_start_leaves_an_image_only_folder_alone(tmp_path):
 
     assert _clip_dataset_refusal(str(folder)) is None
     assert _clip_dataset_refusal(str(tmp_path / "does-not-exist")) is None
+
+
+def test_deleting_an_image_keeps_a_case_folded_clips_caption(client, ds_root):
+    """Where the filesystem folds case, CAT.mp4's sidecar IS cat.txt, so an exact stem compare
+    would delete the caption the clip still reads. The upload refuses to create such a pair,
+    but an externally populated folder can hold one."""
+    folder = ds_root / "legacy-case"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    (folder / "CAT.mp4").write_bytes(_MP4_BYTES)
+    (folder / "cat.txt").write_text("a cat", encoding = "utf-8")
+
+    r = client.delete("/api/train/diffusion/dataset/legacy-case/image/cat.png")
+    assert r.status_code == 200, r.text
+    assert not (folder / "cat.png").exists()
+    assert (folder / "cat.txt").read_text(encoding = "utf-8") == "a cat"
