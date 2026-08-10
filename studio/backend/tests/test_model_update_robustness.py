@@ -400,7 +400,10 @@ def test_cached_gguf_scan_keeps_download_timestamp(monkeypatch, tmp_path):
     assert rows[0]["last_modified"] == 5_000.0
 
 
-def test_cached_model_scan_hides_custom_whisper_repo(monkeypatch, tmp_path):
+def test_cached_model_scan_surfaces_custom_whisper_repo_as_asr(monkeypatch, tmp_path):
+    """The Audio page manages STT downloads off the same inventory, so a cached Whisper
+    repo is emitted as an ASR row instead of being dropped. Chat never offers it: the
+    row carries the ASR task and can_chat False."""
     repo_path = tmp_path / "models--Org--CustomWhisper"
     snapshot = repo_path / "snapshots" / ("a" * 40)
     snapshot.mkdir(parents = True)
@@ -444,7 +447,10 @@ def test_cached_model_scan_hides_custom_whisper_repo(monkeypatch, tmp_path):
         lambda *args, **kwargs: False,
     )
 
-    assert CI._scan_cached_models() == []
+    rows = CI._scan_cached_models()
+    assert [row["repo_id"] for row in rows] == ["Org/CustomWhisper"]
+    assert rows[0]["task"] == "automatic-speech-recognition"
+    assert rows[0]["capabilities"]["can_chat"] is False
 
 
 # ── hf_hub_download_with_xet_fallback force_download bypass (X2/F2) ───
