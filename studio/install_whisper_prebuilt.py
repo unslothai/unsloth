@@ -415,7 +415,19 @@ def slim_pairing_for_artifact(
     if not isinstance(sonames, list) or not sonames:
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
-    missing = [str(name) for name in sonames if not (llama_bin_dir / str(name)).is_file()]
+    required_sonames = [str(name) for name in sonames]
+    if host.is_windows and backend == "rocm":
+        # Windows ROCm llama bundles are built without GGML OpenMP and do not
+        # ship libomp140, while the shared Windows whisper manifest also serves
+        # CPU builds whose ggml runtime does need it. Keep the manifest's ggml
+        # ABI gate, but do not reject the valid ROCm layout for a CPU-only
+        # toolchain runtime. link_ggml_runtime still wires libomp when present.
+        required_sonames = [
+            name
+            for name in required_sonames
+            if not (name.lower().startswith("libomp") and name.lower().endswith(".dll"))
+        ]
+    missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
         log(f"slim_selection: {asset} skipped: llama runtime missing {', '.join(missing)}")
         return None
