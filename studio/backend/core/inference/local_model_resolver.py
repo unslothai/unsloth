@@ -44,6 +44,10 @@ _warm_lock = threading.Lock()
 # else covers them until the next scan, and the request path must not call them absent.
 _just_downloaded: set[str] = set()
 _warming = False
+# An invalidation that lands while a warmer owns the slot must make that worker
+# scan again after its current pass. Otherwise the stale snapshot can survive
+# until a request performs the rebuild synchronously.
+_warm_pending = False
 _last_scan_s = 0.0
 # Rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously.
 _WARM_DUTY = 10.0
@@ -353,7 +357,7 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     Other invalidations retain the allocation but revoke that trust, since a scan
     root may have been removed. Ordinary TTL expiry is likewise not additions-only.
     """
-    global _scan, _additions_only_retained
+    global _scan, _additions_only_retained, _warm_pending
     with _lock:
         timestamp, retained = _scan
         was_trusted = (bool(timestamp) and time.monotonic() - timestamp < _CACHE_TTL_S) or (
@@ -363,6 +367,14 @@ def invalidate_index(*, additions_only: bool = False) -> None:
         # lock-free reader can then fail safe if it runs between these assignments.
         _additions_only_retained = retained if additions_only and was_trusted else None
         _scan = (0.0, retained)
+    # _index() holds _lock for the whole scan. If this invalidation waited for an
+    # active warmer to publish, that worker may still own the warm slot even though
+    # the snapshot it just built is stale again. Preserve a second pass before the
+    # worker can retire. A later warm_index_soon() call starts a worker normally if
+    # the previous one won the race and already released the slot.
+    with _warm_lock:
+        if _warming:
+            _warm_pending = True
 
 
 def _index() -> dict[str, _LocalGgufEntry]:
@@ -423,25 +435,30 @@ def warm_index_soon() -> None:
     scan folder has no invalidation hook and would otherwise stay invisible to them
     for the life of the process. Never blocks, and never touches ``_lock``.
     """
-    global _warming
+    global _warming, _warm_pending
     if time.monotonic() - _scan[0] < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
         return
     with _warm_lock:
         if _warming:
             return
         _warming = True
+        _warm_pending = False
 
     def _run() -> None:
-        global _warming, _last_scan_s
-        started = time.monotonic()
-        try:
-            _index()
-        except Exception:
-            pass
-        finally:
+        global _warming, _warm_pending, _last_scan_s
+        while True:
+            started = time.monotonic()
+            try:
+                _index()
+            except Exception:
+                pass
             _last_scan_s = time.monotonic() - started
             with _warm_lock:
+                if _warm_pending:
+                    _warm_pending = False
+                    continue
                 _warming = False
+                return
 
     threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 
