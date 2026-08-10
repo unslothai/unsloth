@@ -17,9 +17,12 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
+MODELS_UTILS = REPO_ROOT / "unsloth" / "models" / "_utils.py"
 
 
 # 1. Source-level structure check on _IS_MLX (no platform dependencies).
@@ -199,3 +202,132 @@ def test_detect_hardware_picks_cuda_on_real_host():
     hw = _import_studio_hardware()
     detected = hw.detect_hardware()
     assert detected == hw.DeviceType.CUDA, f"CUDA host must dispatch to CUDA, got {detected!r}"
+
+
+# ---------------------------------------------------------------------------
+# 4. The MLX branch must report unsloth's OWN version, not unsloth-zoo's.
+#    unsloth-zoo is a separately released distribution pinned with `>=`, so its
+#    version routinely trails the core's; aliasing it made `unsloth.__version__`
+#    disagree with `pip show unsloth` on every Apple Silicon install (#8171).
+#    Executed straight out of the source so the test exercises the real
+#    statements, not a reimplementation, and needs no torch/mlx to run.
+# ---------------------------------------------------------------------------
+
+
+_ZOO_SENTINEL = "0.0.0+zoo-sentinel"
+
+
+def _mlx_branch(tree):
+    """The body of the module-level ``if _IS_MLX:`` dispatch branch."""
+    for node in tree.body:
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Name)
+            and node.test.id == "_IS_MLX"
+        ):
+            return node
+    raise AssertionError("`if _IS_MLX:` dispatch branch not found in unsloth/__init__.py")
+
+
+def _assigns_version(node):
+    return isinstance(node, ast.Assign) and any(
+        isinstance(t, ast.Name) and t.id == "__version__" for t in node.targets
+    )
+
+
+def _resolve_mlx_version(zoo_version, package_init = None):
+    """Run the MLX branch's ``__version__`` resolution with a spoofed zoo.
+
+    Executes the real source statements (plus any module-level helper they
+    call) in an isolated namespace whose ``unsloth_zoo.__version__`` is a
+    sentinel, so borrowing the zoo's version is directly observable.
+
+    ``package_init`` re-points the executed helper at another package tree,
+    which is how the source-literal precedence test distinguishes "read the
+    literal next to me" from "ask importlib.metadata". The namespace carries
+    no module globals on purpose: the helper must be self-contained.
+    """
+    tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
+
+    version_stmts = [node for node in _mlx_branch(tree).body if _assigns_version(node)]
+    assert version_stmts, "MLX branch does not assign __version__"
+
+    called = {
+        child.func.id
+        for stmt in version_stmts
+        for child in ast.walk(stmt)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name)
+    }
+    helpers = [
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in called
+    ]
+
+    fake_zoo = types.ModuleType("unsloth_zoo")
+    fake_zoo.__version__ = zoo_version
+    namespace = {
+        "__file__": str(package_init or UNSLOTH_INIT),
+        "unsloth_zoo": fake_zoo,
+    }
+    for node in helpers + version_stmts:
+        exec(compile(ast.Module(body = [node], type_ignores = []), "<mlx-branch>", "exec"), namespace)
+    return namespace["__version__"]
+
+
+def _packaging_version_literal():
+    """The literal pyproject.toml resolves the distribution version from."""
+    tree = ast.parse(MODELS_UTILS.read_text(encoding = "utf-8"))
+    for node in tree.body:
+        if _assigns_version(node) and isinstance(node.value, ast.Constant):
+            return node.value.value
+    raise AssertionError("__version__ literal not found in unsloth/models/_utils.py")
+
+
+def test_mlx_branch_reports_unsloth_version_not_zoo():
+    """Apple Silicon must report unsloth's version, not whatever zoo resolved to."""
+    resolved = _resolve_mlx_version(zoo_version = _ZOO_SENTINEL)
+
+    assert resolved != _ZOO_SENTINEL, (
+        "unsloth.__version__ is aliased to unsloth_zoo.__version__ on the MLX path; "
+        "unsloth-zoo is pinned '>=' and trails the core, so this misreports the "
+        "installed unsloth (issue #8171)"
+    )
+    expected = _packaging_version_literal()
+    assert resolved == expected, f"MLX reported {resolved!r}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("literal", ['__version__ = "9999.1.2"', "__version__ = '9999.1.2'"])
+def test_mlx_version_reads_the_source_beside_it_not_installed_metadata(tmp_path, literal):
+    """The version must track the imported tree, so it agrees with the GPU path.
+
+    An editable install that has moved on, or this checkout on PYTHONPATH beside
+    another installed unsloth, both leave `importlib.metadata` describing a
+    different tree. Point the helper at a package whose literal is a sentinel:
+    reading distribution metadata returns the real version and fails here.
+
+    Both quote styles are valid Python and the packaging metadata reads either,
+    so recognising only one turns a reformat of that single line into a silent
+    fall-through to installed metadata.
+    """
+    package = tmp_path / "unsloth"
+    (package / "models").mkdir(parents = True)
+    (package / "models" / "_utils.py").write_text(literal + "\n", encoding = "utf-8")
+    init = package / "__init__.py"
+    init.write_text("", encoding = "utf-8")
+
+    resolved = _resolve_mlx_version(zoo_version = _ZOO_SENTINEL, package_init = init)
+
+    assert resolved == "9999.1.2", (
+        f"expected the literal beside the imported package, got {resolved!r}; "
+        "resolving through installed distribution metadata makes the MLX path "
+        "disagree with the GPU path, which reads models/_utils.py"
+    )
+
+
+def test_gpu_branch_still_sources_version_from_gpu_init():
+    """Canary: the GPU path was already correct; don't 'fix' the MLX path by breaking it."""
+    tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
+
+    gpu_branch = ast.Module(body = _mlx_branch(tree).orelse, type_ignores = [])
+    assert "from ._gpu_init import __version__" in ast.unparse(
+        gpu_branch
+    ), "GPU path must keep resolving __version__ through _gpu_init -> models._utils"
