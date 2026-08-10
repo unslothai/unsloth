@@ -83,6 +83,8 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
+      videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
@@ -1366,6 +1368,7 @@ export const ar = {
       history: "السجل",
     },
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
+    checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
     sections: {
       model: "النموذج",

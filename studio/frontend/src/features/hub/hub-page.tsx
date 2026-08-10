@@ -59,6 +59,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { FreeUpSpaceDialog } from "./catalog/free-up-space-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -574,6 +575,7 @@ export function ModelsPage() {
   const [inventoryTypeFilter, setInventoryTypeFilter] =
     useState<ModelTypeFilter>("all");
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
+  const [freeUpSpaceOpen, setFreeUpSpaceOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
   const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
@@ -1233,6 +1235,7 @@ export function ModelsPage() {
     () => setFoldersDialogOpen(true),
     [],
   );
+  const handleFreeUpSpace = useCallback(() => setFreeUpSpaceOpen(true), []);
   const handleSwitchDevice = useCallback(
     () => handleTabChange("downloaded"),
     [handleTabChange],
@@ -1884,6 +1887,7 @@ export function ModelsPage() {
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}
+          onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
         />
       </HubTopBar>
@@ -1991,6 +1995,11 @@ export function ModelsPage() {
         open={foldersDialogOpen}
         onOpenChange={setFoldersDialogOpen}
         onInventoryChange={refreshInventory}
+      />
+      <FreeUpSpaceDialog
+        open={freeUpSpaceOpen}
+        onOpenChange={setFreeUpSpaceOpen}
+        onChange={refreshInventory}
       />
       <ExternalLinkConfirmDialog />
     </div>

@@ -325,6 +325,19 @@ def h3_transformer_task(filename: str) -> str:
     return H3_TASK_REFERENCES if name.startswith("minimax_h3_ref2va") else H3_TASK_KEYFRAMES
 
 
+def h3_denoiser_component(task: Optional[str]) -> str:
+    """The pipeline component / base-repo subfolder holding ``task``'s denoiser partition.
+
+    One repo, two partitions: the keyframe workflows (fl2va, and text-only through it) denoise
+    against ``transformer``, the reference workflow against ``transformer_ref``. Diffusers names
+    the components that way too, so this single answer serves the seed target, the offload pin and
+    the config subfolder alike -- and seeding ``transformer`` for a reference load would leave the
+    denoise step with no denoiser and pull the dense 66.28 GB partition anyway."""
+    return (
+        "transformer_ref" if (task or "").strip().lower() == H3_TASK_REFERENCES else "transformer"
+    )
+
+
 def fit_h3_reference_image(image: Any, *, width: int, height: int, policy: str) -> Any:
     """Scale a reference to its policy limit without changing its aspect ratio or upscaling."""
     from PIL import Image

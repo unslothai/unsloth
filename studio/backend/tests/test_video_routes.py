@@ -460,6 +460,33 @@ def test_generate_happy_path_persists_and_reports_record(client):
     assert fetched.content == b"MP4-FAKE-BYTES"
 
 
+def test_generate_accepts_a_half_specified_size_without_a_keyframe(client):
+    """Half a canvas is only ambiguous next to a keyframe, so the route must still take it.
+
+    validate_video_request_shape has always resolved a missing axis against the family's default
+    preset (768 alone means 768x512 on LTX-2) and that behaviour is pinned at the family level, so
+    a request-model XOR that fires with no keyframe present makes the two layers disagree and
+    breaks the half-spec case for every video family through the API.
+    """
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+
+    video = _generate_and_wait(client, {"prompt": "a cat", "width": 768})
+    assert (video["width"], video["height"]) == (768, 512)
+
+    # With a keyframe the ambiguity is real and the refusal stands.
+    resp = client.post(
+        "/api/inference/video/generate",
+        json = {
+            "prompt": "a cat",
+            "width": 768,
+            "first_frame": "data:image/png;base64,AAAA",
+        },
+    )
+    assert resp.status_code == 422
+    assert "width and height must be sent together" in str(resp.json())
+
+
 def test_generate_without_load_returns_409(client):
     resp = client.post("/api/inference/video/generate", json = {"prompt": "p"})
     assert resp.status_code == 409
@@ -1205,6 +1232,37 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
     assert seen["transformer_quant"] == "int8"
 
 
+def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
+    # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was
+    # swallowed by **load_kwargs, so a ref2va plan staged the fl2va partition and the one the load
+    # actually opens came down inline, outside the download panel's preflight.
+    backend = video_module.get_video_backend()
+    seen: dict = {}
+
+    def _plan(model_path, **kwargs):
+        seen["model_path"] = model_path
+        seen.update(kwargs)
+        return {"entries": [], "total_bytes": 0}
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "unsloth/MiniMax-H3",
+            "model_kind": "pipeline",
+            "family_override": "minimax-h3",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 200, resp.json()
+    assert seen["h3_task"] == "ref2va"
+
+
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
     # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
     # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
@@ -1266,6 +1324,91 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
     assert resp.status_code == 400
     assert "nvfp4" in resp.json()["detail"]
+
+
+def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
+    # One of the quant-keyed refusals is task-keyed: a pre-quantized H3 denoiser belongs to ONE
+    # partition, so a scheme whose only artifact is the keyframe one must not be seeded into the
+    # reference workflow. Validation only sees the task when the route forwards h3_task, and this
+    # is the route that stages the download -- so without it the plan pulls the 66 GB dense
+    # transformer_ref/ AND the wrong-partition quant before /video/load rejects the same request.
+    # nvfp4 stands in for that pair here: int8 and fp8 both ship a reference artifact now, so
+    # neither is refused any more (test_a_quantized_reference_load_resolves_the_reference_denoiser
+    # in test_video_backend.py pins that), and the per-scheme table in test_video_prequant.py
+    # covers a family where the pair itself is missing.
+    backend = video_module.get_video_backend()
+    monkeypatch.setattr(
+        backend,
+        "validate_load_request",
+        video_module.VideoBackend.validate_load_request.__get__(backend),
+        raising = False,
+    )
+    monkeypatch.setattr(
+        backend,
+        "download_plan",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not be reached")),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "model_kind": "pipeline",
+            "transformer_quant": "nvfp4",
+            "h3_task": "ref2va",
+        },
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "nvfp4" in detail
+    # Naming the way out, not just the dead end.
+    assert "int8" in detail and "fp8" in detail
+
+
+def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch):
+    # The other side of the same gate. The refusal above would still pass if a refactor dropped
+    # the forwarding and something else happened to reject that pick, so assert the forwarding
+    # itself -- and that fl2va, which is exactly what the hosted checkpoints are, still plans.
+    #
+    # Validation is stubbed rather than real here because its later transformer_class probe
+    # imports the family's diffusers module, which is an environment question and not this
+    # test's; the negative case above exercises the real validator, since the ref2va refusal
+    # fires before that probe.
+    backend = video_module.get_video_backend()
+    fam = video_module._detect_load_family("MiniMaxAI/MiniMax-H3", None, None)
+    assert fam is not None
+    seen: dict = {}
+
+    def _validate(model_path, **kwargs):
+        seen["validate"] = kwargs
+        return fam
+
+    def _plan(model_path, **kwargs):
+        seen["plan"] = kwargs
+        return {"files": [], "total_bytes": 0, "cached_bytes": 0}
+
+    monkeypatch.setattr(backend, "validate_load_request", _validate, raising = False)
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+    monkeypatch.setattr(
+        video_module, "assert_video_precision_available", lambda *a, **k: None, raising = False
+    )
+
+    resp = client.post(
+        "/api/inference/video/download-plan",
+        json = {
+            "model_path": "MiniMaxAI/MiniMax-H3",
+            "model_kind": "pipeline",
+            "transformer_quant": "fp8",
+            "h3_task": "fl2va",
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert seen["validate"]["h3_task"] == "fl2va"
+    assert seen["validate"]["transformer_quant"] == "fp8"
+    assert seen["plan"]["h3_task"] == "fl2va"
 
 
 def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch):

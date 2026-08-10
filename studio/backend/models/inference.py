@@ -2943,9 +2943,17 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
         "never opens (tens of GB on a FLUX repo).",
     )
-    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    bytes: int = Field(
+        0, description = "Declared size of the files still missing from cache, 0 when unknown"
+    )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
+    )
+    checkpoint: bool = Field(
+        False,
+        description = "This entry holds the SELECTED model rather than a companion repo. The "
+        "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
+        "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
 
 
@@ -2954,7 +2962,16 @@ class DiffusionDownloadPlanResponse(BaseModel):
     same file scope the loader would. Empty entries mean nothing to download (local path)."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
-    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    total_bytes: int = Field(
+        0, description = "Sum of the remaining download entries, 0 when ready or unknown"
+    )
+    required_bytes: int = Field(
+        0,
+        description = "Full declared footprint of every file the load requires, including cached files",
+    )
+    checkpoint_bytes: int = Field(
+        0, description = "Declared size of the selected checkpoint within required_bytes"
+    )
     incompatible_reason: Optional[str] = Field(
         None,
         description = "Why this pick cannot load as selected (today: a FLUX.2 GGUF paired with a "
@@ -3219,7 +3236,9 @@ class VideoLoadRequest(BaseModel):
             "backend's transformer_quant field.",
         )
     )
-    text_encoder_quant: Optional[Literal["fp8", "fp8_dynamic", "int8", "nvfp4"]] = Field(
+    text_encoder_quant: Optional[
+        Literal["auto", "none", "off", "fp8", "fp8_dynamic", "int8", "nvfp4"]
+    ] = Field(
         None,
         description = "Quantise the dense companion text encoder (Gemma3 / UMT5 / Qwen2.5-VL), "
         "which loads bf16 from the base repo regardless of how the DiT was sourced and is often "
@@ -3227,7 +3246,10 @@ class VideoLoadRequest(BaseModel):
         "8.9); fp8_dynamic = torchao per-row fp8 COMPUTE on the tensor cores (cc >= 8.9); int8 = "
         "torchao int8 COMPUTE with per-family keep-bf16 selection (cc >= 8.0; falls back to fp8 "
         "for a family without a measured schedule); nvfp4 = torchao 4-bit weight-only (Blackwell "
-        "sm_100+). null keeps the encoder dense. Mirrors the image backend's field.",
+        "sm_100+). null/auto leaves the choice to the backend, which keeps the encoder dense on "
+        "every family except MiniMax-H3, where it takes the hosted quantized conditioner; "
+        "none/off always keeps the released bf16 encoder, which on MiniMax-H3 is the only way "
+        "to ask for it. Mirrors the image backend's field.",
     )
 
     h3_task: Optional[Literal["fl2va", "ref2va"]] = Field(

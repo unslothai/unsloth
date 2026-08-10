@@ -44,8 +44,9 @@ def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
     assert '"createUpdaterArtifacts":false' in build["with"]["args"]
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build.get("env", {})
     assert "build-thin-appimage.sh" in package["run"]
-    assert 'tauri signer sign "$appimage" > "$signature"' in package["run"]
-    assert '[[ ! -s "$signature" ]]' in package["run"]
+    assert 'tauri signer sign "$appimage"' in package["run"]
+    assert 'tauri signer sign "$appimage" > "$signature"' not in package["run"]
+    assert "base64.b64decode(signature_value, validate=True)" in package["run"]
     assert "f'{appimage}.sig'" in package["run"]
     assert package["env"]["ARTIFACT_PATHS"] == "${{ steps.build_linux.outputs.artifactPaths }}"
     assert stage["env"]["ARTIFACT_PATHS"].startswith(
