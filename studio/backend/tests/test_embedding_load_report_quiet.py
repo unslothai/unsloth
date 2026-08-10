@@ -226,3 +226,21 @@ def test_the_peft_integration_logger_is_covered():
     finally:
         log.removeHandler(sink)
         log.propagate = True
+
+
+def test_a_mixed_report_is_serious():
+    # The legacy key and a discarded encoder weight in the same table: the second row
+    # is what matters, so the whole report must stay a warning.
+    log, sink = _attach_sink()
+    mixed = (
+        "BertModel LOAD REPORT from: x\n"
+        "embeddings.position_ids  | UNEXPECTED\n"
+        "encoder.layer.0.dense    | UNEXPECTED"
+    )
+    try:
+        with _quiet_transformers_load() as report:
+            log.warning(mixed)
+        assert report.is_serious() is True
+    finally:
+        log.removeHandler(sink)
+        log.propagate = True

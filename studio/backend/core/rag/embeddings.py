@@ -212,8 +212,11 @@ class _CaptureLoadReport(logging.Filter):
         for report in self.reports:
             if any(tag in report for tag in self._SERIOUS):
                 return True
-            if "UNEXPECTED" in report and self._KNOWN_BENIGN_UNEXPECTED not in report:
-                return True
+            # Row by row: a report can list the legacy buffer AND a discarded learned
+            # weight, and only the second one matters.
+            for row in report.splitlines():
+                if "UNEXPECTED" in row and self._KNOWN_BENIGN_UNEXPECTED not in row:
+                    return True
         return False
 
 
