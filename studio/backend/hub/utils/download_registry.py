@@ -57,7 +57,6 @@ from hub.utils.state_dir import RepoType
 logger = get_logger(__name__)
 
 from hub.utils.hf_cache_state import (
-    INCOMPLETE_SUFFIX,
     TRANSPORT_AUTO,
     TRANSPORT_HTTP,
     TRANSPORT_XET,
@@ -70,6 +69,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
     target_dir_name,
     hf_cache_root,
+    incomplete_blob_hash,
 )
 
 
@@ -397,9 +397,9 @@ def _purge_incomplete_blobs(
         try:
             if not blob.is_file():
                 continue
-            if not blob.name.endswith(INCOMPLETE_SUFFIX):
+            blob_hash = incomplete_blob_hash(blob.name)
+            if blob_hash is None:
                 continue
-            blob_hash = blob.name[: -len(INCOMPLETE_SUFFIX)]
             if protected_hashes and blob_hash in protected_hashes:
                 continue
             if only_hashes is not None and blob_hash not in only_hashes:
@@ -740,8 +740,11 @@ def incomplete_blob_hashes(
             continue
         try:
             for blob in blobs_dir.iterdir():
-                if blob.is_file() and blob.name.endswith(INCOMPLETE_SUFFIX):
-                    out.add(blob.name[: -len(INCOMPLETE_SUFFIX)])
+                if not blob.is_file():
+                    continue
+                blob_hash = incomplete_blob_hash(blob.name)
+                if blob_hash is not None:
+                    out.add(blob_hash)
         except OSError:
             continue
     return out
@@ -790,14 +793,25 @@ def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
-        for blob_hash in blob_hashes:
-            for name in (blob_hash, f"{blob_hash}{INCOMPLETE_SUFFIX}"):
-                blob = blobs_dir / name
-                try:
-                    if blob.is_file():
-                        total += max(0, int(blob.stat().st_size))
-                except OSError:
+        present = {blob_hash: 0 for blob_hash in blob_hashes}
+        try:
+            entries = list(blobs_dir.iterdir())
+        except OSError:
+            continue
+        for blob in entries:
+            try:
+                if not blob.is_file():
                     continue
+                partial_hash = incomplete_blob_hash(blob.name)
+                blob_hash = partial_hash if partial_hash is not None else blob.name
+                if blob_hash not in present:
+                    continue
+                # Broken advisory locks can leave several process-unique writers for one etag.
+                # They are duplicate attempts, not additive completion, so keep the largest.
+                present[blob_hash] = max(present[blob_hash], max(0, int(blob.stat().st_size)))
+            except OSError:
+                continue
+        total += sum(present.values())
     return total
 
 
