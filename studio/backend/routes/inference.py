@@ -13703,6 +13703,7 @@ async def serve_sandbox_file(
     from starlette.concurrency import run_in_threadpool
 
     safe_filename = os.path.basename(filename)
+
     # In a worker like the listing: resolving the sandbox touches the
     # filesystem, and the stat below is on the same path.
     def _resolve() -> "tuple[str, bool]":

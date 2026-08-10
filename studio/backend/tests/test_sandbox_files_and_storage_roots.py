@@ -4590,12 +4590,17 @@ def _deleted_project(tmp_path, monkeypatch, project_id, workspace):
         "memberIds": [],
         "activeResearchRunIds": [],
     }
-    monkeypatch.setattr(chat_history, "delete_chat_project", lambda pid, delete_files: dict(project))
+    monkeypatch.setattr(
+        chat_history, "delete_chat_project", lambda pid, delete_files: dict(project)
+    )
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda request, ids: None)
     monkeypatch.setattr(chat_history, "_cancel_active_generations", lambda ids: None)
     return asyncio.new_event_loop().run_until_complete(
         chat_history.delete_project(
-            project_id, request = None, delete_files = True, current_subject = "test",
+            project_id,
+            request = None,
+            delete_files = True,
+            current_subject = "test",
         )
     )
 
@@ -4621,8 +4626,9 @@ def test_a_workspace_delete_that_declined_can_still_be_retried(tmp_path, monkeyp
     _deleted_project(tmp_path, monkeypatch, project_id, workspace)
 
     records = tools.list_orphaned_projects()
-    assert records == [(project_id, str((workspace / "sandbox").resolve()),
-                        str(workspace.resolve()), True)], records
+    assert records == [
+        (project_id, str((workspace / "sandbox").resolve()), str(workspace.resolve()), True)
+    ], records
 
     # And the next collection finishes the job the user asked for.
     monkeypatch.undo()
@@ -4744,8 +4750,10 @@ def test_a_kept_sandbox_is_offered_even_when_deletion_was_asked_for():
     """A sandbox the backend could not remove comes back as kept, and by then
     the chat has gone: this offer is the only notice and the only retry."""
     src = Path(__file__).resolve().parents[2] / "frontend/src"
-    for hook in ("features/chat/hooks/use-chat-sidebar-items.ts",
-                 "features/chat/hooks/use-chat-projects.ts"):
+    for hook in (
+        "features/chat/hooks/use-chat-sidebar-items.ts",
+        "features/chat/hooks/use-chat-projects.ts",
+    ):
         text = (src / hook).read_text(encoding = "utf-8")
         assert "offerToDeleteKeptSandboxes(kept)" in text, hook
         assert "!args.deleteFiles) offerToDeleteKeptSandboxes" not in text, hook
