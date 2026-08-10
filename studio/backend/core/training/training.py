@@ -2854,7 +2854,11 @@ class TrainingBackend:
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
-                if step > 0 and loss is not None:
+                # Only ever move forward. HF can log more than one record at the same
+                # global_step around the end of a run, and each one used to add another
+                # point, so a 30-step run charted 33 with the last few stacked on step 30.
+                _last_step = self.step_history[-1] if self.step_history else None
+                if step > 0 and loss is not None and (_last_step is None or step > _last_step):
                     self.loss_history.append(loss)
                     self.lr_history.append(lr if lr is not None else 0.0)
                     self.step_history.append(step)

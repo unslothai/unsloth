@@ -4579,7 +4579,15 @@ def _create_embedding_progress_callback(
         ):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
+            # See the note in trainer.py: "train_loss" in HF's terminal summary record is
+            # the run mean, not a step loss, so it must not become the final step.
+            loss_value = logs.get("loss")
+            if loss_value is None and logs.get("train_loss") is not None:
+                print(
+                    f"Training finished: mean train_loss={logs.get('train_loss')} "
+                    f"over {state.global_step} steps",
+                    flush = True,
+                )
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
