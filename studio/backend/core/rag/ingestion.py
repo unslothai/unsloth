@@ -89,6 +89,23 @@ def _progress(conn, job_id: str, stage: str, progress: float) -> None:
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
 
+def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
+    """Retire the job when a project delete or a discarded upload removed its document.
+
+    Opens the write transaction the caller then commits into, so a delete cannot land between
+    the check and the write. Chunks carry no foreign key to the document, so writing after one
+    would strand rows under a dead scope, and completing would report a deleted document as
+    indexed and retire the document it was replacing.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    if store.get_document(conn, document_id) is not None:
+        return False
+    conn.rollback()
+    _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
+    _emit(job_id, {"type": "error", "stage": "cancelled", "error": "Document was deleted"})
+    return True
+
+
 def _embed_all(texts: list[str], model_name: str | None):
     """Embed texts in batches into a flat vector list."""
     vectors: list = []
@@ -226,6 +243,10 @@ def _run(
             count = count,
         )
         if not chunks:
+            # An empty parse still completes the document and retires the one it replaces, so it
+            # needs the same guard as the chunk write below.
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
             store.set_document_status(conn, document_id, "completed", num_chunks = 0)
             _replace_old_document(conn, replaces, stored_path)
             _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
@@ -246,17 +267,7 @@ def _run(
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
-        # a project delete or a discarded upload can remove the document while this job runs, and
-        # chunks carry no foreign key to it, so writing after one would strand rows under a dead
-        # scope; the writer lock is taken before the check so a delete cannot land between them
-        conn.execute("BEGIN IMMEDIATE")
-        if store.get_document(conn, document_id) is None:
-            conn.rollback()
-            _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
-            _emit(
-                job_id,
-                {"type": "error", "stage": "cancelled", "error": "Document was deleted"},
-            )
+        if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
         store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))

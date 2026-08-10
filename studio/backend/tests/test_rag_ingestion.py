@@ -105,6 +105,40 @@ def test_ingestion_skips_chunk_write_when_the_document_was_deleted(
         conn.close()
 
 
+def test_ingestion_skips_an_empty_completion_when_the_document_was_deleted(
+    rag_home, stub_embeddings, tmp_path, monkeypatch
+):
+    """An empty parse takes the other completion path, and must not report a deleted document
+    as indexed or retire the document it was replacing."""
+    path = _write(tmp_path, "empty.txt", "alpha bravo charlie " * 50)
+    scope = store.project_scope("P1")
+    deleted = {}
+    doc_id_known = threading.Event()
+    real_chunk_pages = ingestion.chunking.chunk_pages
+
+    def delete_document_then_return_nothing(*args, **kwargs):
+        real_chunk_pages(*args, **kwargs)
+        doc_id_known.wait(30)
+        conn = rag_db.get_connection()
+        try:
+            store.delete_document(conn, deleted["id"])
+        finally:
+            conn.close()
+        return []
+
+    monkeypatch.setattr(ingestion.chunking, "chunk_pages", delete_document_then_return_nothing)
+    doc_id, job_id = ingestion.start_ingestion(scope, None, None, "empty.txt", path, project_id = "P1")
+    deleted["id"] = doc_id
+    doc_id_known.set()
+
+    assert _wait_finished(job_id)["status"] == "cancelled"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id) is None
+    finally:
+        conn.close()
+
+
 def test_ingestion_dedupe_by_hash(rag_home, stub_embeddings, tmp_path):
     path = _write(tmp_path, "doc.txt", "alpha bravo charlie")
     scope = store.kb_scope("K1")

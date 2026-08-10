@@ -2041,10 +2041,11 @@ def ensure_chat_project_workspace(id: str) -> Optional[dict]:
     root_path = _ensure_project_workspace(root_path)
     # a delete running in another threadpool worker can drop the row at any point before the
     # directory is created, so confirm the project outlived the create rather than trusting a
-    # pre-create snapshot
+    # pre-create snapshot. Removing the directory here is not this function's call: only the
+    # delete path knows whether the user asked to keep the files, and the row may have had a
+    # populated workspace already. An empty directory left behind is the cheaper outcome.
     project = get_chat_project(id)
     if project is None:
-        delete_chat_project_workspace({"id": id, "rootPath": root_path})
         return None
     if project.get("rootPath") == root_path:
         return project
