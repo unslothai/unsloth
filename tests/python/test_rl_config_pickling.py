@@ -94,9 +94,18 @@ def test_checkpoint_loads_without_unsloth(patched, tmp_path):
     torch.save(_make(patched, tmp_path), path)
 
     script = (
-        "import sys, json, torch\n"
+        # Baseline FIRST, so this measures what the load drags in rather than what the
+        # interpreter already had. An editable install of unsloth puts its own import
+        # finder (__editable___unsloth_..._finder) into sys.modules at startup, which
+        # answers to a name test but says nothing about the checkpoint.
+        "import sys\n"
+        "preloaded = set(sys.modules)\n"
+        "import json, torch\n"
         "obj = torch.load(sys.argv[1], weights_only = False)\n"
-        "leaked = sorted(m for m in sys.modules if 'unsloth' in m.lower() or m.startswith('Unsloth'))\n"
+        "leaked = sorted(\n"
+        "    m for m in set(sys.modules) - preloaded\n"
+        "    if 'unsloth' in m.lower() or m.startswith('Unsloth')\n"
+        ")\n"
         "print(json.dumps({\n"
         "    'cls': type(obj).__module__ + '.' + type(obj).__name__,\n"
         "    'output_dir': obj.output_dir,\n"
