@@ -3495,13 +3495,15 @@ def _bootstrap_uv() -> bool:
 
 
 def _filter_requirements(req: Path, skip: set[str]) -> Path:
-    """Return a temp copy of a requirements file with certain packages removed."""
+    """Return an adjacent temp copy with certain packages removed."""
     lines = req.read_text(encoding = "utf-8").splitlines(keepends = True)
     filtered = [
         line for line in lines if not any(line.strip().lower().startswith(pkg) for pkg in skip)
     ]
     tmp = tempfile.NamedTemporaryFile(
         mode = "w",
+        dir = req.parent,
+        prefix = f".{req.stem}-filtered-",
         suffix = ".txt",
         delete = False,
         encoding = "utf-8",

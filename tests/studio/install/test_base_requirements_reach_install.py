@@ -124,6 +124,16 @@ class TestRequirementsBeyond:
         finally:
             out.unlink(missing_ok = True)
 
+    def test_platform_filter_keeps_the_source_directory(self, tmp_path):
+        """A later Windows/no-torch filter must not break the same relative include."""
+        req = self._write(tmp_path, "-r child.txt\ntriton_kernels\n")
+        out = ips._filter_requirements(req, {"triton_kernels"})
+        try:
+            assert out.parent == req.parent
+            assert out.read_text(encoding = "utf-8") == "-r child.txt\n"
+        finally:
+            out.unlink(missing_ok = True)
+
     def test_a_prefixed_package_is_not_swallowed(self, tmp_path):
         """`unsloth-something` is not `unsloth`.
 
