@@ -803,7 +803,9 @@ def test_the_orphan_precondition_is_scoped_to_the_cache_being_deleted(monkeypatc
     rows = asyncio.run(companion_cleanup.orphan_companions_response())["companions"]
     assert [r["cache_path"] for r in rows] == ["/c2/models--black-forest-labs--FLUX.2-dev"]
     try:
-        deletion._delete_cached_model_blocking(dev, None, None, rows[0]["cache_path"], only_if_orphan = True)
+        deletion._delete_cached_model_blocking(
+            dev, None, None, rows[0]["cache_path"], only_if_orphan = True
+        )
     except HTTPException as exc:
         assert exc.status_code != 409, exc.detail
 

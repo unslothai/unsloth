@@ -857,9 +857,7 @@ def _delete_cached_model_blocking(
                 ]
                 if scoped:
                     copies = scoped
-            still_orphan = not any(
-                companion_assets.repo_holds_denoiser(repo) for repo in copies
-            )
+            still_orphan = not any(companion_assets.repo_holds_denoiser(repo) for repo in copies)
         except Exception as e:
             logger.warning(f"Orphan re-check failed for {repo_id}; refusing delete: {e}")
             raise HTTPException(
