@@ -4972,7 +4972,9 @@ def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch)
     answers = [str(tmp_path / "gone"), str(moved)]
 
     monkeypatch.setattr(
-        inference, "_sandbox_dir_for", lambda session_id, create = False: answers.pop(0),
+        inference,
+        "_sandbox_dir_for",
+        lambda session_id, create = False: answers.pop(0),
     )
     monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
 
