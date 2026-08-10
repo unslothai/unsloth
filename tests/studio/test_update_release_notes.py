@@ -1255,9 +1255,9 @@ def test_the_stack_geometry_is_checked_numerically():
     here so deleting it does not quietly leave the cap unchecked."""
     geometry = REPO / "studio/frontend/tests/monitor-stack-inset.test.ts"
     src = geometry.read_text(encoding = "utf-8")
-    assert "stackGeometry(null, W, H).maxHeight, H - 32" in src, (
-        "nothing pins the no-obstacle cap to the 2rem the class used to spell"
-    )
+    assert (
+        "stackGeometry(null, W, H).maxHeight, H - 32" in src
+    ), "nothing pins the no-obstacle cap to the 2rem the class used to spell"
 
 
 def test_desktop_notes_are_not_keyed_by_the_pinned_backend_version():
@@ -1631,9 +1631,9 @@ def test_a_failed_fetch_keeps_retry_reachable():
     hook = " ".join(
         (FRONTEND / "hooks" / "use-release-notes.ts").read_text(encoding="utf-8").split()
     )
-    assert "const failed = !next || (!next.matched && next.error !== null);" in hook, (
-        "the distinction this relies on"
-    )
+    assert (
+        "const failed = !next || (!next.matched && next.error !== null);" in hook
+    ), "the distinction this relies on"
 
 
 def test_an_unclosed_comment_in_prose_cannot_hide_later_links(run_scanner):
