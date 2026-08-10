@@ -1329,11 +1329,11 @@ function GgufVariantExpander({
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
-  // A local path stages nothing, so it is not worth asking about.
+  // Local paths included: only the checkpoint is on disk, and both loaders can still resolve a
+  // remote base, whose text encoder and VAE the plan stages and the row must advertise.
   const companionQueryFilenames = useMemo(
-    () =>
-      isLocalPath ? [] : (displayVariants ?? []).map((variant) => variant.filename),
-    [isLocalPath, displayVariants],
+    () => (displayVariants ?? []).map((variant) => variant.filename),
+    [displayVariants],
   );
   const { sizes: companionBytes, blocked: companionBytesBlocked } =
     useCompanionBytes(repoId, companionQueryFilenames);

@@ -44,6 +44,11 @@ test("companion bytes are asked for per row, not per repo", () => {
     pickers.includes("(displayVariants ?? []).map((variant) => variant.filename)"),
     "every displayed row must be in the query",
   );
+  // Local paths included: only the checkpoint is on disk, and the base it resolves is not.
+  assert.ok(
+    !/isLocalPath \? \[\]/.test(pickers),
+    "a local checkpoint still needs its remote companions sized",
+  );
   assert.ok(
     pickers.includes("companionBytes.get(v.filename)"),
     "each row must read its own answer",

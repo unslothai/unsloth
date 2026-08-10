@@ -6318,6 +6318,33 @@ def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
     assert plan["entries"] == []
 
 
+def test_a_local_checkpoint_still_stages_its_remote_base(monkeypatch, tmp_path):
+    """Only the checkpoint is on disk. The base is resolved the same way as for a hub pick, so its
+    text encoder and VAE are still a download the row has to advertise."""
+    from models.inference import DiffusionDownloadPlanResponse
+
+    local = tmp_path / "my-model.gguf"
+    local.write_text("x", encoding = "utf-8")
+    _fake_hf_api(monkeypatch, {"black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS})
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_quant_prefetch_needed",
+        lambda self, fam, kwargs, **_: False,
+    )
+    _no_cache(monkeypatch)
+
+    plan = DiffusionBackend().download_plan(str(local), gguf_filename = local.name)
+
+    # The checkpoint is on disk so it earns no entry, but the base is not and does.
+    assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/FLUX.1-dev"]
+    assert plan["total_bytes"] > 0
+    assert DiffusionDownloadPlanResponse(**plan).companion_bytes == plan["total_bytes"]
+
+
 def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monkeypatch):
     # An fp8 text-encoder request loads a hosted PRE-CAST checkpoint, so the plan must stage that file, not the base repo's dense encoder shards (tens of GB, never opened).
     _fake_hf_api(
