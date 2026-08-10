@@ -7521,6 +7521,8 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
         plan, fam, "black-forest-labs/FLUX.2-klein-4B", target, "pipeline"
     )
     assert lowered.estimates["model_dense_mib"] < measured
+
+
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):
     """An explicit Speed=off rewrites an auto request to "off" and the plan stages no
     transformer/ on purpose. Reading that expected absence as a decline told the caller their
@@ -8436,6 +8438,8 @@ def test_the_pre_cast_companion_scale_matches_the_load_level_plan(fake_runtime, 
     )
     candidate = types.SimpleNamespace(companions_mib = 10_400, text_encoders_mib = 10_000)
     assert DiffusionBackend._precast_scaled_companions_mib(candidate, fam, object(), "fp8") == 5_400
+
+
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
     fake_runtime, tmp_path, monkeypatch
 ):
