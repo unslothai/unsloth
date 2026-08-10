@@ -2294,7 +2294,6 @@ def test_web_search_name_only_gate_is_unchanged():
     # is_always_safe_tool runs before arguments exist (streaming provisional card, the
     # non-streaming stream requirement), so a query-only search must not start prompting.
     from core.inference.tools import is_always_safe_tool
-
     assert is_always_safe_tool("web_search") is True
 
 
