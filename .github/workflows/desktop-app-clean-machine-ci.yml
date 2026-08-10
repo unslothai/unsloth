@@ -25,6 +25,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/desktop-app-clean-machine-ci.yml'
+
+      - '.github/scripts/resolve-desktop-release.py'
       - '.github/scripts/clean-machine-env.sh'
       - '.github/scripts/clean-machine-assert.sh'
   workflow_dispatch:
@@ -32,10 +34,8 @@ on:
       release_tag:
         description: 'Release tag in the desktop release repo (empty resolves the newest)'
         type: string
-        # Empty, not a pinned tag. desktop-v0.1.50-beta predates #7547, so with the
-        # outcome pins retired a dispatch that took this default would fail all four
-        # POSIX legs at the installer step -- on a bundle nobody meant to test. Empty
-        # falls through to the same newest-desktop-v* resolution the schedule uses.
+        # Empty falls through to the newest SemVer v... release that actually carries
+        # the platform bundle under test. An explicit tag remains an immutable fixture.
         default: ''
       release_repo:
         description: 'owner/name hosting the desktop release'
@@ -58,8 +58,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # Drafts are listed only to a token with push access, and every desktop-v* release here
-  # is a draft, so `contents: read` cannot see the bundle under test at all.
+  # Drafts are listed only to a token with push access. Clean-machine CI intentionally
+  # includes review drafts, so read-only contents permission cannot resolve every candidate.
   contents: write
 
 env:
@@ -68,10 +68,9 @@ env:
   # the schedule kept re-testing the same fixture).
   REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against it
-  # could never catch a newly published broken bundle. Each download step then resolves
-  # the newest desktop-v* release, drafts included -- they are all cut as drafts, so
-  # --exclude-drafts matched nothing and every leg died resolving. releases/tags/<tag>
-  # 404s for a draft, but gh resolves drafts over GraphQL, so the download still works.
+  # could never catch a newly published broken bundle. Each download step resolves the
+  # newest SemVer v... release carrying its required asset, drafts included. gh release
+  # list/download use the draft-aware GraphQL path with this workflow's write token.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -80,7 +79,7 @@ jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
     # A fork PR's token is read-only whatever this workflow declares, so it cannot list
-    # the drafts every desktop-v* bundle is published as. Skip rather than fail: a
+    # review drafts. Skip rather than fail: a
     # property of the trigger, not a broken release.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop macOS ${{ matrix.os }}
@@ -104,18 +103,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so the
-          # newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # Resolve by both SemVer tag and required asset so historical non-app v... releases
+          # cannot be selected accidentally. Drafts are included for pre-publish review.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            # Loud on purpose: there is no bundle to test, so passing would prove nothing.
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix .dmg < "$releases_json")"; then
+              echo "::error::no SemVer v... release with a .dmg is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
@@ -319,20 +320,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
+          asset_suffix='.deb'
+          pat='*.deb'
+          if [ "${{ matrix.kind }}" = "appimage" ]; then
+            asset_suffix='.AppImage'
+            pat='*.AppImage'
+          fi
+          # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix "$asset_suffix" < "$releases_json")"; then
+              echo "::error::no SemVer v... release with a $asset_suffix asset is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
-          pat='*.deb'; [ "${{ matrix.kind }}" = "appimage" ] && pat='*.AppImage'
           gh release download "$REL_TAG" --repo "$REL_REPO" --pattern "$pat" --dir dl
           ls -la dl
 
@@ -534,16 +543,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # See the macOS job. Loud on purpose: no bundle means nothing to prove.
+          # See the macOS job. Loud on purpose: no matching bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
-            [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+            releases_json="$RUNNER_TEMP/desktop-releases.json"
+            if ! gh release list --repo "$REL_REPO" --limit 100 \
+              --json tagName,createdAt,isDraft > "$releases_json"; then
+              echo "::error::could not list desktop releases in $REL_REPO"
               exit 1
-            }
+            fi
+            if ! REL_TAG="$(python3 .github/scripts/resolve-desktop-release.py \
+              --repo "$REL_REPO" --asset-suffix .exe < "$releases_json")"; then
+              echo "::error::no SemVer v... release with an .exe is visible in $REL_REPO"
+              exit 1
+            fi
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi

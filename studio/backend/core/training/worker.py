@@ -3349,10 +3349,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
 
     import warnings
-    from loggers.config import LogConfig
+    from loggers.config import LogConfig, keep_progress_bars_countable
 
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
+
+    # This worker READS the bars: the monitor thread further down polls tqdm._instances
+    # to turn the Hub download and "Loading checkpoint shards" bars into the UI's status
+    # line, and a disabled bar is never registered there. So it redirects their output
+    # instead of disabling them, and does so before the inherited
+    # HF_HUB_DISABLE_PROGRESS_BARS reaches huggingface_hub's import-time constant.
+    keep_progress_bars_countable()
 
     LogConfig.setup_logging(
         service_name = "unsloth-studio-training-worker",
@@ -4513,14 +4520,46 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
 
     Status events go out only while the status is non-empty, so the empty status the
     trainer reports on every log leaves the parent's last real status standing.
+
+    The trainer shares one TrainingProgress for metrics and status, so a status-only
+    update (an evaluation line, a warning) carries the last step's numbers unchanged.
+    The parent appends every progress event to the loss / grad-norm / eval-loss
+    histories without deduplicating the step, so those replays would plot the same
+    point again. Only a changed measurement is published; the status still is.
     """
 
     sent_warnings: set[str] = set()
+    last_metrics: list = [None]
 
     def _on_progress(progress: TrainingProgress) -> None:
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
+        # The end-of-run summary carries no loss (it is the mean, not a step), but it
+        # does carry the elapsed time including the final evaluation, checkpoint save
+        # and best-model reload, and a run stopped early never reaches total_steps, so
+        # the flag the trainer sets on that record is what marks it terminal.
+        is_terminal = bool(getattr(progress, "is_run_summary", False)) or (
+            progress.total_steps > 0 and progress.step >= progress.total_steps
+        )
+        # Wall-clock fields are excluded: they move on every call, so keeping them
+        # would make each status replay look like a new measurement.
+        metrics = (
+            progress.step,
+            progress.loss,
+            progress.learning_rate,
+            progress.grad_norm,
+            progress.num_tokens,
+            progress.epoch,
+            progress.eval_loss,
+        )
+        is_repeat = metrics == last_metrics[0]
+        if (
+            (progress.step == 0 and progress.total_steps > 0)
+            or has_train_loss
+            or has_eval_loss
+            or is_terminal
+        ) and not is_repeat:
+            last_metrics[0] = metrics
             event_queue.put(
                 {
                     "type": "progress",
@@ -4579,7 +4618,29 @@ def _create_embedding_progress_callback(
         ):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
+            # Trainer's end-of-run summary carries train_runtime, samples and steps per
+            # second, total_flos and memory, which nothing else here publishes. It used
+            # to reach the log only through PrinterCallback's raw stdout dict.
+            from core.training.trainer import _RESERVED_LOG_KEYS, _TRAINER_SUMMARY_KEYS
+
+            if any(k in logs for k in _TRAINER_SUMMARY_KEYS):
+                logger.info(
+                    "trainer summary",
+                    **{
+                        k: v
+                        for k, v in logs.items()
+                        if isinstance(k, str) and k not in _RESERVED_LOG_KEYS
+                    },
+                )
+            # See the note in trainer.py: "train_loss" in HF's terminal summary record is
+            # the run mean, not a step loss, so it must not become the final step.
+            loss_value = logs.get("loss")
+            if loss_value is None and logs.get("train_loss") is not None:
+                print(
+                    f"Training finished: mean train_loss={logs.get('train_loss')} "
+                    f"over {state.global_step} steps",
+                    flush = True,
+                )
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
@@ -4661,6 +4722,16 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+
+    # datasets is only in the process now, and setup_logging ran long before it, so
+    # this is the first point where its Generating/Map bars can be quieted. Without
+    # it a local JSON/CSV/Parquet or Hub load_dataset writes them into this worker's
+    # structured log.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a run
+        pass
 
     # ── Stop signal handling ──
     _should_stop = False
@@ -4955,6 +5026,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
+    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+
     training_args_kwargs = {
         "output_dir": output_dir,
         "per_device_train_batch_size": batch_size,
@@ -4969,6 +5042,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
+        # Same reason as the UnslothTrainer path: this worker has no terminal, its
+        # stdout is teed into the server log, and _create_embedding_progress_callback
+        # already publishes every number the bar carries.
+        "disable_tqdm": _hf_stdout_progress_disabled(),
     }
 
     if max_steps_val and max_steps_val > 0:
@@ -5015,6 +5092,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             args = args,
             callbacks = [progress_callback],
         )
+        # disable_tqdm only swaps ProgressCallback for PrinterCallback, which prints a
+        # raw dict per step instead; both write to the same stdout.
+        _drop_hf_stdout_callbacks(trainer)
 
         trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:

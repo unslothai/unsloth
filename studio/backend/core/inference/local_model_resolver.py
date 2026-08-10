@@ -127,7 +127,14 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         # load would take: answering with the largest can evict a model and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
-        best = preferred_quant(quants)
+        # Rank the ROOT checkpoints alone when there are any. A plain local load resolves
+        # through non-recursive detect_gguf_model and so always takes the repo root, while
+        # preferred_quant ranks on the key text and would hand a bare id an equally-good
+        # ``distilled/...`` row that sorts earlier -- the same id serving different weights
+        # depending on which resolver answered it. The qualified rows stay advertised; they
+        # simply are not what a bare id means.
+        unqualified = tuple(q for q in quants if "/" not in q)
+        best = preferred_quant(unqualified or quants)
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(loader_id, str(load_dir), quants)

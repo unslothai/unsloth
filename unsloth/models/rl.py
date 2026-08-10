@@ -396,6 +396,13 @@ try:
     from unsloth.models._utils import _unsloth_reset_stray_compile_cache
 except Exception:
     def _unsloth_reset_stray_compile_cache(self): pass
+# Drops/renames config arguments the installed TRL no longer accepts, so a
+# script pinned to an older TRL keeps working after an upgrade. Falls back to
+# the historical raw passthrough so this can never break trainer construction.
+try:
+    from unsloth.models.rl_config_compat import filter_config_init_kwargs as _unsloth_filter_config_init_kwargs
+except Exception:
+    def _unsloth_filter_config_init_kwargs(config_class, kwargs): return kwargs
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
@@ -505,7 +512,11 @@ class Unsloth{RLConfig_name}({RLConfig_name}):
         **kwargs,
     ):
 {RLConfig_extra_args}
-        super().__init__({RLConfig_call_args}{RLConfig_kwargs})
+        # One dict so the filter sees the mirrored parameters AND `**kwargs`:
+        # filtering kwargs alone would double-bind any argument TRL renamed,
+        # since the new name is itself a mirrored parameter.
+        _unsloth_config_arguments = dict({RLConfig_call_args}{RLConfig_kwargs})
+        super().__init__(**_unsloth_filter_config_init_kwargs({RLConfig_name}, _unsloth_config_arguments))
         self.vllm_sampling_params = vllm_sampling_params
         self.unsloth_num_chunks = unsloth_num_chunks
         if unsloth_grpo_mini_batch is not None:

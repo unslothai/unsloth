@@ -65,6 +65,19 @@ class DiffusionFamily:
     # Hosted checkpoints for NON-DEFAULT bases as (base_repo, scheme, repo_id), base_repo lowercased: one family entry covers
     # variants whose weights differ. Resolution prefers an exact variant match, then falls back to ``prequant_repos``.
     prequant_variant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # Bases (lowercased) with NO hosted checkpoint, which must not inherit ``prequant_repos``: the family
+    # fallback names an artifact baked from different weights, and planning acts on it before the load's
+    # base_model_id check can refuse it. Only for a base whose weights genuinely differ from the default.
+    prequant_excluded_bases: tuple[str, ...] = field(default_factory = tuple)
+    # Preferred checkpoint FILENAME for a scheme, as (scheme, filename), overriding the
+    # ``<Model>-<SCHEME>.pt`` name ``prequant_repo_filename`` derives. The derived name stays on as
+    # the fallback, so a repo hosting BOTH an old and a new artifact serves the new one to a build
+    # that asks for it by name and the old one to every build that does not. That is what lets a
+    # rotated (v2) checkpoint ship without regressing an already-installed Studio, which would
+    # otherwise refuse the v2 tag and fall all the way back to the dense download.
+    # A row may also be (scheme, task, filename), which names the artifact for ONE task and beats
+    # the task-agnostic row; see ``family_prequant_filename``.
+    prequant_filenames: tuple[tuple[str, ...], ...] = field(default_factory = tuple)
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id). Layerwise-fp8 only: the cast is deterministic, so the artifact is bit-identical while skipping the dense TE download.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
     # Native (sd.cpp) single-file assets, used only on the no-GPU sd.cpp engine. The transformer GGUF is shared with
@@ -243,12 +256,20 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Z-Image-Turbo-FP8"),
             ("fp8", "unsloth/Z-Image-Turbo-FP8"),
         ),
-        # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB). NOT shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
+        # Both hosted checkpoints are baked from the distilled Turbo transformer, so the undistilled base has none and must quantize its own dense weights.
+        prequant_excluded_bases = ("tongyi-mai/z-image",),
+        # Pre-cast Qwen3-4B TE (8.04 -> 4.41 GB), shared with the undistilled base (byte-identical encoder). NOT shared with flux.2-klein-4B: klein TE retrained layer 35 MLP (up/down_proj maxdiff 0.86 vs this checkpoint).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Z-Image-Turbo-FP8"),),
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA.
         trainable = True,
-        train_base_repos = ("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"),
+        # The undistilled base is what the upstream DreamBooth recipe trains on. No deploy pairing:
+        # its adapters preview on the base itself at the 20-step / guidance 4 recipe.
+        train_base_repos = (
+            "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+            "Tongyi-MAI/Z-Image-Turbo",
+            "Tongyi-MAI/Z-Image",
+        ),
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
@@ -613,6 +634,23 @@ def _upstream_is_cached(
         return False
 
 
+def cache_holds_files(repo_id: str, files: Sequence[str]) -> bool:
+    """Whether ``repo_id``'s local cache holds EVERY name in ``files``.
+
+    The same revision rule ``_upstream_is_cached`` applies, exposed for callers that need to know a
+    component is complete rather than merely started: a partial pull leaves some shards resident,
+    and "some" is not a cache hit for anything that then decides not to download the rest.
+
+    The LIVE root only. It is tempting to count the import-time root as well, since
+    ``_prefetch_files`` passes ``reuse_other_cache_root`` and would not re-fetch from it, but the
+    prefetch is not the consumer that matters here: the dense fast path this verdict unlocks calls
+    ``from_pretrained(cache_dir = hub_cache_dir())``, which is pinned to the live root and cannot
+    see the other one. A hit there would widen the plan and then download the whole transformer
+    again after eviction, which is the exact outcome the check exists to prevent.
+    """
+    return bool(files) and _upstream_is_cached(repo_id, tuple(files))
+
+
 # Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
 # byte identical, so an existing install that already pulled the repack holds the very same bytes
 # under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would
@@ -756,11 +794,19 @@ def family_prequant_repo(
 
     ``base_repo`` (when known) selects a variant-specific checkpoint first: a checkpoint is
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
-    without its own entry still returns the family default (harmless: the base_model_id
-    validation then falls back to dense-quantise, exactly as before this table existed)."""
-    # prequant_variant_repos is keyed on upstream ids.
+    without its own entry still returns the family default. That is harmless only while the
+    default is close enough that planning around it costs nothing, since the base_model_id
+    validation refuses the artifact well after the plan was made. A base whose weights really
+    differ belongs in ``prequant_excluded_bases``, which returns None here instead."""
+    # Both tables are keyed on lowercased upstream ids.
     base = canonical_base(base_repo).lower()
     if base:
+        # getattr, because the video loader calls this with a VideoFamily, which has no such
+        # field. A plain attribute read raises AttributeError, resolve_prequant_source swallows it
+        # in its bare except and hands back None, and every video family silently loses its hosted
+        # prequant checkpoint to the dense path whenever a base_repo is passed.
+        if base in (getattr(fam, "prequant_excluded_bases", ()) or ()):
+            return None
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
                 return repo_id
@@ -768,6 +814,48 @@ def family_prequant_repo(
         if entry_scheme == scheme:
             return repo_id
     return None
+
+
+def family_prequant_filename(
+    fam: DiffusionFamily,
+    scheme: str,
+    task: Optional[str] = None,
+) -> Optional[str]:
+    """The preferred checkpoint filename this family declares for ``scheme``, or None.
+
+    ``None`` means "use the derived ``<Model>-<SCHEME>.pt`` name", which is every family but the
+    ones shipping a second artifact under the same repo and scheme. Not variant-keyed: the
+    filename says WHICH artifact, the repo says which base.
+
+    Rows come in two shapes. ``(scheme, filename)`` is the historical one and is TASK-AGNOSTIC.
+    ``(scheme, task, filename)`` names an artifact for one task only and wins over the agnostic
+    row when ``task`` matches. That distinction exists because a family can hold several denoiser
+    PARTITIONS in one repo (MiniMax-H3: keyframe vs reference), whose checkpoints have identical
+    key sets and identical metadata and so cannot be told apart by any later check -- picking the
+    wrong one generates from the wrong partition rather than failing.
+
+    ``task = None`` therefore sees only the agnostic rows, and a scheme with no row for the task
+    asked for falls back to the agnostic one, i.e. exactly today's behaviour. Malformed rows are
+    skipped rather than raising: this runs on a refusal path where a table typo must not 500."""
+    wanted = (task or "").strip().lower()
+    agnostic: Optional[str] = None
+    for entry in getattr(fam, "prequant_filenames", ()) or ():
+        if not isinstance(entry, (tuple, list)):
+            continue
+        if len(entry) == 2:
+            entry_scheme, filename = entry
+            if entry_scheme == scheme and agnostic is None and filename:
+                agnostic = filename
+        elif len(entry) == 3:
+            entry_scheme, entry_task, filename = entry
+            if (
+                wanted
+                and entry_scheme == scheme
+                and (entry_task or "").strip().lower() == wanted
+                and filename
+            ):
+                return filename
+    return agnostic
 
 
 # The release where diffusers' own requires-python went ">= 3.10.0", which makes 0.36.0 the newest
@@ -1026,6 +1114,21 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
     return frozenset(r.strip().lower() for r in companions - loadable if r)
+
+
+def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:
+    """EVERY text-encoder set an sd.cpp load of *fam* could pick, unioned.
+
+    For the guard, not for a load. A load reads the GGUF header and picks one; a guard
+    reconstructing a checkpoint it cannot open has no header, and for FLUX.2-klein a renamed 9B
+    file carries no size token either, so the string fallback answers 4B and the 9B encoder the
+    load actually fetched is left unprotected. Naming both costs a delete that is refused and
+    saves one that strands an installed model.
+    """
+    sets = [fam.sd_cpp_text_encoders]
+    if fam.name == "flux.2-klein":
+        sets.append(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return tuple(dict.fromkeys(entry for group in sets for entry in group or ()))
 
 
 def sd_cpp_text_encoders_for(

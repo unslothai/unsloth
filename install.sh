@@ -1568,6 +1568,11 @@ DESKTOP_EOF
             echo "[ERROR] $_css_app exists but is not a directory; remove manually and re-run install" >&2
             return 1
         fi
+        # Older installs linked the Desktop shortcut with `ln -sf`, which followed the
+        # existing link and planted a self-referential copy one level inside the bundle.
+        if [ -L "$_css_app/Unsloth Studio.app" ]; then
+            rm -f "$_css_app/Unsloth Studio.app" 2>/dev/null || true
+        fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
         # Info.plist
@@ -1646,9 +1651,10 @@ STUB_EOF
         # Touch so Finder indexes it
         touch "$_css_app"
 
-        # Symlink on Desktop
+        # Symlink on Desktop. -n is required: without it a re-run follows the existing
+        # link into the bundle and creates the new one inside it, as the CLI shim guards.
         if [ -d "$HOME/Desktop" ]; then
-            ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
+            ln -sfn "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
         _css_created=1
 
@@ -2636,6 +2642,15 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+# Whether the scripts next to install.sh may be trusted. A piped install (curl ... | sh)
+# has $0 = "sh", so _REPO_ROOT is just the caller's cwd and a file planted there would run.
+# Marker files cannot decide this (whoever can plant a helper can plant those), so require
+# the explicit --local intent AND a run from the file itself; else fetch the official copy.
+_REPO_IS_CHECKOUT=0
+case "$0" in
+    */install.sh|install.sh)
+        [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
+esac
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
@@ -3494,10 +3509,12 @@ _maybe_bootstrap_rocm_wsl() {
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
-    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
+    # copy counts only for a --local checkout run, since this executes with no prompt and
+    # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
-    if [ ! -r "$_rw_helper" ]; then
+    if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
         if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
@@ -4159,7 +4176,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6"
+            "unsloth>=2026.8.10" "unsloth-zoo>=2026.8.7"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -4174,7 +4191,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6"
+            "unsloth>=2026.8.10" "unsloth-zoo>=2026.8.7"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4408,7 +4425,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6"
+            "unsloth>=2026.8.10" "unsloth-zoo>=2026.8.7"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4427,7 +4444,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.9" "unsloth-zoo>=2026.8.6"
+            --upgrade-package unsloth "unsloth>=2026.8.10" "unsloth-zoo>=2026.8.7"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4456,7 +4473,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.6" "unsloth>=2026.8.9" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.7" "unsloth>=2026.8.10" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
