@@ -377,15 +377,19 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
 
 
 def test_progress_reports_the_live_writer_not_the_killed_attempt(monkeypatch, tmp_path):
-    """A retry inside the sweep's grace leaves the corpse next to the replacement."""
+    """The immediate retry: both partials written seconds apart, the corpse the larger."""
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
     corpse = blobs / f"{_BLOB_HASH}.11111111.incomplete"
     corpse.write_bytes(b"x" * 80)
-    stale = time.time() - snapshot_progress.ABANDONED_PARTIAL_SECONDS - 60
-    os.utime(corpse, (stale, stale))
-    (blobs / f"{_BLOB_HASH}.22222222.incomplete").write_bytes(b"x" * 10)
+    live = blobs / f"{_BLOB_HASH}.22222222.incomplete"
+    live.write_bytes(b"x" * 10)
+    # A retry seconds after the kill, so the two mtimes are far closer together than any
+    # abandonment threshold. Only which one is still advancing separates them.
+    now = time.time()
+    os.utime(corpse, (now - 8, now - 8))
+    os.utime(live, (now, now))
 
     monkeypatch.setattr(
         snapshot_progress,

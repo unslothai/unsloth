@@ -335,17 +335,10 @@ def reap_orphan_workers() -> None:
     survives a hard crash like a graceful shutdown's does. A partial nothing can
     resume has no affordance to preserve and is swept
     (see :func:`sweep_abandoned_partials`). Runs once at startup and never raises."""
-    try:
-        swept = sweep_abandoned_partials_in_all_caches()
-        if swept:
-            logger.info(
-                "Swept %d unresumable partial blob(s) left by a previous backend instance.",
-                swept,
-            )
-    except Exception as exc:
-        logger.debug("Boot sweep of abandoned partials failed: %s", exc)
+    reaped: list[tuple[str, str, Optional[str]]] = []
     parent = state_dir.workers_dir()
     if parent is None:
+        _boot_sweep(reaped)
         return
     try:
         entries = list(parent.iterdir())
@@ -367,6 +360,10 @@ def reap_orphan_workers() -> None:
         try:
             if _process_alive(pid) and _is_our_worker(pid, repo_id):
                 _kill_orphan(pid)
+                # Its partial is unreadable now and its writer is gone, but only as of this
+                # line. The sweep has to come after the kill, not before, or it reads the
+                # still-held blob lock and spares a file nothing will ever finish.
+                reaped.append((data.get("repo_type") or "model", repo_id, data.get("hub_cache")))
                 logger.warning(
                     "Reaped orphaned download worker pid=%s repo=%s from a "
                     "previous backend instance.",
@@ -383,6 +380,28 @@ def reap_orphan_workers() -> None:
         except Exception as exc:
             logger.debug("Reaper failed for breadcrumb %s: %s", entry, exc)
         _safe_unlink(entry)
+    _boot_sweep(reaped)
+
+
+def _boot_sweep(reaped: "Sequence[tuple[str, str, Optional[str]]]") -> None:
+    """Startup cleanup, run only once every surviving worker above has been killed."""
+    swept = 0
+    try:
+        for repo_type, repo_id, hub_cache in reaped:
+            # We killed this one ourselves a moment ago, so it need not look abandoned yet.
+            swept += sweep_abandoned_partials(
+                repo_type,
+                repo_id,
+                owns_all_blobs = True,
+                root = hub_cache,
+            )
+        swept += sweep_abandoned_partials_in_all_caches()
+    except Exception as exc:
+        logger.debug("Boot sweep of abandoned partials failed: %s", exc)
+    if swept:
+        logger.info(
+            "Swept %d unresumable partial blob(s) left by a previous backend instance.", swept
+        )
 
 
 class _PurgeOutcome(NamedTuple):
@@ -403,6 +422,7 @@ def _purge_incomplete_blobs(
     *,
     unresumable_only: bool = False,
     owned_hashes: Optional[frozenset[str]] = None,
+    owns_all_blobs: bool = False,
 ) -> _PurgeOutcome:
     """Delete selected partials while preserving protected concurrent writes.
 
@@ -413,8 +433,9 @@ def _purge_incomplete_blobs(
     writer on POSIX; it keeps filling an unlinked inode and then fails at the rename, so the
     cost of that mistake is another client's whole download.
 
-    ``owned_hashes`` are blobs whose only Studio-side writer has just been reaped, so the wait
-    buys nothing: the staleness check exists to infer a live writer, and here the answer is
+    ``owned_hashes``, or ``owns_all_blobs`` for a job that owns its whole repo dir (one with no
+    variant, which claim() will not let a sibling share), are blobs whose only Studio-side
+    writer has just been reaped, so the wait buys nothing: the staleness check exists to infer a live writer, and here the answer is
     known. The lock check still runs, which is what makes this safe -- hf takes the per-blob
     lock BEFORE creating its temporary file, so any partial belonging to a live writer
     (including a retry for this same job) is necessarily locked.
@@ -450,7 +471,8 @@ def _purge_incomplete_blobs(
                 # from one stalled on a slow network for longer than the grace.
                 if blob_download_lock_held(entry, blob_hash):
                     continue
-                if not (owned_hashes and blob_hash in owned_hashes):
+                owned = owns_all_blobs or bool(owned_hashes and blob_hash in owned_hashes)
+                if not owned:
                     if now - blob.stat().st_mtime < ABANDONED_PARTIAL_SECONDS:
                         continue
             blob.unlink()
@@ -787,7 +809,8 @@ def sweep_abandoned_partials(
     only_blob_hashes: Optional[frozenset[str]] = None,
     protected_blob_hashes: Optional[frozenset[str]] = None,
     owned_blob_hashes: Optional[frozenset[str]] = None,
-    root: Optional[Path] = None,
+    owns_all_blobs: bool = False,
+    root: Optional[str | Path] = None,
 ) -> int:
     """Remove partials nothing can resume and nothing has touched. Returns how many went.
 
@@ -797,6 +820,10 @@ def sweep_abandoned_partials(
     this when a download reaches a terminal state and every file skipped then gets a second
     look, by which point the grace has long since elapsed.
     """
+    # DownloadMetadata.hub_cache is a str, and every caller hands its captured root straight
+    # through, so normalize here rather than trusting each one to remember.
+    if isinstance(root, str):
+        root = Path(root) if root else None
     removed = 0
     for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         outcome = _purge_incomplete_blobs(
@@ -805,6 +832,7 @@ def sweep_abandoned_partials(
             protected_blob_hashes,
             unresumable_only = True,
             owned_hashes = owned_blob_hashes,
+            owns_all_blobs = owns_all_blobs,
         )
         removed += outcome.removed
     return removed

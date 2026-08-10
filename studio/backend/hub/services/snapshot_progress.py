@@ -25,7 +25,6 @@ from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.state_dir import RepoType
 from hub.utils.hf_cache_state import (
-    ABANDONED_PARTIAL_SECONDS,
     blob_bytes_present,
     incomplete_blob_hash,
     preferred_repo_cache_dirs,
@@ -601,18 +600,18 @@ def compute_snapshot_progress(
         # swept -- and an orphan outlives the process that would have unlinked it on the way out.
         for blob_hash in completed_hashes:
             partial_readings.pop(blob_hash, None)
-        # Among writers for one blob, only those still keeping pace with the freshest count.
-        # A retry inside the sweep's grace leaves the killed attempt's partial next to the
-        # replacement's, both unresumable and both named for the same etag, and taking the
-        # larger reported the corpse -- freezing the bar at the dead attempt's high-water mark
-        # until the live transfer overtook it. Genuine concurrent writers are all advancing, so
-        # they stay in and the largest of them still wins.
+        # Among writers for one blob, the most recently touched one IS the reading. A retry
+        # leaves the killed attempt's partial beside the replacement's, both unresumable and
+        # both named for the same etag, and taking the larger reported the corpse -- freezing
+        # the bar at the dead attempt's high-water mark until the live transfer overtook it.
+        # Size cannot separate them, and neither can the gap between their mtimes, which is
+        # smallest exactly when the retry was quickest. Only "which one is still being
+        # written" can, and huggingface_hub writes continuously, so that is the newest mtime.
+        # Genuine concurrent racers are all advancing within a chunk of each other, so
+        # preferring the freshest over the largest costs at most a chunk there.
         partial_bytes: dict[str, int] = {}
         for blob_hash, writers in partial_readings.items():
-            freshest = max(mtime for mtime, _ in writers)
-            partial_bytes[blob_hash] = max(
-                size for mtime, size in writers if freshest - mtime <= ABANDONED_PARTIAL_SECONDS
-            )
+            partial_bytes[blob_hash] = max(writers)[1]
         in_progress_bytes = sum(partial_bytes.values())
         snapshot_dirs: "_Lazy[list[Path]]" = _Lazy(
             lambda entry = entry: _retained_snapshot_dirs(entry)

@@ -1115,6 +1115,9 @@ def register_worker(
                     repo_id,
                     protected_blob_hashes = registry.peer_blob_hashes(key),
                     owned_blob_hashes = _own_blob_hashes if terminal else None,
+                    # _own_blob_hashes is None for a job with no variant, and claim() refuses a
+                    # concurrent sibling for those, so such a job owns the whole repo dir.
+                    owns_all_blobs = terminal and _own_blob_hashes is None,
                     # The cache this worker actually wrote to. Resolving the live one instead
                     # would miss the orphan whenever the download location changed mid-run,
                     # and sweep a cache this job never touched.

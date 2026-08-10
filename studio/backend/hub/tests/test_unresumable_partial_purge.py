@@ -374,3 +374,101 @@ def test_ownership_never_overrides_peer_protection(monkeypatch, blobs):
 
     assert swept == 0
     assert partial.exists()
+
+
+def test_the_sweep_accepts_the_string_root_the_metadata_holds(monkeypatch, tmp_path):
+    """DownloadMetadata.hub_cache is a str, and the caller hands it straight through.
+
+    Deliberately not using the ``blobs`` fixture: patching hf_cache_root would hand the
+    resolver a Path and hide the very conversion under test.
+    """
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    blobs = tmp_path / "hub" / "models--Org--Model" / "blobs"
+    blobs.mkdir(parents = True)
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+    _abandon(partial)
+
+    # A Path-only signature raised AttributeError here, and the caller's broad except
+    # swallowed it, so the terminal sweep silently did nothing for every real download.
+    swept = download_registry.sweep_abandoned_partials(
+        "model",
+        "Org/Model",
+        root = str(blobs.parent.parent),
+    )
+
+    assert swept == 1
+    assert not partial.exists()
+
+
+def test_a_job_owning_its_whole_repo_needs_no_hash_list(monkeypatch, blobs):
+    """A download with no variant resolves no blob hashes, and claim() gives it the repo."""
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)  # fresh, as a just-cancelled snapshot download's would be
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    assert download_registry.sweep_abandoned_partials("model", "Org/Model") == 0
+    assert (
+        download_registry.sweep_abandoned_partials("model", "Org/Model", owns_all_blobs = True) == 1
+    )
+    assert not partial.exists()
+
+
+def test_the_boot_sweep_runs_after_the_orphan_is_killed(monkeypatch, tmp_path, blobs):
+    """Sweeping first reads the doomed worker's still-held lock and spares its partial."""
+    workers = tmp_path / "workers"
+    workers.mkdir()
+    (workers / "job.json").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "repo_type": "model",
+                "repo_id": "Org/Model",
+                "variant": None,
+                "transport": "http",
+                "hub_cache": str(blobs.parent.parent),
+            }
+        ),
+        encoding = "utf-8",
+    )
+    partial = blobs / _NONCE_PARTIAL
+    partial.write_bytes(b"x" * 25)
+
+    order = []
+    locked = {"held": True}
+    monkeypatch.setattr(download_registry.state_dir, "workers_dir", lambda: workers)
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: False)
+    monkeypatch.setattr(download_registry, "_process_alive", lambda _pid: True)
+    monkeypatch.setattr(download_registry, "_is_our_worker", lambda *_a: True)
+    monkeypatch.setattr(download_registry, "_settle_orphaned_download", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        download_registry,
+        "hf_cache_roots",
+        lambda *_a, **_k: [blobs.parent.parent],
+    )
+    monkeypatch.setattr(
+        download_registry,
+        "iter_active_repo_cache_dirs",
+        lambda *_a, **_k: [blobs.parent],
+    )
+
+    def _kill(_pid):
+        order.append("kill")
+        locked["held"] = False  # the lock dies with the process
+
+    monkeypatch.setattr(download_registry, "_kill_orphan", _kill)
+    monkeypatch.setattr(
+        download_registry,
+        "blob_download_lock_held",
+        lambda *_a: order.append("sweep") or locked["held"],
+    )
+
+    download_registry.reap_orphan_workers()
+
+    assert order[0] == "kill"
+    assert not partial.exists()
