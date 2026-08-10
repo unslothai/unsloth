@@ -340,13 +340,10 @@ export function useStackGeometry(): StackPlacement {
       setNeededRoom((current) => (current === natural ? current : natural));
     };
     measure();
-    // Every box inside the stack, not just the stack itself. Capped, the container's own
-    // border box does not move when its content grows: an expanded release note whose
-    // Markdown image finishes loading pushes the content taller inside a root that stays
-    // at exactly the cap, so a root-only observer never fires. The child list does not
-    // change either, so the MutationObserver below says nothing. `neededRoom` would keep
-    // the pre-load height and the banner would stay clipped under an obstacle it was
-    // tall enough to be lifted over.
+    // Every box inside the stack, not just the stack itself. At its cap the container's
+    // border box does not move when its content grows, so a root-only observer never
+    // fires for a release-note image finishing its load, and childList says nothing
+    // either: the stack would keep the pre-load height and stay clipped.
     const observer = new ResizeObserver(measure);
     const observed = new Set<Element>();
     const syncObserved = () => {
@@ -366,7 +363,7 @@ export function useStackGeometry(): StackPlacement {
     };
     syncObserved();
     // A 0-height stack stays 0 as children come and go, so watch the child list too, and
-    // take the chance to observe whatever just arrived.
+    // observe whatever just arrived.
     const mutations = new MutationObserver(() => {
       syncObserved();
       measure();

@@ -435,10 +435,9 @@ test("no pairing produces an overlap or an unusable cap", () => {
   }
 });
 
-// Capped, the stack's own border box does not move when its content grows, so a root-only
-// ResizeObserver never fires for an image that finishes loading inside an expanded release
-// note. The child list does not change either, so neither observer speaks and the stack
-// keeps the pre-load height and stays clipped.
+// At its cap the stack's border box does not move when its content grows, so neither a
+// root-only ResizeObserver nor a childList watcher hears an image finish loading inside an
+// expanded release note, and the stack keeps the pre-load height and stays clipped.
 test("every box inside the stack is observed, not just the stack", async () => {
   const source = await readFile(
     new URL(
@@ -457,8 +456,7 @@ test("every box inside the stack is observed, not just the stack", async () => {
     /querySelectorAll\("\*"\)/,
     "the descendants are never enumerated, so none of them is observed",
   );
-  // A subtree that changes has to be re-observed, or a banner that arrives after mount is
-  // watched only until its first paint.
+  // A changed subtree has to be re-observed, or a banner arriving after mount is missed.
   const onMutation = wiring.slice(wiring.indexOf("new MutationObserver"));
   assert.match(onMutation, /syncObserved\(\)/, "the observed set is not resynced");
   // And unobserved on the way out, or a detached node keeps the observer alive.
