@@ -62,7 +62,6 @@ HOST_LIBS_RE="$HOST_LIBS_RE"'|^(libasound|libpulse.*)\.so'
 DLOPEN_LIBS=(
   libayatana-appindicator3.so.1
   libappindicator3.so.1
-  libpixbufloader-svg.so
   librsvg-2.so.2
 )
 
@@ -98,9 +97,15 @@ assert_portable_appdir() {
   local target
   while IFS= read -r -d '' target; do
     local unresolved
+    # Names on the host allowlist are supposed to come from the target system,
+    # so their absence on THIS machine says nothing about the bundle. Everything
+    # else unresolved is a genuine hole in the closure.
     unresolved="$(
       LD_LIBRARY_PATH="$libdir" ldd "$target" 2>/dev/null |
-        sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p'
+        sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p' |
+        while IFS= read -r miss; do
+          [[ "$miss" =~ $HOST_LIBS_RE ]] || printf '%s\n' "$miss"
+        done
     )"
     if [[ -n "$unresolved" ]]; then
       printf 'Unresolved in %s:\n%s\n' "$target" "$unresolved" >&2
@@ -158,10 +163,20 @@ mkdir -p "$libdir" "$webkit_exec"
 # Walk ldd output transitively from the executable plus the dlopened names, and
 # copy in everything that is not on the host allowlist. Resolving with ldd (not a
 # hand-written list) is what makes the closure complete rather than partial.
+# Extra directories to search for dlopened names, colon-separated. Needed on build
+# hosts that are not FHS-laid-out (nix, guix), where ldconfig knows nothing and the
+# libraries live outside /usr/lib. Empty and harmless on a normal distro.
+EXTRA_LIB_DIRS="${PORTABLE_APPIMAGE_LIB_DIRS:-}"
+
 resolve_lib() {  # soname -> absolute path on the build host, or empty
-  local name="$1" path
+  local name="$1" path dir
   path="$(ldconfig -p 2>/dev/null | awk -v n="$name" '$1 == n { print $NF; exit }')" || true
   [[ -n "$path" && -e "$path" ]] && { printf '%s\n' "$path"; return 0; }
+  local IFS=:
+  for dir in $EXTRA_LIB_DIRS ${LD_LIBRARY_PATH:-} ; do
+    [[ -n "$dir" && -e "$dir/$name" ]] && { printf '%s\n' "$dir/$name"; return 0; }
+  done
+  IFS=$' \t\n'
   for dir in /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /lib/x86_64-linux-gnu /lib64 /lib; do
     [[ -e "$dir/$name" ]] && { printf '%s\n' "$dir/$name"; return 0; }
   done
@@ -172,7 +187,12 @@ declare -A seen=()
 queue=("$binary_file")
 for name in "${DLOPEN_LIBS[@]}"; do
   if path="$(resolve_lib "$name")"; then
-    queue+=("$path")
+    # Copy the library ITSELF, not just walk its dependencies. Queuing alone
+    # bundled everything the tray library needs and not the tray library, so the
+    # app started and then panicked in libappindicator-sys' dlopen.
+    seen[$name]=1
+    cp -L "$path" "$libdir/$name"
+    queue+=("$libdir/$name")
   else
     log "note: dlopened $name not present on the build host, skipping"
   fi
@@ -182,6 +202,10 @@ while [[ ${#queue[@]} -gt 0 ]]; do
   current="${queue[0]}"; queue=("${queue[@]:1}")
   while read -r soname target; do
     [[ -n "$soname" ]] || continue
+    # ldd prints the dynamic loader with an absolute path in the name column, and
+    # some hosts print absolute paths generally, so reduce to a bare soname before
+    # matching the host allowlist or using it as a destination filename.
+    soname="$(basename -- "$soname")"
     [[ "$soname" =~ $HOST_LIBS_RE ]] && continue
     [[ -n "${seen[$soname]:-}" ]] && continue
     [[ -n "$target" && -e "$target" ]] || continue
@@ -194,57 +218,133 @@ log "bundled ${#seen[@]} libraries"
 
 # WebKit's helper processes. Without these the window opens and stays blank,
 # which is the single most confusing way for this bundle to fail.
-for helper_dir in /usr/libexec/webkit2gtk-4.1 /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1 \
-                  /usr/lib/webkit2gtk-4.1 /usr/libexec/webkit2gtk-4.0; do
-  if [[ -d "$helper_dir" ]]; then
+# Ask pkg-config where WebKit actually lives before guessing at FHS paths: the
+# helpers sit under $exec_prefix/libexec on any layout, which is the only thing
+# that holds on a non-FHS build host (nix, guix) as well as on Debian.
+webkit_search=()
+if webkit_prefix="$(pkg-config --variable=exec_prefix webkit2gtk-4.1 2>/dev/null)" \
+   && [[ -n "$webkit_prefix" ]]; then
+  webkit_search+=("$webkit_prefix/libexec/webkit2gtk-4.1")
+fi
+[[ -n "${PORTABLE_APPIMAGE_WEBKIT_EXEC_DIR:-}" ]] \
+  && webkit_search+=("$PORTABLE_APPIMAGE_WEBKIT_EXEC_DIR")
+webkit_search+=(
+  /usr/libexec/webkit2gtk-4.1
+  /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1
+  /usr/lib/webkit2gtk-4.1
+  /usr/libexec/webkit2gtk-4.0
+)
+for helper_dir in "${webkit_search[@]}"; do
+  if [[ -d "$helper_dir" && -e "$helper_dir/WebKitNetworkProcess" ]]; then
     cp -a "$helper_dir/." "$webkit_exec/"
+    chmod -R u+w "$webkit_exec"
     log "bundled WebKit helpers from $helper_dir"
     break
   fi
 done
-# The helpers link against the same closure, so walk them too.
-while IFS= read -r -d '' helper; do
+# Anything we copy in can pull further dependencies: the WebKit helpers, and the
+# GIO modules / pixbuf loaders copied below. Walking only the main binary leaves
+# exactly the partial closure this design exists to avoid, so walk every one.
+walk_closure() {  # dir -> copies missing deps of every ELF under it into $libdir
+  local root="$1" obj soname target
+  [[ -d "$root" ]] || return 0
+  while IFS= read -r -d '' obj; do
+    while read -r soname target; do
+      [[ -n "$soname" ]] || continue
+      soname="$(basename -- "$soname")"
+      [[ "$soname" =~ $HOST_LIBS_RE ]] && continue
+      [[ -n "${seen[$soname]:-}" ]] && continue
+      [[ -n "$target" && -e "$target" ]] || continue
+      seen[$soname]=1
+      cp -L "$target" "$libdir/$soname"
+      # Newly copied library may itself pull more in.
+      walk_one "$libdir/$soname"
+    done < <(ldd "$obj" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
+  done < <(find "$root" -type f \( -name '*.so*' -o -perm -u+x \) -print0)
+}
+
+walk_one() {  # single ELF -> copies its missing deps, transitively
+  local obj="$1" soname target
   while read -r soname target; do
     [[ -n "$soname" ]] || continue
+    soname="$(basename -- "$soname")"
     [[ "$soname" =~ $HOST_LIBS_RE ]] && continue
     [[ -n "${seen[$soname]:-}" ]] && continue
     [[ -n "$target" && -e "$target" ]] || continue
     seen[$soname]=1
     cp -L "$target" "$libdir/$soname"
-  done < <(ldd "$helper" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
-done < <(find "$webkit_exec" -type f -perm -u+x -print0)
+    walk_one "$libdir/$soname"
+  done < <(ldd "$obj" 2>/dev/null | sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*\([^[:space:]]*\).*$/\1 \2/p')
+}
+
+# MiniBrowser is WebKit's own test harness, not something the app ever launches.
+# It drags in the whole X11/Wayland/GBM client stack, so drop it rather than
+# bundle dependencies nothing uses.
+rm -f "$webkit_exec/MiniBrowser"
+
+walk_closure "$webkit_exec"
 
 # ── Loadable-module data ─────────────────────────────────────────────────────
 # GLib/GTK find these through compiled indexes that embed absolute build-host
 # paths. Copying the .so files without their indexes is precisely the "bundled
 # GLib, host modules" mix the thin script warns about, so the caches are
 # regenerated against the bundle and AppRun points the env vars at them.
+# Ask pkg-config for the module directories that belong to the SAME gio and
+# gdk-pixbuf we just bundled. Guessing at /usr/lib*/gio/modules copies the HOST's
+# modules next to our GLib, which is the bundled-GLib-with-host-modules mix the
+# thin build warns about -- and on a build host whose GLib is not the host's, the
+# modules link against libraries that are not in the bundle at all.
 pixbuf_dir="$app_dir/usr/lib/unsloth/gdk-pixbuf"
-mkdir -p "$pixbuf_dir"
-for cand in /usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/*/loaders /usr/lib64/gdk-pixbuf-2.0/*/loaders; do
-  [[ -d "$cand" ]] || continue
-  cp -a "$cand/." "$pixbuf_dir/" 2>/dev/null || true
-  break
-done
 gio_dir="$app_dir/usr/lib/unsloth/gio-modules"
-mkdir -p "$gio_dir"
-for cand in /usr/lib/x86_64-linux-gnu/gio/modules /usr/lib64/gio/modules; do
-  [[ -d "$cand" ]] || continue
-  cp -a "$cand/." "$gio_dir/" 2>/dev/null || true
-  break
-done
+mkdir -p "$pixbuf_dir" "$gio_dir"
+
+src_pixbuf="$(pkg-config --variable=gdk_pixbuf_moduledir gdk-pixbuf-2.0 2>/dev/null || true)"
+[[ -d "${src_pixbuf:-}" ]] || src_pixbuf="$(
+  ls -d /usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/*/loaders /usr/lib64/gdk-pixbuf-2.0/*/loaders 2>/dev/null | head -1
+)"
+if [[ -d "${src_pixbuf:-}" ]]; then
+  cp -a "$src_pixbuf/." "$pixbuf_dir/" 2>/dev/null || true
+  chmod -R u+w "$pixbuf_dir"
+  log "pixbuf loaders from $src_pixbuf"
+fi
+
+src_gio="$(pkg-config --variable=giomoduledir gio-2.0 2>/dev/null || true)"
+[[ -d "${src_gio:-}" ]] || src_gio="$(
+  ls -d /usr/lib/x86_64-linux-gnu/gio/modules /usr/lib64/gio/modules 2>/dev/null | head -1
+)"
+if [[ -d "${src_gio:-}" ]]; then
+  cp -a "$src_gio/." "$gio_dir/" 2>/dev/null || true
+  chmod -R u+w "$gio_dir"
+  log "gio modules from $src_gio"
+fi
+
 schema_dir="$app_dir/usr/share/glib-2.0/schemas"
 mkdir -p "$schema_dir"
-if [[ -d /usr/share/glib-2.0/schemas ]]; then
-  cp -a /usr/share/glib-2.0/schemas/. "$schema_dir/" 2>/dev/null || true
+src_schema="$(pkg-config --variable=schemasdir gsettings-desktop-schemas 2>/dev/null || true)"
+[[ -d "${src_schema:-}" ]] || src_schema=/usr/share/glib-2.0/schemas
+if [[ -d "$src_schema" ]]; then
+  cp -a "$src_schema/." "$schema_dir/" 2>/dev/null || true
+  chmod -R u+w "$schema_dir"
   command -v glib-compile-schemas >/dev/null 2>&1 \
     && glib-compile-schemas "$schema_dir" >/dev/null 2>&1 || true
 fi
+
+# The modules pull their own libraries (libproxy, gnutls, rsvg, jxl); without
+# this they would resolve back to the build host at runtime.
+walk_closure "$pixbuf_dir"
+walk_closure "$gio_dir"
 
 # ── Make everything relocatable ──────────────────────────────────────────────
 # Absolute RUNPATHs from the build host would send the loader to directories that
 # do not exist on the target. $ORIGIN makes each object look next to itself.
 if command -v patchelf >/dev/null 2>&1; then
+  # Copies inherit the source mode, and libraries on a read-only prefix (nix,
+  # guix, or anything served from a store) arrive without write permission --
+  # patchelf then fails on every object and the bundle ships with absolute
+  # build-host RUNPATHs that resolve nowhere on the target. Make them writable
+  # first; the `|| true` on each patchelf call would otherwise hide it.
+  chmod -R u+w "$libdir" "$webkit_exec" "$pixbuf_dir" "$gio_dir" 2>/dev/null || true
+  chmod u+w "$binary_file" 2>/dev/null || true
   while IFS= read -r -d '' obj; do
     patchelf --set-rpath '$ORIGIN' "$obj" 2>/dev/null || true
   done < <(find "$libdir" -maxdepth 1 -name '*.so*' -type f -print0)
@@ -255,15 +355,105 @@ if command -v patchelf >/dev/null 2>&1; then
     patchelf --set-rpath '$ORIGIN/../../lib/unsloth' "$obj" 2>/dev/null || true
   done < <(find "$webkit_exec" -type f -perm -u+x -print0)
   patchelf --set-rpath '$ORIGIN/../lib/unsloth' "$binary_file" 2>/dev/null || true
+
+  # Every executable must use the HOST's dynamic loader.
+  #
+  # A build host with a non-standard prefix (nix, guix, a relocated toolchain)
+  # stamps its own absolute interpreter path into PT_INTERP. An AppImage built
+  # that way cannot start on any machine that lacks that exact path -- and on the
+  # build machine itself it starts but then runs under a loader whose
+  # ld.so.cache does not know the target's library directories, so precisely the
+  # libraries we deliberately did NOT bundle (wayland, GL, EGL) come up missing.
+  # Observed exactly that: libwayland-client.so.0 not found on a host that has it
+  # in /usr/lib64. Normalise to the FHS path the runtime guarantees.
+  normalise_interpreter() {
+    local obj="$1" interp
+    interp="$(patchelf --print-interpreter "$obj" 2>/dev/null || true)"
+    [[ -n "$interp" ]] || return 0            # static or not an executable
+    case "$interp" in
+      /lib64/ld-linux-x86-64.so.2|/lib/ld-linux-x86-64.so.2|/lib/ld64.so.*) return 0 ;;
+    esac
+    patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$obj" 2>/dev/null \
+      && log "interpreter normalised: $(basename -- "$obj") (was $interp)"
+  }
+  normalise_interpreter "$binary_file"
+  while IFS= read -r -d '' obj; do
+    normalise_interpreter "$obj"
+  done < <(find "$webkit_exec" -type f -perm -u+x -print0)
   # Regenerate the loader cache with bundle-relative paths.
   if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
     ( cd "$pixbuf_dir" && GDK_PIXBUF_MODULEDIR="$pixbuf_dir" \
         gdk-pixbuf-query-loaders > "$pixbuf_dir/loaders.cache" 2>/dev/null ) || true
     sed -i "s|$pixbuf_dir/|./|g" "$pixbuf_dir/loaders.cache" 2>/dev/null || true
   fi
+  # Prove the rewrite happened. Every `patchelf ... || true` above is a place a
+  # read-only file or an unsupported object silently keeps its build-host RUNPATH,
+  # which produces a bundle that works only on the machine that built it.
+  leaked=0
+  while IFS= read -r -d '' obj; do
+    case "$(patchelf --print-rpath "$obj" 2>/dev/null || true)" in
+      */nix/store/*|/usr/*|/opt/*)
+        printf 'RUNPATH still absolute: %s -> %s\n' \
+          "$obj" "$(patchelf --print-rpath "$obj" 2>/dev/null)" >&2
+        leaked=$((leaked + 1))
+        ;;
+    esac
+  done < <(
+    printf '%s\0' "$binary_file"
+    find "$libdir" "$webkit_exec" -type f \( -name '*.so*' -o -perm -u+x \) -print0
+  )
+  [[ "$leaked" -eq 0 ]] || die "$leaked object(s) kept a build-host RUNPATH"
+  log "RUNPATHs rewritten to \$ORIGIN"
+
+  bad_interp=0
+  while IFS= read -r -d '' obj; do
+    case "$(patchelf --print-interpreter "$obj" 2>/dev/null || true)" in
+      ''|/lib64/ld-linux-x86-64.so.2|/lib/ld-linux-x86-64.so.2) ;;
+      *) printf 'Non-standard interpreter: %s -> %s\n' \
+           "$obj" "$(patchelf --print-interpreter "$obj" 2>/dev/null)" >&2
+         bad_interp=$((bad_interp + 1)) ;;
+    esac
+  done < <(
+    printf '%s\0' "$binary_file"
+    find "$webkit_exec" -type f -perm -u+x -print0
+  )
+  [[ "$bad_interp" -eq 0 ]] || die "$bad_interp executable(s) point at a build-host loader"
+  log "interpreters point at the host loader"
 else
   die "patchelf is required to build a relocatable AppImage"
 fi
+
+# ── Redirect WebKit's compiled-in helper directory ───────────────────────────
+# WebKitGTK dropped WEBKIT_EXEC_PATH; the path to WebKitNetworkProcess /
+# WebKitWebProcess is baked into libwebkit2gtk at build time as an absolute
+# string. Inside an AppImage that path points at the BUILD host, so the helpers
+# either fail to spawn or, worse, spawn the build machine's copies -- which is
+# what happened here: they launched from the build prefix and then could not find
+# libX11 under that prefix's loader.
+#
+# The mount point is random (/tmp/.mount_XXXXXX), so it cannot be patched in at
+# build time. Rewrite the string to a short fixed path instead and have AppRun
+# point that at the bundle. Replacement must be no longer than the original; the
+# remainder is NUL-padded, which keeps every offset in the ELF intact.
+WEBKIT_LINK_PATH="/tmp/.unsloth-webkit-$(id -u 2>/dev/null || echo 0)"
+python3 - "$libdir" "$WEBKIT_LINK_PATH" <<'PYEOF'
+import pathlib, re, sys
+libdir, link = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
+pat = re.compile(rb'[\x20-\x7e]*/libexec/webkit2gtk-4\.[01]\x00')
+for so in libdir.glob('libwebkit2gtk-*.so*'):
+    blob = bytearray(so.read_bytes())
+    hits = 0
+    for m in list(pat.finditer(blob)):
+        original = m.group()[:-1]
+        if len(link) > len(original):
+            print(f"  cannot patch: {link!r} longer than {original!r}", file=sys.stderr)
+            sys.exit(1)
+        blob[m.start():m.start() + len(m.group())] = link + b'\x00' * (len(m.group()) - len(link))
+        hits += 1
+    if hits:
+        so.write_bytes(bytes(blob))
+        print(f"  redirected {hits} helper path(s) in {so.name} -> {link.decode()}")
+PYEOF
 
 ln -sf usr/share/applications/Unsloth.desktop "$app_dir/Unsloth.desktop"
 ln -sf usr/share/icons/hicolor/128x128/apps/unsloth-studio.png "$app_dir/unsloth-studio.png"
@@ -288,8 +478,12 @@ export GDK_PIXBUF_MODULE_FILE="$libdir/gdk-pixbuf/loaders.cache"
 export GDK_PIXBUF_MODULEDIR="$libdir/gdk-pixbuf"
 export GIO_MODULE_DIR="$libdir/gio-modules"
 export GSETTINGS_SCHEMA_DIR="$appdir/usr/share/glib-2.0/schemas"
-# WebKit refuses to start its helpers from anywhere else.
-export WEBKIT_EXEC_PATH="$appdir/usr/libexec/unsloth-webkit"
+# WebKitGTK has its helper directory compiled in (WEBKIT_EXEC_PATH is gone), and
+# the build rewrote that string to the fixed path below. Point it at this mount.
+# Re-created every launch: the mount point changes each run, and a stale link
+# from a previous version would silently spawn the wrong helpers.
+WEBKIT_LINK="__WEBKIT_LINK_PATH__"
+ln -sfn "$appdir/usr/libexec/unsloth-webkit" "$WEBKIT_LINK" 2>/dev/null || true
 
 # Software rendering fallback. The bundle deliberately does NOT carry libGL, so
 # rendering uses the host driver; when there is none that works (headless, a
@@ -324,6 +518,7 @@ fi
 
 exec "$binary" "$@"
 EOF
+sed -i "s|__WEBKIT_LINK_PATH__|$WEBKIT_LINK_PATH|" "$app_dir/AppRun"
 chmod +x "$app_dir/AppRun"
 
 assert_portable_appdir "$app_dir"
