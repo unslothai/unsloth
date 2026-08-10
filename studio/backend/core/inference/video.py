@@ -709,6 +709,24 @@ class VideoBackend:
                 f"model{gguf_hint}."
             )
         if fam.modular_workflow and kind == "pipeline":
+            # Metal cannot place a modular workflow at all. _load_h3_modular_pipeline hands every
+            # non-CPU device to ComponentsManager.enable_auto_cpu_offload, which reads
+            # torch.<device>.mem_get_info and raises NotImplementedError for a device module
+            # without one; torch.mps has never exposed it. Refuse here, before ~145 GB downloads
+            # and the resident pipeline is torn down to make room for it.
+            if resolve_diffusion_device_target().device == "mps":
+                gguf_hint = (
+                    f" Load a .gguf checkpoint from '{fam.gguf_repo}' instead, which runs on the "
+                    f"native engine."
+                    if fam.gguf_repo
+                    else ""
+                )
+                raise ValueError(
+                    f"'{fam.name}' cannot run on Apple Silicon: its Modular Diffusers workflow "
+                    f"places components through the Diffusers auto CPU offload, which needs a "
+                    f"torch device exposing mem_get_info, and Metal (MPS) does not have it."
+                    f"{gguf_hint}"
+                )
             # Same normaliser the load uses, so a malformed value raises the identical message it
             # would below and only a real scheme reaches the availability check.
             requested_scheme = normalize_transformer_quant(transformer_quant)
