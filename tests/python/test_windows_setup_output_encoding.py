@@ -453,7 +453,9 @@ def test_update_command_uses_the_utf8_switch_not_just_env() -> None:
     https://docs.python.org/3/using/cmdline.html#cmdoption-I
     """
     source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "update.rs").read_text(encoding = "utf-8")
-    assert re.search(r'"-X"\s*,\s*"utf8"', source), "isolated Python child needs -X utf8, env vars are ignored"
+    assert re.search(
+        r'"-X"\s*,\s*"utf8"', source
+    ), "isolated Python child needs -X utf8, env vars are ignored"
 
 
 @pytest.mark.parametrize(
