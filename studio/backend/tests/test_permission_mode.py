@@ -2960,7 +2960,7 @@ def test_confirm_gate_needs_stream():
         is False
     )
     # web_search prompts once the model supplies a ``url``, so it needs a stream to deliver
-    # that prompt, else the request is admitted then blocks in wait_tool_decision forever.
+    # that prompt, else the request is admitted then blocks out the decision timeout.
     assert (
         _confirm_gate_needs_stream(req(permission_mode = "auto", enabled_tools = ["web_search"]))
         is True
