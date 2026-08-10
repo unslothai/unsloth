@@ -154,10 +154,9 @@ export function ProjectSourceDropzone({
   stagedRef.current = staged;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  // Radix unmounts the dialog's content on close, so a cancel takes this
-  // component down before the reset below reaches it. Set on setup, not just
-  // cleared on cleanup: StrictMode replays setup/cleanup/setup, which would
-  // otherwise leave this false forever.
+  // Radix unmounts the dialog content on close, so a cancel takes this
+  // component down before the reset below reaches it. Set on setup, or
+  // StrictMode's replayed cleanup would leave it false forever.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -165,13 +164,10 @@ export function ProjectSourceDropzone({
       mounted.current = false;
     };
   }, []);
-  // The dialog stays mounted across close, so an unmount flag cannot see a
-  // cancel. Identity, not length, marks a drop as superseded: `reset()` swaps
-  // in a fresh array even when it was already empty, which a nonzero→zero
-  // check would miss. Anything this component did not hand to `onChange` is an
-  // external reset, so a drop still registering is no longer wanted. Comparing
-  // the reference also absorbs StrictMode's replayed setup, which sees the
-  // array it already recorded.
+  // The dialog can stay mounted across close, so an unmount flag alone cannot
+  // see a cancel. Any array this component did not hand off is an external
+  // reset, and a drop still registering is no longer wanted. Identity, not
+  // length: `reset()` swaps in a fresh array even when it was already empty.
   const generation = useRef(0);
   const handedOff = useRef<StagedSource[] | null>(null);
   useEffect(() => {
@@ -182,9 +178,8 @@ export function ProjectSourceDropzone({
 
   /** Hand a list to the owner without reading it back as an external reset. */
   const commit = useCallback((next: StagedSource[]) => {
-    // Also the ref, not just on the next render: two drops settling in one tick
-    // would otherwise merge against the same old list and the second would
-    // publish an array missing the first drop's files.
+    // The ref too, not just on the next render: two drops settling in one tick
+    // would both merge against the old list and the second would lose the first.
     stagedRef.current = next;
     handedOff.current = next;
     onChangeRef.current(next);
@@ -276,9 +271,8 @@ export function ProjectSourceDropzone({
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
       ).finally(() => addPending(-1));
-      // The panel was cleared or closed while this was registering: the user is
-      // done with this drop, so let the tokens lapse instead of refilling a
-      // draft that a later dialog would open on.
+      // Cleared or closed while registering: let the tokens lapse rather than
+      // refill a draft the next dialog would open on.
       if (!mounted.current || claimed !== generation.current) return;
       const staged = settled.flatMap((result) =>
         result.status === "fulfilled" ? [stagedFromIntent(result.value)] : [],
@@ -294,9 +288,8 @@ export function ProjectSourceDropzone({
     [addSources, addPending],
   );
 
-  // Stay claimed while disabled. Unregistering hands the drop back to the
-  // chat-wide handler, which would attach it to the chat behind the dialog;
-  // holding the claim and ignoring the drop is what "disabled" should mean.
+  // Stay claimed while disabled: unregistering hands the drop to the chat-wide
+  // handler, which would attach it to the chat behind the dialog.
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => {
       if (disabled) return;

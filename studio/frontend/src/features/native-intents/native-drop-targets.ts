@@ -67,9 +67,9 @@ function listen(): void {
       // would step aside for a listener that cannot deliver, losing the drop.
       ready = true;
 
-      // Scale is a refinement, not a prerequisite, and the devicePixelRatio seed
-      // holds until it lands. Failing here must not reset `listening`: the next
-      // registration would stack a second drop listener, doubling every drop.
+      // Scale is a refinement; the devicePixelRatio seed holds until it lands.
+      // Failing here must not reset `listening`, or the next registration would
+      // stack a second drop listener and double every drop.
       let scaleReported = false;
       await currentWindow
         .onScaleChanged(({ payload }) => {

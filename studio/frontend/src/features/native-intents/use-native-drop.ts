@@ -175,9 +175,8 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
     // "over" carries no paths, so the ones announced on "enter" are what the
     // overlay keeps reading as the cursor moves across the window.
     let draggedPaths: string[] = [];
-    // Tauri repeats "over" for every cursor move. A fresh object each time
-    // would rerender ChatPage at drag-event frequency, so publish only a
-    // change; returning `prev` makes React bail out.
+    // Tauri repeats "over" per cursor move, so a fresh object each time would
+    // rerender ChatPage at drag frequency. Returning `prev` makes React bail out.
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 

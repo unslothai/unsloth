@@ -8,11 +8,9 @@ import {
   registerNativeDropTarget,
 } from "./native-drop-targets";
 
-/**
- * Claim native drops landing on the returned ref's element. Without this a drop
- * anywhere on the window goes to the chat-wide handler, which is how a file
- * dropped on a dialog's own drop zone ended up attached to the chat behind it.
- */
+/** Claim native drops landing on the returned ref's element. Without this they
+ * all go to the chat-wide handler, which is how a file dropped on a dialog's
+ * own drop zone ended up attached to the chat behind it. */
 export function useNativeDropTarget(
   options: NativeDropTargetHandlers & { enabled?: boolean },
 ): (element: HTMLElement | null) => void {

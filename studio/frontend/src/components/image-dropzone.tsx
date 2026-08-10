@@ -19,9 +19,8 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "@/lib/toast";
 
-// What the native path policy lets registerNativeAttachmentPath take. The
-// picker itself accepts image/*, so say which formats a drop can carry rather
-// than letting the backend refuse one with its own wording.
+// All registerNativeAttachmentPath takes. The picker itself accepts image/*,
+// so name the droppable formats instead of surfacing the backend's refusal.
 const NATIVE_IMAGE_EXTS = ["jpg", "jpeg", "png", "webp", "gif"];
 
 /** Shared image picker that returns a data URL. */
@@ -45,9 +44,8 @@ export function ImageDropzone({
   // File reads can finish after another picker action. Only the newest
   // selection may update the shared field.
   const selection = useRef(0);
-  // The sequence above is per instance, so it cannot see a read outliving this
-  // picker: `onChange` is shared, and a late write would land on whatever slot
-  // holds it now. Set on setup, so StrictMode's replay does not leave it false.
+  // The sequence is per instance, so it cannot see a read outliving this
+  // picker: `onChange` is shared, and a late write lands on whoever holds it.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
