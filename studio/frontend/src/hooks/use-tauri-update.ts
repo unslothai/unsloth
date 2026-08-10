@@ -63,10 +63,12 @@ export interface RetainedUpdateFailure {
   logs: string[];
 }
 
+// Mirrors the constants in src-tauri/src/desktop_update_policy.rs; used when the
+// desktop_update_policy invoke fails.
 const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   mode: "in_app",
   releasePageBaseUrl: "https://github.com/unslothai/unsloth/releases/tag/",
-  releaseTagPrefix: "desktop-v",
+  releaseTagPrefix: "v",
 };
 
 // Desktop quit never fires beforeunload, and only the renderer sees the shell installer.

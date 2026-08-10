@@ -128,7 +128,9 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert re.search(r"^\s*break\b", loop_body, re.MULTILINE), wait_run
 
     names = [step.get("name") for step in publish["steps"]]
-    assert names.index("Wait for the build matrix") < names.index("Create versioned release")
+    assert names.index("Wait for the build matrix") < names.index(
+        "Stage desktop bundles on a draft release"
+    )
     # And it has to clear before the assets are pulled, or the download races the
     # legs and publish-release dies on artifacts that do not exist yet.
     download = next(
@@ -138,18 +140,23 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert names.index("Wait for the build matrix") < download, names
 
-    # Creating a missing release is a separate step gated on validation, so a
-    # non-draft release is never reserved before its assets are ready to upload.
+    # Staging is a separate step gated on validation, so nothing reaches the public
+    # v{version} release before its assets are ready to upload.
     release_step = next(
         step for step in publish["steps"] if step.get("name") == "Validate versioned release state"
     )
+    # Draft-aware listing catches a leftover staging release; the REST lookup checks
+    # the target release exists and is not already carrying desktop assets.
     assert "gh release list" in release_step["run"]
-    assert "resource_exists" in release_step["run"]
+    assert 'gh api "repos/${GH_REPO}/releases/tags/${DESKTOP_RELEASE_TAG}"' in release_step["run"]
 
     create_step = next(
-        step for step in publish["steps"] if step.get("name") == "Create versioned release"
+        step
+        for step in publish["steps"]
+        if step.get("name") == "Stage desktop bundles on a draft release"
     )
     assert "gh release create" in create_step["run"]
+    assert "--draft" in create_step["run"]
     assert create_step["if"] == "steps.versioned_release_state.outputs.create == 'true'"
 
 
@@ -203,7 +210,7 @@ def test_publishing_draft_advances_updater_without_rebuilding():
     job = workflow["jobs"]["publish-updater"]
     assert "build" not in workflow["jobs"]
     assert job["permissions"] == {"contents": "write"}
-    assert "startsWith(github.event.release.tag_name, 'desktop-v')" in job["if"]
+    assert "startsWith(github.event.release.tag_name, 'v')" in job["if"]
     assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
     assert any("desktop-latest" in step.get("run", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])

@@ -35,7 +35,7 @@ on:
         # Empty, not a pinned tag. desktop-v0.1.50-beta predates #7547, so with the
         # outcome pins retired a dispatch that took this default would fail all four
         # POSIX legs at the installer step -- on a bundle nobody meant to test. Empty
-        # falls through to the same newest-desktop-v* resolution the schedule uses.
+        # falls through to the same desktop-latest resolution the schedule uses.
         default: ''
       release_repo:
         description: 'owner/name hosting the desktop release'
@@ -58,9 +58,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # Drafts are listed only to a token with push access, and every desktop-v* release here
-  # is a draft, so `contents: read` cannot see the bundle under test at all.
-  contents: write
+  # Bundles ship on the public v{version} release and the desktop-latest channel that
+  # resolves it is public too, so read access is enough; this workflow writes nothing.
+  contents: read
 
 env:
   # release-desktop.yml publishes into github.repository, so a nightly aimed anywhere else
@@ -69,9 +69,8 @@ env:
   REL_REPO: ${{ inputs.release_repo || github.repository }}
   # Empty unless dispatched: a pinned tag is an immutable fixture, so a nightly against it
   # could never catch a newly published broken bundle. Each download step then resolves
-  # the newest desktop-v* release, drafts included -- they are all cut as drafts, so
-  # --exclude-drafts matched nothing and every leg died resolving. releases/tags/<tag>
-  # 404s for a draft, but gh resolves drafts over GraphQL, so the download still works.
+  # the release the desktop-latest channel currently points at, which is by definition
+  # the v{version} release carrying the bundles under test.
   REL_TAG: ${{ inputs.release_tag || '' }}
   UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
   UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK: '1'
@@ -79,9 +78,9 @@ env:
 jobs:
   # ── macOS: .dmg, Apple Silicon ────────────────────────────────────────────
   macos:
-    # A fork PR's token is read-only whatever this workflow declares, so it cannot list
-    # the drafts every desktop-v* bundle is published as. Skip rather than fail: a
-    # property of the trigger, not a broken release.
+    # Fork PRs get a token with no access to this repo's release downloads, so the
+    # bundle under test cannot be fetched. Skip rather than fail: a property of the
+    # trigger, not a broken release.
     if: github.event.pull_request.head.repo.fork != true
     name: desktop macOS ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -104,16 +103,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dl logs
-          # Desktop releases are prereleases (never repo-wide "latest") and drafts, so the
-          # newest desktop-v* tag has to be resolved explicitly. See REL_TAG above.
+          # Desktop releases are prereleases and never the repo-wide "latest", so the
+          # target tag has to be resolved explicitly. See REL_TAG above.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            # Bundles ship on the ordinary v{version} release, and only some of those
+            # carry them, so resolve the active one from the updater channel rather
+            # than by tag shape.
+            manifest_dir="$(mktemp -d)"
+            gh release download desktop-latest --repo "$REL_REPO" \
+              --pattern latest.json --dir "$manifest_dir" 2>/dev/null || true
+            if [ -s "$manifest_dir/latest.json" ]; then
+              REL_TAG="$(jq -r '"v" + (.version | sub("^v"; ""))' "$manifest_dir/latest.json")"
+            else
+              REL_TAG=""
+            fi
             # Loud on purpose: there is no bundle to test, so passing would prove nothing.
             [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              echo "::error::no desktop release resolvable from desktop-latest in $REL_REPO -- either the channel has never been published, or this token cannot read it"
               exit 1
             }
             echo "resolved release tag: $REL_TAG"
@@ -321,12 +327,19 @@ jobs:
           mkdir -p dl logs
           # See the macOS job. Loud on purpose: no bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            # Bundles ship on the ordinary v{version} release, and only some of those
+            # carry them, so resolve the active one from the updater channel rather
+            # than by tag shape.
+            manifest_dir="$(mktemp -d)"
+            gh release download desktop-latest --repo "$REL_REPO" \
+              --pattern latest.json --dir "$manifest_dir" 2>/dev/null || true
+            if [ -s "$manifest_dir/latest.json" ]; then
+              REL_TAG="$(jq -r '"v" + (.version | sub("^v"; ""))' "$manifest_dir/latest.json")"
+            else
+              REL_TAG=""
+            fi
             [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              echo "::error::no desktop release resolvable from desktop-latest in $REL_REPO -- either the channel has never been published, or this token cannot read it"
               exit 1
             }
             echo "resolved release tag: $REL_TAG"
@@ -536,12 +549,19 @@ jobs:
           mkdir -p dl logs
           # See the macOS job. Loud on purpose: no bundle means nothing to prove.
           if [ -z "$REL_TAG" ]; then
-            REL_TAG="$(gh release list --repo "$REL_REPO" --limit 100 \
-              --json tagName,createdAt \
-              --jq '[.[] | select(.tagName | startswith("desktop-v"))]
-                    | sort_by(.createdAt) | reverse | .[0].tagName // empty')"
+            # Bundles ship on the ordinary v{version} release, and only some of those
+            # carry them, so resolve the active one from the updater channel rather
+            # than by tag shape.
+            manifest_dir="$(mktemp -d)"
+            gh release download desktop-latest --repo "$REL_REPO" \
+              --pattern latest.json --dir "$manifest_dir" 2>/dev/null || true
+            if [ -s "$manifest_dir/latest.json" ]; then
+              REL_TAG="$(jq -r '"v" + (.version | sub("^v"; ""))' "$manifest_dir/latest.json")"
+            else
+              REL_TAG=""
+            fi
             [ -n "$REL_TAG" ] || {
-              echo "::error::no desktop-v* release visible in $REL_REPO -- either none has been cut, or this token cannot list drafts (needs contents: write)"
+              echo "::error::no desktop release resolvable from desktop-latest in $REL_REPO -- either the channel has never been published, or this token cannot read it"
               exit 1
             }
             echo "resolved release tag: $REL_TAG"

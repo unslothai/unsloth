@@ -15,7 +15,11 @@ concurrency:
 jobs:
   publish-updater:
     name: Advance desktop updater channel
-    if: startsWith(github.event.release.tag_name, 'desktop-v')
+    # Desktop bundles now ship on the ordinary `v{version}` release. Those releases are
+    # published before the bundles are copied onto them, so the precise SemVer shape and
+    # the presence of latest.json are re-checked in "Check for desktop bundles" below;
+    # a release without them is skipped rather than failed.
+    if: startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,7 +33,33 @@ jobs:
         with:
           egress-policy: audit
 
+      - name: Check for desktop bundles
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.][0-9A-Za-z.-]*)?$ ]]; then
+            echo "${RELEASE_TAG} is not a v{SemVer} release; nothing to advance."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Fail closed on an API error: an unreadable release must not look like one
+          # that simply carries no bundles.
+          asset_names="$RUNNER_TEMP/release-asset-names.txt"
+          if ! gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' > "$asset_names"; then
+            echo "Could not list assets on ${RELEASE_TAG}; refusing to advance the channel." >&2
+            exit 1
+          fi
+          if grep -Fxq 'latest.json' "$asset_names"; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${RELEASE_TAG} carries no latest.json; the desktop bundles have not landed yet."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download updater metadata
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -65,20 +95,25 @@ jobs:
             exit 1
           fi
 
+      # Scoped to the desktop bundle names: this release is shared with whatever else
+      # the version release carries, so deleting every *.sig on it would reach beyond
+      # the desktop artifacts.
       - name: Remove standalone signature assets
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           signature_assets="$(
             gh release view "$RELEASE_TAG" --json assets \
-              --jq '.assets[].name | select(endswith(".sig"))'
+              --jq '.assets[].name | select(startswith("Unsloth-Desktop-")) | select(endswith(".sig"))'
           )"
           while IFS= read -r asset_name; do
             [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
           done <<< "$signature_assets"
 
       - name: Validate updater metadata
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           python3 <<'PY'
           import json
@@ -138,7 +173,7 @@ jobs:
               return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
 
           release_tag = os.environ['RELEASE_TAG']
-          tag_match = re.fullmatch(r'desktop-v(.+)', release_tag)
+          tag_match = re.fullmatch(r'v(.+)', release_tag)
           if not tag_match:
               sys.exit(f'Not a desktop version release: {release_tag}')
 
@@ -191,6 +226,7 @@ jobs:
           PY
 
       - name: Ensure updater channel release
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -222,6 +258,7 @@ jobs:
           PY
 
       - name: Publish updater channel metadata
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

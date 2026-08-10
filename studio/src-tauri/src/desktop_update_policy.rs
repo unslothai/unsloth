@@ -2,7 +2,11 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 const DESKTOP_RELEASE_PAGE_BASE_URL: &str = "https://github.com/unslothai/unsloth/releases/tag/";
-const DESKTOP_RELEASE_TAG_PREFIX: &str = "desktop-v";
+// Desktop bundles ship on the ordinary `v{version}` release rather than a separate
+// `desktop-v{version}` one, so the release page link and the bundle URLs share a tag.
+const DESKTOP_RELEASE_TAG_PREFIX: &str = "v";
+const DESKTOP_RELEASE_DOWNLOAD_BASE_URL: &str =
+    "https://github.com/unslothai/unsloth/releases/download/";
 const DESKTOP_UPDATER_CHANNEL_URL: &str =
     "https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json";
 
@@ -120,8 +124,10 @@ fn validate_channel_metadata(
         return Err("Desktop updater metadata has no platforms".to_string());
     }
 
+    // Derived from the shared constants so the accepted prefix cannot drift away from
+    // the tag the release page link is built from.
     let expected_prefix = format!(
-        "https://github.com/unslothai/unsloth/releases/download/desktop-v{normalized_version}/"
+        "{DESKTOP_RELEASE_DOWNLOAD_BASE_URL}{DESKTOP_RELEASE_TAG_PREFIX}{normalized_version}/"
     );
     for (platform, entry) in &metadata.platforms {
         if entry.url.trim().is_empty() {
@@ -379,6 +385,92 @@ fn split_alpha_numeric(value: &str) -> Option<(&str, u64)> {
 
 #[cfg(test)]
 mod tests {
+    use super::{ChannelMetadata, ChannelPlatform};
+    use std::collections::HashMap;
+
+    fn metadata_with_url(url: &str) -> ChannelMetadata {
+        let mut platforms = HashMap::new();
+        platforms.insert(
+            "windows-x86_64".to_string(),
+            ChannelPlatform {
+                url: url.to_string(),
+                signature: "dW50cnVzdGVk".to_string(),
+            },
+        );
+        ChannelMetadata {
+            version: "0.1.527-beta".to_string(),
+            pypi_version: None,
+            notes: None,
+            pub_date: None,
+            platforms,
+        }
+    }
+
+    const VERSION: &str = "0.1.527-beta";
+
+    #[test]
+    fn validate_channel_metadata_accepts_version_tag_urls() {
+        let metadata = metadata_with_url(
+            "https://github.com/unslothai/unsloth/releases/download/v0.1.527-beta/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+        );
+        assert!(super::validate_channel_metadata(&metadata, VERSION).is_ok());
+    }
+
+    #[test]
+    fn validate_channel_metadata_rejects_legacy_desktop_tag_urls() {
+        let metadata = metadata_with_url(
+            "https://github.com/unslothai/unsloth/releases/download/desktop-v0.1.527-beta/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+        );
+        assert!(super::validate_channel_metadata(&metadata, VERSION).is_err());
+    }
+
+    #[test]
+    fn validate_channel_metadata_rejects_moving_channel_urls() {
+        for url in [
+            "https://github.com/unslothai/unsloth/releases/download/desktop-latest/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+            "https://github.com/unslothai/unsloth/releases/latest/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+        ] {
+            let metadata = metadata_with_url(url);
+            assert!(
+                super::validate_channel_metadata(&metadata, VERSION).is_err(),
+                "expected {url} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_channel_metadata_rejects_foreign_hosts_and_other_versions() {
+        for url in [
+            "https://example.com/unslothai/unsloth/releases/download/v0.1.527-beta/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+            "https://github.com/unslothai/unsloth/releases/download/v0.1.526-beta/Unsloth-Desktop-0_1_526_beta-Windows.exe",
+        ] {
+            let metadata = metadata_with_url(url);
+            assert!(
+                super::validate_channel_metadata(&metadata, VERSION).is_err(),
+                "expected {url} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_channel_metadata_requires_url_signature_and_platforms() {
+        let mut empty = metadata_with_url("");
+        assert!(super::validate_channel_metadata(&empty, VERSION).is_err());
+
+        empty.platforms.clear();
+        assert!(super::validate_channel_metadata(&empty, VERSION).is_err());
+
+        let mut unsigned = metadata_with_url(
+            "https://github.com/unslothai/unsloth/releases/download/v0.1.527-beta/Unsloth-Desktop-0_1_527_beta-Windows.exe",
+        );
+        unsigned
+            .platforms
+            .get_mut("windows-x86_64")
+            .expect("platform present")
+            .signature = "   ".to_string();
+        assert!(super::validate_channel_metadata(&unsigned, VERSION).is_err());
+    }
+
     #[test]
     fn compare_versions_orders_supported_suffixes() {
         assert!(super::compare_versions("2026.5.3", "2026.5.3-rc1") > 0);

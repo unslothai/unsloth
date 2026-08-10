@@ -13,7 +13,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
-RELEASE_TAG = "desktop-v0.1.50-beta"
+RELEASE_TAG = "v0.1.50-beta"
+STAGING_TAG = "desktop-v0.1.50-beta"
 SOURCE_SHA = "1f02275b86f0e0d3a5b1c9f2a4d6e8b0c2a4e6f8"
 
 
@@ -43,26 +44,39 @@ def _write_fake_gh(path: Path):
 set -eu
 printf 'gh %s\\n' "$*" >> "$COMMAND_LOG"
 if [ "$1" = "api" ]; then
+  include=0
   endpoint=""
   for argument in "$@"; do
-    case "$argument" in repos/*) endpoint="$argument" ;; esac
+    case "$argument" in
+      --include) include=1 ;;
+      repos/*) endpoint="$argument" ;;
+    esac
   done
   case "$endpoint" in
-    */git/ref/tags/*) status="$TAG_HTTP_STATUS" ;;
-    */releases/tags/*) status="$RELEASE_HTTP_STATUS" ;;
+    */releases/tags/desktop-latest) status=404 ;;
+    */releases/tags/*) status="$TARGET_HTTP_STATUS" ;;
     *) exit 0 ;;
   esac
-  printf 'HTTP/2.0 %s Test Response\n' "$status"
-  if [ "$status" = "200" ]; then exit 0; fi
+  if [ "$include" = "1" ]; then
+    printf 'HTTP/2.0 %s Test Response\n' "$status"
+  fi
+  if [ "$status" = "200" ]; then
+    if [ "$TARGET_HAS_DESKTOP_ASSETS" = "1" ]; then
+      printf '{"tag_name":"%s","draft":false,"assets":[{"name":"latest.json"}]}\n' "$DESKTOP_RELEASE_TAG"
+    else
+      printf '{"tag_name":"%s","draft":false,"assets":[]}\n' "$DESKTOP_RELEASE_TAG"
+    fi
+    exit 0
+  fi
   exit 1
 fi
 if [ "$1" = "release" ] && [ "$2" = "list" ]; then
-  if [ "$RELEASE_HTTP_STATUS" = "500" ]; then
+  if [ "$STAGING_LIST_STATUS" = "500" ]; then
     printf 'GraphQL test failure\n' >&2
     exit 1
   fi
-  if [ "$RELEASE_HTTP_STATUS" = "200" ]; then
-    printf '[{"tagName":"%s"}]\n' "$DESKTOP_RELEASE_TAG"
+  if [ "$STAGING_EXISTS" = "1" ]; then
+    printf '[{"tagName":"%s"}]\n' "$STAGING_RELEASE_TAG"
   else
     printf '[]\n'
   fi
@@ -82,8 +96,10 @@ def _run_step(
     name: str,
     tmp_path: Path,
     *,
-    tag_http_status: int = 404,
-    release_http_status: int = 404,
+    target_http_status: int = 200,
+    target_has_desktop_assets: bool = False,
+    staging_exists: bool = False,
+    staging_list_status: int = 200,
     extra_env: dict[str, str] | None = None,
 ):
     fake_bin = tmp_path / "bin"
@@ -95,15 +111,19 @@ def _run_step(
     env = os.environ.copy()
     env.update(
         {
+            "ASSET_VERSION": "0_1_50_beta",
             "COMMAND_LOG": str(log),
             "DESKTOP_RELEASE_TAG": RELEASE_TAG,
             "GH_REPO": "unslothai/unsloth",
             "GITHUB_OUTPUT": str(tmp_path / "github-output"),
             "GH_TOKEN": "masked-token",
             "PATH": f"{fake_bin}:{env['PATH']}",
-            "RELEASE_HTTP_STATUS": str(release_http_status),
             "RUNNER_TEMP": str(tmp_path),
-            "TAG_HTTP_STATUS": str(tag_http_status),
+            "STAGING_EXISTS": "1" if staging_exists else "0",
+            "STAGING_LIST_STATUS": str(staging_list_status),
+            "STAGING_RELEASE_TAG": STAGING_TAG,
+            "TARGET_HAS_DESKTOP_ASSETS": "1" if target_has_desktop_assets else "0",
+            "TARGET_HTTP_STATUS": str(target_http_status),
         }
     )
     env.update(extra_env or {})
@@ -148,7 +168,6 @@ def _run_create_release(workflow, tmp_path: Path, **kwargs):
         "GITHUB_SHA": SOURCE_SHA,
         "GITHUB_REPOSITORY": "unslothai/unsloth",
         "PYPI_VERSION": "2026.8.7",
-        "RELEASE_DRAFT": "true",
         "STUDIO_VERSION": "v0.1.50-beta",
     }
     env.update(kwargs.pop("extra_env", None) or {})
@@ -158,14 +177,19 @@ def _run_create_release(workflow, tmp_path: Path, **kwargs):
     names = (
         "Validate versioned release state",
         "Generate versioned updater metadata and provenance",
-        "Create versioned release",
+        "Stage desktop bundles on a draft release",
     )
-    create_step = _step(workflow, "publish-release", "Create versioned release")
+    create_step = _step(workflow, "publish-release", "Stage desktop bundles on a draft release")
     create_step["run"] = "\n".join(
         _step(workflow, "publish-release", name)["run"] for name in names
     )
     return _run_step(
-        workflow, "publish-release", "Create versioned release", tmp_path, extra_env = env, **kwargs
+        workflow,
+        "publish-release",
+        "Stage desktop bundles on a draft release",
+        tmp_path,
+        extra_env = env,
+        **kwargs,
     )
 
 
@@ -189,8 +213,8 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
     assert workflow["jobs"]["build"]["needs"] == "prepare-version"
 
     for case, expected in (
-        ({"tag_http_status": 200}, 1),
-        ({"release_http_status": 200}, 1),
+        ({"target_has_desktop_assets": True}, 1),
+        ({"target_http_status": 404}, 1),
         ({}, 0),
     ):
         case_dir = tmp_path / ("-".join(case) or "unused-version")
@@ -202,15 +226,36 @@ def test_a_used_version_fails_the_guard_before_any_build_work(tmp_path):
             case_dir,
             **case,
         )
-        assert result.returncode == expected, (case, result.stderr)
+        assert result.returncode == expected, (case, result.stderr, result.stdout)
         if expected:
             assert RELEASE_TAG in result.stderr
-            # Avoid leaving a tag that fails the next attempt.
-            assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
-            assert (
-                f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}"
-                in result.stderr
-            )
+
+
+def test_a_missing_target_release_says_how_to_create_it(tmp_path):
+    workflow = _workflow()
+    result, _ = _run_step(
+        workflow,
+        "prepare-version",
+        "Guard against republishing an existing version",
+        tmp_path,
+        target_http_status = 404,
+    )
+    assert result.returncode == 1
+    assert f"Release {RELEASE_TAG} does not exist." in result.stderr
+    assert "Tag main and publish" in result.stderr
+
+
+def test_existing_desktop_assets_name_the_cleanup_command(tmp_path):
+    workflow = _workflow()
+    result, _ = _run_step(
+        workflow,
+        "prepare-version",
+        "Guard against republishing an existing version",
+        tmp_path,
+        target_has_desktop_assets = True,
+    )
+    assert result.returncode == 1
+    assert f"gh release delete-asset {RELEASE_TAG} latest.json --yes" in result.stderr
 
 
 def test_a_failed_guard_probe_fails_closed_before_any_build_work(tmp_path):
@@ -220,40 +265,41 @@ def test_a_failed_guard_probe_fails_closed_before_any_build_work(tmp_path):
         "prepare-version",
         "Guard against republishing an existing version",
         tmp_path,
-        tag_http_status = 500,
+        target_http_status = 500,
     )
     assert result.returncode == 1
-    assert "Could not verify that tag" in result.stderr
+    assert "Could not read release" in result.stderr
 
 
 def test_publish_refuses_to_reuse_an_existing_release(tmp_path):
     workflow = _workflow()
-    # The write-scoped publish job can see drafts that prepare-version cannot.
-    for case in ({"tag_http_status": 200}, {"release_http_status": 200}):
-        case_dir = tmp_path / "-".join(case)
-        case_dir.mkdir()
-        result, commands = _run_create_release(workflow, case_dir, **case)
-        assert result.returncode == 1, case
-        assert "Refusing to republish" in result.stderr
-        assert f"gh release delete {RELEASE_TAG} --cleanup-tag" in result.stderr
-        assert (
-            f"gh api --method DELETE repos/unslothai/unsloth/git/refs/tags/{RELEASE_TAG}"
-            in result.stderr
-        )
-        assert not [line for line in commands if line.startswith("gh release create")]
-
-
-def test_publish_fails_closed_when_a_guard_probe_errors(tmp_path):
-    workflow = _workflow()
-    result, commands = _run_create_release(workflow, tmp_path, tag_http_status = 500)
+    result, commands = _run_create_release(workflow, tmp_path, target_has_desktop_assets = True)
     assert result.returncode == 1
-    assert "Could not verify that tag" in result.stderr
+    assert "Refusing to republish" in result.stderr
+    assert f"gh release delete-asset {RELEASE_TAG} latest.json --yes" in result.stderr
+    assert not [line for line in commands if line.startswith("gh release create")]
+
+
+def test_publish_refuses_when_a_staging_release_is_left_over(tmp_path):
+    workflow = _workflow()
+    result, commands = _run_create_release(workflow, tmp_path, staging_exists = True)
+    assert result.returncode == 1
+    assert f"Staging release {STAGING_TAG} already exists" in result.stderr
+    assert f"gh release delete {STAGING_TAG} --yes" in result.stderr
+    assert not [line for line in commands if line.startswith("gh release create")]
+
+
+def test_publish_fails_closed_when_the_target_release_is_missing(tmp_path):
+    workflow = _workflow()
+    result, commands = _run_create_release(workflow, tmp_path, target_http_status = 404)
+    assert result.returncode == 1
+    assert f"Release {RELEASE_TAG} does not exist." in result.stderr
     assert not [line for line in commands if line.startswith("gh release create")]
 
 
 def test_publish_fails_closed_when_draft_listing_errors(tmp_path):
     workflow = _workflow()
-    result, commands = _run_create_release(workflow, tmp_path, release_http_status = 500)
+    result, commands = _run_create_release(workflow, tmp_path, staging_list_status = 500)
     assert result.returncode == 1
     assert "Could not list releases, including drafts" in result.stderr
     assert not [line for line in commands if line.startswith("gh release create")]
@@ -265,14 +311,15 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     result, commands = _run_create_release(workflow, tmp_path)
     assert result.returncode == 0, result.stderr
 
+    # Staging is a draft with no tag reserved, so no desktop-v* tag survives a release.
     create = next(line for line in commands if line.startswith("gh release create"))
-    assert RELEASE_TAG in create
+    assert STAGING_TAG in create
+    assert "--draft" in create
+    assert "--verify-tag" not in create
     assert "--target" not in create
-    assert "--verify-tag" in create
-    assert any("git/refs" in line and f"sha={SOURCE_SHA}" in line for line in commands)
+    assert not [line for line in commands if "git/refs" in line]
 
     body_file = tmp_path / "desktop-release-body.md"
-    assert f"--notes-file {body_file}" in create
     body = body_file.read_text(encoding = "utf-8")
     assert SOURCE_SHA in body
     for name, digest in digests.items():
@@ -286,19 +333,23 @@ def test_release_body_records_provenance_the_updater_notes_do_not_carry(tmp_path
     notes = (tmp_path / "desktop-release-notes.md").read_text(encoding = "utf-8")
     assert "Build provenance" not in notes
     assert "Desktop app for Unsloth." in notes
-    create_step = _step(workflow, "publish-release", "Create versioned release")
-    assert "'desktop-release-notes.md'" in create_step["run"]
-    assert "latest.json" in create_step["run"]
+
+    # The maintainer's changelog is appended to, never replaced.
+    provenance = _step(workflow, "publish-release", "Record desktop build provenance on the release")
+    assert "gh release edit" in provenance["run"]
+    assert "--json body" in provenance["run"]
 
 
 def test_versioned_uploads_never_clobber_but_the_channel_pointer_does():
     uploads = _upload_commands(_workflow())
     versioned = [line for line in uploads if "$DESKTOP_RELEASE_TAG" in line]
+    staging = [line for line in uploads if "$STAGING_RELEASE_TAG" in line]
     channel = [line for line in uploads if "desktop-latest" in line]
     assert len(versioned) == 2, uploads
+    assert len(staging) == 1, uploads
     assert len(channel) == 1, uploads
 
-    for line in versioned:
+    for line in versioned + staging:
         assert "--clobber" not in line, line
     # The channel pointer is intentionally mutable.
     assert "--clobber" in channel[0]
