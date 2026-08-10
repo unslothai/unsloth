@@ -1,10 +1,8 @@
 name: Publish Desktop Release
 
-# Manual dispatch only. Publishing a release must never start this workflow: it
-# shares a concurrency group with release-desktop.yml, so an auto-fired run queues
-# ahead of the desktop build dispatched right after it and stalls the release. It
-# also fired on a release that could not yet carry bundles, because this repo
-# publishes the v... release before release-desktop.yml attaches them.
+# Manual dispatch only. This shares a concurrency group with release-desktop.yml,
+# so a run fired by publishing queues ahead of the desktop build dispatched right
+# after it and stalls the release -- and fires before any bundles exist anyway.
 on:
   workflow_dispatch:
     inputs:
@@ -50,9 +48,9 @@ jobs:
         with:
           egress-policy: audit
 
-      # Dispatching against a release that carries no bundles is a normal case, so
-      # decide from the assets rather than failing: with repair_pointer the run
-      # carries a manifest forward, without it there is simply nothing to validate.
+      # A release with no bundles is a normal dispatch, so decide from the assets:
+      # with repair_pointer the run carries a manifest forward, without it there is
+      # nothing to validate.
       - name: Check for desktop bundles
         id: gate
         env:
@@ -78,10 +76,8 @@ jobs:
       # newest desktop manifest onto this release instead, so discovery follows
       # desktop metadata rather than release order. The manifest keeps its own
       # version and its URLs keep pointing at the immutable release that built it.
-      #
-      # This run stops here: the gate said the release carries nothing of its own,
-      # so validation and promotion below stay skipped. Once the release has its
-      # own bundles, re-dispatch without repair_pointer to validate and promote.
+      # The run stops here; validation and promotion below stay skipped. Re-dispatch
+      # without repair_pointer once the release carries its own bundles.
       - name: Carry desktop metadata forward
         if: ${{ inputs.repair_pointer && steps.gate.outputs.proceed == 'false' }}
         env:
@@ -153,10 +149,9 @@ jobs:
           PY
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/carry-forward/latest.json" --clobber
           echo "Carried ${source_tag} updater metadata onto ${RELEASE_TAG}."
-          # GitHub moves /releases/latest the moment the release is published, so
-          # update checks 404 from then until the upload above. Nothing fires
-          # automatically now, so that gap runs until someone dispatches this:
-          # record it, because its length is a human response time.
+          # GitHub moves /releases/latest when the release is published, so update
+          # checks 404 from then until the upload above. Nothing fires automatically
+          # now, so record the gap: its length is a human response time.
           {
             printf '### Desktop updater pointer\n\n'
             printf '%s carried no desktop bundles, so it now serves the %s manifest.\n\n' \
@@ -325,14 +320,10 @@ jobs:
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
           test -n "$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "latest.json") | .url')"
 
-      # The gate guard is load-bearing, not decoration: this step reads the
-      # manifest that "Download updater metadata" fetches, and that step is
-      # itself gated on proceed == 'true'. Before this workflow became
-      # dispatch-only the gate short-circuited to 'true' on every dispatch, so
-      # bridge_legacy_channel alone implied the download had run. It no longer
-      # does, and without this conjunct a repair_pointer run that also asks to
-      # bridge would upload a carried manifest and then read a file that was
-      # never downloaded, failing after it had already mutated the release.
+      # The gate conjunct is load-bearing: this step reads the manifest that
+      # "Download updater metadata" fetches, and that step is itself gated on
+      # proceed == 'true'. Without it a repair_pointer run that also bridges would
+      # upload a carried manifest and then die on a file it never downloaded.
       - name: Bridge legacy desktop-latest clients once
         if: ${{ steps.gate.outputs.proceed == 'true' && inputs.bridge_legacy_channel }}
         env:
