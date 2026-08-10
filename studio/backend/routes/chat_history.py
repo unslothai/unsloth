@@ -444,6 +444,11 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
 
         removed, kept = 0, []
         for thread_id in thread_ids:
+            # The row went first, and another tab can upsert the same id in the
+            # meantime. That chat is alive, with a tool call possibly running in
+            # here, so its folder is not this delete's to take.
+            if get_chat_thread(thread_id) is not None:
+                continue
             # A fork clones the message content, cards and all, so the source
             # chat's files are still on screen in a chat the user kept.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):

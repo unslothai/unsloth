@@ -7131,7 +7131,7 @@ def _session_key(session_id: "str | None") -> str:
     on a default macOS volume, and keying them apart let a delete land while the
     other chat was running a tool in there.
     """
-    return (session_id or "_default").casefold()
+    return (session_id or _ANON_KEY).casefold()
 
 
 @contextlib.contextmanager
@@ -7432,6 +7432,16 @@ _SANDBOX_MARKER = ".unsloth_sandbox"
 # never to a chat that happens to be called the same thing.
 _DERIVED_PREFIX = "_id-"
 
+# The directories a call with no usable session id runs in. A chat whose id is
+# one of these gets a derived name instead of sharing that folder, and with it
+# every session-less call's files and the delete that takes them.
+_FALLBACK_NAMES = frozenset({"_default", "_invalid"})
+
+# The cache and lifecycle key for a call with no session id. Holds a character
+# the id charset forbids, so a chat cannot key onto the same entry and be handed
+# the session-less sandbox out of the cache.
+_ANON_KEY = "\x00_default"
+
 
 def _sandbox_name(session_id: str) -> str:
     """The directory name for an id.
@@ -7440,7 +7450,11 @@ def _sandbox_name(session_id: str) -> str:
     shared bucket: those ids come from API clients, and one bucket meant every
     such chat could read and delete every other one's files.
     """
-    if _usable_session_id(session_id) and not session_id.startswith(_DERIVED_PREFIX):
+    if (
+        _usable_session_id(session_id)
+        and not session_id.startswith(_DERIVED_PREFIX)
+        and session_id not in _FALLBACK_NAMES
+    ):
         return session_id
     # An id that already looks derived is derived too, or it would land on the
     # directory of whichever unusable id hashes to it. surrogatepass because a
@@ -7835,17 +7849,17 @@ def _legacy_session_dir(session_id: str) -> "str | None":
     """
     legacy_root = _legacy_sandbox_root()
     names = [_sandbox_name(session_id)]
-    if _usable_session_id(session_id):
-        # Only the derived-prefix case: an id the old code could hold kept its
-        # folder under the literal name while _sandbox_name now hashes it.
-        if session_id not in names:
-            names.append(session_id)
-    else:
+    if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one
         # bucket with every other such chat. Read where they are, never moved
         # or deleted since they are not this chat's alone, and only for such an
         # id: any other chat would be reading somebody else's files.
         names.append(_LEGACY_SHARED_BUCKET)
+    elif session_id not in names and session_id not in _FALLBACK_NAMES:
+        # Only the derived-prefix case: an id the old code could hold kept its
+        # folder under the literal name while _sandbox_name now hashes it. A
+        # fallback name is nobody's chat: every session-less call ran in there.
+        names.append(session_id)
     for name in names:
         candidate = os.path.join(legacy_root, name)
         if not os.path.isdir(candidate) or os.path.islink(candidate):
@@ -7983,6 +7997,7 @@ def _sandbox_fallback(
     Dropping that link is only ours to do at our own root; in a directory the
     user pointed us at, the entry is theirs and a fresh one is used instead.
     """
+    owner = _sandbox_name(name)  # reserved, so it is never a chat's own name
     path = os.path.join(root, name)
     if os.path.islink(path):
         if _root_is_ours():
@@ -7991,7 +8006,7 @@ def _sandbox_fallback(
                 return path
             except OSError:
                 pass
-    elif _root_is_ours() or not os.path.exists(path) or _marker_owner(path) == name:
+    elif _root_is_ours() or not os.path.exists(path) or _marker_owner(path) == owner:
         return path
     # In a root the user pointed us at, a directory already sitting under this
     # name is theirs: a call with no session id would otherwise run in it. The
@@ -8002,14 +8017,14 @@ def _sandbox_fallback(
     ]
     if not create:
         for made in candidates:
-            if not os.path.islink(made) and _marker_owner(made) == name:
+            if not os.path.islink(made) and _marker_owner(made) == owner:
                 return made
         return _nothing_to_serve(name)
     for made in candidates:
         # exist_ok alone would take a directory of theirs that happens to carry
         # this name, and follow a link out of the root to run wherever it
         # points, so the entry has to be free and the claim has to succeed.
-        if not _free_for(made, name):
+        if not _free_for(made, owner):
             continue
         try:
             os.makedirs(made, exist_ok = True)
@@ -8082,7 +8097,7 @@ def _owned_by_session(workdir: str, session_id: str) -> bool:
 def _get_workdir(session_id: str | None = None) -> str:
     """Return a per-session sandbox dir at mode 0o700."""
     global _workdirs
-    key = session_id or "_default"
+    key = session_id or _ANON_KEY
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
@@ -8125,7 +8140,11 @@ def _get_workdir(session_id: str | None = None) -> str:
             # prefix kept its folder under the literal id, so that name is
             # tried too. Only a usable one: the rest never named a directory.
             derived = _sandbox_name(session_id)
-            if derived != session_id and _usable_session_id(session_id):
+            if (
+                derived != session_id
+                and _usable_session_id(session_id)
+                and session_id not in _FALLBACK_NAMES
+            ):
                 _migrate_one_legacy_session(sandbox_root_path, session_id)
             _migrate_one_legacy_session(sandbox_root_path, derived)
         _start_legacy_migration()
@@ -8180,7 +8199,7 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         if project:
             return project
     root = sandbox_root()
-    cached = _workdirs.get(session_id or "_default")
+    cached = _workdirs.get(session_id or _ANON_KEY)
     if (
         cached
         and not os.path.islink(cached)
@@ -11973,6 +11992,11 @@ def _created_file_sentinels(
         # downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
+    if token is not None and token.get("shared"):
+        # A call that started while that walk was running. What it wrote is in
+        # `after` and cannot be told apart from ours, so the same rule applies:
+        # the check above only saves the walk when the sharing was already known.
+        return ""
     # ``exclude`` is this call's own scratch script by exact name, not a pattern
     # reserved over names a tool might pick.
     with _scratch_lock:

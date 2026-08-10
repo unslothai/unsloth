@@ -13666,6 +13666,11 @@ async def list_sandbox_files(
         # The query form carries an id a path segment cannot: an API client can
         # use one with a slash in it, and ASGI decodes %2F before route matching.
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
+        if not os.path.isdir(sandbox_dir):
+            # Right after an upgrade the background move can rename the legacy
+            # tree into place between resolving and walking it. One more resolve
+            # finds it at the destination rather than showing an empty chat.
+            sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
         return sandbox_dir, _sandbox_listing(sandbox_dir)
 
     # Resolving scans the root for a marked directory and may read the legacy
@@ -13708,6 +13713,10 @@ async def serve_sandbox_file(
     # filesystem, and the stat below is on the same path.
     def _resolve() -> "tuple[str, bool]":
         _dir, path = _contained_sandbox_path(session or session_id, filename)
+        if not os.path.isfile(path):
+            # As in the listing: the legacy move can rename the tree out from
+            # under a path resolved a moment ago, and the file is at the new one.
+            _dir, path = _contained_sandbox_path(session or session_id, filename)
         return path, os.path.isfile(path)
 
     file_path, is_file = await run_in_threadpool(_resolve)

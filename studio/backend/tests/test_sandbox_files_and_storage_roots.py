@@ -4696,7 +4696,7 @@ def test_the_default_sandbox_never_lands_in_a_directory_of_theirs(tmp_path, monk
 
     workdir = Path(tools._sandbox_fallback(str(root), "_default", create = True))
     assert workdir != theirs, "a tool call would have run in the user's directory"
-    assert tools._marker_owner(str(workdir)) == "_default"
+    assert tools._marker_owner(str(workdir)) == tools._sandbox_name("_default")
     assert not (workdir / "thesis.tex").exists()
     # And the read path finds the same one.
     assert Path(tools._sandbox_fallback(str(root), "_default")) == workdir
@@ -4768,6 +4768,8 @@ def test_a_read_waits_for_the_move_of_the_tree_it_would_return(tmp_path, monkeyp
     while it runs lists nothing and 404s every card in the transcript."""
     import threading
 
+    monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
 
     from core.inference import tools
@@ -4866,6 +4868,118 @@ def test_clearing_every_chat_builds_the_listed_set_once():
     route = inspect.getsource(chat_history.clear_history)
     assert "listed = set(thread_ids)" in route
     assert "not in set(thread_ids)" not in route
+
+
+def test_a_call_that_starts_during_the_snapshot_costs_the_card(tmp_path, monkeypatch):
+    """The walk takes as long as the directory is big, and a call starting
+    inside it writes files this one would then name and offer for download."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    workdir = str(tmp_path / "shared")
+    os.makedirs(workdir)
+    token = tools._call_started(workdir)
+    before = tools._snapshot_workdir_files(workdir)
+
+    real_snapshot = tools._snapshot_workdir_files
+
+    def snapshot_with_a_late_arrival(target):
+        # The other chat in this project starts its call while we walk.
+        tools._call_started(target)
+        Path(target, "theirs.csv").write_text("a,b\n", encoding = "utf-8")
+        return real_snapshot(target)
+
+    monkeypatch.setattr(tools, "_snapshot_workdir_files", snapshot_with_a_late_arrival)
+    sentinels = tools._created_file_sentinels(workdir, before, token = token)
+    assert sentinels == "", f"another call's file was put on this card: {sentinels}"
+
+
+def test_a_chat_called_default_does_not_take_the_anonymous_sandbox(tmp_path, monkeypatch):
+    """An API client picks its own thread ids, and that folder holds every
+    session-less call's files, which this chat's delete would take."""
+    monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    anonymous = Path(tools.get_sandbox_workdir(None))
+    (anonymous / "scratch.csv").write_text("a,b\n", encoding = "utf-8")
+
+    chat = Path(tools.get_sandbox_workdir("_default"))
+    assert chat != anonymous, "the chat is running in the session-less sandbox"
+    assert not (chat / "scratch.csv").exists()
+
+    # And deleting the chat leaves the session-less files alone.
+    tools.remove_session_sandbox("_default", delete_files = True)
+    assert (anonymous / "scratch.csv").is_file()
+
+
+def test_a_chat_called_default_is_not_served_the_old_shared_folder(tmp_path, monkeypatch):
+    """Before the upgrade every call with no session id ran in that directory."""
+    monkeypatch.setenv("HOME", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "userprofile"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    for name in ("_default", "_invalid"):
+        legacy = Path(tools._legacy_sandbox_root()) / name
+        legacy.mkdir(parents = True, exist_ok = True)
+        (legacy / "somebody-elses.csv").write_text("a,b\n", encoding = "utf-8")
+        assert tools._legacy_session_dir(name) is None, name
+
+
+def test_a_chat_recreated_under_the_same_id_keeps_its_sandbox(tmp_path, monkeypatch):
+    """The row goes first, so another tab can upsert the same id before the
+    cleanup runs, and that chat may have a tool call in there right now."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+
+    _forget_sandbox_state(tools)
+    thread_id = "chat-recreated-1"
+    workdir = Path(tools.get_sandbox_workdir(thread_id))
+    (workdir / "report.csv").write_text("a,b\n", encoding = "utf-8")
+
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda tid: {"id": tid})
+    removed, kept = asyncio.new_event_loop().run_until_complete(
+        chat_history._remove_sandboxes([thread_id], True)
+    )
+    assert removed == 0, "the recreated chat's sandbox was deleted"
+    assert (workdir / "report.csv").is_file()
+
+
+def test_a_listing_follows_a_tree_moved_out_from_under_it(tmp_path, monkeypatch):
+    """The legacy move renames the tree between resolving and walking it, and
+    the chat's own files would show as an empty sandbox."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    moved = tmp_path / "moved-in"
+    moved.mkdir()
+    (moved / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    answers = [str(tmp_path / "gone"), str(moved)]
+
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: answers.pop(0),
+    )
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+
+    result = asyncio.new_event_loop().run_until_complete(
+        inference.list_sandbox_files("thread-1", request = None, token = None, session = None)
+    )
+    assert [f["name"] for f in result["files"]] == ["report.csv"], result
 
 
 if __name__ == "__main__":
