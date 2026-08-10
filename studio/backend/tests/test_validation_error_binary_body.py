@@ -134,9 +134,9 @@ def test_deep_nesting_does_not_explode():
     for _ in range(20):
         payload["next"] = {}
         payload = payload["next"]
-    out = safe_validation_errors(
-        [{"type": "x", "loc": ("body",), "msg": "bad", "input": value}]
-    )[0]["input"]
+    out = safe_validation_errors([{"type": "x", "loc": ("body",), "msg": "bad", "input": value}])[
+        0
+    ]["input"]
     assert "dict with" in str(out)
 
 
