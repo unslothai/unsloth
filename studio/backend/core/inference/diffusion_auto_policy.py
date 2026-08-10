@@ -37,7 +37,7 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
 }
 
 # bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they occupy on device after the dtype
-# cast, NOT the download size (Z-Image ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling metadata.
+# cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling metadata.
 _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "flux.1": (23.8, 9.8, 0.2),
     "flux.1-kontext": (23.8, 9.8, 0.2),
@@ -59,7 +59,7 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
 
 # Hub DOWNLOAD bytes relative to the bf16-resident sizes above, for families whose published checkpoints are not stored at
 # bf16. The free-disk gate needs what lands in the HF cache, which differs by 2x in either direction here. From HF metadata:
-#   z-image     transformer/ 23,479 MiB fp32 -> 11,730 MiB resident (2.00x)
+#   z-image     Turbo transformer/ 23,479 MiB fp32 -> 11,730 MiB resident (2.00x)
 #   lumina-2    transformer/  9,956 MiB fp32 ->  4,959 MiB resident (2.01x)
 #   ideogram-4  transformer/ + unconditional_transformer/ 17,718 MiB fp8 -> 35,477 MiB resident (0.50x)
 # Anything absent ships bf16 and downloads what it occupies (measured 0.99-1.07x).
@@ -68,6 +68,26 @@ _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
     "lumina-2": 2.0,
     "ideogram-4": 0.5,
 }
+
+# Per-base overrides of the factor above, for a checkpoint stored at a different precision from its
+# family default. Only Tongyi-MAI/Z-Image needs one: the family key exists because the distilled
+# Turbo publishes fp32 (23,479 MiB), while the undistilled base ships bf16 (11,740 MiB) and so
+# downloads exactly what it occupies. Without it the free-disk gate demands twice the real size.
+_BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
+    "Tongyi-MAI/Z-Image": 1.0,
+}
+
+
+def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
+    """Download bytes per bf16-resident byte for this pick, defaulting to 1.0."""
+    # Both tables are keyed on UPSTREAM ids, so a mirror has to be normalised before the lookup.
+    from .diffusion_families import canonical_base
+
+    override = _BASE_REPO_HUB_DOWNLOAD_FACTOR.get(canonical_base(base_repo)) if base_repo else None
+    if override is not None:
+        return override
+    return _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
+
 
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
 # flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and
@@ -114,8 +134,8 @@ class DenseQuantEstimate:
     ``transient_transformer_mib`` is the build peak (dense bf16 when quantising on the fly, or the
     quantised size when a prequant checkpoint loads via meta). ``steady_transformer_mib`` is what
     stays resident for generation. ``download_transformer_mib`` is what the base-repo transformer
-    costs on DISK, which is not the same number whenever the family publishes something other than
-    bf16 (see ``_FAMILY_HUB_DOWNLOAD_FACTOR``)."""
+    costs on DISK, which is not the same number whenever the checkpoint publishes something other
+    than bf16 (see ``hub_download_factor``)."""
 
     scheme: str
     steady_transformer_mib: int
@@ -155,7 +175,7 @@ def estimate_dense_quant(
     steady = int(transformer_gb * factor * _MIB_PER_GB)
     transient = steady if prequant_available else int(transformer_gb * _MIB_PER_GB)
     companions = int((text_encoders_gb + vae_gb) * _MIB_PER_GB)
-    hub_factor = _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
+    hub_factor = hub_download_factor(fam, base_repo)
     return DenseQuantEstimate(
         scheme = scheme,
         steady_transformer_mib = steady,

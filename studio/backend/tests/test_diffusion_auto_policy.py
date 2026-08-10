@@ -48,6 +48,24 @@ def test_family_table_unknown_family_returns_none():
     assert family_bf16_components_gb(_fam("not-a-family")) is None
 
 
+def test_zimage_base_downloads_bf16_while_turbo_downloads_fp32():
+    # The z-image family factor exists because the distilled Turbo publishes fp32 shards. The
+    # undistilled base ships bf16 and downloads exactly what it occupies, so charging it the
+    # family factor makes the free-disk gate demand twice the real size.
+    assert ap.hub_download_factor(_fam("z-image")) == 2.0
+    assert ap.hub_download_factor(_fam("z-image"), "Tongyi-MAI/Z-Image-Turbo") == 2.0
+    assert ap.hub_download_factor(_fam("z-image"), "Tongyi-MAI/Z-Image") == 1.0
+    # A family with no factor at all still defaults to 1.0, base repo or not.
+    assert ap.hub_download_factor(_fam("flux.2-klein"), "black-forest-labs/FLUX.2-klein-4B") == 1.0
+
+    turbo = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
+    base = estimate_dense_quant(_fam("z-image"), "int8", base_repo = "Tongyi-MAI/Z-Image")
+    assert turbo is not None and base is not None
+    # Same architecture, so the resident footprint is identical and only the download differs.
+    assert base.steady_transformer_mib == turbo.steady_transformer_mib
+    assert base.download_transformer_mib * 2 == turbo.download_transformer_mib
+
+
 def test_base_repo_override_wins_over_the_family_default():
     # flux.2-klein's family default is the 4B base; loading the 9B GGUF passes the 9B base repo, whose transformer is over twice the size.
     default = family_bf16_components_gb(_fam("flux.2-klein"))

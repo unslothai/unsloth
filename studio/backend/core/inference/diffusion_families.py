@@ -248,7 +248,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("zimage", "z_image"),
         # LoRA training via the DiT trainer (bf16); defaults to the prequant nf4 repo for QLoRA.
         trainable = True,
-        train_base_repos = ("unsloth/Z-Image-Turbo-unsloth-bnb-4bit", "Tongyi-MAI/Z-Image-Turbo"),
+        # The undistilled base is what the upstream DreamBooth recipe trains on. No deploy pairing:
+        # its adapters preview on the base itself at the 20-step / guidance 4 recipe.
+        train_base_repos = (
+            "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
+            "Tongyi-MAI/Z-Image-Turbo",
+            "Tongyi-MAI/Z-Image",
+        ),
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.

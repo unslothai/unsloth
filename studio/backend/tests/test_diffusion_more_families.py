@@ -84,6 +84,25 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+# ── z-image: the undistilled base ────────────────────────────────────────────
+def test_zimage_base_is_trusted_so_the_gguf_keeps_its_companion_base():
+    # unsloth/Z-Image-GGUF carries base_model: Tongyi-MAI/Z-Image, and _resolve_base_repo drops a
+    # tag that fails this gate. While it did, that pick fell back to the Turbo companions and
+    # denoised on their shift 3.0 scheduler instead of the base's 6.0.
+    assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image")
+    assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image-Turbo")
+    assert not _is_trusted_diffusion_repo("someone/Z-Image-finetune")
+
+
+def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
+    # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
+    # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
+    assert default_generation_params("Tongyi-MAI/Z-Image") == (20, 4.0)
+    assert default_generation_params("unsloth/Z-Image-GGUF") == (20, 4.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (9, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (9, 0.0)
+
+
 # ── lumina-2 family ──────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
