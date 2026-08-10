@@ -2304,7 +2304,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error(incompatible);
         return false;
       }
-      return handleLoadRef.current(repoId, opts);
+      return handleLoadRef.current(repoId, opts, advanced);
     },
     [stage, currentLoadAdvanced, requestDownloadPlan],
   );

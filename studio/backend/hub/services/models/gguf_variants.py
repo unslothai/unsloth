@@ -360,7 +360,24 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
         fam = detect_family_for_pick(repo_id, filename)
         if fam is None:
             return None
-        encoders = sd_cpp_text_encoders_for(fam, repo_id, filename)
+        inner_dim = None
+        if fam.name == "flux.2-klein":
+            from core.inference.diffusion_compat import flux2_inner_dim_for_pick
+
+            inner_dim = flux2_inner_dim_for_pick(repo_id, filename, allow_network = False)
+            identity = f"{repo_id}/{filename}".lower()
+            sized = re.search(r"(?<![a-z0-9])(?:4b|9b)(?![a-z0-9])", identity)
+            if (
+                inner_dim is None
+                and sized is None
+                and "klein4b" not in identity
+                and "klein9b" not in identity
+            ):
+                unknown = hashlib.sha256(filename.lower().encode("utf-8")).hexdigest()[:16]
+                return f"{fam.name}:unknown:{unknown}"
+        encoders = sd_cpp_text_encoders_for(
+            fam, repo_id, filename, inner_dim = inner_dim
+        )
         # Hashed, not joined raw: the encoder table is long, and the key is opaque
         # to the client, which only ever compares it for equality.
         digest = hashlib.sha256(

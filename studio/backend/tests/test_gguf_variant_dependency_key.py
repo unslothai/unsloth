@@ -26,6 +26,27 @@ def test_klein_4b_and_9b_in_one_repo_get_different_keys():
     assert key_4b != key_9b
 
 
+def test_renamed_klein_uses_its_cached_header_size(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.diffusion_compat.flux2_inner_dim_for_pick",
+        lambda *args, **kwargs: 4096,
+    )
+    renamed = _variant_dependency_key(KLEIN_REPO, "renamed-Q4_K_M.gguf")
+    known_9b = _variant_dependency_key(KLEIN_REPO, "flux.2-klein-9b-Q4_K_M.gguf")
+    assert renamed == known_9b
+
+
+def test_unidentified_klein_filenames_do_not_share_a_footprint(monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.diffusion_compat.flux2_inner_dim_for_pick",
+        lambda *args, **kwargs: None,
+    )
+    first = _variant_dependency_key(KLEIN_REPO, "renamed-a-Q4_K_M.gguf")
+    second = _variant_dependency_key(KLEIN_REPO, "renamed-b-Q4_K_M.gguf")
+    assert first is not None and second is not None
+    assert first != second
+
+
 def test_two_quants_of_the_same_model_share_one_key():
     """The common case must stay a single group: the client resolves one footprint
     per key, and splitting quants of one model would multiply the requests."""

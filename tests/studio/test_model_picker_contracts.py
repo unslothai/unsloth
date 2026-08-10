@@ -1160,6 +1160,8 @@ def test_diffusion_pages_stage_downloads_through_the_manager():
         # A missing plan must still load rather than dead-end.
         assert "catch" in body, f"{rel}: no fallback when the plan is unavailable"
 
+        assert "handleLoadRef.current(repoId, opts, advanced)" in body, rel
+
 
 def test_every_diffusion_planner_filters_the_cache_before_staging():
     """Planning every Hub pick is only safe on a planner that skips files already on disk;
@@ -3464,7 +3466,8 @@ def test_the_backend_keys_the_footprint_on_family_and_text_encoders():
     src = _read_backend("hub/services/models/gguf_variants.py")
     helper = src.split("def _variant_dependency_key(", 1)[1].split("\ndef ", 1)[0]
     assert "detect_family_for_pick(repo_id, filename)" in helper
-    assert "sd_cpp_text_encoders_for(fam, repo_id, filename)" in helper
+    assert "sd_cpp_text_encoders_for(" in helper
+    assert "inner_dim = inner_dim" in helper
     # No family means no grouping information, not a fabricated key.
     assert "if fam is None:\n            return None" in helper
     # It runs once per row inside the listing, so it must never fail it.
