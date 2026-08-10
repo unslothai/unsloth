@@ -567,28 +567,52 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
   }
 }
 
-export async function getStoredChatThread(
+export type StoredChatThreadReadResult = {
+  thread: ThreadRecord | undefined;
+  cacheable: boolean;
+};
+
+export async function getStoredChatThreadReadResult(
   threadId: string,
-): Promise<ThreadRecord | undefined> {
+): Promise<StoredChatThreadReadResult> {
   // Incognito threads are never stored, so the lookup can only come back
   // empty -- short-circuit it instead of doing a Dexie read + backend GET.
-  if (isThreadIncognito(threadId)) return undefined;
-  if (isChatThreadDeleted(threadId)) return undefined;
+  if (isThreadIncognito(threadId)) {
+    return { thread: undefined, cacheable: true };
+  }
+  if (isChatThreadDeleted(threadId)) {
+    return { thread: undefined, cacheable: true };
+  }
   const legacyThread = await db.threads.get(threadId);
   let backendThread: ThreadRecord | null;
   try {
     backendThread = await getChatThread(threadId);
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
-      return legacyThread;
+      return { thread: legacyThread, cacheable: false };
     }
     throw error;
   }
   if (backendThread && !isChatThreadDeleted(backendThread.id)) {
-    return backfillLegacyThreadFields(backendThread, legacyThread);
+    return {
+      thread: await backfillLegacyThreadFields(backendThread, legacyThread),
+      cacheable: true,
+    };
   }
-  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) return undefined;
-  return importLegacyThread(legacyThread).catch(() => legacyThread);
+  if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
+    return { thread: undefined, cacheable: true };
+  }
+  try {
+    return { thread: await importLegacyThread(legacyThread), cacheable: true };
+  } catch {
+    return { thread: legacyThread, cacheable: false };
+  }
+}
+
+export async function getStoredChatThread(
+  threadId: string,
+): Promise<ThreadRecord | undefined> {
+  return (await getStoredChatThreadReadResult(threadId)).thread;
 }
 
 export async function ensureStoredChatThread(
