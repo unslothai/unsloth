@@ -1217,9 +1217,9 @@ def test_local_model_sections_respect_the_task_filter():
     for memo in ("sortedLmStudio", "sortedLocalDir", "sortedCustomFolderModels"):
         block = re.search(rf"const {memo} = useMemo\(.*?\n  \);", src, re.S)
         assert block, f"{memo} not found"
-        assert re.search(r"passesTaskGate\(\s*m\.task", block.group(0)), (
-            f"{memo} does not apply the task gate"
-        )
+        assert re.search(
+            r"passesTaskGate\(\s*m\.task", block.group(0)
+        ), f"{memo} does not apply the task gate"
 
 
 def test_chat_picker_routes_diffusion_picks_to_their_page():

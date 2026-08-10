@@ -731,8 +731,7 @@ def test_media_pages_clear_the_custom_titlebar():
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
 
     assert (
-        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;"
-        in root
+        "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;" in root
     )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
