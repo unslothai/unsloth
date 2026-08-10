@@ -21,9 +21,8 @@ export type NavRowState = {
  * on a page that shows its own loading state. Both render sites (the inline rows and the More
  * flyout) go through here so they cannot drift.
  *
- * The spinner alone does not say what is being waited on, and detection can take minutes on a
- * cold host, so a pending row carries its own tooltip rather than the disabled hint (which
- * would state a verdict that has not been reached) or nothing (which reads as a hung row).
+ * A pending row carries its own tooltip rather than the disabled hint, which would state a
+ * verdict nobody has reached, or nothing, which reads as a hung row.
  */
 export function resolveNavRowState(row: NavRowState): {
   disabled?: boolean;

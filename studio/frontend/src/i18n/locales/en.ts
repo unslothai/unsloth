@@ -78,9 +78,7 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
-      // Hover text while the row spins, i.e. before this machine's training or video
-      // capability has been measured. A cold host can take minutes, so the spinner has to
-      // say what it is waiting for rather than read as a hung row.
+      // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
       more: "More",

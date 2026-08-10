@@ -229,8 +229,7 @@ type NavRowDef = {
   // The capability that decides `disabled` has not been measured yet. A row in this state is
   // neither enabled-looking nor blacked out: resolveNavRowState renders it with the spinner.
   pending?: boolean;
-  // What that spinning row says on hover. Detection can take minutes on a cold host, so the
-  // spinner needs to name what it is waiting for.
+  // What that spinning row says on hover; detection can take minutes on a cold host.
   pendingTooltip?: string;
   badge?: string;
   onClick: () => void;
@@ -369,9 +368,8 @@ function NavItem({
   testId?: string;
   // Overrides the hover tooltip; explains why a disabled item is greyed out.
   tooltip?: string;
-  // Show that tooltip on the expanded row too. An enabled row normally only shows one on
-  // the collapsed rail, where it stands in for the hidden label; a row that is still being
-  // measured has something to say the expanded row cannot show any other way.
+  // Show that tooltip on the expanded row too, not just the collapsed rail where it
+  // stands in for the hidden label.
   alwaysTooltip?: boolean;
   // Trailing "New" pill text.
   badge?: string;
@@ -562,9 +560,8 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      // Whenever there is one. It used to be gated on `disabled`, on the assumption that a
-      // tooltip only ever explains a grey-out; a row that is still being measured is enabled
-      // and has something to say, and dropped it.
+      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
+      // still being measured, which is enabled and has something to say.
       title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}

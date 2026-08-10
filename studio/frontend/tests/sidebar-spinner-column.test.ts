@@ -120,9 +120,9 @@ test("a pending row spins instead of blacking out", async () => {
   );
 });
 
-// Detection is a cold `import torch` and can run for minutes, which is long enough for a
-// silent spinner to read as a hung row. It says what it is waiting for instead, the way
-// the Video page does; the disabled hint is still withheld, since no verdict is in yet.
+// Detection is a cold `import torch` and can run for minutes, long enough for a silent
+// spinner to read as a hung row, so it says what it is waiting for. The disabled hint is
+// still withheld: no verdict is in yet.
 test("a pending row says what it is waiting for", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 
@@ -137,11 +137,9 @@ test("a pending row says what it is waiting for", async () => {
   assert.equal(pending.tooltip, "Checking this machine for training support...");
 });
 
-// Having the tooltip is not the same as showing it. Both renderers hide one by default for
-// an enabled row: SidebarMenuButton shows it only on the collapsed rail (it stands in for
-// the hidden label there), and MoreMenuItem used to set `title` only when disabled. A
-// pending row is enabled, so the explanation reached neither the expanded row nor the
-// flyout and the spinner stayed unexplained exactly where it is most visible.
+// Having the tooltip is not the same as showing it. Both renderers hid one by default for
+// an enabled row: SidebarMenuButton only on the collapsed rail, MoreMenuItem only when
+// disabled. A pending row is enabled, so the explanation reached neither.
 test("a pending row is marked so both renderers can show its tooltip", async () => {
   const { resolveNavRowState } = await import("../src/components/nav-row-state.ts");
 

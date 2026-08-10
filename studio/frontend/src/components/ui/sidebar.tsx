@@ -706,9 +706,8 @@ function SidebarMenuButton({
         align="center"
         // Enabled items only show the tooltip when collapsed (icon labels);
         // a disabled item shows it while expanded too, since it explains why.
-        // alwaysTooltip is for the third case: an enabled row whose tooltip is
-        // not a label repeat but a status the expanded row has no other way to
-        // show, e.g. a capability still being measured.
+        // alwaysTooltip is the third case: an enabled row whose tooltip is a
+        // status, not a label repeat, e.g. a capability still being measured.
         hidden={isMobile || (!isDisabled && !alwaysTooltip && state !== "collapsed")}
         {...tooltip}
       />
