@@ -62,17 +62,17 @@ for (const [name, source] of CARDS) {
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // 8rem is the card with its notes closed, measured in a browser. Under it
-    // the buttons are the next thing to go. min-h-0 was the old floor and it
-    // is no floor at all.
+    // The floor is the card with its notes closed, measured in a browser: 8rem
+    // for one row of actions, 12rem once the card is narrow enough to wrap them
+    // onto two. min-h-0 was the old floor and it is no floor at all.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
     assert.match(
       source,
-      /\bmin-h-32\b/,
-      "a capped rail squeezes the card past its own buttons",
+      /\bmin-h-48 sm:min-h-32\b|\bmin-h-48\b[^"]*\bsm:min-h-32\b/,
+      "one floor for both widths clips the wrapped action row",
     );
   });
 }
@@ -82,7 +82,7 @@ test("the desktop failure card does not shrink at all", () => {
   // only clips the diagnostics and the retry button.
   assert.match(
     TAURI,
-    /showFailure \? "shrink-0" : "min-h-32"/,
+    /showFailure \? "shrink-0" : "min-h-48 sm:min-h-32"/,
     "the failure card shares the notes-bearing card's floor, which is too low",
   );
 });
@@ -100,7 +100,7 @@ test("the two update cards do not drift apart", () => {
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
-      .filter((rule) => rule !== "min-h-32")
+      .filter((rule) => !rule.endsWith("min-h-32") && rule !== "min-h-48")
       .join(" ");
   assert.equal(
     root(TAURI),

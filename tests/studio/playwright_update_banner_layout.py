@@ -130,7 +130,15 @@ WHISPER_STATUS = dict(
 
 # 921x534 and 768x500 are where the report reproduces; the taller ones prove the
 # fix costs nothing when there is room.
-VIEWPORTS = [(1440, 900), (1280, 830), (921, 534), (768, 500), (390, 844)]
+VIEWPORTS = [
+    (1440, 900),
+    (1280, 830),
+    (921, 534),
+    (768, 500),
+    (390, 844),
+    # Narrow enough to wrap the action row, short enough to hit the card's floor.
+    (390, 500),
+]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 
 failures: list[str] = []
@@ -180,8 +188,11 @@ MEASURE = """
     return {top: r.top, bottom: r.bottom, left: r.left, right: r.right,
             width: r.width, height: r.height};
   };
+  // Takes an element or an already-clipped box, so clips can be chained.
   const clip = (el, clipper) => {
-    const a = rect(el), b = rect(clipper);
+    if (el === null) return null;
+    const a = el.top !== undefined ? el : rect(el);
+    const b = rect(clipper);
     if (!a || !b) return a;
     // Only a scroll or hidden ancestor hides anything; clipping to a visible
     // one would erase the very overflow this is looking for.
@@ -202,11 +213,16 @@ MEASURE = """
   const copy = q('[data-testid="web-update-copy-button"]');
   const footer = snooze ? snooze.closest('div').parentElement : null;
   const rail = card ? card.parentElement : (llama ? llama.parentElement : null);
+  // The clipper is the card's inner surface, the one with overflow-hidden; the
+  // rail-facing root above it is overflow-visible and clips nothing.
+  const surface = card ? card.firstElementChild : null;
   return {
     viewport: {width: innerWidth, height: innerHeight},
     card: clip(card, rail), llama: clip(llama, rail),
     notesBody: clip(body, notes),
-    toggle: rect(toggle), snooze: rect(snooze), copy: rect(copy),
+    toggle: clip(clip(toggle, surface), rail),
+    snooze: clip(clip(snooze, surface), rail),
+    copy: clip(clip(copy, surface), rail),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
   };
@@ -225,8 +241,11 @@ def overlap(a: dict | None, b: dict | None) -> float:
 
 
 def inside(box: dict | None, viewport: dict) -> bool:
+    # A missing box is not "inside": clip() returns None for an element that is
+    # entirely hidden, and reading that as a pass would make this whole suite
+    # green on the one failure it exists to catch.
     if not box:
-        return True
+        return False
     return (
         box["top"] >= -0.5
         and box["left"] >= -0.5
@@ -254,6 +273,15 @@ def measure(page, label: str) -> dict:
             f"{label}: the {name} stays inside the viewport",
             inside(facts[name], view),
             f"{name}={facts[name]} viewport={view}",
+        )
+    # The notes are allowed to yield all of their height, and do; the controls
+    # are not, and a card clipped to nothing is the failure being tested for.
+    for name in ("card", "llama", "toggle", "snooze", "copy"):
+        box = facts[name]
+        check(
+            f"{label}: the {name} is not clipped away",
+            box is not None and box["height"] > 1.0 and box["width"] > 1.0,
+            f"{name}={box}",
         )
     return facts
 

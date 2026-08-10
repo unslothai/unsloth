@@ -915,10 +915,13 @@ def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so scrolling the card itself
     carried it off screen on a short viewport."""
     src = banner.read_text(encoding = "utf-8")
-    assert "flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden" in src
+    assert "flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden" in src
     assert 'className="min-h-0 flex-1"' in src
     panel = PANEL.read_text(encoding = "utf-8")
     assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in panel
+    # The collapsed summary scrolls too: without it the bullets were painted
+    # over the row of buttons once the card's slot for them got small.
+    assert "min-h-0 flex-1 space-y-1 overflow-y-auto" in panel
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(changelog_module):
@@ -1112,6 +1115,11 @@ def test_code_span_closers_ignore_backslashes():
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 
+def _overlay_stacks(provider: str) -> int:
+    """How many bottom-right overlay stacks the provider renders."""
+    return len(re.findall(r"z-\[9998\][^\"]*flex flex-col items-end gap-2", provider))
+
+
 def test_the_overlay_stack_fits_the_viewport():
     """The update card's own cap does not account for a long download list stacked
     beneath it. The cap is no longer the literal class `max-h-[calc(100dvh_-_2rem)]`
@@ -1119,16 +1127,20 @@ def test_the_overlay_stack_fits_the_viewport():
     studio/frontend/tests/monitor-stack-inset.test.ts; what has to hold here is that
     the stack reads it rather than growing unbounded."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    stacks = _overlay_stacks(provider)
     assert stacks, "the bottom-right overlay stack is gone"
     # Counted, not merely present: capping only one of the stacks is the bug here.
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
-    # Both overlays scroll internally, so they can give up height.
+    # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
-    assert "flex min-h-0" in WEB_BANNER.read_text(encoding = "utf-8")
+    # The update card cannot: its header and buttons are fixed and only its
+    # notes yield, so it floors instead and the stack scrolls past it.
+    web = WEB_BANNER.read_text(encoding = "utf-8")
+    assert "min-h-48" in web and "sm:min-h-32" in web
+    assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
@@ -1137,7 +1149,8 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
-    assert "flex min-h-0" in TAURI_BANNER.read_text(encoding = "utf-8")
+    tauri = TAURI_BANNER.read_text(encoding = "utf-8")
+    assert "min-h-48" in tauri and "sm:min-h-32" in tauri
 
 
 def test_the_stack_geometry_is_checked_numerically():
@@ -1377,7 +1390,7 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
-    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    stacks = _overlay_stacks(provider)
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "the cap this has to absorb"
 
 

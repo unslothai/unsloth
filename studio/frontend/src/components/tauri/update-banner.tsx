@@ -111,8 +111,11 @@ export function UpdateBanner({
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
-                  // min-h-32 is this card with its notes closed. A capped rail
-                  // takes its height out of the notes, which clip, and stops at
+                  // The floor is this card with its notes closed, measured in
+                  // a browser: 8rem wide enough for one row of actions, 12rem
+                  // once the card is narrow enough to wrap them onto a second
+                  // row (184px at a 390px viewport). A capped rail takes the
+                  // card's height out of the notes, which clip, and stops at
                   // the buttons. min-height:auto would be the whole card, so
                   // the card would give up nothing and the banner below it
                   // would be the one clipped.
@@ -120,7 +123,7 @@ export function UpdateBanner({
                   // The failure card has no notes, so there is nothing in it to
                   // give up: shrinking it only clips the diagnostics and the
                   // retry button. It holds its height and the rail scrolls.
-                  showFailure ? "shrink-0" : "min-h-32",
+                  showFailure ? "shrink-0" : "min-h-48 sm:min-h-32",
                 ),
           )}
           data-testid="tauri-update-banner"

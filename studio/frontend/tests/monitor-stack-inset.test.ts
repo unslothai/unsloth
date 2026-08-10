@@ -333,6 +333,33 @@ test("the height is measured with the hook's own cap lifted", async () => {
 });
 
 // The sweep above, re-run at the heights the stack actually takes.
+// The stack scrolls now, and an uncapped box does not overflow, so the
+// measurement has to put scrollTop back with the cap or a descendant resize
+// throws a reader of the download list back to the first banner.
+test("the measurement restores the stack's scroll position", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/settings/stores/monitor-frame-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const measure = source.slice(
+    source.indexOf("const measure = () => {"),
+    source.indexOf("const observer = new ResizeObserver"),
+  );
+  assert.match(
+    measure,
+    /const scrolled = node\.scrollTop;[\s\S]*node\.style\.maxHeight = "none";/,
+    "scrollTop is read after the cap comes off, when it has already clamped",
+  );
+  assert.match(
+    measure,
+    /node\.style\.maxHeight = capped;[\s\S]*node\.scrollTop = scrolled;/,
+    "the scroll position is never put back",
+  );
+});
+
 test("no measured height leaves the stack overlapping a box", () => {
   const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
   for (const needed of [0, 40, 80, 120, 200, 320]) {
