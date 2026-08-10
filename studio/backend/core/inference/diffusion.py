@@ -5238,8 +5238,7 @@ def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:
 
         from .plan_metadata import plan_model_info
         meta = (
-            plan_model_info(HfApi(), repo_id, files_metadata = False, token = hf_token).cardData
-            or {}
+            plan_model_info(HfApi(), repo_id, files_metadata = False, token = hf_token).cardData or {}
         )
     except Exception:  # noqa: BLE001 — best-effort; fall back to the family default
         return None

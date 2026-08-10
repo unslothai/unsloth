@@ -1849,7 +1849,10 @@ class VideoBackend:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 local = Path(
                     hf_hub_download_with_xet_fallback(
-                        base, name, hf_token, cancel_event = cancel,
+                        base,
+                        name,
+                        hf_token,
+                        cancel_event = cancel,
                         reuse_other_cache_root = True,
                     )
                 )
