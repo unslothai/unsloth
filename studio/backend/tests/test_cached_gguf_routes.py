@@ -2617,6 +2617,22 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert not missing, f"diffusion archs would still show in chat: {missing}"
 
 
+def test_arch_to_task_tags_the_h3_gguf_bundle_as_video():
+    # The published MiniMax-H3 GGUFs carry kv_count 0, so general.architecture is absent and the
+    # arch read alone leaves the downloaded repo without a task -- dropped from the Video picker's
+    # On Device list and offered to chat instead. Both bundle repo ids must resolve to Video.
+    from core.inference.video_minimax_h3 import H3_GGUF_REPO
+
+    for repo in (H3_GGUF_REPO, "leejet/MiniMax-H3-GGUF"):
+        assert (
+            models_route._arch_to_task(None, (repo, "minimax_h3_fl2va-Q4_K_M.gguf"))
+            == models_route._VIDEO_GEN_TASK
+        )
+    # No hint is still unknown, and an unrelated repo is untouched.
+    assert models_route._arch_to_task(None) is None
+    assert models_route._arch_to_task(None, ("unsloth/Qwen3-GGUF", "q.gguf")) is None
+
+
 def test_arch_to_task_resolves_z_image_gguf_tagged_lumina2():
     # Z-Image's DiT is a Lumina2 derivative, so both Z-Image GGUF repos declare general.architecture = "lumina2". Reading
     # the arch alone tagged the whole line unsupported and hid it, even though validate_load_request loads it happily.
@@ -3229,13 +3245,14 @@ def test_hub_local_rows_are_tagged_with_their_task():
 
 
 def test_pipeline_class_guard_fires_before_any_download():
-    # The 0.39-only families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
+    # The newer families used to die with a bare AttributeError deep in the load, after the checkpoint was fetched, on
     # the older diffusers packaging still allows on Python 3.9. Validation refuses first, naming the version and the fix.
+    # 0.35.2 is the last release before ZImagePipeline existed, and it is still installable on 3.9.
     import pytest
 
     from core.inference.diffusion_families import assert_pipeline_class_available
 
-    stub = types.SimpleNamespace(__version__ = "0.37.0")
+    stub = types.SimpleNamespace(__version__ = "0.35.2")
     real = sys.modules.get("diffusers")
     sys.modules["diffusers"] = stub
     try:
@@ -3249,8 +3266,25 @@ def test_pipeline_class_guard_fires_before_any_download():
             del sys.modules["diffusers"]
     msg = str(excinfo.value)
     assert "z-image" in msg and "ZImagePipeline" in msg
-    assert "0.39" in msg and "0.37.0" in msg
-    assert "3.10" in msg  # names the Python floor that carries a new enough diffusers
+    # The release that family actually needs (0.36.0), not the blanket packaging floor, and what is installed.
+    assert "0.36.0" in msg and "0.35.2" in msg
+    # And NOT a Python upgrade: 0.36.0 still declares requires-python >= 3.8, so `pip install -U
+    # diffusers` alone fixes this on a 3.9 host. Sending it to 3.10 would be the wrong remedy.
+    assert "3.10" not in msg
+
+    # Krea 2 is the other side: its class only exists from 0.39.0, which needs 3.10 -- so the
+    # Python floor belongs in THAT message.
+    sys.modules["diffusers"] = stub
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            assert_pipeline_class_available("Krea2Pipeline", "krea-2")
+    finally:
+        if real is not None:
+            sys.modules["diffusers"] = real
+        else:
+            del sys.modules["diffusers"]
+    krea = str(excinfo.value)
+    assert "0.39.0" in krea and "3.10" in krea
 
 
 def test_pipeline_class_guard_passes_every_shipped_family():
@@ -3295,7 +3329,8 @@ def test_pipeline_class_guard_is_silent_when_a_lazy_submodule_cannot_import(monk
     # unsatisfiable it raises RuntimeError ("Failed to import diffusers.pipelines..."). hasattr
     # absorbs AttributeError only, so the RuntimeError escaped this guard exactly the way a
     # missing diffusers used to: not the ValueError the routes map to 400, so a bare 500 with the
-    # message lost.
+    # message lost -- and, now that the training preflight calls this too, a refusal that arrives
+    # as a 500 instead of the actionable 400. There is no version to judge here either.
     import types
 
     from core.inference.diffusion_families import assert_pipeline_class_available

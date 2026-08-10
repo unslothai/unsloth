@@ -136,7 +136,10 @@ export interface ValidateModelResponse {
 
 export interface GgufVariantDetail {
   filename: string;
+  /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
+  /** What to SHOW for `quant` ("Q6_K · distilled"); absent when the key already reads as a label. */
+  display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
   downloaded?: boolean;

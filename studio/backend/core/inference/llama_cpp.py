@@ -1727,6 +1727,18 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
 
 
+def _quant_label_for_endian(path: str) -> Optional[str]:
+    """The file's own quant label, for ``_is_big_endian_gguf_path``, or None when unreadable.
+
+    Best-effort: with no label the caller keeps its previous argument rather than dropping the
+    endian test, which would admit a genuinely big-endian build."""
+    try:
+        from hub.utils.gguf import extract_quant_token
+        return extract_quant_token(path)
+    except Exception:  # noqa: BLE001 -- an unreadable label must not sink the resolution
+        return None
+
+
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
 
@@ -1739,15 +1751,33 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         for f in files
         if f.lower().endswith(".gguf")
         and not _is_companion_gguf_path(f)
-        and not _is_big_endian_gguf_path(f, variant_key)
+        # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
+        # parent directory only -- so it gets the file's own label, never the requested key. Handed
+        # a path-qualified key it cannot find that string in either the basename or the parent and
+        # reads distilled/Q4_K_M/foo-be.gguf as big-endian, dropping the one file the key owns:
+        # the row is advertised and downloadable but never resolves for loading. Same reason
+        # gguf_plan and the auto-download map pass the label here.
+        and not _is_big_endian_gguf_path(f, _quant_label_for_endian(f) or variant_key)
     ]
     if not variant_key:
         return sorted(main_files)
 
     try:
-        from utils.models.model_config import _extract_quant_label
+        from utils.models.model_config import _extract_quant_label, _gguf_variant_key
     except Exception:
         _extract_quant_label = None
+        _gguf_variant_key = None
+
+    if _gguf_variant_key is not None:
+        try:
+            # The variant's own files first. In a repo holding several checkpoints at
+            # one quant the label alone names all of them, and handing llama-server a
+            # mixed set makes it read another checkpoint's weights as a shard.
+            owned = sorted(f for f in main_files if _gguf_variant_key(f).lower() == variant_key)
+            if owned:
+                return owned
+        except Exception as e:
+            logger.warning("Failed to derive GGUF variant keys: %s", e)
 
     if _extract_quant_label is not None:
         try:
@@ -7294,9 +7324,21 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
+            # Deliberately NOT start_new_session, as with the component
+            # installer: the desktop stops this backend by signalling its
+            # process group and force-kills it after five seconds, so a session
+            # of its own would leave the shim and the visual server holding the
+            # GPU until the next launch sweeps them.
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # macOS has no parent-death signal, so the kwargs above are empty there and
+        # only this record lets the next startup reap a runner holding the GPU.
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(self._process.pid)
+        except Exception as e:
+            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -13301,6 +13343,47 @@ class LlamaCppBackend:
                     torch.cuda.empty_cache()
             return True
 
+    @staticmethod
+    def _leading_process_group(pid):
+        """The pid's own process group, when it leads one. None otherwise."""
+        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+            return None
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return None
+        return pgid if pgid == pid else None
+
+    @staticmethod
+    def _kill_process_group(pgid):
+        """Take down what the leader left behind, if anything is still there."""
+        if pgid is None or not hasattr(os, "killpg"):
+            return
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _collect_descendants(pid):
+        """The server's own children, for the kill below. Empty when unreadable."""
+        try:
+            from utils.process_lifetime import collect_descendants
+            return collect_descendants(pid)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _terminate_descendants(collected):
+        """The diffusion shim's visual server, and anything else it started."""
+        if not collected:
+            return
+        try:
+            from utils.process_lifetime import terminate_descendants
+            terminate_descendants(collected, timeout = 5.0)
+        except Exception as e:
+            logger.debug(f"Could not terminate server descendants: {e}")
+
     def _kill_process(self):
         """Terminate the subprocess if running."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
@@ -13320,6 +13403,13 @@ class LlamaCppBackend:
         terminable = hasattr(self._process, "terminate")
         if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
+        # Both read before the terminate below: getpgid stops answering once the
+        # wait reaps the leader, and the shim's children are reparented the
+        # moment it exits. This is the only stop the desktop shutdown waits for,
+        # so the visual server has to be named while that link still exists.
+        _pid = getattr(self._process, "pid", None)
+        _pgid = self._leading_process_group(_pid)
+        _descendants = self._collect_descendants(_pid)
         try:
             if terminable:
                 self._process.terminate()
@@ -13340,11 +13430,25 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
+            self._kill_process_group(_pgid)
+            self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
+            # Drop it from the lifetime record only once it is confirmed gone.
+            # A server that survived a failed kill has to stay recorded, or the
+            # next startup sweep cannot reap it. The record stores a start-time
+            # identity, so a recycled pid is never signalled either way.
+            _killed_pid = getattr(self._process, "pid", None)
+            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            if _killed_pid is not None and _exited:
+                try:
+                    from utils.process_lifetime import forget_pid
+                    forget_pid(_killed_pid)
+                except Exception:
+                    pass
             self._process = None
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
@@ -13388,6 +13492,14 @@ class LlamaCppBackend:
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
         """
+        # Track it generically too: the pidfile holds one server, while the
+        # process-lifetime record covers every child and is what the startup
+        # sweep reads where there is no parent-death signal (macOS).
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
         path = cls._server_pidfile_path()
         if path is None:
             return

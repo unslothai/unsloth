@@ -1423,13 +1423,10 @@ export function DiffusionTrainPanel({
   // overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
   // letting a wide row pan the page sideways on a phone.
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
-      {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
-      {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
-          selector above; pr-8 sets the gap to the rule. */}
-      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-8 md:w-[416px] md:overflow-hidden md:border-r md:border-b-0">
-        {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
-            matches the right pane's p-1.5, so both headings start on the same line. */}
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
+      {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
+      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+        {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
@@ -1437,7 +1434,7 @@ export function DiffusionTrainPanel({
             // pb-20 at every width: the floating Start training button below is absolutely
             // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
             // phone padding puts it on top of the Adapter name field.
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5 md:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1786,7 +1783,8 @@ export function DiffusionTrainPanel({
       {/* Right: the run area. Before a run: training settings + previous-runs history; during/after: the live view. Selecting a previous run re-plots its logs read-only. */}
       {/* Sections carry no card of their own: spacing and a rule separate them. p-1.5 keeps the chart cards' outer ring from being clipped. */}
       {/* 40px off the rule, the gutter the settings column has off the page edge. */}
-      <div className="hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 p-1.5 pb-7 pl-8 md:overflow-y-auto md:pl-10">
+      {/* This pane remains a query container for its own stat and chart breakpoints. */}
+      <div className="@container hover-scrollbar relative flex min-w-0 flex-1 flex-col gap-5 pb-7 pl-10 pr-1.5 pt-4 @[50rem]:overflow-y-auto @[50rem]:pt-[42px]">
         {viewRun && !hasRun ? (
           <>
             <div className="flex flex-col gap-3">
@@ -1803,7 +1801,7 @@ export function DiffusionTrainPanel({
                   Back
                 </Button>
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat label="Status" value={viewRun.status} />
                 <Stat label="Steps" value={`${viewRun.step}/${viewRun.total_steps}`} />
                 <Stat
@@ -1959,7 +1957,7 @@ export function DiffusionTrainPanel({
                   style={{ width: `${pct}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 @min-[440px]:grid-cols-4">
                 <Stat
                   label="Loss"
                   value={status?.loss != null ? status.loss.toFixed(4) : "-"}
@@ -2041,7 +2039,14 @@ export function DiffusionTrainPanel({
                   {completed
                     ? "Trained"
                     : "Stopped early; the adapter as of the last finished step was saved"}
-                  {status?.family ? ` (${status.family})` : ""} and added to the LoRA picker.
+                  {status?.family ? ` (${status.family})` : ""}
+                  {/* The LoRA picker and Deploy to Create are the Images surface, and only an
+                      adapter published into the diffusion LoRA catalog reaches them. A family
+                      trained here without that catalog (video) still saves a loadable adapter,
+                      so report the file and claim nothing more. */}
+                  {status?.catalog_path
+                    ? " and added to the LoRA picker."
+                    : ". Load it from the path below."}
                   {status?.lora_path && (
                     <span className="mt-1 block break-all">Saved: {status.lora_path}</span>
                   )}
@@ -2050,9 +2055,12 @@ export function DiffusionTrainPanel({
                   )}
                 </p>
                 <div className="mt-1 flex flex-wrap gap-2">
-                  <Button type="button" size="sm" onClick={onDeployClick}>
-                    Deploy to Create
-                  </Button>
+                  {/* A video run publishes no catalog entry, so there is nothing to deploy. */}
+                  {status?.catalog_path && (
+                    <Button type="button" size="sm" onClick={onDeployClick}>
+                      Deploy to Create
+                    </Button>
+                  )}
                   {/* Only a run stopped short can be continued; a completed one is already at its
                       target. Disabled until the run record lands (and enabled only if its
                       checkpoint really is on disk), with the backend's reason as the tooltip. */}

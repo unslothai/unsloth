@@ -1,3 +1,6 @@
 # Core unsloth packages
 unsloth-zoo
 unsloth
+# diffusers is deliberately NOT here: install.sh skips this file entirely
+# (SKIP_STUDIO_BASE=1), so a pin here never reaches a fresh install. It lives in
+# diffusers-pin.txt, installed by its own step in install_python_stack.py.
