@@ -63,3 +63,37 @@ def test_clean_machine_workflow_uses_resolver_but_preserves_explicit_tag():
     assert 'startswith("desktop-v")' not in workflow
     for suffix in (".dmg", ".deb", ".AppImage", ".exe"):
         assert suffix in workflow
+
+
+def test_the_resolver_stops_at_the_newest_release_holding_the_asset():
+    # One lookup per release per matrix leg was the cost, and a transient failure
+    # on an irrelevant older release failed the leg. Newest first, stop on match.
+    looked_up: list[str] = []
+    releases = [
+        {"tagName": "v0.1.527-beta", "createdAt": "2026-03-01T00:00:00Z"},
+        {"tagName": "v0.1.529-beta", "createdAt": "2026-05-01T00:00:00Z"},
+        {"tagName": "v0.1.528-beta", "createdAt": "2026-04-01T00:00:00Z"},
+        {"tagName": "not-a-release", "createdAt": "2026-06-01T00:00:00Z"},
+    ]
+
+    def fetch(tag):
+        looked_up.append(tag)
+        return [{"name": f"Unsloth-Desktop-{tag}-MacOS.dmg"}]
+
+    assert _module().resolve_newest(releases, ".dmg", fetch) == "v0.1.529-beta"
+    assert looked_up == ["v0.1.529-beta"]
+
+
+def test_the_resolver_keeps_looking_past_a_release_without_the_asset():
+    looked_up: list[str] = []
+    releases = [
+        {"tagName": "v0.1.528-beta", "createdAt": "2026-04-01T00:00:00Z"},
+        {"tagName": "v0.1.529-beta", "createdAt": "2026-05-01T00:00:00Z"},
+    ]
+
+    def fetch(tag):
+        looked_up.append(tag)
+        return [] if tag == "v0.1.529-beta" else [{"name": "app-MacOS.dmg"}]
+
+    assert _module().resolve_newest(releases, ".dmg", fetch) == "v0.1.528-beta"
+    assert looked_up == ["v0.1.529-beta", "v0.1.528-beta"]

@@ -45,27 +45,41 @@ def resolve(releases: Any, asset_suffix: str) -> str | None:
     return max(candidates, default = None)[1] if candidates else None
 
 
-def hydrate_assets(releases: Any, repo: str) -> Any:
-    """Fetch asset names for SemVer candidates, including authorized drafts."""
+def fetch_assets(tag: str, repo: str) -> Any:
+    """Asset names for one release, including authorized drafts."""
+    result = subprocess.run(
+        ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
+        check = False,
+        capture_output = True,
+        text = True,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"could not inspect assets for {tag}: {result.stderr.strip()}")
+    return json.loads(result.stdout).get("assets")
+
+
+def resolve_newest(releases: Any, asset_suffix: str, fetch) -> str | None:
+    """Newest SemVer release carrying the asset, hydrating one release at a time.
+
+    Newest first and stop on the first match: hydrating every entry cost one
+    subprocess per release per matrix leg, and let a transient lookup on an
+    irrelevant historical release fail a leg whose answer was the newest one.
+    """
     if not isinstance(releases, list):
         raise ValueError("release listing must be a JSON array")
-    for release in releases:
-        if not isinstance(release, dict):
-            continue
-        tag = release.get("tagName")
-        if not isinstance(tag, str) or not SEMVER_TAG.fullmatch(tag):
-            continue
-        result = subprocess.run(
-            ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"],
-            check = False,
-            capture_output = True,
-            text = True,
-        )
-        if result.returncode != 0:
-            raise ValueError(f"could not inspect assets for {tag}: {result.stderr.strip()}")
-        payload = json.loads(result.stdout)
-        release["assets"] = payload.get("assets")
-    return releases
+
+    candidates = [
+        (release["createdAt"], release["tagName"])
+        for release in releases
+        if isinstance(release, dict)
+        and isinstance(release.get("tagName"), str)
+        and SEMVER_TAG.fullmatch(release["tagName"])
+        and isinstance(release.get("createdAt"), str)
+    ]
+    for created_at, tag in sorted(candidates, reverse = True):
+        if resolve([{"tagName": tag, "createdAt": created_at, "assets": fetch(tag)}], asset_suffix):
+            return tag
+    return None
 
 
 def main() -> int:
@@ -75,8 +89,11 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        releases = hydrate_assets(json.load(sys.stdin), args.repo)
-        tag = resolve(releases, args.asset_suffix)
+        tag = resolve_newest(
+            json.load(sys.stdin),
+            args.asset_suffix,
+            lambda release_tag: fetch_assets(release_tag, args.repo),
+        )
     except (json.JSONDecodeError, ValueError) as error:
         print(f"invalid GitHub release listing: {error}", file = sys.stderr)
         return 2

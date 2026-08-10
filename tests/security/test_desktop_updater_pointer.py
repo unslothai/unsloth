@@ -104,6 +104,7 @@ def _run(tmp_path, *, release_tag, releases, manifest):
             "MANIFEST_FIXTURE": str(manifest_fixture),
             "PATH": f"{fake_bin}:{env['PATH']}",
             "RELEASES_FIXTURE": str(releases_fixture),
+            "GITHUB_STEP_SUMMARY": str(tmp_path / "step-summary.md"),
             "RELEASE_TAG": release_tag,
             "RUNNER_TEMP": str(tmp_path),
         }
@@ -139,6 +140,11 @@ def test_the_newest_desktop_manifest_is_carried_onto_a_bundleless_release(tmp_pa
     # The manifest is copied byte for byte, so it keeps pointing at its own release.
     carried = json.loads((tmp_path / "carry-forward" / "latest.json").read_text(encoding = "utf-8"))
     assert carried == _manifest("v0.1.52-beta")
+
+    # The 404 gap between publish and this upload is recorded, not silent.
+    summary = (tmp_path / "step-summary.md").read_text(encoding = "utf-8")
+    assert "v0.1.52-beta manifest" in summary
+    assert "404" in summary
 
 
 def test_drafts_prereleases_and_bundleless_releases_are_never_the_source(tmp_path):

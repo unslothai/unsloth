@@ -145,6 +145,15 @@ jobs:
           PY
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/carry-forward/latest.json" --clobber
           echo "Carried ${source_tag} updater metadata onto ${RELEASE_TAG}."
+          # GitHub moves /releases/latest when the release is published, before this
+          # job can start, so update checks 404 from that moment until the upload
+          # above. Record it: a long queue makes the gap worth knowing about.
+          {
+            printf '### Desktop updater pointer\n\n'
+            printf '%s carried no desktop bundles, so it now serves the %s manifest.\n\n' \
+              "$RELEASE_TAG" "$source_tag"
+            printf 'Update checks returned 404 between the release being published and this upload.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download updater metadata
         if: steps.gate.outputs.proceed == 'true'
