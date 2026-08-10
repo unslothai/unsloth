@@ -1,6 +1,7 @@
 use crate::native_backend_lease::{
     encode_secret_env, now_ms, random_token, sign_path_lease, NativePathKind,
-    NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
+    NativePathLeaseRequest, NativePathLeaseResponse, NativePathOperation, NativePathSourceKind,
+    NativePathType,
 };
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
@@ -22,6 +23,7 @@ const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 // How long after the OS reports a drop the renderer may still register those paths.
 const DROP_GRACE: Duration = Duration::from_secs(2 * 60);
 
+#[cfg(any(windows, test))]
 fn normalize_windows_verbatim_path(path: String) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{rest}");
@@ -275,15 +277,17 @@ impl NativeIntakeState {
         validate_entry_path(&entry, operation)?;
         sign_path_lease(
             &self.lease_secret,
-            operation,
-            entry.canonical_path.to_string_lossy().to_string(),
-            entry.path_kind,
-            entry.path_type,
-            entry.source_kind,
-            &entry.token,
-            entry.display_label,
-            entry.size_bytes,
-            entry.modified_ms,
+            NativePathLeaseRequest {
+                operation,
+                canonical_path: entry.canonical_path.to_string_lossy().to_string(),
+                path_kind: entry.path_kind,
+                path_type: entry.path_type,
+                source_kind: entry.source_kind,
+                token: entry.token,
+                display_label: entry.display_label,
+                size_bytes: entry.size_bytes,
+                modified_ms: entry.modified_ms,
+            },
         )
     }
 
@@ -524,7 +528,11 @@ pub fn open_path_token(
     open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
-const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+// Covers the largest client-side limit (audio, 25 MB).
+const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+// Images stop lower: the composer throws over 20 MB without a toast and the
+// drain swallows it, so a larger read loses them silently.
+const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -541,6 +549,11 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "png" => Some("image/png"),
         "webp" => Some("image/webp"),
         "gif" => Some("image/gif"),
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
         _ => None,
     }
 }
@@ -589,14 +602,19 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image attachments can be read for vision input.".to_string()
+        "Only chat image and audio attachments can be read inline.".to_string()
     })?;
+    let max_bytes = if mime_type.starts_with("image/") {
+        MAX_NATIVE_IMAGE_BYTES
+    } else {
+        MAX_NATIVE_ATTACHMENT_BYTES
+    };
     let file = open_attachment_file(path)?;
     let metadata = file
         .metadata()
         .map_err(|e| format!("Path is no longer available: {e}"))?;
-    if !metadata.is_file() || metadata.len() > MAX_NATIVE_ATTACHMENT_BYTES {
-        return Err("Image attachment is unavailable or too large.".to_string());
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err("Attachment is unavailable or too large.".to_string());
     }
     // path_for_operation validated a fingerprint against the path; bind the
     // handle we are about to read to that same one, or a swap in between wins.
@@ -610,11 +628,11 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
     }
     // The file can grow between the stat and the read, so cap the reader itself.
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_NATIVE_ATTACHMENT_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("Could not read image attachment: {e}"))?;
-    if bytes.len() as u64 > MAX_NATIVE_ATTACHMENT_BYTES {
-        return Err("Image attachment is unavailable or too large.".to_string());
+        .map_err(|e| format!("Could not read attachment: {e}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err("Attachment is unavailable or too large.".to_string());
     }
     let name = path
         .file_name()
@@ -674,6 +692,29 @@ mod tests {
         (state, entry)
     }
 
+    // The reader maps its own mime types; an unmapped one refuses an accepted file.
+    #[test]
+    fn audio_read_round_trips_with_its_mime_type() {
+        for (ext, mime) in [
+            ("wav", "audio/wav"),
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+            ("ogg", "audio/ogg"),
+            ("oga", "audio/ogg"),
+            ("flac", "audio/flac"),
+        ] {
+            let path = temp_path("clip").with_extension(ext);
+            fs::write(&path, b"ID3AUDIO").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} was unreadable: {error}"));
+            assert_eq!(payload.mime_type, mime);
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"ID3AUDIO");
+            assert!(payload.name.ends_with(&format!(".{ext}")));
+            let _ = fs::remove_file(path);
+        }
+    }
+
     #[test]
     fn image_read_round_trips_and_names_the_file() {
         let path = temp_path("photo").with_extension("png");
@@ -694,7 +735,7 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image attachments"));
+        assert!(err.contains("Only chat image and audio attachments"));
         let _ = fs::remove_file(path);
     }
 
@@ -711,9 +752,34 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    // Reading past the image cap would make the file disappear instead of
+    // reporting it.
     #[test]
-    fn image_read_refuses_more_than_the_cap() {
+    fn image_read_refuses_more_than_the_image_cap() {
         let path = temp_path("huge").with_extension("png");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    // Audio keeps the larger cap: the caps are per kind, not one shared ceiling.
+    #[test]
+    fn audio_read_allows_more_than_the_image_cap() {
+        let path = temp_path("clip").with_extension("wav");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).expect("audio under the audio cap reads");
+        assert_eq!(payload.mime_type, "audio/wav");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audio_read_refuses_more_than_the_audio_cap() {
+        let path = temp_path("huge").with_extension("wav");
         fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
         let (_state, entry) = attachment_entry(&path);
         let Err(err) = read_attachment_payload(&entry) else {
@@ -801,7 +867,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("dropped on the window"));
 
-        state.note_dropped_paths(&[path.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&path));
         let intent = state
             .register_attachment_path(&path, NativePathSourceKind::Drop)
             .unwrap();
@@ -823,7 +889,7 @@ mod tests {
         fs::write(&dropped, b"dropped").unwrap();
         fs::write(&sibling, b"sibling").unwrap();
 
-        state.note_dropped_paths(&[dropped.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&dropped));
         assert!(state
             .register_attachment_path(&sibling, NativePathSourceKind::Drop)
             .is_err());

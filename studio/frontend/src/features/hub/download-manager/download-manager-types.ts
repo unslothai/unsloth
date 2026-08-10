@@ -100,6 +100,16 @@ export interface ProgressLike {
   complete_on_disk?: boolean;
   expected_bytes: number;
   progress: number;
+  /** The scanned cache dir, or null when no cache for this repo exists at all. Optional so an
+   *  older backend's response still satisfies this shape; hydration treats absent as unknown. */
+  cache_path?: string | null;
+  /** Whether the backend found anything for THIS target (variant) rather than the shared repo
+   *  cache dir. Null where it cannot say, absent from an older backend; both leave the
+   *  repo-level cache_path rule in charge. */
+  target_present?: boolean | null;
+  /** False when the cache could not be scanned at all: unknown, not empty. Absent from an
+   *  older backend, which is also unknown. */
+  cache_measured?: boolean;
 }
 
 export type Terminal = "complete" | "cancelled" | "error" | "gone";

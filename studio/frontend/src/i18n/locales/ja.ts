@@ -392,6 +392,8 @@ export const ja = {
         sectionTitle: "通知",
         showLlamaUpdates: "llama.cpp のアップデート通知",
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
+        showLoadedModels: "読み込み済みモデルのインジケーター",
+        showLoadedModelsDescription: "現在メモリ上にあるすべてのモデル（チャット、音声、画像、動画）を一覧表示する小さなカードを右下に表示します。各モデルを解放するボタンが付いています。",
       },
       startup: {
         sectionTitle: "起動",
@@ -882,6 +884,9 @@ export const ja = {
           "Canvas モードでは完全な HTML を自動的に折りたたみます。Canvas がオフのときも、コードフェンスで囲まれた HTML ドキュメントを折りたたむには、この設定をオンにします。",
         allowNetworkAccess: "Canvas のネットワークアクセスを許可",
         allowNetworkAccessDescription: "CanvasのプレビューがCDNからスクリプト、スタイル、フォント、メディア、ネットワークリソースを読み込むことを許可します。完全にオフラインでプレビューする場合はオフのままにしてください。",
+        blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerAction: "この Canvas で許可",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",

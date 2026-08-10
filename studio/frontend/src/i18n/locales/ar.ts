@@ -401,6 +401,9 @@ export const ar = {
         showLlamaUpdates: "إشعارات تحديث llama.cpp",
         showLlamaUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من llama.cpp لتشغيل نماذج جديدة. أوقف التشغيل إذا كنت تُدرّب فقط.",
+        showLoadedModels: "مؤشر النماذج المحمّلة",
+        showLoadedModelsDescription:
+          "إظهار بطاقة صغيرة في الزاوية السفلية اليمنى تعرض كل نموذج موجود حاليًا في الذاكرة (الدردشة، الكلام، الصور، الفيديو)، مع زر لإخراج كل منها.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",
@@ -895,6 +898,9 @@ export const ar = {
         allowNetworkAccess: "السماح بوصول Canvas إلى الشبكة",
         allowNetworkAccessDescription:
           "اسمح لمعاينات Canvas بتحميل النصوص البرمجية والأنماط والخطوط والوسائط وموارد الشبكة من شبكات CDN. أبقِه معطّلاً للمعاينات دون اتصال بالكامل.",
+        blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
+        blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
+        blockedBannerAction: "السماح لهذا الـ Canvas",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",

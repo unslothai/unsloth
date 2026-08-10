@@ -398,6 +398,9 @@ export const ko = {
         showLlamaUpdates: "llama.cpp 업데이트 알림",
         showLlamaUpdatesDescription:
           "새 모델을 실행할 수 있는 최신 llama.cpp 빌드가 있으면 알립니다. 학습만 사용한다면 끄세요.",
+        showLoadedModels: "로드된 모델 표시기",
+        showLoadedModelsDescription:
+          "현재 메모리에 있는 모든 모델(채팅, 음성, 이미지, 비디오)을 오른쪽 아래 작은 카드에 표시하고, 각각을 해제하는 버튼을 제공합니다.",
       },
       startup: {
         sectionTitle: "시작",
@@ -893,6 +896,9 @@ export const ko = {
         allowNetworkAccess: "Canvas 네트워크 접근 허용",
         allowNetworkAccessDescription:
           "Canvas 미리보기가 CDN에서 스크립트, 스타일, 폰트, 미디어 및 네트워크 리소스를 불러올 수 있게 합니다. 완전한 오프라인 미리보기를 위해서는 꺼 두세요.",
+        blockedBanner: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerPlural: "{hosts}의 외부 리소스 {count}개를 차단했습니다.",
+        blockedBannerAction: "이 Canvas에서 허용",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",

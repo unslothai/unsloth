@@ -57,6 +57,18 @@ def test_studio_extra_exists():
     )
 
 
+def test_huggingface_extra_contains_no_diffusers_vcs_reference():
+    from packaging.requirements import Requirement
+
+    entries = _load_pyproject()["project"]["optional-dependencies"]["huggingfacenotorch"]
+    diffusers = [Requirement(entry) for entry in entries if Requirement(entry).name == "diffusers"]
+    assert diffusers
+    assert all(requirement.url is None for requirement in diffusers), (
+        "PyPI rejects VCS direct references in uploaded Requires-Dist metadata; "
+        "keep temporary Diffusers commit pins in Studio installer requirement files."
+    )
+
+
 def test_studio_extra_matches_requirements_file():
     extras = _load_pyproject()["project"]["optional-dependencies"]
     extra = sorted(_normalise(entry) for entry in extras["studio"])

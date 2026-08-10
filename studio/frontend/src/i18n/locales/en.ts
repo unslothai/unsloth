@@ -400,6 +400,9 @@ export const en = {
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
           "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+        showLoadedModels: "Loaded models indicator",
+        showLoadedModelsDescription:
+          "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
       },
       startup: {
         sectionTitle: "Startup",
@@ -888,6 +891,9 @@ export const en = {
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
           "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+        blockedBanner: "Blocked {count} external resource from {hosts}.",
+        blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
+        blockedBannerAction: "Allow for this canvas",
       },
       data: "Data",
       exportHistory: "Export chat history",

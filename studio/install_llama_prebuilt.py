@@ -18,6 +18,7 @@ import platform
 import random
 import re
 import shutil
+import signal
 import site
 import socket
 import ssl
@@ -42,7 +43,7 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Union
 
 # Shared component-agnostic machinery lives in prebuilt_core (same directory);
 # put studio/ on sys.path so it resolves whether this file is run as a script
@@ -4471,6 +4472,35 @@ def download_validation_model(path: Path, cache_path: Path | None = None) -> Non
         raise PrebuiltFallback(f"validation model unavailable: {exc}") from exc
 
 
+# A probe model supplied either directly or as a thunk fetched on first use.
+ValidationModelProvider = Union[Path, Callable[[], Path]]
+
+
+def lazy_validation_model(path: Path, cache_path: Path | None = None) -> Callable[[], Path]:
+    """Fetch the tiny GGUF probe on first use, at most once.
+
+    An approved bundle proves its integrity by sha256 and so skips the staged smoke
+    test, leaving the probe unread on the default install path. Fetching it up front
+    still made huggingface.co a hard gate: a 429 there raised PrebuiltFallback and
+    forced a multi-minute source build over a file nothing went on to open.
+    """
+    fetched = False
+
+    def ensure() -> Path:
+        nonlocal fetched
+        if not fetched:
+            download_validation_model(path, cache_path)
+            fetched = True
+        return path
+
+    return ensure
+
+
+def resolve_validation_model(probe: ValidationModelProvider) -> Path:
+    """Materialize a probe model that may have been supplied lazily."""
+    return probe() if callable(probe) else probe
+
+
 def free_local_port() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
@@ -5270,8 +5300,13 @@ def validate_server(
                     stderr = subprocess.STDOUT,
                     text = True,
                     env = binary_env(server_path, install_dir, host, runtime_line = runtime_line),
+                    **_validation_server_kwargs(),
                     **windows_hidden_subprocess_kwargs(),
                 )
+                # For the caller that spawned this script: a validation server is
+                # its grandchild, so a crash here leaves it holding the GPU and
+                # the staged files with nothing recording where it is.
+                _announce_child("started", process.pid)
                 deadline = time.time() + 60
                 startup_started = time.time()
                 response_body = ""
@@ -5331,13 +5366,11 @@ def validate_server(
                         + ("\n" + response_body if response_body else "")
                     )
         finally:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout = 5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout = 5)
+            if process is not None:
+                # Only once nothing is left in its group: announcing the stop
+                # drops the record, which is the only handle on a survivor.
+                if _terminate_validation_server(process):
+                    _announce_child("stopped", process.pid)
             try:
                 log_path.unlink(missing_ok = True)
             except Exception:
@@ -5345,6 +5378,134 @@ def validate_server(
     if last_failure is not None:
         raise last_failure
     raise PrebuiltFallback("llama-server validation failed unexpectedly")
+
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _validation_server_leads_group() -> bool:
+    """Whether the validation server is started as its own group leader.
+
+    Only where the parent-death signal can be armed with it, so the two always
+    agree: the kill path may only killpg a group the server actually leads.
+    """
+    return os.name == "posix" and sys.platform.startswith("linux")
+
+
+def _validation_server_kwargs() -> "dict[str, Any]":
+    """Popen kwargs tying a validation server to this installer's lifetime.
+
+    Its own group keeps whatever the server starts reachable through the leader
+    alone, but it also takes the server out of the group Studio force-kills, so
+    the parent-death signal is armed alongside it: an installer that is killed
+    mid-validation must not leave a server holding the GPU and the staged files
+    until some later startup sweeps the breadcrumb.
+
+    macOS has no such signal, and the record only exists once the backend has
+    read the announcement that follows the spawn, so a session of its own there
+    would leave a window in which nothing can reach the server at all. It stays
+    in the inherited group instead, and the termination walk covers whatever it
+    starts.
+    """
+    if not _validation_server_leads_group():
+        return {}
+    kwargs: "dict[str, Any]" = {"start_new_session": True}
+    owner_pid = os.getpid()  # read pre-fork, so the child can tell reparenting apart
+
+    def _arm_parent_death() -> None:
+        # Post-fork, pre-exec: fork clears the setting, and subprocess runs
+        # preexec_fn after setsid, neither of which undoes it (a plain execve
+        # preserves it too). getppid closes the race where the installer was
+        # already gone by the time this ran.
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+            if os.getppid() != owner_pid:
+                os._exit(1)
+        except Exception:
+            pass
+
+    kwargs["preexec_fn"] = _arm_parent_death
+    return kwargs
+
+
+def _announce_child(state: str, pid: int) -> None:
+    """Tell whoever runs this script about a server it started.
+
+    Studio adopts the pid so its own sweep can reach it; run by hand the line is
+    just noise on stdout.
+    """
+    print(f"UNSLOTH_INSTALLER_CHILD {state} {pid}", flush = True)
+
+
+def _group_is_running(pgid: "int | None") -> bool:
+    """Whether anything is left in that process group."""
+    if pgid is None or os.name != "posix" or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_group(pgid: "int | None", grace: float) -> None:
+    """Give a signalled group its moment to go."""
+    deadline = time.time() + grace
+    while _group_is_running(pgid) and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def _terminate_validation_server(process: "subprocess.Popen", grace: float = 5.0) -> bool:
+    """Stop the validation server and anything it started. True when it is gone.
+
+    Where it leads its own group, signalling the leader alone would leave a
+    child of its own behind, and a child that ignores SIGTERM outlives the
+    leader's exit. False means something is still in that group, and the caller
+    keeps the pid announced so a later sweep can still reach it.
+
+    Where it does not lead one it shares this installer's group, and killpg
+    would take the installer and Studio with it, so only the server itself is
+    signalled.
+    """
+    pgid = None
+    if _validation_server_leads_group() and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(process.pid)
+        except OSError:
+            # Already reaped, so its own pid is the group id: it was started in
+            # a session of its own, and the kernel holds that number for as long
+            # as any member of the group is still there.
+            pgid = process.pid
+        if pgid != process.pid:
+            pgid = None  # not the leader after all; never signal a shared group
+    if pgid is not None:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            process.terminate()
+    else:
+        process.terminate()
+    try:
+        process.wait(timeout = grace)
+    except subprocess.TimeoutExpired:
+        pass
+    # The leader exiting is not the answer: a member that ignored the SIGTERM
+    # is still holding the GPU and the staged files.
+    _wait_for_group(pgid, grace)
+    if pgid is not None and _group_is_running(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+        _wait_for_group(pgid, grace)
+    elif pgid is None and process.poll() is None:
+        process.kill()
+    try:
+        process.wait(timeout = grace)
+    except subprocess.TimeoutExpired:
+        pass
+    return not _group_is_running(pgid) and process.poll() is not None
 
 
 def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_dir: Path) -> str:
@@ -6292,7 +6453,7 @@ def validate_prebuilt_choice(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6360,6 +6521,8 @@ def validate_prebuilt_choice(
     # disabled for now. The check and the source-build fallback it triggers are
     # kept intact; flip the flag / env to restore it (#5854).
     if choice.expected_sha256 is None or staged_validation_enabled():
+        # Only branch that reads the probe, so this is where a lazy one is fetched.
+        probe_path = resolve_validation_model(probe)
         validate_quantize(
             quantize_path,
             probe_path,
@@ -6428,7 +6591,7 @@ def validate_prebuilt_attempts(
     host: HostInfo,
     install_dir: Path,
     work_dir: Path,
-    probe_path: Path,
+    probe: ValidationModelProvider,
     *,
     requested_tag: str,
     llama_tag: str,
@@ -6443,6 +6606,14 @@ def validate_prebuilt_attempts(
     attempt_list = list(attempts)
     if not attempt_list:
         raise PrebuiltFallback("no prebuilt bundle attempts were available")
+
+    # Resolve the probe up front when any attempt will validate. The per-candidate
+    # handler below catches Exception, so a probe download failing inside it would
+    # read as a bad bundle and demote a healthy GPU pick to CPU -- and, since the
+    # thunk memoises success but not failure, re-download once per attempt. Plans
+    # that skip validation never call the thunk, so they stay lazy.
+    if staged_validation_enabled() or any(a.expected_sha256 is None for a in attempt_list):
+        probe = resolve_validation_model(probe)
 
     tried_fallback = initial_fallback_used
     for index, attempt in enumerate(attempt_list):
@@ -6492,7 +6663,7 @@ def validate_prebuilt_attempts(
                 host,
                 staging_dir,
                 work_dir,
-                probe_path,
+                probe,
                 requested_tag = requested_tag,
                 llama_tag = llama_tag,
                 release_tag = release_tag,
@@ -7103,8 +7274,22 @@ def install_prebuilt(
                     sync_marker_rocm_gfx(install_dir, persist_rocm_gfx)
                     return
             with scratch_dir("unsloth-llama-prebuilt-") as work_dir:
-                probe_path = work_dir / "stories260K.gguf"
-                download_validation_model(probe_path, validation_model_cache_path(install_dir))
+                probe = lazy_validation_model(
+                    work_dir / "stories260K.gguf",
+                    validation_model_cache_path(install_dir),
+                )
+                # Same reason as the per-candidate guard in validate_prebuilt_attempts,
+                # one level up: the per-release handler below also swallows
+                # PrebuiltFallback and moves to an older plan, so a probe failure raised
+                # inside it would install an older llama.cpp over a transient 429. The
+                # probe is independent of which release was picked, so resolve it once
+                # here when any plan will smoke-test.
+                if staged_validation_enabled() or any(
+                    attempt.expected_sha256 is None
+                    for release_plan in release_plans
+                    for attempt in release_plan.attempts
+                ):
+                    probe = resolve_validation_model(probe)
                 release_count = len(release_plans)
                 for release_index, plan in enumerate(release_plans):
                     choice = plan.attempts[0]
@@ -7142,7 +7327,7 @@ def install_prebuilt(
                             host,
                             install_dir,
                             work_dir,
-                            probe_path,
+                            probe,
                             requested_tag = requested_tag,
                             llama_tag = plan.llama_tag,
                             release_tag = plan.release_tag,

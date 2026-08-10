@@ -414,6 +414,9 @@ export const es = {
         showLlamaUpdates: "Notificaciones de actualización de llama.cpp",
         showLlamaUpdatesDescription:
           "Avisa cuando haya una compilación más reciente de llama.cpp para ejecutar nuevos modelos. Desactívalo si solo entrenas.",
+        showLoadedModels: "Indicador de modelos cargados",
+        showLoadedModelsDescription:
+          "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
       },
       startup: {
         sectionTitle: "Inicio",
@@ -919,6 +922,9 @@ export const es = {
         allowNetworkAccess: "Permitir acceso de red en Canvas",
         allowNetworkAccessDescription:
           "Permite que las vistas previas de Canvas carguen scripts, estilos, fuentes, medios y recursos de red desde CDNs. Mantenlo desactivado para vistas previas totalmente sin conexión.",
+        blockedBanner: "Se bloqueó {count} recurso externo de {hosts}.",
+        blockedBannerPlural: "Se bloquearon {count} recursos externos de {hosts}.",
+        blockedBannerAction: "Permitir en este Canvas",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",

@@ -385,6 +385,9 @@ export const zhCN = {
         showLlamaUpdates: "llama.cpp 更新通知",
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
+        showLoadedModels: "已加载模型指示器",
+        showLoadedModelsDescription:
+          "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
       },
       startup: {
         sectionTitle: "启动",
@@ -870,6 +873,9 @@ export const zhCN = {
         allowNetworkAccess: "允许 Canvas 访问网络",
         allowNetworkAccessDescription:
           "允许 Canvas 预览从 CDN 加载脚本、样式、字体、媒体和网络资源。若需完全离线预览请保持关闭。",
+        blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerAction: "允许此 Canvas",
       },
       data: "数据",
       exportHistory: "导出聊天记录",

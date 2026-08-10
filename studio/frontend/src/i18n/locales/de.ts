@@ -418,6 +418,9 @@ export const de = {
         showLlamaUpdates: "llama.cpp-Update-Benachrichtigungen",
         showLlamaUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
+        showLoadedModels: "Anzeige geladener Modelle",
+        showLoadedModelsDescription:
+          "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
       },
       startup: {
         sectionTitle: "Autostart",
@@ -928,6 +931,9 @@ export const de = {
         allowNetworkAccess: "Netzwerkzugriff für Canvas erlauben",
         allowNetworkAccessDescription:
           "Erlaubt Canvas-Vorschauen, Skripte, Stile, Schriftarten, Medien und Netzwerkressourcen von CDNs zu laden. Für vollständig offline nutzbare Vorschauen deaktiviert lassen.",
+        blockedBanner: "{count} externe Ressource von {hosts} blockiert.",
+        blockedBannerPlural: "{count} externe Ressourcen von {hosts} blockiert.",
+        blockedBannerAction: "Für dieses Canvas erlauben",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",

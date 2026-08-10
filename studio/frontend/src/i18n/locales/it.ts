@@ -391,6 +391,9 @@ export const it = {
         showLlamaUpdates: "Notifiche di aggiornamento di llama.cpp",
         showLlamaUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di llama.cpp per eseguire nuovi modelli. Disattiva le notifiche se usi Unsloth solo per l'addestramento.",
+        showLoadedModels: "Indicatore dei modelli caricati",
+        showLoadedModelsDescription:
+          "Mostra una piccola scheda in basso a destra con tutti i modelli attualmente in memoria (chat, voce, immagini, video), con un pulsante per rimuovere ciascuno.",
       },
       startup: {
         sectionTitle: "Avvio",
@@ -895,6 +898,9 @@ export const it = {
         allowNetworkAccess: "Consenti a Canvas di accedere alla rete",
         allowNetworkAccessDescription:
           "Consenti alle anteprime di Canvas di caricare script, stili, font, contenuti multimediali e risorse di rete dalle CDN. Lascia l'opzione disattivata per anteprime completamente offline.",
+        blockedBanner: "Bloccata {count} risorsa esterna da {hosts}.",
+        blockedBannerPlural: "Bloccate {count} risorse esterne da {hosts}.",
+        blockedBannerAction: "Consenti per questo Canvas",
       },
       data: "Dati",
       exportHistory: "Esporta la cronologia delle chat",

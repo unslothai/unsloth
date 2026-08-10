@@ -22,7 +22,11 @@ import {
   listScanFolders,
   removeScanFolder,
 } from "@/features/chat";
-import { useChatRuntimeStore } from "@/features/chat";
+import {
+  chatModelLoaded,
+  isExternalModelId,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import type {
   CachedGgufRepo,
   CachedModelRepo,
@@ -36,6 +40,7 @@ import {
   TrainIcon,
   TransportConflictDialog,
   deleteCachedModel,
+  ggufVariantDisplayLabel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
@@ -58,6 +63,7 @@ import {
   useOnlineStatus,
 } from "@/features/hub";
 import { useDebouncedValue, useGpuInfo, useInferenceGpuInfo } from "@/hooks";
+import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -125,6 +131,7 @@ import {
   orderRecommendedRows,
   paramsFromId,
   searchRowFitsDevice,
+  searchableRecommendedIds,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -156,7 +163,9 @@ import type {
 import {
   type CatalogGroup,
   artifactForRepoId,
+  curatedCapabilitiesFor,
   curatedSizeBytesFor,
+  curatedTotalParamsFor,
 } from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
@@ -1427,7 +1436,10 @@ function GgufVariantExpander({
                 <span
                   className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
                 >
-                  {v.quant}
+                  {/* The key is the selection identity and can be path-qualified
+                      ("distilled/ltx-2.3-22b-distilled-Q6_K"); the label is what that reads
+                      as ("Q6_K · distilled"). Everything below still keys on v.quant. */}
+                  {ggufVariantDisplayLabel(v)}
                 </span>
                 {unusableLocal ? (
                   <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
@@ -1888,9 +1900,20 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  // Live model id from the runtime store (backend-mirrored active_model), not the dropdown
-  // highlight which can be a staged pick. Disables the update action for it.
-  const loadedModelId = useChatRuntimeStore((s) => s.params.checkpoint);
+  // What the backend actually holds, not the dropdown highlight, which can be a
+  // staged pick. The selection alone was wrong: an image or video load evicts
+  // the chat model and leaves the pick untouched, so its rows kept the "Loaded"
+  // badge with nothing resident. Same predicate as the header tick, so the two
+  // cannot disagree.
+  const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedModelId = chatModelLoaded({
+    checkpoint: selectedCheckpoint,
+    isExternalModel: isExternalModelId(selectedCheckpoint),
+    residentCheckpoint,
+  })
+    ? selectedCheckpoint
+    : undefined;
   // Loaded GGUF quant of the active model; marks the matching pinned row.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -2386,8 +2409,16 @@ export function HubModelPicker({
         // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
         // and non-unsloth ids never get a listing row to correct it.
         curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
+        // Same reason the size is curated: a seed the listing does not return has no
+        // other source for its param chip, and most curated ids carry no "<n>B" token.
+        totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
+
+  const catalogSeedIds = useMemo(
+    () => catalogSeedRows.map((row) => row.id),
+    [catalogSeedRows],
+  );
 
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
@@ -2436,13 +2467,16 @@ export function HubModelPicker({
     catalog,
   ]);
 
-  // Per-row meta + VRAM badge from the recommended listing's own metadata.
+  // Per-row meta + VRAM badge from the recommended listing's own metadata, with the
+  // curated seeds behind it: a listing row wins wherever there is one, and a curated
+  // row the listing never returns still gets its size chip instead of rendering bare.
   const recommendedMeta = useMemo(() => {
     const map = new Map<
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
-    for (const r of recommendedSearch.results) {
+    for (const r of [...recommendedSearch.results, ...catalogSeedRows]) {
+      if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
       // GGUF param count comes from the repo name or the GGUF metadata, so even
       // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
@@ -2500,10 +2534,18 @@ export function HubModelPicker({
       map.set(r.id, { meta, status, est });
     }
     return map;
-  }, [recommendedSearch.results, isKnownGgufRepo, gpu, inferenceGpu]);
+  }, [
+    recommendedSearch.results,
+    catalogSeedRows,
+    isKnownGgufRepo,
+    gpu,
+    inferenceGpu,
+  ]);
 
-  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
-  // Rows look it up by id and fall back to name detection when absent.
+  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings, then the
+  // catalog for curated ids neither listing returned. Rows look it up by id and fall
+  // back to repo-name detection when absent, which cannot see an audio track a name
+  // does not mention. Listings first: real tags outrank curated data.
   const capsById = useMemo(() => {
     const map = new Map<string, ModelCapabilities>();
     for (const r of [...results, ...recommendedSearch.results]) {
@@ -2517,8 +2559,15 @@ export function HubModelPicker({
         }),
       );
     }
+    if (catalog) {
+      for (const row of catalogSeedRows) {
+        if (map.has(row.id)) continue;
+        const curated = curatedCapabilitiesFor(row.id, catalog);
+        if (curated) map.set(row.id, curated);
+      }
+    }
     return map;
-  }, [results, recommendedSearch.results]);
+  }, [results, recommendedSearch.results, catalog, catalogSeedRows]);
 
   // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
@@ -2651,8 +2700,9 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // The target page uses this verbatim as the gguf filename, so it must be ggufFilename (an exact repo filename), never ggufVariant (a label like "Q4_K_M", which routed a file that does not exist). No filename means a curated non-GGUF pick.
-            search: { model: id, quant: meta.ggufFilename ?? undefined },
+            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant instead; dropping it
+            // made every non-curated GGUF repo arrive as a bare repo id.
+            search: diffusionRouteSearch(id, meta),
           });
           return;
         }
@@ -2888,7 +2938,14 @@ export function HubModelPicker({
       searchRowFitsDevice(
         {
           ...row,
-          totalParams: row.totalParams ?? recommendedParamCountById.get(row.id),
+          // Curated params last, same rule as the curated size below: a listing
+          // total wins, but a repo no listing returns must still be sizable or
+          // `requireKnown` hides it from search while the unfiltered Recommended
+          // list, which reads the seed row's own metadata, keeps painting it.
+          totalParams:
+            row.totalParams ??
+            recommendedParamCountById.get(row.id) ??
+            (catalog ? curatedTotalParamsFor(row.id, catalog) : undefined),
         },
         {
           isGguf: isKnownGgufRepo(row.id),
@@ -2915,7 +2972,10 @@ export function HubModelPicker({
     if (!showHfSection) return [];
     const q = normalizeForSearch(debouncedQuery.trim());
     return (
-      recommendedIds
+      // Seeds included: recommendedIds hides downloaded models, which the unfiltered
+      // Recommended list still paints, so without them a curated pick vanishes from
+      // search the moment it is on disk unless a Hub listing row happens to carry it.
+      searchableRecommendedIds(catalogSeedIds, recommendedIds)
         .filter((id) => normalizeForSearch(id).includes(q))
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
@@ -2932,6 +2992,7 @@ export function HubModelPicker({
   }, [
     showHfSection,
     debouncedQuery,
+    catalogSeedIds,
     recommendedIds,
     formatFilter,
     isKnownGgufRepo,
@@ -3462,6 +3523,9 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
+                // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages asked for a
+                // pipeline, which a GGUF repo rejects. No filename: the pin stores a label, resolved against the listing.
+                isGguf: true,
               })
             }
             vramStatus={null}
@@ -4862,10 +4926,14 @@ export function HubModelPicker({
                             hubUrl={hubRepoUrl(id)}
                             alignMeta="hub"
                             showSize={hubRowsShowSize}
+                            downloaded={downloadedSet.has(id.toLowerCase())}
                             capabilities={capsById.get(id)}
+                            // Same meta the unfiltered Recommended row shows, so a
+                            // model does not lose its size chip just because it was
+                            // reached by typing its name.
                             meta={
                               isKnownGgufRepo(id)
-                                ? "GGUF"
+                                ? (recommendedMeta.get(id)?.meta ?? "GGUF")
                                 : (vram?.detail ?? extractParamLabel(id))
                             }
                             selected={value === id}

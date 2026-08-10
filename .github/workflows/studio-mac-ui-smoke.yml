@@ -34,6 +34,7 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -302,6 +303,13 @@ jobs:
       - name: Cross-browser permission controls
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 webkit
+
+      # WKWebView is what the desktop app embeds here, so this is the closest
+      # CI gets to the real macOS surface. The status reads are stubbed, which
+      # also covers the mps and sd.cpp payloads a CUDA runner cannot produce.
+      - name: Loaded-models indicator (WebKit)
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |

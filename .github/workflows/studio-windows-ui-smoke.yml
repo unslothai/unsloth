@@ -20,6 +20,7 @@ on:
       - 'pyproject.toml'
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
       - '.github/workflows/studio-windows-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -365,6 +366,11 @@ jobs:
       - name: Edge permission controls
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18895 chromium msedge
+
+      # Real Edge, which is also the WebView2 the desktop app embeds on Windows.
+      - name: Loaded-models indicator (Edge)
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium msedge
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |

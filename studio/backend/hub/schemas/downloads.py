@@ -154,6 +154,21 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    cache_measured: bool = Field(
+        True,
+        description = (
+            "False when the cache could not be scanned at all (an unreadable root). The "
+            "reading is then unknown, not empty: cache_path is null either way, and "
+            "hydration must not retire a persisted job on a scan that never happened."
+        ),
+    )
+    target_present: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether this TARGET (variant) has anything in the cache, as opposed to the "
+            "shared repo directory existing. Null where it cannot be established."
+        ),
+    )
 
 
 class DownloadDatasetRequest(BaseModel):

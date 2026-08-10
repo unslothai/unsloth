@@ -46,6 +46,12 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+def _training_is_active() -> bool:
+    """The non-raising half of the load guard, for callers that must not take the GPU."""
+    from routes.inference import _training_is_active as _images_training_is_active
+    return _images_training_is_active()
+
+
 def _guard_video_load_against_training() -> None:
     """Refuse loading a video model while a training run is active. Unlike chat,
     a video pipeline's VRAM can't be cheaply estimated before the load, so the
@@ -86,7 +92,11 @@ async def video_download_plan(
     """The repos + files this pick needs, so the frontend stages them through the Hub
     download manager instead of the load downloading inline. Mirrors /images/download-plan."""
     from core.inference.diffusion import resolve_local_single_file
-    from core.inference.video import get_video_backend, resolve_video_model_kind
+    from core.inference.video import (
+        assert_video_precision_available,
+        get_video_backend,
+        resolve_video_model_kind,
+    )
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
@@ -97,14 +107,34 @@ async def video_download_plan(
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
-        await asyncio.to_thread(
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            # Validation is quant-keyed: a scheme this family can serve only from a hosted
+            # pre-quantized checkpoint has to be refused HERE, on the route that stages the
+            # download, or the panel fetches ~98.7 GB before /video/load can say no.
+            transformer_quant = request.transformer_quant,
         )
+        # BEFORE the plan is staged, as on the images side: /video/load refuses a precision this
+        # host cannot honour, but the UI plans and downloads first, so an explicit FP8 on an
+        # unsupported host paid for tens of GB of weights to be told afterwards. Network-free.
+        #
+        # Skipped while a trainer holds the GPU: an uncached scheme takes this into a
+        # quantise-and-matmul smoke probe that initialises CUDA in the Studio process, and the
+        # plan runs before the load's training guard can refuse. Staging needs no GPU.
+        if fam is not None and not await asyncio.to_thread(_training_is_active):
+            await asyncio.to_thread(
+                assert_video_precision_available,
+                fam,
+                model_kind = kind,
+                transformer_quant = request.transformer_quant,
+                text_encoder_quant = request.text_encoder_quant,
+                memory_mode = request.memory_mode,
+            )
         plan = await asyncio.to_thread(
             backend.download_plan,
             request.model_path,
@@ -115,10 +145,18 @@ async def video_download_plan(
             hf_token = request.hf_token,
             # The plan must see the encoder policy the load will use: an fp8 request takes a hosted pre-cast encoder, so staging the dense one wastes ~49 GB on LTX-2.
             text_encoder_quant = request.text_encoder_quant,
+            # And the denoiser policy, for the same reason: a scheme with a hosted pre-quantized
+            # checkpoint replaces the dense DiT, so without this the plan stages 66.3 GB of shards
+            # the load never opens.
+            transformer_quant = request.transformer_quant,
         )
         return DiffusionDownloadPlanResponse(**plan)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # Mirrors /video/load and /images/download-plan: the precision gate above raises
+        # RuntimeError, and that refusal is a 409, not a server fault.
+        raise HTTPException(status_code = 409, detail = redact_native_paths(str(exc)))
 
 
 @router.post("/video/load", response_model = VideoStatusResponse)
@@ -128,7 +166,11 @@ async def load_video_model(
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
-    from core.inference.video import get_video_backend, resolve_video_model_kind
+    from core.inference.video import (
+        assert_video_precision_available,
+        get_video_backend,
+        resolve_video_model_kind,
+    )
     from utils.native_path_leases import redact_native_paths
 
     backend = get_video_backend()
@@ -142,7 +184,7 @@ async def load_video_model(
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
         # Validate cheaply BEFORE touching the GPU so an unloadable pick can't evict chat then 400.
-        await asyncio.to_thread(
+        fam = await asyncio.to_thread(
             backend.validate_load_request,
             request.model_path,
             gguf_filename = request.gguf_filename,
@@ -151,9 +193,28 @@ async def load_video_model(
             model_kind = kind,
             transformer_quant = request.transformer_quant,
             text_encoder_quant = request.text_encoder_quant,
+            h3_task = request.h3_task,
         )
-        # Refuse while training is running (VRAM competition). Mirrors the image-load guard.
+        # Refuse while training is running (VRAM competition) BEFORE the precision check below:
+        # that check runs an uncached quantise+matmul probe on the GPU, which would initialise a
+        # CUDA context and allocate alongside the training subprocess for a load that is about to
+        # be rejected anyway. Mirrors the image-load route, which already guards first.
         _guard_video_load_against_training()
+        # Same bar for an EXPLICIT precision this host can never honor. begin_load makes the
+        # identical network-free check, but it runs inside acquire_for, which evicts chat under the
+        # arbiter lock BEFORE the register callback -- so a refusal raised there arrives having
+        # already taken the GPU away from the model it was meant to preserve. `auto` is never
+        # refused, so a caller that left the precision to the backend cannot reach this.
+        await asyncio.to_thread(
+            assert_video_precision_available,
+            fam,
+            model_kind = kind,
+            transformer_quant = request.transformer_quant,
+            text_encoder_quant = request.text_encoder_quant,
+            # The memory request settles the offload policy for balanced/low_vram before
+            # anything is measured, and an offloaded DiT or encoder skips the torchao build.
+            memory_mode = request.memory_mode,
+        )
         # Take the GPU from chat only for a non-CPU load. Release stale VIDEO ownership on a CPU load (owner-guarded no-op).
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
 
@@ -173,6 +234,7 @@ async def load_video_model(
                 transformer_quant = request.transformer_quant,
                 text_encoder_quant = request.text_encoder_quant,
                 model_kind = kind,
+                h3_task = request.h3_task,
             )
 
         if device != "cpu":
@@ -211,9 +273,19 @@ async def generate_video(
     generate + gallery-persist pipeline; the terminal outcome (completed with the
     saved record / failed with a client-safe error) arrives via generate-progress."""
     from core.inference.video import get_video_backend
-    from core.inference.video_families import VIDEO_GENERATION_BUSY_MSG, VIDEO_NOT_LOADED_MSG
+    from core.inference.video_families import (
+        VIDEO_GENERATION_BUSY_MSG,
+        VIDEO_NOT_LOADED_MSG,
+        VideoShapeError,
+    )
 
     backend = get_video_backend()
+    # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
+    # family's (its presets and frame lattice), and begin_generate applies it under the same lock that
+    # reserves the state the job will run against, so a load committing concurrently cannot leave the
+    # shape judged against one family and denoised by another. Unloaded still falls through to the
+    # not-loaded 409; a family with no declared presets keeps the old SIZE snapping, though its frame
+    # lattice is enforced either way (frame_step is declared regardless).
     try:
         await asyncio.to_thread(
             backend.begin_generate,
@@ -227,7 +299,19 @@ async def generate_video(
             guidance = request.guidance,
             guidance_2 = request.guidance_2,
             seed = request.seed,
+            first_frame = request.first_frame,
+            last_frame = request.last_frame,
+            reference_images = request.reference_images,
+            reference_videos = [r.model_dump() for r in request.reference_videos or []] or None,
+            reference_audios = request.reference_audios,
+            reference_image_size = request.reference_image_size,
+            flow_shift = request.flow_shift,
+            audio_flow_shift = request.audio_flow_shift,
         )
+    except VideoShapeError as exc:
+        # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError. The body
+        # parses and is in range, but the shape is not one this model can render.
+        raise HTTPException(status_code = 422, detail = str(exc))
     except ValueError as exc:
         # Bad client input -- a 400 with the reason, not a generic 500.
         raise HTTPException(status_code = 400, detail = str(exc))

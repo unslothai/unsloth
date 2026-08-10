@@ -403,6 +403,9 @@ export const ru = {
         showLlamaUpdates: "Уведомления об обновлениях llama.cpp",
         showLlamaUpdatesDescription:
           "Уведомлять о доступности новой сборки llama.cpp для запуска новых моделей. Отключите, если вы только обучаете модели.",
+        showLoadedModels: "Индикатор загруженных моделей",
+        showLoadedModelsDescription:
+          "Показывает в правом нижнем углу небольшую карточку со всеми моделями, находящимися сейчас в памяти (чат, речь, изображения, видео), и кнопку для выгрузки каждой из них.",
       },
       startup: {
         sectionTitle: "Автозапуск",
@@ -905,6 +908,9 @@ export const ru = {
         allowNetworkAccess: "Разрешить сетевой доступ Canvas",
         allowNetworkAccessDescription:
           "Позволяет предпросмотрам Canvas загружать скрипты, стили, шрифты, медиа и сетевые ресурсы из CDN. Оставьте выключенным для полностью офлайн-предпросмотров.",
+        blockedBanner: "Заблокирован {count} внешний ресурс с {hosts}.",
+        blockedBannerPlural: "Заблокировано внешних ресурсов: {count} с {hosts}.",
+        blockedBannerAction: "Разрешить для этого Canvas",
       },
       data: "Данные",
       exportHistory: "Экспортировать историю чатов",

@@ -404,6 +404,9 @@ export const hi = {
         showLlamaUpdates: "llama.cpp अपडेट सूचनाएं",
         showLlamaUpdatesDescription:
           "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
+        showLoadedModels: "लोड किए गए मॉडल का संकेतक",
+        showLoadedModelsDescription:
+          "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",
@@ -901,6 +904,9 @@ export const hi = {
         allowNetworkAccess: "canvas नेटवर्क एक्सेस की अनुमति दें",
         allowNetworkAccessDescription:
           "canvas पूर्वावलोकन को CDN से स्क्रिप्ट, स्टाइल, फ़ॉन्ट, मीडिया, और नेटवर्क संसाधन लोड करने दें। पूरी तरह ऑफ़लाइन पूर्वावलोकन के लिए बंद रखें।",
+        blockedBanner: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किया गया।",
+        blockedBannerPlural: "{hosts} से {count} बाहरी संसाधन अवरुद्ध किए गए।",
+        blockedBannerAction: "इस Canvas के लिए अनुमति दें",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",

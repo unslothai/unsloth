@@ -705,6 +705,19 @@ def test_our_own_shared_top_level_trees_are_exempt_too(site):
     assert _deps().damaged_installed_files() == []
 
 
+def test_two_distributions_claiming_one_shared_path(site):
+    # The real shape: a third party also ships tests/conftest.py and lands last,
+    # so the bytes on disk match its RECORD and are shorter than unsloth_zoo's.
+    # Neither the drift nor the deletion can affect startup.
+    rel = "tests/conftest.py"
+    _make_dist(site, "unsloth_zoo", {rel: b"u" * 11429})
+    _make_dist(site, "upsilon", {rel: b"c" * 8107})
+    assert (site / rel).stat().st_size == 8107
+    assert _deps().damaged_installed_files() == []
+    (site / rel).unlink()
+    assert _deps().damaged_installed_files() == []
+
+
 def test_our_own_shared_top_level_trees_may_also_vanish(site):
     # Same path, deleted rather than overwritten: the einx shape, but claimed by
     # a distribution of ours. No reinstall repairs it either.
