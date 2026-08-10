@@ -1219,12 +1219,19 @@ jobs:
           # narrow: it triggers only when the cmdlets themselves fail, which is an
           # unavailable engine. A Defender that IS present but misconfigured still
           # fails below, and an actual detection still fails the job.
-          if ($unavailable) {
-            Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')); skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
-            exit 0
+          # The cmdlets and MpCmdRun.exe fail independently: the WMI provider and
+          # the service RPC endpoint back the cmdlets, while MpCmdRun talks to the
+          # engine directly. Treating dead cmdlets as "no scanner" was meant to
+          # cover a one-off incident, but they have been down on every Windows
+          # runner since 2026-08-06, so it silently shipped three releases
+          # unscanned. Carry on into the MpCmdRun path instead and let the EICAR
+          # positive control below decide whether a scanner is really there.
+          $cmdletsDown = [bool]$unavailable
+          if ($cmdletsDown) {
+            Write-Host "::warning::Defender cmdlets are unavailable on this runner ($($unavailable -join '; ')); configuration cannot be read or enforced. Falling back to a direct MpCmdRun scan."
+          } else {
+            Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
           }
-
-          Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
 
           # Set-MpPreference can return cleanly and still be ignored, so verify.
           # Split by whether the gap invalidates the verdict: cloud-delivered
@@ -1232,14 +1239,19 @@ jobs:
           # sight, and "!ml" is a cloud verdict, so a clean result without them
           # cannot see what this gate exists to catch. Leftover exclusions only
           # weaken it, since -DisableRemediation ignores file exclusions.
+          # Every check here reads $status/$pref, so none of it can run when the
+          # cmdlets are down. MpCmdRun still answers, and the MAPS and EICAR probes
+          # below exercise the same properties directly.
           $fatal = @()
           $degraded = @()
-          if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
-          if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
-          if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
-          if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
-          if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
-          if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          if (-not $cmdletsDown) {
+            if (-not $status.RealTimeProtectionEnabled) { $fatal += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+            if ([int]$pref.MAPSReporting -ne 2)         { $fatal += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+            if ($pref.DisableBlockAtFirstSeen)          { $fatal += 'DisableBlockAtFirstSeen=true' }
+            if ([int]$pref.SubmitSamplesConsent -ne 3)  { $degraded += "SubmitSamplesConsent=$($pref.SubmitSamplesConsent), expected 3 (SendAllSamples)" }
+            if ([int]$pref.CloudBlockLevel -eq 0)       { $degraded += "CloudBlockLevel=$($pref.CloudBlockLevel), expected High" }
+            if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+          }
 
           # Configuration is not connectivity. Retried, so one network blip does
           # not block a release.
@@ -1250,7 +1262,13 @@ jobs:
             Write-Host "  MAPS check $try failed: $($mapsOut.Trim())"
             Start-Sleep -Seconds (5 * $try)
           }
-          if (-not $maps) { $fatal += 'cannot reach the Defender cloud service' }
+          # With the cmdlets down a release would otherwise be blocked outright, so
+          # losing the cloud degrades the scan rather than failing it: signature
+          # detections still fire, only cloud-delivered "!ml" verdicts go unseen.
+          if (-not $maps) {
+            if ($cmdletsDown) { $degraded += 'cannot reach the Defender cloud service, so "!ml" cloud verdicts cannot fire' }
+            else              { $fatal += 'cannot reach the Defender cloud service' }
+          }
 
           # Positive control: clean and broken-scanner look identical. Split into
           # fragments so this file is not itself a sample.
@@ -1270,7 +1288,20 @@ jobs:
             Write-Host 'EICAR positive control blocked on write; real-time protection is live.'
             $controlPassed = $true
           }
-          if (-not $controlPassed) { $fatal += 'EICAR positive control did not fire' }
+          # This is the real test of whether a scanner exists. With the cmdlets down
+          # it is the only one left, so a control that does not fire means MpCmdRun
+          # cannot scan either: skip exactly as before rather than fail a release on
+          # a missing engine. A control that DOES fire means the scan below is real.
+          if (-not $controlPassed) {
+            if ($cmdletsDown) {
+              Write-Host "::warning::Defender is unavailable on this runner ($($unavailable -join '; ')) and MpCmdRun could not fire the EICAR positive control either; skipping the bundle scan. This is a missing scanner, not a clean verdict - these bundles were not scanned."
+              exit 0
+            }
+            $fatal += 'EICAR positive control did not fire'
+          }
+          if ($cmdletsDown) {
+            Write-Host 'EICAR positive control fired via MpCmdRun; scanning with the cmdlets unavailable.'
+          }
 
           if ($degraded) {
             Write-Host "::warning::Defender is not fully configured on this runner ($($degraded -join '; ')). Scanning anyway."
@@ -1321,12 +1352,18 @@ jobs:
 
           # -ErrorAction Continue does not stop on a rejected exclusion, so read
           # it back. Defender stores these verbatim; normalise anyway.
-          $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
-          $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
-          $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
-          if ($notApplied) {
-            Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
-            exit 1
+          # Unreadable with the cmdlets down, and unnecessary there: exclusions
+          # exist to stop real-time protection quarantining the copy mid-scan, and
+          # real-time protection is not running when the service RPC endpoint is
+          # what took the cmdlets out.
+          if (-not $cmdletsDown) {
+            $norm = { param($p) $p.TrimEnd('\').ToLowerInvariant() }
+            $applied = @(@((Get-MpPreference).ExclusionPath) | ForEach-Object { & $norm $_ })
+            $notApplied = @($exclude | Where-Object { $applied -notcontains (& $norm $_) })
+            if ($notApplied) {
+              Write-Host "::error::Defender refused these exclusions: $($notApplied -join ', '); a detection would quarantine the bundle mid-copy and leave nothing to submit"
+              exit 1
+            }
           }
 
           $detected = @()

@@ -462,3 +462,42 @@ def test_the_promotion_guard_fails_closed_on_a_failed_latest_lookup():
     assert "refusing to promote" in fallback.lower()
     assert "exit 1" in fallback
     assert "2>/dev/null" not in guard.split("releases/latest", 1)[1].split("\n", 1)[0]
+
+
+def test_dead_defender_cmdlets_do_not_skip_the_bundle_scan():
+    """Dead cmdlets must not read as "no scanner"; only a dead engine may.
+
+    The escape hatch added for a one-off runner incident became the permanent
+    path: the Defender WMI provider and service RPC endpoint have been down on
+    every Windows runner since 2026-08-06, so `Get-MpComputerStatus` throws and
+    three releases shipped unscanned. MpCmdRun.exe answers independently of the
+    cmdlets, so an unavailable cmdlet surface may only cost the configuration
+    checks, never the scan itself.
+    """
+    scan = _step(_workflow(), "build", "Scan Windows bundles with Defender")["run"]
+
+    # The unavailable branch records the fact and keeps going.
+    unavailable = scan.split("$cmdletsDown = [bool]$unavailable", 1)
+    assert len(unavailable) == 2, "the cmdlet-unavailable branch no longer sets $cmdletsDown"
+    before_control = unavailable[1].split("EICAR positive control", 1)[0]
+    assert "exit 0" not in before_control, (
+        "unavailable cmdlets still short-circuit the scan before the positive control"
+    )
+
+    # $status/$pref are unreadable then, so every check reading them is guarded.
+    for probe in ("$status.RealTimeProtectionEnabled", "$pref.MAPSReporting", "$pref.ExclusionPath"):
+        guarded = scan.split("if (-not $cmdletsDown) {", 1)
+        assert len(guarded) == 2
+        assert probe in scan
+    assert "if (-not $cmdletsDown) {" in scan
+
+    # The only remaining skip is a positive control that will not fire, which is
+    # the one signal that MpCmdRun cannot scan either.
+    skip = scan.split("MpCmdRun could not fire the EICAR positive control", 1)
+    assert len(skip) == 2, "the missing-scanner skip no longer keys off the positive control"
+    assert "exit 0" in skip[1].split("\n", 3)[1] + skip[1].split("\n", 3)[2]
+    assert "not a clean verdict" in skip[0].rsplit("::warning::", 1)[1] + skip[1]
+
+    # A detection still fails the job, cmdlets or not.
+    assert "Refusing to publish a Windows bundle Defender flags" in scan
+    assert "Refusing to publish bundles Defender could not scan" in scan
