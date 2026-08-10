@@ -13,6 +13,38 @@ from pathlib import Path
 from typing import NoReturn, Optional, Sequence, Tuple
 
 
+def _normalize_standard_streams():
+    """Point missing std streams at the null device.
+
+    sys.stdout/stderr/stdin are None in a process with no valid std handles (a
+    Windows pythonw or detached launch), so every .write() / .isatty() on them
+    raises AttributeError. A null-device stream answers like a real one, so
+    nothing downstream needs its own None check.
+
+    MUST run before the `from loggers import ...` below: structlog binds
+    `from sys import stdout` at ITS import time and PrintLogger does
+    `self._file = file or stdout`, so a None stdout is captured permanently.
+    Normalizing inside run_server() is too late to undo that capture.
+    """
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        if getattr(sys, name, None) is not None:
+            continue
+        try:
+            stream = open(os.devnull, mode, encoding = "utf-8", errors = "replace")
+        except Exception:
+            # Normalizing must never itself be what kills startup.
+            continue
+        setattr(sys, name, stream)
+        # sys.__stdout__ & co are None here too, and readers of those (rich reads
+        # sys.__stdout__.fileno() at import) otherwise fall back to fds 0/1/2,
+        # which this process does not have. Point them at the real null fd.
+        if getattr(sys, f"__{name}__", None) is None:
+            setattr(sys, f"__{name}__", stream)
+
+
+_normalize_standard_streams()
+
+
 def _fix_torch_cuda_ld_path():
     """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH.
 
@@ -93,6 +125,7 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 
 try:
@@ -101,12 +134,23 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
+# Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
+# taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both
+# must precede the first import below. No-op on other runtimes.
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
+
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
+
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
 # that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
-from loggers import get_logger
+from loggers import get_logger, install_uvicorn_duplicate_exception_filter
 from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
@@ -1092,6 +1136,79 @@ def _remove_pid_file():
         pass
 
 
+# Windows terminates the process ~5s after a close event, so leave a margin.
+_CONSOLE_SHUTDOWN_BUDGET = 4.5
+
+
+# CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN. Ctrl+C and Ctrl+Break (0 and 1) are
+# left out on purpose: Python already delivers those as signals.
+_CONSOLE_SHUTDOWN_EVENTS = (2, 5, 6)
+
+
+def _console_event_is_shutdown(event: int) -> bool:
+    return event in _CONSOLE_SHUTDOWN_EVENTS
+
+
+def _run_console_shutdown(shutdown) -> None:
+    try:
+        shutdown()
+    except Exception as error:
+        logger.warning("Console-close cleanup failed: %s", error)
+
+
+def _install_windows_console_handler(shutdown) -> bool:
+    """Run the graceful shutdown when the console window is closed.
+
+    Closing the window raises CTRL_CLOSE_EVENT, which Python never turns into a
+    signal, so neither a signal handler nor atexit runs and cleanup is skipped.
+    ``shutdown`` takes no arguments and must not touch signal.signal: Windows
+    runs this on a thread it creates for the event, and Windows kills the
+    process about five seconds later, so the work is bounded to fit. No-op off
+    Windows.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        HANDLER = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+        import threading
+
+        def _on_console_event(event: int) -> bool:
+            if _console_event_is_shutdown(event):
+                worker = threading.Thread(
+                    target = _run_console_shutdown, args = (shutdown,), daemon = True
+                )
+                worker.start()
+                worker.join(timeout = _CONSOLE_SHUTDOWN_BUDGET)
+                return True
+            # Ctrl+C / Ctrl+Break already arrive as Python signals; pass them
+            # on rather than shutting down twice.
+            return False
+
+        callback = HANDLER(_on_console_event)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        kernel32.SetConsoleCtrlHandler.argtypes = [HANDLER, wintypes.BOOL]
+        kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+        if not kernel32.SetConsoleCtrlHandler(callback, True):
+            logger.warning(
+                "Could not install the console-close handler (WinError %s); closing the "
+                "window will skip subprocess cleanup.",
+                ctypes.get_last_error(),
+            )
+            return False
+        # Hold a reference: a collected callback leaves Windows calling into
+        # freed memory.
+        globals()["_WINDOWS_CONSOLE_HANDLER"] = callback
+        logger.info("Console-close handler installed")
+        return True
+    except Exception as error:
+        logger.warning("Could not install the console-close handler: %s", error)
+        return False
+
+
 def _graceful_shutdown(server = None):
     """Shut down all subprocess backends and the uvicorn server.
 
@@ -1138,15 +1255,16 @@ def _graceful_shutdown(server = None):
 
     # 6. Stop the Cloudflare tunnel (if started).
     try:
-        from cloudflare_tunnel import stop_studio_tunnel
-        stop_studio_tunnel()
+        from cloudflare_tunnel import close_studio_tunnel_lifecycle
+        close_studio_tunnel_lifecycle()
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
     # 7. Backstop sweep for any adopted child the steps above missed.
     try:
-        from utils.process_lifetime import terminate_all
+        from utils.process_lifetime import clear_breadcrumb, terminate_all
         terminate_all()
+        clear_breadcrumb()  # nothing left for the next startup to sweep
     except Exception as e:
         logger.warning("Error in process-lifetime sweep: %s", e)
 
@@ -1194,6 +1312,13 @@ _shutdown_event = None
 # trycloudflare.com URL for wildcard binds (set by run_server, read by the banner);
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
+
+
+def _publish_cloudflare_url(app_state, cloudflare_url: "Optional[str]") -> None:
+    global _cloudflare_url
+    _cloudflare_url = cloudflare_url
+    app_state.cloudflare_url = cloudflare_url
+
 
 # Public reachability from the last _verify_global_reachability run, read by the
 # Cloudflare banner line. True when the public ip:port probe confirmed reachable,
@@ -1286,6 +1411,22 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
     return None, attempted
 
 
+def _frontend_serving_mode(*, api_only: bool, desktop_owned: bool) -> tuple[bool, bool]:
+    tunnel_only = api_only and desktop_owned
+    return not api_only or tunnel_only, tunnel_only
+
+
+def _missing_frontend_is_fatal(*, tunnel_only: bool) -> bool:
+    """Whether an unresolvable SPA build must abort startup.
+
+    It must when the web UI is this launch's own surface: a 404 on / is worse
+    than a loud error. It must not for the desktop, which passes --api-only with
+    no --frontend and whose installer skips the frontend build outright; there
+    the SPA only backs the optional remote web UI, so aborting would kill the
+    local API before TAURI_PORT is ever emitted. Degrade to API-only instead."""
+    return not tunnel_only
+
+
 class _TeeStream:
     """Mirror writes to the original stream and a session log file.
 
@@ -1303,6 +1444,8 @@ class _TeeStream:
             self._log_fh.write(data)
         except Exception:
             pass
+        if self._stream is None:
+            return len(data)
         return self._stream.write(data)
 
     def flush(self):
@@ -1310,6 +1453,8 @@ class _TeeStream:
             self._log_fh.flush()
         except Exception:
             pass
+        if self._stream is None:
+            return
         try:
             self._stream.flush()
         except Exception:
@@ -1325,12 +1470,16 @@ class _TeeStream:
             self._log_fh.flush()
         except Exception:
             pass
+        if self._stream is None:
+            return
         try:
             self._stream.close()
         except Exception:
             pass
 
     def __getattr__(self, name):
+        if self._stream is None:
+            raise AttributeError(name)
         return getattr(self._stream, name)
 
 
@@ -1374,6 +1523,8 @@ def _harden_console_close(stream):
     before and any other error still propagates, so nothing changes off Colab. A
     stream whose ``close`` cannot be reassigned keeps its original close().
     """
+    if stream is None:
+        return
     try:
         _orig_close = stream.close
     except Exception:
@@ -1444,6 +1595,8 @@ def _setup_server_disk_logging():
     _harden_console_close(sys.stdout)
     _harden_console_close(sys.stderr)
 
+    # _normalize_standard_streams() ran at import, so these are never None; the
+    # tee's own None guards are defence-in-depth for _TeeStream(None, ...).
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
@@ -1468,6 +1621,39 @@ def _cloudflare_tunnel_should_start(
     if secure:
         return True
     return host in ("0.0.0.0", "::") and not api_only
+
+
+def _final_bound_port(server, requested_port: int) -> int:
+    """Resolve Uvicorn's OS-assigned port after readiness for ``port=0``."""
+    if requested_port > 0:
+        return requested_port
+    for listener in getattr(server, "servers", ()):
+        for sock in getattr(listener, "sockets", ()) or ():
+            address = sock.getsockname()
+            if isinstance(address, tuple) and len(address) >= 2 and int(address[1]) > 0:
+                return int(address[1])
+    raise RuntimeError("Uvicorn did not expose its final bound port")
+
+
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
+
+
+def _consume_cloudflare_intent(cloudflare: "Optional[bool]", secure: bool) -> str:
+    """Resolve user intent without confusing a compatibility flag with opt-out.
+
+    An explicit choice on THIS invocation wins: letting the inherited marker
+    override it would let a stale export, Docker ENV or systemd Environment=
+    re-enable a tunnel the user opted out of.
+    """
+    inherited = os.environ.pop(_CLOUDFLARE_INTENT_ENV, None)
+    if secure or cloudflare is True:
+        return "enabled"
+    if cloudflare is False:
+        # Only "the parent omitted the option" softens this into unselected.
+        return "unset" if inherited == "unset" else "disabled"
+    if inherited in {"unset", "enabled", "disabled"}:
+        return inherited
+    return "unset"
 
 
 def _stream_isatty(stream) -> bool:
@@ -1712,7 +1898,8 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
-        api_only: API server only, no frontend (for Tauri desktop app)
+        api_only: API server only, except that a Tauri-owned backend serves its
+            packaged frontend exclusively through a live Cloudflare tunnel
         llama_parallel_slots: parallel slots for llama-server (default
             _PARALLEL_DEFAULT_PLAIN, matching the CLI entry points)
         cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
@@ -1732,12 +1919,22 @@ def run_server(
 
     boot_started = time.perf_counter()
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+    cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
-    from utils.process_lifetime import initialize_parent_lifetime
+    from utils.process_lifetime import initialize_parent_lifetime, reap_recorded_children
 
     initialize_parent_lifetime()
+    # macOS has neither PR_SET_PDEATHSIG nor job objects, so a Studio that
+    # crashed left its sidecars running. Sweep before spawning anything: a
+    # leftover holds VRAM, a port, and the files an update has to replace.
+    try:
+        reaped = reap_recorded_children()
+        if reaped:
+            logger.warning("Reaped %d orphan(s) from a previous Studio: %s", len(reaped), reaped)
+    except Exception as e:
+        logger.warning("Could not sweep orphans from a previous run: %s", e)
 
     # --secure exposes ONLY the Cloudflare link: reject --secure --no-cloudflare,
     # then force a loopback bind so the raw port is never public (even -H 0.0.0.0).
@@ -1810,7 +2007,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB
+    from main import app, setup_frontend, _desktop_owner, _IS_COLAB
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1859,11 +2056,17 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend (skip in api-only). Falls back through alternate locations if
-    # the default lacks a built dist; errors loudly rather than 404 on `/`.
-    if frontend_path and not api_only:
+    _serve_frontend, _tunnel_only_frontend = _frontend_serving_mode(
+        api_only = api_only,
+        desktop_owned = _desktop_owner() is not None,
+    )
+
+    # A desktop-owned API-only backend mounts the packaged SPA behind a
+    # Cloudflare-only request gate so Remote access can serve the WebUI without
+    # changing the direct local API-only surface.
+    if frontend_path and _serve_frontend:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
-        if chosen is not None and setup_frontend(app, chosen):
+        if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
             if not silent:
                 # Resolve so logs show an absolute path for support.
                 try:
@@ -1871,6 +2074,13 @@ def run_server(
                 except OSError:
                     display = chosen
                 print(f"[OK] Frontend loaded from {display}")
+        elif not _missing_frontend_is_fatal(tunnel_only = _tunnel_only_frontend):
+            # Remote access serves nothing; the local API the desktop asked for
+            # still comes up. The tunnel gate already 404s every other request.
+            logger.warning(
+                "No frontend build found, so Remote access will not serve the web UI. Tried: %s",
+                ", ".join(str(p) for p in attempted) or "(none)",
+            )
         else:
             home_str = (
                 os.environ.get("UNSLOTH_STUDIO_HOME")
@@ -1903,6 +2113,10 @@ def run_server(
     # Resolve once; shared by the log rewrite and banner.
     display_host = _display_host_for_bind(host)
     _install_uvicorn_startup_log_rewrite(host, display_host)
+    # LoggingMiddleware already logs every unhandled request exception with its full
+    # traceback as a structured event; without this uvicorn prints the same traceback
+    # again on stderr and the desktop shell copies it into tauri.log line by line.
+    install_uvicorn_duplicate_exception_filter()
 
     logger.info(
         "run_server pre-uvicorn setup completed in %.1fms",
@@ -1955,6 +2169,27 @@ def run_server(
     app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
+    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
+    _cloudflare_url = None
+    _cloudflare_flag = cloudflare
+    app.state.cloudflare_url = None
+    from utils.remote_access_settings import configure_remote_access
+
+    _launch_tunnel_managed = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
+    configure_remote_access(
+        app.state,
+        port = port,
+        intent = cloudflare_intent,
+        is_colab = _IS_COLAB,
+        launch_managed = _launch_tunnel_managed,
+    )
+
     # Expose a shutdown callable before the server accepts requests so
     # /api/shutdown is ready as soon as readiness publishes.
     def _trigger_shutdown():
@@ -1973,13 +2208,7 @@ def run_server(
     # warn / fail closed headless; see _terminal_password_gate). Runs BEFORE the
     # socket binds so a pre-gate listener can't hand out the injected credential.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
-        tunnel_will_start = _cloudflare_tunnel_should_start(
-            cloudflare = cloudflare,
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            is_colab = _IS_COLAB,
-        ),
+        tunnel_will_start = _launch_tunnel_managed,
         host = host,
         secure = secure,
         api_only = api_only,
@@ -2001,6 +2230,10 @@ def run_server(
         # makes it skip that re-read.
         app.state.suppress_bootstrap_injection = True
         app.state.bootstrap_password = None
+
+    from cloudflare_tunnel import open_studio_tunnel_lifecycle
+
+    open_studio_tunnel_lifecycle()
 
     # Run server in a daemon thread with explicit new_event_loop() +
     # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
@@ -2043,6 +2276,11 @@ def run_server(
         (time.perf_counter() - boot_started) * 1000,
     )
 
+    port = _final_bound_port(_server, port)
+    app.state.server_port = port
+    app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
+    app.state.remote_access_port = port
+
     _write_pid_file(port, host)
     import atexit
 
@@ -2068,33 +2306,33 @@ def run_server(
                 parent_pid = int(owner_pid) if owner_pid.isdigit() else None,
             )
 
+    from cloudflare_tunnel import (
+        set_studio_tunnel_runtime_callback,
+        set_studio_tunnel_url_callback,
+    )
+    from utils.host_policy import set_remote_connector_active
+
+    set_studio_tunnel_runtime_callback(set_remote_connector_active)
+    set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
+    app.state.remote_access_ready = True
+
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
-    global _cloudflare_url, _cloudflare_requested, _cloudflare_flag
-    _cloudflare_url = None
-    _cloudflare_flag = cloudflare
-    app.state.cloudflare_url = None
-    _cloudflare_enabled = _cloudflare_tunnel_should_start(
-        cloudflare = cloudflare,
-        host = host,
-        secure = secure,
-        api_only = api_only,
-        is_colab = _IS_COLAB,
-    )
+    _cloudflare_enabled = _launch_tunnel_managed
     _cloudflare_requested = _cloudflare_enabled
 
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
-            from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
-
-            _cloudflare_url = start_studio_tunnel(port)
-            app.state.cloudflare_url = _cloudflare_url
-            # Backstop: tear the tunnel down even on an abnormal exit that bypasses
-            # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
-            atexit.register(stop_studio_tunnel)
+            from cloudflare_tunnel import start_studio_tunnel
+            start_studio_tunnel(port, managed_by = "launch")
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
+
+    # Backstop for both launch- and settings-managed tunnels on abnormal exits.
+    from cloudflare_tunnel import close_studio_tunnel_lifecycle
+
+    atexit.register(close_studio_tunnel_lifecycle)
 
     # --secure fails closed: no tunnel means no public link, so exit rather than
     # silently fall back to a raw port.
@@ -2143,6 +2381,11 @@ def run_server(
             )
     except Exception as e:  # best-effort: never block startup on the timeout
         logger.warning("Bootstrap timeout not armed: %s", e)
+
+    from utils.remote_access_settings import maybe_auto_start_remote_access
+
+    if maybe_auto_start_remote_access(app.state):
+        logger.info("Remote access auto-start scheduled")
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
@@ -2222,7 +2465,9 @@ def _build_arg_parser():
         action = "store_true",
         default = None,
         help = "Force server-side tools (web search, code execution) on for "
-        "every request. Default: on for every bind, per-request setting honored.",
+        "every request. Default: on for every bind, per-request setting honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has "
+        "no confirmation channel; the off direction still applies everywhere.",
     )
     parser.add_argument(
         "--disable-tools",
@@ -2325,6 +2570,15 @@ if __name__ == "__main__":
     # On Windows, some terminals send SIGBREAK for Ctrl+C / Ctrl+Break.
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
+
+    # NOT _signal_handler: Windows runs this on a thread it creates, and
+    # signal.signal() off the main thread raises, which would leave the window
+    # close doing no cleanup at all.
+    def _console_shutdown():
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
+
+    _install_windows_console_handler(_console_shutdown)
 
     # Keep running until shutdown signal. Event.wait() without a timeout blocks at
     # the C level on Linux, preventing SIGINT delivery; a short timeout in a loop

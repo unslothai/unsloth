@@ -1175,6 +1175,157 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
 
+    @staticmethod
+    def _dspark_capable(supported = True):
+        """The sizing gate asks the binary whether it can run draft-dspark, so the
+        probe must be stubbed or these assertions track the host's llama.cpp."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
+        )
+
+    def test_local_dspark_sidecar_is_only_counted_when_requested(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
+                off_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                )
+                dspark_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                )
+                extras_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                    llama_extra_args = ["--spec-type", "draft-dspark"],
+                )
+        self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
+    def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
+        """The loader's DSpark branch falls back to --spec-default, which loads no
+        drafter, so charging the MTP one would refuse a load that fits. Auto is
+        different: it falls through to the MTP branch and keeps that charge."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            mtp = p / "mtp-model.gguf"
+            target.write_bytes(b"x" * 2000)
+            mtp.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_dspark_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(False),
+            ):
+                forced = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+                auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+        self.assertAlmostEqual(forced, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
+
+    def test_validate_request_carries_the_mode_the_load_will_use(self):
+        """The estimate is mode-dependent, so /validate must be told the mode or
+        its verdict disagrees with the /load that follows it: a user with
+        speculative decoding off and a sidecar on disk would be refused at the
+        preflight for a load that would have been admitted."""
+        from models.inference import ValidateModelRequest
+
+        req = ValidateModelRequest(
+            model_path = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            speculative_type = "off",
+            spec_draft_n_max = 3,
+        )
+        self.assertEqual(req.speculative_type, "off")
+        self.assertEqual(req.spec_draft_n_max, 3)
+        # Omitted stays None rather than defaulting to a mode, so the estimate
+        # keeps its previous behaviour for callers that do not send it.
+        self.assertIsNone(ValidateModelRequest(model_path = "org/repo").speculative_type)
+
+    def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
+        """The loader skips the ~11 GB fetch when llama.cpp has no usable
+        draft-dspark, so charging it here would refuse a load that never opens it
+        and would evict nothing."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                with self._dspark_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "dspark"
+                    )
+                with self._dspark_capable(True):
+                    capable = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(capable, 5000 / (1024**3), places = 9)
+
+    def test_split_dspark_sidecar_counts_every_shard(self):
+        """Discovery hands back shard 1, so sizing it with stat() alone would let the
+        guard admit a load that evicts the training run it exists to protect."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            target.write_bytes(b"x" * 2000)
+            shard1 = p / "dspark-model-Q8_0-00001-of-00002.gguf"
+            shard1.write_bytes(b"y" * 3000)
+            (p / "dspark-model-Q8_0-00002-of-00002.gguf").write_bytes(b"z" * 4000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(shard1),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                with self._dspark_capable():
+                    gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+        self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
@@ -1197,11 +1348,49 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
+            self._dspark_capable(),
         ):
-            gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
+            gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                hf_token = "tok",
+                speculative_type = "dspark",
+            )
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+        self.assertFalse(comp.call_args.kwargs["include_mtp"])
+        self.assertTrue(comp.call_args.kwargs["include_dspark"])
+
+    def test_remote_companions_choose_preferred_dspark_sidecar(self):
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 100),
+            SimpleNamespace(rfilename = "dspark/dspark-model-BF16.gguf", size = 300),
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
+            SimpleNamespace(rfilename = "dflash-model-Q8_0.gguf", size = 400),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_dspark = True,
+            )
+        self.assertEqual(total, 300)  # root MTP plus the preferred Q8_0 DSpark file
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            dspark_only = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+            )
+        self.assertEqual(dspark_only, 200)
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
@@ -1279,6 +1468,29 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 seen["n_ubatch"] = n_ubatch
                 seen["flash_attn"] = flash_attn
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
+
+            _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 0
+
+            # zeroed: this test pins the kv sizing, not the compute buffers
+            def _estimate_compute_buffer_bytes(
+                self,
+                *,
+                n_ubatch = None,
+                n_parallel = 1,
+                per_device_tensor = False,
+            ):
+                seen["compute_n_ubatch"] = n_ubatch
+                return 0
+
+            def _compute_buffer_ctx_bytes(
+                self,
+                n_ctx,
+                n_ubatch = None,
+                cache_type_kv = None,
+                *,
+                layer_split = False,
+            ):
+                return 0
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route

@@ -78,6 +78,13 @@ class DownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    # The transport the job is really on: the one the backend resolved for a
+    # fresh start, or the running job's own when this start adopted one.
+    # Either can differ from what the client asked for.
+    transport: Optional[str] = None
+    # Set only when an adopted job had fallen back from Xet to HTTP: stopping
+    # it still writes the original marker, so it is a restart, not a resume.
+    cancel_transport: Optional[str] = None
 
 
 class CancelDownloadResponse(BaseModel):
@@ -91,6 +98,10 @@ class ActiveDownload(BaseModel):
     repo_id: Optional[str] = None
     variant: Optional[str] = None
     transport: Optional[str] = None
+    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling
+    # it still writes the original transport's marker, so the partial is
+    # restart-only even though the worker is on resumable HTTP.
+    cancel_transport: Optional[str] = None
     state: str
     files: Optional[List[str]] = Field(
         None,
@@ -143,6 +154,21 @@ class DownloadProgressResponse(BaseModel):
     expected_bytes: int
     progress: float
     cache_path: Optional[str] = None
+    cache_measured: bool = Field(
+        True,
+        description = (
+            "False when the cache could not be scanned at all (an unreadable root). The "
+            "reading is then unknown, not empty: cache_path is null either way, and "
+            "hydration must not retire a persisted job on a scan that never happened."
+        ),
+    )
+    target_present: Optional[bool] = Field(
+        None,
+        description = (
+            "Whether this TARGET (variant) has anything in the cache, as opposed to the "
+            "shared repo directory existing. Null where it cannot be established."
+        ),
+    )
 
 
 class DownloadDatasetRequest(BaseModel):
@@ -189,6 +215,9 @@ class DatasetDownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    # The transport the job is really on, and its cancel marker (see above).
+    transport: Optional[str] = None
+    cancel_transport: Optional[str] = None
 
 
 class CancelDatasetDownloadResponse(BaseModel):

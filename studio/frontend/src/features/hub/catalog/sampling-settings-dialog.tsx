@@ -225,7 +225,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
       </Tooltip>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent
-          className="flex max-h-[85vh] flex-col gap-5 sm:max-w-[580px]"
+          className="flex max-h-[85dvh] flex-col gap-5 sm:max-w-[580px]"
           onClick={(e) => e.stopPropagation()}
         >
           <DialogHeader>

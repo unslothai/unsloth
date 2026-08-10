@@ -34,12 +34,32 @@ class GgufVariantDetail(BaseModel):
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
     )
+    cleanable: bool = Field(
+        False,
+        description = (
+            "Row exists only to offer deleting an empty leftover <quant>/ folder; the "
+            "listing has no such weights, so it never proves a load would find any"
+        ),
+    )
     partial_transport: Optional[str] = Field(
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
             '"xet"), or null if not partial / unknown. Frontend uses '
             "this to pick Resume (http) vs Redownload (xet) labels."
+        ),
+    )
+    dependency_key: Optional[str] = Field(
+        None,
+        description = (
+            "Opaque grouping key: variants sharing a key share one companion "
+            "download footprint (text encoders, VAE, tokenizer, configs), so a "
+            "footprint resolved for one of them is correct for all of them. The "
+            "companion set is NOT repository-wide -- one repo can hold GGUFs of "
+            "different diffusion families, and FLUX.2-klein picks its text "
+            "encoder per checkpoint size -- so a client must group by this key "
+            "rather than per repo. Null means unknown (no family resolved); "
+            "clients should then treat the repo as a single group."
         ),
     )
 
@@ -56,6 +76,21 @@ class GgufVariantsResponse(BaseModel):
     )
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
+    )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    loadable_variants: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Quants the load resolver resolves for this identifier; None when unanswered "
+            "(remote answers, or a server that predates the field)"
+        ),
+    )
+    loadable: Optional[bool] = Field(
+        None,
+        description = "Whether a variantless load resolves GGUF weights; None when unanswered",
     )
 
 
@@ -210,6 +245,10 @@ class CachedModelRepo(CachedRepoBase):
     # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
     # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
     single_file: bool = False
+    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
+    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
+    # is how they are seen and deleted; the pickers filter on this instead.
+    companion: bool = False
 
 
 class CachedModelsResponse(BaseModel):
@@ -255,6 +294,48 @@ class DeleteCachedModelResponse(BaseModel):
     status: str
     repo_id: str
     variant: Optional[str] = None
+
+
+class CompanionAssetInfo(BaseModel):
+    """A companion base repo (text encoders, VAE, tokenizer, configs) in the cache."""
+
+    repo_id: str
+    size_bytes: int = Field(0, description = "Real on-disk blob bytes, deduped per blob")
+    needed_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that still need it; empty means it is reclaimable",
+    )
+
+
+class DeleteImpactResponse(BaseModel):
+    """What a pending delete would actually do, so the confirm dialog can say it."""
+
+    repo_id: str
+    variant: Optional[str] = None
+    reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
+    retained_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that stay because another installed model needs them",
+    )
+    freeable_companions: List[CompanionAssetInfo] = Field(
+        default_factory = list,
+        description = "Shared assets that become orphaned by this delete and can then be removed",
+    )
+    blocked_by: List[str] = Field(
+        default_factory = list,
+        description = "Installed models that make this delete impossible (shared-asset guard)",
+    )
+
+
+class OrphanCompanionInfo(BaseModel):
+    repo_id: str
+    size_bytes: int = 0
+    cache_path: Optional[str] = None
+
+
+class OrphanCompanionsResponse(BaseModel):
+    companions: List[OrphanCompanionInfo] = Field(default_factory = list)
+    total_bytes: int = 0
 
 
 class BrowseEntry(BaseModel):

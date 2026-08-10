@@ -54,6 +54,7 @@ _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _STACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+_PREBUILT_PY = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 _SPOOF_PY = PACKAGE_ROOT / "tests" / "_zoo_rocm_spoof.py"
 
 
@@ -645,6 +646,45 @@ class TestTorch211PinAllowlistParity:
         assert m, "the 2.11 pin allowlist helper was not found in studio/setup.ps1"
         leaves = set(re.findall(r"'([^']+)'", m.group(1)))
         assert leaves == self._EXPECTED, f"studio/setup.ps1 pins {sorted(leaves)}"
+
+
+class TestShadowingIntegratedGfxParity:
+    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
+    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
+    installer, so both copies of the list have to agree or one entry point keeps
+    installing the iGPU's wheel family."""
+
+    _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
+
+    def _setup_ps1_list(self):
+        source = _SETUP_PS1.read_text(encoding = "utf-8")
+        m = re.search(r"\$script:ShadowingIntegratedGfx\s*=\s*@\(([^)]*)\)", source)
+        assert m, "$script:ShadowingIntegratedGfx not found in studio/setup.ps1"
+        return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    def _prebuilt_list(self):
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "SHADOWING_INTEGRATED_GFX" for t in node.targets
+            ):
+                return set(ast.literal_eval(node.value.args[0]))
+        raise AssertionError("SHADOWING_INTEGRATED_GFX not found in install_llama_prebuilt.py")
+
+    def test_setup_ps1_matches_install_python_stack(self):
+        assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    def test_install_llama_prebuilt_matches_install_python_stack(self):
+        # _apply_host_overrides() honours setup's repick only for these arches, so drift
+        # re-splits torch and llama.cpp across two GPUs on a mixed host.
+        assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    def test_strix_is_excluded_from_every_copy(self):
+        # Supported training targets, not shadowing APUs: listing them would silently
+        # redirect Strix hosts.
+        assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
+        assert not (self._STRIX & self._setup_ps1_list())
+        assert not (self._STRIX & self._prebuilt_list())
 
 
 if __name__ == "__main__":

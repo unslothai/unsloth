@@ -13,6 +13,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import (
@@ -476,3 +477,159 @@ def test_openai_responses_stream_emits_usage_chunk_on_incomplete(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1
     assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 768
+
+
+def _continuation_body(monkeypatch, provider_type: str, base_url: str) -> dict:
+    """Send a continuation through one provider and return the upstream body."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = base_url,
+            api_key = "k",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": "It is a bar"},
+                ],
+                model = "Qwen/Qwen3-0.6B",
+                continue_final_message = True,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    return captured
+
+
+def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
+    """These apply the template themselves, so a trailing assistant turn alone would
+    render closed plus a fresh generation prompt and restart the answer."""
+    for provider_type in ("llama_cpp", "vllm"):
+        body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
+        assert body["continue_final_message"] is True, provider_type
+        # A server rejects both being asked for at once.
+        assert body["add_generation_prompt"] is False, provider_type
+
+
+@pytest.mark.parametrize(
+    ("provider_type", "base_url"),
+    [
+        # Prompt assembly is theirs, so the flag would just be an unknown field.
+        ("openai", "https://api.openai.com/v1"),
+        # Any user-supplied base_url, including a strict endpoint that would 400.
+        ("custom", "http://custom.example/v1"),
+        ("ollama", "http://localhost:11434/v1"),
+    ],
+)
+def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider_type, base_url):
+    body = _continuation_body(monkeypatch, provider_type, base_url)
+    assert "continue_final_message" not in body
+    assert "add_generation_prompt" not in body
+
+
+@pytest.mark.parametrize(
+    "provider_type, expected",
+    [
+        ("vllm", True),
+        ("openrouter", True),
+        ("kimi", True),
+        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        ("custom", False),
+        ("ollama", False),
+        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+    ],
+)
+def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
+    # An OAI-compatible stream omits usage without stream_options.include_usage, and
+    # these providers report no llama.cpp timings, so the monitor has no token count to
+    # derive a speed from and the row shows a blank Speed for every completed request.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "http://provider.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "m",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["stream"] is True
+    if expected:
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+    else:
+        assert "stream_options" not in captured["body"]
+
+
+def test_kimi_no_search_fallback_requests_usage(monkeypatch):
+    # The web-search path returns before the common body injection, and Kimi reports no
+    # engine timings, so this fallback would leave tokens and speed blank.
+    bodies: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        bodies.append(body)
+        # First call: the model declines to invoke $web_search.
+        return httpx.Response(
+            200,
+            content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "kimi",
+            base_url = "http://kimi.example/v1",
+            api_key = "sk-test",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "kimi-k2",
+                max_tokens = 64,
+                enabled_tools = ["web_search"],
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert len(bodies) >= 2, "the search call then the plain fallback"
+    search_body, fallback_body = bodies[0], bodies[-1]
+    assert "tools" in search_body
+    assert "tools" not in fallback_body
+    assert fallback_body["stream_options"] == {"include_usage": True}

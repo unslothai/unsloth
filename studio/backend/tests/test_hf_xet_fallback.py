@@ -478,6 +478,9 @@ def test_a_worker_spawned_during_the_gpu_init_retry_does_not_inherit_the_overrid
     sys.meta_path.insert(0, finder)
     try:
         shim = importlib.import_module("utils.hf_xet_fallback")
+        # There is only a retry to spawn into on a host with no accelerator (see _gpu_present),
+        # so pin that rather than letting the runner's hardware decide the assertion.
+        monkeypatch.setattr(shim, "_gpu_present", lambda: False)
         shim.DownloadStallError  # drives the load: plain attempt, then the retry
         assert len(child_envs) == 2, child_envs
         # The retry is the attempt that sets it; neither child may see it.

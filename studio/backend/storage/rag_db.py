@@ -5,8 +5,9 @@
 
 Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3,
 WAL, per-call connections, lazy schema), but every connection also loads
-sqlite-vec (vec0 needs it per-connection). If it cannot load, RAG_AVAILABLE is
-False and get_connection() raises rather than failing import.
+sqlite-vec (vec0 needs it per-connection). If it cannot load, get_connection()
+raises RagExtensionUnavailable rather than failing import, and rag_available()
+reports the machine as one where RAG cannot run.
 
 One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
 (``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
@@ -18,6 +19,7 @@ import logging
 import re
 import sqlite3
 import threading
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,66 @@ except Exception as exc:  # noqa: BLE001 - any import failure disables RAG
 
 _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loaded"
 
+
+class RagExtensionUnavailable(RuntimeError):
+    """sqlite-vec is installed but its native library will not load (a missing
+    vec0 binary in the venv is the common macOS case). Subclasses RuntimeError so
+    existing ``except RuntimeError`` callers are unaffected; it exists so a caller
+    can tell "RAG is switched off on this machine" from a real database error and
+    degrade instead of returning 500 on every poll."""
+
+
 _schema_lock = threading.Lock()
 _schema_ready = False
+# The dylib is either there or it is not, and the UI polls the KB list on a timer, so
+# one warning per process says everything the repeat lines would. Same shape as the
+# per-job throttle in hub/services/snapshot_progress.py.
+_unavailable_lock = threading.Lock()
+_unavailable_warned = False
+# Set once a connection has actually loaded the extension, so the request gate can
+# answer without reopening the database. Only the positive verdict is kept: a failure
+# stays retried per connection exactly as it was before, so a one-off cannot latch RAG
+# off for the rest of the session.
+_extension_loaded = False
+
+
+def _warn_unavailable_once(exc: BaseException | None = None) -> None:
+    """Log the sqlite-vec unavailability at most once per process."""
+    global _unavailable_warned
+    with _unavailable_lock:
+        if _unavailable_warned:
+            return
+        _unavailable_warned = True
+    logger.warning(
+        "%s; RAG features are disabled for this session%s",
+        _RAG_UNAVAILABLE_MSG,
+        f" ({exc})" if exc is not None else "",
+    )
+
+
+def rag_available() -> bool:
+    """Whether RAG can actually run in this process.
+
+    RAG_AVAILABLE only records that ``import sqlite_vec`` worked. The vec0 native
+    library it loads is a separate file, and a venv can have the package without it
+    (the common macOS case), which nothing finds out until a connection tries. So try,
+    unless one already got through: a machine where RAG works answers from the flag
+    instead of opening a second connection per request, and a machine where it does not
+    pays the same failed connect it paid before, quietly.
+
+    A genuine database error (locked, corrupt, bad schema) is not an answer to this
+    question, so it propagates instead of being reported as "RAG is off here".
+    """
+    if not RAG_AVAILABLE:
+        return False
+    if _extension_loaded:
+        return True
+    try:
+        conn = get_connection()
+    except RagExtensionUnavailable:
+        return False
+    conn.close()
+    return True
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -97,6 +157,83 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS rag_job_leases (
+            kind TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY(kind, job_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rag_job_leases_expiry
+            ON rag_job_leases(expires_at);
+
+        CREATE TABLE IF NOT EXISTS linked_folders (
+            id TEXT NOT NULL PRIMARY KEY,
+            scope_type TEXT NOT NULL,
+            scope_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            path TEXT NOT NULL,
+            name TEXT NOT NULL,
+            root_device INTEGER,
+            root_inode INTEGER,
+            delete_remove_index INTEGER,
+            auto_sync INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'pending',
+            last_error TEXT,
+            last_scan_at TEXT,
+            withheld_paths TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(scope, path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folders_scope ON linked_folders(scope);
+
+        CREATE TABLE IF NOT EXISTS linked_folder_retired_scopes (
+            scope TEXT NOT NULL PRIMARY KEY,
+            retired_at TEXT NOT NULL,
+            purged_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS linked_folder_files (
+            folder_id TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            device INTEGER,
+            inode INTEGER,
+            document_id TEXT NOT NULL,
+            content_hash TEXT,
+            synced_at TEXT NOT NULL,
+            PRIMARY KEY(folder_id, relative_path)
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folder_files_document
+            ON linked_folder_files(document_id);
+
+        CREATE TABLE IF NOT EXISTS linked_folder_sync_jobs (
+            id TEXT NOT NULL PRIMARY KEY,
+            folder_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'sync',
+            status TEXT NOT NULL DEFAULT 'pending',
+            stage TEXT,
+            progress REAL NOT NULL DEFAULT 0.0,
+            discovered INTEGER NOT NULL DEFAULT 0,
+            added INTEGER NOT NULL DEFAULT 0,
+            changed INTEGER NOT NULL DEFAULT 0,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            renamed INTEGER NOT NULL DEFAULT 0,
+            failed INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            successor_kind TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_linked_folder_jobs_queue
+            ON linked_folder_sync_jobs(status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_linked_folder_jobs_active
+            ON linked_folder_sync_jobs(folder_id)
+            WHERE status IN ('pending','running');
+
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
             text,
             chunk_id UNINDEXED,
@@ -113,13 +250,41 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # assumed current). Dedupe re-ingests when it no longer matches.
     if "embedding_model" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN embedding_model TEXT")
+    # Folder ownership makes crash cleanup unambiguous without changing retrieval.
+    if "linked_folder_id" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
+    if "linked_relative_path" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    ensure_linked_folder_columns(conn)
+    conn.commit()
+
+
+def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
+    """Add the linked-folder columns a database created by an earlier build is missing.
+
+    Also called for the metadata connection, which skips _ensure_schema so that scope
+    retirement keeps working when the vector extension cannot load.
+    """
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
+    # the queued follow-up request; it replaced a flag that only recorded rebuilds
+    if job_cols and "successor_kind" not in job_cols:
+        conn.execute("ALTER TABLE linked_folder_sync_jobs ADD COLUMN successor_kind TEXT")
+        if "rebuild_requested" in job_cols:
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET successor_kind='rebuild' "
+                "WHERE rebuild_requested=1"
+            )
+    # vanished paths already granted their one grace pass before removal
+    folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
+    if folder_cols and "withheld_paths" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
 
 
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
-    global _schema_ready
+    global _schema_ready, _extension_loaded
     if not RAG_AVAILABLE:
-        raise RuntimeError(_RAG_UNAVAILABLE_MSG)
+        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
@@ -135,7 +300,11 @@ def get_connection() -> sqlite3.Connection:
         conn.enable_load_extension(False)
     except Exception as exc:  # noqa: BLE001
         conn.close()
-        raise RuntimeError(_RAG_UNAVAILABLE_MSG) from exc
+        _warn_unavailable_once(exc)
+        raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG) from exc
+    # Set before the schema step: the library loaded, so RAG runs on this machine
+    # whatever a broken database does next. A monotonic flip, so no lock.
+    _extension_loaded = True
 
     if not _schema_ready:
         with _schema_lock:
@@ -146,6 +315,21 @@ def get_connection() -> sqlite3.Connection:
                 except Exception:
                     conn.close()
                     raise
+    return conn
+
+
+def get_metadata_connection() -> sqlite3.Connection:
+    """Open rag.db without loading sqlite-vec.
+
+    This connection is only for ordinary SQLite metadata tables. It lets lifecycle
+    tombstones remain writable when the optional native vector extension is temporarily
+    unavailable. Callers must not query or mutate the vec0 virtual table.
+    """
+    db_path = rag_db_path()
+    ensure_dir(db_path.parent)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 
@@ -213,16 +397,27 @@ def _delete_document_chunks(conn, document_id: str) -> None:
 
 def reconcile_orphaned_ingestion_jobs() -> int:
     """Fail ingestion jobs/documents left mid-flight by a crash so they stop
-    showing as stuck "processing" and become re-ingestible. Run at startup.
-    No-op without RAG. Returns the number of jobs reset.
+    showing as stuck "processing" and become re-ingestible. Work owned by another
+    live backend is left alone until its lease expires. No-op without RAG. Returns
+    the number of jobs reset.
     """
-    if not RAG_AVAILABLE:
+    # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary
+    # would otherwise raise out of startup and be logged as a reconcile failure, when
+    # there is simply nothing here to reconcile.
+    if not rag_available():
         return 0
     conn = get_connection()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        now = datetime.now(timezone.utc).isoformat()
+        # 'cancelled' is terminal too: the job stopped because its document was deleted, so
+        # rewriting it to failed would report a deliberate cancellation as an indexing failure.
         rows = conn.execute(
-            "SELECT id, document_id FROM ingestion_jobs "
-            "WHERE status NOT IN ('completed', 'failed')"
+            "SELECT j.id, j.document_id FROM ingestion_jobs j "
+            "WHERE j.status NOT IN ('completed', 'failed', 'cancelled') AND NOT EXISTS ("
+            "SELECT 1 FROM rag_job_leases l WHERE l.kind='ingestion' "
+            "AND l.job_id=j.id AND l.expires_at>?)",
+            (now,),
         ).fetchall()
         for row in rows:
             doc = conn.execute(
@@ -238,21 +433,25 @@ def reconcile_orphaned_ingestion_jobs() -> int:
                     "progress=1.0, error=NULL WHERE id=?",
                     (row["id"],),
                 )
-                continue
+            else:
+                conn.execute(
+                    "UPDATE ingestion_jobs SET status='failed', stage='error', "
+                    "error='Server restarted during ingestion' WHERE id=?",
+                    (row["id"],),
+                )
+                conn.execute(
+                    "UPDATE documents SET status='failed' "
+                    "WHERE id=? AND status NOT IN ('completed', 'failed')",
+                    (row["document_id"],),
+                )
+                # A failed or still-in-flight doc must not leave citable chunks
+                # (retrieval filters by scope, not status); also drops any chunks of a
+                # doc already 'failed' before the crash.
+                _delete_document_chunks(conn, row["document_id"])
             conn.execute(
-                "UPDATE ingestion_jobs SET status='failed', stage='error', "
-                "error='Server restarted during ingestion' WHERE id=?",
+                "DELETE FROM rag_job_leases WHERE kind='ingestion' AND job_id=?",
                 (row["id"],),
             )
-            conn.execute(
-                "UPDATE documents SET status='failed' "
-                "WHERE id=? AND status NOT IN ('completed', 'failed')",
-                (row["document_id"],),
-            )
-            # A failed or still-in-flight doc must not leave citable chunks
-            # (retrieval filters by scope, not status); also drops any chunks of a
-            # doc already 'failed' before the crash.
-            _delete_document_chunks(conn, row["document_id"])
         conn.commit()
         return len(rows)
     finally:

@@ -46,18 +46,30 @@ export interface DownloadJobStatus {
   generation?: number;
 }
 
-export type DownloadStartState = DownloadJobState | "deleting";
+// "repository_owned": a dictation model download holds this repository's cache.
+export type DownloadStartState =
+  | DownloadJobState
+  | "deleting"
+  | "repository_owned";
 
 export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
+  // Present only when the start adopted a job another client had already
+  // begun: the transport it is really running on.
+  transport?: TransportMode | null;
+  // And its cancel marker, when that job had fallen back from Xet to HTTP.
+  cancel_transport?: TransportMode | null;
 }
 
 export interface ActiveModelDownload {
   repo_id?: string;
   variant: string | null;
   transport?: TransportMode | null;
+  // Set only on a Xet run that fell back to HTTP: stopping it still leaves a
+  // restart-only partial, so this and not `transport` decides the stop control.
+  cancel_transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
   // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the same "@scope" slot, so an
@@ -69,6 +81,7 @@ export interface ActiveDatasetDownload {
   repo_id: string;
   variant: null;
   transport?: TransportMode | null;
+  cancel_transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
 }
@@ -114,6 +127,15 @@ export interface DownloadProgressResponse {
   expected_bytes: number;
   progress: number;
   cache_path: string | null;
+  /**
+   * Whether the backend found anything for THIS target (variant), as opposed to the shared
+   * repo cache directory existing. Null where it cannot say, and absent from an older
+   * backend -- both of which leave the repo-level rule in charge.
+   */
+  target_present?: boolean | null;
+  /** False when the cache could not be scanned at all: unknown, not empty. Absent from an
+   *  older backend, which is also unknown. */
+  cache_measured?: boolean;
 }
 
 export type DownloadProgressOptions = {
@@ -310,8 +332,12 @@ async function getActiveModelDownloadsForKey(
 
 export async function getActiveDatasetDownloads(
   signal?: AbortSignal,
+  repoId?: string,
 ): Promise<ActiveDatasetDownload[]> {
-  const response = await authFetch("/api/hub/datasets/active-downloads", {
+  // No repo id lists every active dataset download, which is what hydration
+  // wants; one narrows it, which is what a single repo view wants.
+  const params = repoId ? `?${new URLSearchParams({ repo_id: repoId })}` : "";
+  const response = await authFetch(`/api/hub/datasets/active-downloads${params}`, {
     signal,
   });
   const data = await parseJsonOrThrow<{

@@ -20,8 +20,7 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-# Reuse the absolute-paths test's stub harness for loading core/export/export.py
-# without torch/unsloth.
+# Reuse the absolute-paths stub harness: loads core/export/export.py without torch/unsloth.
 from test_export_absolute_paths import (  # noqa: E402
     _install_export_backend_stubs,
     _load_module,
@@ -65,8 +64,7 @@ def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
 
 
 def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
-    # UUID/MIG masks resolve to NO numeric ids ([]), but get_device_map(None) still
-    # detects >1 GPU, so the empty list must route there, not to the loader default.
+    # UUID/MIG masks resolve to no numeric ids, but get_device_map(None) still sees >1 GPU.
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
@@ -151,6 +149,56 @@ def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     assert "device_map" not in kwargs  # loader default (sequential) untouched
 
 
+def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter(
+    monkeypatch, tmp_path
+):
+    mod = _export_mod(monkeypatch)
+    snapshot = (
+        tmp_path
+        / "cache"
+        / "models--unsloth--Llama-3.2-1B-Instruct"
+        / "snapshots"
+        / "0123456789abcdef"
+    )
+    snapshot.mkdir(parents = True)
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    adapter_path = checkpoint / "adapter_config.json"
+    original_adapter = '{"base_model_name_or_path":"' + str(snapshot) + '","r":16}\n'
+    adapter_path.write_text(original_adapter, encoding = "utf-8")
+
+    class _LegacyAdapterLoader:
+        @classmethod
+        def from_pretrained(cls, **_kwargs):
+            model = types.SimpleNamespace(
+                config = types.SimpleNamespace(_name_or_path = str(checkpoint)),
+                peft_config = {
+                    "default": types.SimpleNamespace(base_model_name_or_path = str(snapshot))
+                },
+            )
+            return model, types.SimpleNamespace()
+
+    monkeypatch.setattr(mod, "FastLanguageModel", _LegacyAdapterLoader)
+    monkeypatch.setattr(mod, "get_base_model_from_lora", lambda _path: str(snapshot))
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
+
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert (
+        backend.current_model.peft_config["default"].base_model_name_or_path
+        == "unsloth/Llama-3.2-1B-Instruct"
+    )
+    assert backend.current_model.config._name_or_path == str(checkpoint)
+    assert adapter_path.read_text(encoding = "utf-8") == original_adapter
+
+
 # ── a load that succeeds but offloads to CPU/disk ──
 
 
@@ -198,8 +246,7 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
 
 
 def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
-    # Nothing raises, so only hf_device_map catches it; the parameters would otherwise
-    # stay on meta and kill the export inside safetensors.
+    # Nothing raises, so only hf_device_map catches it; otherwise the params stay on meta and kill the export.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
     assert ok, message
     assert len(calls) == 2

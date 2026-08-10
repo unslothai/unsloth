@@ -48,6 +48,8 @@ export {
   PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
   listPerModelConfigs,
+  isServedByMlx,
+  presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";

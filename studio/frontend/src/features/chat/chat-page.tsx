@@ -71,9 +71,14 @@ import {
 } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import {
+  CONVERSATION_MARKDOWN_FORMAT,
+  CONVERSATION_MARKDOWN_LABEL,
+} from "./utils/conversation-markdown";
 import {
   Archive03Icon,
   BubbleChatTemporaryIcon,
@@ -194,6 +199,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -1003,7 +1009,11 @@ function createThreadNonce(): string {
 }
 
 // Chat export formats, mirroring the sidebar chat menu.
-type ProjectChatExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
+type ProjectChatExportFormat =
+  | "raw-jsonl"
+  | "csv"
+  | "sharegpt-jsonl"
+  | typeof CONVERSATION_MARKDOWN_FORMAT;
 const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   label: string;
   format: ProjectChatExportFormat;
@@ -1011,6 +1021,10 @@ const PROJECT_CHAT_EXPORT_OPTIONS: Array<{
   { label: "Raw JSONL", format: "raw-jsonl" },
   { label: "CSV", format: "csv" },
   { label: "ShareGPT JSONL", format: "sharegpt-jsonl" },
+  {
+    label: CONVERSATION_MARKDOWN_LABEL,
+    format: CONVERSATION_MARKDOWN_FORMAT,
+  },
 ];
 
 async function exportProjectConversation(
@@ -1020,7 +1034,12 @@ async function exportProjectConversation(
   const exports = await import("./prompt-storage/prompt-storage-dialog");
   if (format === "raw-jsonl") return exports.exportConversationRawJsonl(threadId);
   if (format === "csv") return exports.exportConversationCsv(threadId);
-  return exports.exportConversationShareGPT(threadId);
+  if (format === CONVERSATION_MARKDOWN_FORMAT)
+    return exports.exportConversationMarkdown(threadId);
+  if (format === "sharegpt-jsonl") return exports.exportConversationShareGPT(threadId);
+  // Was a fallthrough return, so an unhandled format silently exported ShareGPT.
+  const unhandled: never = format;
+  throw new Error(`Unhandled export format: ${String(unhandled)}`);
 }
 
 async function exportProjectChatItem(
@@ -1817,6 +1836,7 @@ export function ChatPage({
     : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
+    const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
     // On an empty scratch chat there's nothing to abandon, so flip in
     // place: navigating would remount the thread and bounce the composer
@@ -1828,6 +1848,9 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
+    if (wasIncognito) {
+      requestTemporaryPromptQueueStop();
+    }
     if (onEmptyScratchChat) return;
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
@@ -1907,6 +1930,9 @@ export function ChatPage({
   const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
+  );
+  const residentCheckpoint = useChatRuntimeStore(
+    (state) => state.residentCheckpoint,
   );
   const ggufContextLength = useChatRuntimeStore(
     (state) => state.ggufContextLength,
@@ -2593,14 +2619,29 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeImageDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
+  const handleNativeAudioDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     enabled: active && view.mode === "single",
     attachmentScope,
+    attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
     onAttach: handleNativeAttachmentDrop,
+    onAttachImages: handleNativeImageDrop,
+    onAttachAudio: handleNativeAudioDrop,
   });
 
   const handleCheckpointChange = useCallback(
@@ -3281,7 +3322,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[33px] rounded-[10px] text-muted-foreground"
+                className="!size-[30px] rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -3296,6 +3337,16 @@ export function ChatPage({
                 loraModels={loraModels}
                 externalModels={externalModels}
                 value={inferenceParams.checkpoint}
+                // Resident, not merely picked: an image or video load evicts
+                // the chat model and leaves this selection behind, so the tick
+                // stayed on a model the backend had already released.
+                loaded={chatModelLoaded({
+                  checkpoint: inferenceParams.checkpoint,
+                  isExternalModel: isExternalModelId(
+                    inferenceParams.checkpoint,
+                  ),
+                  residentCheckpoint,
+                })}
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
                 activeGgufContextLength={ggufContextLength}
@@ -3401,7 +3452,7 @@ export function ChatPage({
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      "flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -3439,7 +3490,7 @@ export function ChatPage({
                       closeArtifactSurface();
                       openResearchPanel(latestResearchRun.id);
                     }}
-                    className="relative flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
+                    className="relative flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
                     aria-label="Open research activity"
                     aria-pressed={openResearchRunId === latestResearchRun.id}
                   >
@@ -3467,7 +3518,7 @@ export function ChatPage({
                       useResearchRunStore.getState().closePanel();
                       setSettingsOpen(true);
                     }}
-                    className="flex size-[var(--studio-chat-control-height,34px)] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="flex size-[30px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     aria-label="Open run settings"
                   >
                     <HugeiconsIcon

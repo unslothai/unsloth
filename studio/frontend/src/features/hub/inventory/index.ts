@@ -17,6 +17,8 @@ export {
   listCachedModels,
   deleteCachedDataset,
   deleteCachedModel,
+  fetchDeleteImpact,
+  fetchOrphanCompanions,
   invalidateGgufVariantsCache,
   listGgufVariants,
   listLocalDatasets,
@@ -28,6 +30,8 @@ export {
   type CachedGgufRepo,
   type CachedModelRepo,
   type BaseModelSource,
+  type CompanionAssetInfo,
+  type DeleteImpact,
   type GgufVariantDetail,
   type GgufVariantsResponse,
   type LocalDatasetInfo,
@@ -35,6 +39,7 @@ export {
   type LocalModelListResponse,
   type ModelInventoryFormat,
   type ModelInventoryRuntime,
+  type OrphanCompanion,
   type ScanFolderInfo,
 } from "./api";
 export {
@@ -61,6 +66,7 @@ export {
   fetchInventorySource,
   useDeviceInventorySources,
   useDeviceInventoryStore,
+  useTokenScopedInventoryRequestOptions,
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,

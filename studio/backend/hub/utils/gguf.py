@@ -120,20 +120,50 @@ def is_mtp_drafter_path(path: str) -> bool:
     )
 
 
-def is_mtp_only_drafter_path(path: str) -> bool:
-    """MTP drafters only, for the delete path rather than selection. Studio fetches
-    the root ``mtp-*.gguf`` with every variant, so a variant delete may reclaim it.
-    DSpark and DFlash are opt-in and in no variant plan, so sweeping them up would
-    destroy a file Studio never downloaded."""
+def is_reclaimable_drafter_path(path: str) -> bool:
+    """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
+    variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
+    left, and companion filtering hides them from the variant menu, so leaving one
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
+    name doubles as a family a user picks for real weights."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
     parts = [segment for segment in p.split("/") if segment]
-    return parts[-1].startswith("mtp-") or "mtp" in parts[:-1]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_DIR_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
+
+
+# Every repo that bundles H3's denoisers together with its companion models. The Unsloth mirror
+# carries the Qwen3-VL text-encoder quants beside the denoisers, so it needs the same filtering as
+# the community repack it replaced; listing only one of them would let the encoder GGUFs be
+# aggregated as if they were selectable transformer quants.
+_H3_BUNDLE_REPOS = frozenset({"leejet/minimax-h3-gguf", "unsloth/minimax-h3-gguf"})
+
+
+def is_h3_bundle_repo(repo_id: str) -> bool:
+    return repo_id.strip().lower() in _H3_BUNDLE_REPOS
+
+
+# Both released denoiser partitions are valid picks -- which one is picked IS the task. Kept in
+# step with validate_h3_transformer_filename in core/inference/video_minimax_h3.py, which the load
+# enforces; listing only FL2VA hid every published Ref2VA quant from the picker even though the
+# loader routes it and the reference UI depends on it.
+_H3_DENOISER_PARTITIONS = ("minimax_h3_fl2va", "minimax_h3_ref2va")
+
+
+def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
+    """Hide auxiliary GGUFs from repos that bundle several model roles."""
+    if is_h3_bundle_repo(repo_id):
+        name = Path(filename).name.lower()
+        return name.startswith(_H3_DENOISER_PARTITIONS) and name.endswith(".gguf")
+    return True
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -233,20 +263,91 @@ def _select_quant_match(text: str) -> Optional[re.Match]:
     return fallback
 
 
-def extract_quant_token(filename: str) -> Optional[str]:
-    stem = _gguf_stem(filename)
+def _quant_search_stem(filename: str) -> str:
+    """The text a quant token is looked for in: the basename, less any shard suffix.
+
+    Unlike :func:`_gguf_stem` this keeps everything after the last dot. The extension is not in
+    the way, since the token is matched rather than the whole string, while cutting at the dot
+    truncates a bare ``IQ4_XS-3.53bpw`` to ``IQ4_XS-3``. Bare names do arrive here: a ``<quant>/``
+    folder and a stored variant string both come without ``.gguf``.
+    """
+    return _GGUF_SPLIT_SUFFIX_RE.sub("", filename.rsplit("/", 1)[-1]).strip()
+
+
+def _locate_quant_match(filename: str) -> tuple[Optional[re.Match], str]:
+    """The quant match naming *filename*, with the text it was found in.
+
+    The basename decides; only when it names no quant do parent directories, nearest first.
+    Callers that need what trails the token (the bpw modifier) need that text too, so this is
+    the one place the search order lives.
+    """
+    stem = _quant_search_stem(filename)
     match = _select_quant_match(stem)
-    if not match and "/" in filename:
-        parents = filename.rsplit("/", 1)[0]
-        for segment in reversed(parents.split("/")):
+    if match:
+        return match, stem
+    if "/" in filename:
+        for segment in reversed(filename.rsplit("/", 1)[0].split("/")):
             parent_match = _select_quant_match(segment)
             if parent_match:
-                match = parent_match
-                break
+                return parent_match, segment
+    return None, ""
+
+
+def extract_quant_token(filename: str) -> Optional[str]:
+    match, _ = _locate_quant_match(filename)
     if match:
         prefix = match.group(1) or ""
         return f"{prefix}{match.group(2)}"
     return None
+
+
+# A bits-per-weight modifier trailing the quant token. Two builds of one base quant at different
+# bpw are two checkpoints (byteshape ships IQ4_XS at 3.53, 3.97 and 4.19), and the loader's own
+# label keeps the modifier for exactly that reason. The variant KEY has to keep it too: without it
+# the lister advertises IQ4_XS-3.53bpw while the plan, the download map and the delete predicate
+# all say IQ4_XS, so the advertised name 404s and the collapsed one unlinks every build.
+#
+# Applied with ``match`` against the text that follows the token, never ``search``: only a
+# modifier IMMEDIATELY after the quant qualifies it, so ``flux1-dev-Q8_0-fp32-08.577bpw`` keeps
+# the bare ``Q8_0`` rather than borrowing a number that describes something else in the name.
+_GGUF_BPW_SUFFIX_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw", re.IGNORECASE)
+
+# The same modifier ending a name of its own, with or without the extension still on it. Used
+# only for the basename under a quant DIRECTORY (``Q6_K/model-3.5bpw.gguf``), where the token is
+# in the parent and the number is all the file has to say which build it is.
+_GGUF_BPW_TRAILING_RE = re.compile(r"-[0-9]+(?:\.[0-9]+)?bpw(?=\.[A-Za-z0-9]+$|$)", re.IGNORECASE)
+
+
+def quant_token_with_bpw(filename: str) -> Optional[str]:
+    """:func:`extract_quant_token` with the bpw modifier that trails it, when there is one.
+
+    The spelling that identifies a checkpoint. The bare token does not: a repo publishing one
+    base quant at several bit widths gives every one of them the same token, and the modifier is
+    the only thing telling them apart.
+
+    Where the modifier is found follows where the token was. Named by the basename, only a
+    modifier IMMEDIATELY after it counts, so ``flux1-dev-Q8_0-fp32-08.577bpw`` keeps the bare
+    ``Q8_0`` rather than borrowing a number describing something else. Named by a parent
+    directory, the modifier may sit against the token there (``IQ4_XS-3.53bpw/model.gguf``) or
+    end the basename instead (``Q6_K/model-3.5bpw.gguf``), and both are this build's own.
+
+    Returns the bare token unchanged for every repo without one, which is nearly all of them,
+    and ``None`` when nothing in the path names a quant.
+    """
+    path = filename.replace("\\", "/")
+    match, text = _locate_quant_match(path)
+    if match is None:
+        return None
+    token = f"{match.group(1) or ''}{match.group(2)}"
+    adjacent = _GGUF_BPW_SUFFIX_RE.match(text[match.end() :])
+    if adjacent:
+        return f"{token}{adjacent.group(0)}"
+    stem = _quant_search_stem(path)
+    if text != stem:
+        trailing = _GGUF_BPW_TRAILING_RE.search(stem)
+        if trailing:
+            return f"{token}{trailing.group(0)}"
+    return token
 
 
 def _unknown_gguf_variant_key(filename: str) -> str:
@@ -257,19 +358,162 @@ def _unknown_gguf_variant_key(filename: str) -> str:
     return f"{parents}/{stem}" if parents and stem else stem or "gguf"
 
 
+def gguf_variant_family(filename: str) -> str:
+    """The shard family *filename* belongs to: its directory plus its shard-stripped name.
+
+    The unit a row and a download plan describe. Every shard of one split GGUF shares
+    a family, which is why summing sizes within a family is right; two files that do
+    NOT share one are two different checkpoints, so summing across them is not.
+    """
+    return _unknown_gguf_variant_key(filename)
+
+
 def extract_quant_label(filename: str) -> str:
     return extract_quant_token(filename) or _unknown_gguf_variant_key(filename)
+
+
+def bare_quant_alias(key: str) -> str:
+    """The bare quant spelling a path-qualified *key* also answers to.
+
+    ``weights/model-IQ4_XS-3.53bpw`` -> ``IQ4_XS-3.53bpw``. The bpw modifier is part of the
+    identity now, so the three compatibility fallbacks that accept a bare name for a qualified
+    key (the plan lookup, auto-download admission, deletion) have to keep it -- comparing on the
+    token alone means a persisted ``IQ4_XS-3.53bpw`` resolves nothing.
+    """
+    basename = (key or "").replace("\\", "/").rsplit("/", 1)[-1]
+    token = quant_token_with_bpw(basename)
+    if token is not None:
+        return token
+    # Nothing in the name is a quant, so the alias is the unknown-variant spelling. That one
+    # still re-stems, and a key arrives already extension-stripped, so hand it an extension to
+    # strip rather than let it cut at the dot in "ltx-2.3".
+    return extract_quant_label(f"{basename}.gguf")
+
+
+def _is_quant_directory(segment: str) -> bool:
+    """Whether a path segment names a quant (``Q6_K/``, ``Llama-3.3-70B-Instruct-Q6_K/``).
+
+    Such a directory says only how the file was quantized, which its name already says,
+    so it adds nothing to the file's identity. A directory naming something else
+    (``distilled/``) is a different checkpoint and does. The basename still wins on
+    which quant it is: ``Q8_0/model-Q4_K_M.gguf`` IS the Q4_K_M file.
+    """
+    return _select_quant_match(segment) is not None
+
+
+def gguf_variant_key(filename: str) -> str:
+    """The persisted identity of a selectable GGUF variant.
+
+    The bare quant token when that token names the file within its path -- the shape
+    almost every repo uses, so this is byte-identical to the historical key there and
+    every stored pin, manifest and marker keeps resolving. When the token does NOT
+    single the file out, because a sibling directory holds another checkpoint at the
+    same quant (``distilled/`` and ``distilled-1.1/`` beside the repo root), the key
+    is the file's :func:`gguf_variant_family` instead, which is unique within the
+    repo and which the loader already accepts as a spelling
+    (``model_config._find_local_gguf_by_variant`` matches its shard-stripped relative
+    path, as does ``llama_cpp._gguf_files_for_variant``).
+
+    A pure function of the path, deliberately: the remote listing sees a whole repo
+    while a cache scan sees whatever was downloaded, and a key that depended on the
+    set would disagree between them and strand a finished download as incomplete.
+    """
+    path = filename.replace("\\", "/")
+    quant = quant_token_with_bpw(path)
+    if quant is None:
+        return _unknown_gguf_variant_key(path)
+    # MiniMax H3 bundles two denoiser partitions, and may publish both full and pruned
+    # builds at one quant. Each file is a different loadable checkpoint, so the bare
+    # quant cannot identify the row, download state, or file the loader should open.
+    if path.rsplit("/", 1)[-1].lower().startswith(_H3_DENOISER_PARTITIONS):
+        return _unknown_gguf_variant_key(path)
+    parents = path.rpartition("/")[0]
+    if any(segment and not _is_quant_directory(segment) for segment in parents.split("/")):
+        return _unknown_gguf_variant_key(path)
+    return quant
+
+
+def _variant_scope_label(filename: str, *, with_stem: bool = False) -> str:
+    """The part of a qualified variant's path that tells it apart from its namesakes.
+
+    The directory alone reads best and is enough for the usual shape, where each checkpoint
+    has its own. ``with_stem`` adds the filename back for the case where it is not: two
+    checkpoints in ONE directory at one quant are two rows, and a label naming only the
+    directory would print the same text on both.
+    """
+    parents = filename.replace("\\", "/").rpartition("/")[0].strip("/")
+    stem = _gguf_stem(filename)
+    if not parents:
+        return stem
+    return f"{parents}/{stem}" if with_stem else parents
 
 
 def _apply_gguf_display_labels(variants: list[GgufVariantInfo]) -> None:
     unknown_variants = [
         variant for variant in variants if extract_quant_token(variant.filename) is None
     ]
-    if not unknown_variants:
-        return
     ambiguous = len(unknown_variants) > 1
-    for variant in unknown_variants:
-        variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+
+    # The bpw modifier is part of the key but reads perfectly well on its own
+    # ("IQ4_XS-3.53bpw"), so a key that is only the token plus its bpw suffix is NOT a
+    # path-qualified one and needs no scope label.
+    def _plain_key(variant) -> Optional[str]:
+        return quant_token_with_bpw(variant.filename)
+
+    qualified = [
+        variant
+        for variant in variants
+        if (plain := _plain_key(variant)) is not None and variant.quant.lower() != plain.lower()
+    ]
+    # A scope shared by two rows does not tell them apart, so those rows show the file too.
+    scopes: dict[str, int] = {}
+    for variant in qualified:
+        scope = _variant_scope_label(variant.filename).lower()
+        scopes[scope] = scopes.get(scope, 0) + 1
+    for variant in variants:
+        token = extract_quant_token(variant.filename)
+        h3_name = Path(variant.filename).name.lower()
+        h3_partition = next(
+            (partition for partition in _H3_DENOISER_PARTITIONS if h3_name.startswith(partition)),
+            None,
+        )
+        if h3_partition is not None:
+            task = "References" if h3_partition.endswith("ref2va") else "Text & frames"
+            build = "Pruned" if "_pruned-" in h3_name else "Full"
+            variant.display_label = f"{task} · {token or 'GGUF'} · {build}"
+            continue
+        if token is None:
+            variant.display_label = f"GGUF · {variant.filename}" if ambiguous else "GGUF"
+        elif variant.quant.lower() != (_plain_key(variant) or "").lower():
+            # A key qualified by path: show the quant, plus what distinguishes it.
+            collides = scopes.get(_variant_scope_label(variant.filename).lower(), 0) > 1
+            variant.display_label = (
+                f"{token} · {_variant_scope_label(variant.filename, with_stem = collides)}"
+            )
+
+
+def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
+    """``variant key -> (first filename, size of that variant's shard family)``.
+
+    *entries* is an iterable of ``(path, size)`` for main GGUFs only, already filtered
+    of mmproj, drafters and big-endian builds.
+
+    Sizes are summed across the shards of ONE family, never across families. A repo
+    that ships the same quant twice (``BF16/QwQ-32B-BF16-*`` beside
+    ``BF16/QwQ-32B.BF16-*``) therefore advertises what a load would actually read
+    rather than the total of both copies. The family kept is the one holding the
+    lexicographically first file, which is the shard the lister and the loader open.
+    """
+    families: dict[str, dict[str, list[tuple[str, int]]]] = {}
+    for path, size in entries:
+        families.setdefault(gguf_variant_key(path), {}).setdefault(
+            gguf_variant_family(path), []
+        ).append((path, int(size or 0)))
+    grouped: dict[str, tuple[str, int]] = {}
+    for key, by_family in families.items():
+        chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
+        grouped[key] = (min(path for path, _ in chosen), sum(size for _, size in chosen))
+    return grouped
 
 
 def _env_offline() -> bool:
@@ -295,11 +539,14 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
     )
     for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
-        if not snapshots_dir.is_dir():
-            continue
+        # is_dir() ignores only ENOENT/ENOTDIR/EBADF/ELOOP, so an unreadable root raised
+        # EACCES up to 3.13 (3.14 returns False, gh-101357). Skip it instead of 500ing.
         try:
+            if not snapshots_dir.is_dir():
+                continue
             snapshots.extend(snap for snap in snapshots_dir.iterdir() if snap.is_dir())
-        except OSError:
+        except OSError as e:
+            logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, e)
             continue
 
     # Same key the inventory row selects with, so both name one snapshot.
@@ -309,7 +556,11 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
 
 def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> set[str]:
     """Quant labels present only as an EMPTY snapshot ``<quant>/`` folder (an
-    interrupted split download); a quant with shards in any snapshot is excluded."""
+    interrupted split download); a quant with shards in any snapshot is excluded.
+
+    Labelled the way a row is keyed, bpw modifier included, or an empty ``IQ4_XS-3.53bpw/``
+    folder would be reported against a bare ``IQ4_XS`` row that does not exist while the row
+    it belongs to reads as absent."""
     empty: dict[str, str] = {}
     nonempty: set[str] = set()
     snapshots = (
@@ -326,7 +577,7 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
             try:
                 if sub.is_symlink() or not sub.is_dir():
                     continue
-                quant = extract_quant_token(sub.name)
+                quant = quant_token_with_bpw(sub.name)
                 if not quant:
                     continue
                 has_child = any(sub.iterdir())
@@ -339,14 +590,13 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def list_gguf_variants_from_hf_cache(
+def select_gguf_cache_snapshot(
     repo_id: str, root: Optional[Path] = None
-) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
-    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
 
-    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
-    *complete* is the subset whose shards are all present, so the caller marks the rest partial
-    rather than ready, as the snapshot-path form of this call does.
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -357,17 +607,45 @@ def list_gguf_variants_from_hf_cache(
         else iter_hf_cache_snapshots(repo_id)
     )
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
-    fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
+    fallback: Optional[tuple[list[GgufVariantInfo], bool, set, Path]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
             # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
             if any(not v.quant or v.quant in complete for v in variants):
-                return variants, has_vision, complete
+                return variants, has_vision, complete, snapshot
         if fallback is None and (variants or has_vision):
-            fallback = (variants, has_vision, complete)
+            fallback = (variants, has_vision, complete, snapshot)
     return fallback
+
+
+def list_gguf_variants_from_hf_cache(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
+    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+
+    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
+    *complete* is the subset whose shards are all present, so the caller marks the rest partial
+    rather than ready, as the snapshot-path form of this call does.
+    """
+    selected = select_gguf_cache_snapshot(repo_id, root = root)
+    return selected[:3] if selected is not None else None
+
+
+def _is_state_filename_fallback(variant: str, path: Path) -> bool:
+    """Whether *variant* was read off *path*'s own name rather than out of it.
+
+    An unreadable payload leaves the reader the filename, whose fragment for an
+    unspellable variant is a digest. Spelling cannot tell that from a variant
+    genuinely called ``sha256-<32 hex>``, but the file can: a real one is stored
+    under the hash of itself, never under its own name. A recovered digest names
+    nothing -- it cannot be spelled back, and a resume would re-key it again.
+    """
+    from hub.utils.state_dir import variant_is_hashed_fragment
+    return variant_is_hashed_fragment(variant) and path.stem.lower().endswith(
+        f"--variant--{variant.strip().lower()}"
+    )
 
 
 def list_partial_gguf_variants_from_state(
@@ -407,7 +685,9 @@ def list_partial_gguf_variants_from_state(
         )
     )
     for source in sources:
-        for variant, _path in source:
+        for variant, path in source:
+            if _is_state_filename_fallback(variant, path):
+                continue
             key = variant.lower()
             if key not in seen:
                 seen.add(key)
@@ -544,34 +824,32 @@ def list_gguf_variants(
             return _ready_cached_variants(cached)
         raise
 
-    variants: list[GgufVariantInfo] = []
     has_vision = False
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, int]] = []
 
     for sibling in info.siblings:
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
+            continue
+        if not _is_selectable_repo_gguf(repo_id, filename):
             continue
         if is_mtp_drafter_path(filename):
             continue
         if is_mmproj_filename(filename):
             has_vision = True
             continue
-        quant = extract_quant_label(filename)
-        if is_big_endian_gguf_path(filename, quant):
-            continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
-        quant_first_file.setdefault(quant, filename)
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is advertised for a file the remote detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
 
-    for quant, total_size in quant_totals.items():
-        variants.append(
-            GgufVariantInfo(
-                filename = quant_first_file[quant],
-                quant = quant,
-                size_bytes = total_size,
-            )
-        )
+        if is_big_endian_gguf_path(filename, _loader_quant(filename)):
+            continue
+        main_files.append((filename, int(getattr(sibling, "size", 0) or 0)))
+
+    variants = [
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+    ]
 
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)
@@ -609,11 +887,18 @@ def list_local_gguf_variants(
         else _registered_custom_model_root(directory)
     )
 
-    quant_totals: dict[str, int] = {}
-    quant_first_file: dict[str, str] = {}
+    main_files: list[tuple[str, int]] = []
     has_vision = False
+    # Match the cache dir of ANY H3 bundle repo, not just one of them: the same aggregation runs
+    # over whichever mirror the user actually downloaded.
+    root_key = root.as_posix().lower()
+    h3_bundle_repo = next(
+        (r for r in _H3_BUNDLE_REPOS if f"models--{r.replace('/', '--')}" in root_key), None
+    )
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
+            continue
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.
             try:
@@ -628,19 +913,17 @@ def list_local_gguf_variants(
         rel = file.relative_to(root).as_posix()
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
-        quant = extract_quant_label(rel)
-        if is_big_endian_gguf_path(rel, quant):
+        # The two extractors disagree on F16-be-checkpoint-Q4_K_M shapes; judge with the
+        # loader's label so no row is listed for a file the local detector refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(rel, _loader_quant(rel)):
             continue
-        quant_totals[quant] = quant_totals.get(quant, 0) + size
-        quant_first_file.setdefault(quant, rel)
+        main_files.append((rel, size))
 
     variants = [
-        GgufVariantInfo(
-            filename = quant_first_file[quant],
-            quant = quant,
-            size_bytes = size,
-        )
-        for quant, size in quant_totals.items()
+        GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
+        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants)

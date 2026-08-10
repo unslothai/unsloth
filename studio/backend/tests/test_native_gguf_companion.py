@@ -22,7 +22,11 @@ from routes.inference import _validate_native_mtp_drafter
 from routes.inference import _loaded_is_local_model
 from routes.inference import _mtp_draft_for_path
 from routes.inference import _native_gguf_companion_usable
-from utils.models.model_config import _local_gguf_companion_search_root, detect_mtp_file
+from utils.models.model_config import (
+    _local_gguf_companion_search_root,
+    detect_dspark_file,
+    detect_mtp_file,
+)
 from core.inference.llama_cpp import LlamaCppBackend
 from models.inference import LoadRequest
 
@@ -43,6 +47,7 @@ def _request_matches_loaded_settings(
         gguf_file = model_path,
         gguf_mmproj_file = None,
         gguf_mtp_file = draft,
+        gguf_dspark_file = detect_dspark_file(model_path, search_root = root),
         is_vision = False,
     )
     intent = _resolve_gguf_load_intent(
@@ -80,7 +85,7 @@ def test_native_companion_allows_model_directory(tmp_path):
 def test_native_mtp_companion_allows_mtp_directory(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     _validate_native_gguf_companion(
-        str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+        str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
     )
 
 
@@ -96,7 +101,24 @@ def test_native_mtp_companion_allows_repo_root_mtp_directory(tmp_path):
         str(companion),
         str(weight),
         "MTP drafter",
-        allow_mtp_subdir = True,
+        allowed_subdirs = ("mtp",),
+        mtp_search_root = str(tmp_path),
+    )
+
+
+def test_native_dspark_companion_allows_repo_dspark_directory(tmp_path):
+    quant_dir = tmp_path / "Q4_0"
+    weight, _ = _write_pair(quant_dir)
+    companion_dir = tmp_path / "dspark"
+    companion_dir.mkdir()
+    companion = companion_dir / "dspark-model-Q8_0.gguf"
+    companion.write_bytes(b"draft")
+
+    _validate_native_gguf_companion(
+        str(companion),
+        str(weight),
+        "DSpark drafter",
+        allowed_subdirs = ("dspark",),
         mtp_search_root = str(tmp_path),
     )
 
@@ -114,7 +136,7 @@ def test_native_mtp_companion_rejects_unrelated_search_root(tmp_path):
             str(companion),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
             mtp_search_root = str(tmp_path),
         )
 
@@ -168,7 +190,7 @@ def test_native_companion_rejects_arbitrary_nesting(tmp_path, folder):
     weight, companion = _write_pair(tmp_path, folder)
     with pytest.raises(HTTPException, match = "must live beside") as error:
         _validate_native_gguf_companion(
-            str(companion), str(weight), "MTP drafter", allow_mtp_subdir = True
+            str(companion), str(weight), "MTP drafter", allowed_subdirs = ("mtp",)
         )
     assert error.value.status_code == 400
 
@@ -202,7 +224,7 @@ def test_native_companion_rejects_directory_symlink_escape(tmp_path):
             str(model_dir / "MTP" / companion.name),
             str(weight),
             "MTP drafter",
-            allow_mtp_subdir = True,
+            allowed_subdirs = ("mtp",),
         )
 
 

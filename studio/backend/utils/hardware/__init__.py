@@ -68,6 +68,11 @@ def export_capability() -> dict:
     return _hardware.export_capability()
 
 
+def video_capability() -> dict:
+    """Return live video-generation capability from the hardware module."""
+    return _hardware.video_capability()
+
+
 def get_torch_device_str() -> str:
     """Return the torch device string ("cuda", "xpu", "cpu") for the detected hardware."""
     return _hardware.get_torch_device_str()
@@ -83,6 +88,7 @@ __all__ = [
     "start_background_detection",
     "get_device",
     "export_capability",
+    "video_capability",
     "is_apple_silicon",
     "clear_gpu_cache",
     "get_gpu_memory_info",

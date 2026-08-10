@@ -26,6 +26,9 @@ export type WorkflowId =
 export const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
+  /** Page heading, when the sidebar's short label would read oddly on its own.
+   *  Falls back to `label`. */
+  heading?: string;
   requires: string | null;
   icon: IconSvgElement;
   hint: string;
@@ -33,6 +36,8 @@ export const WORKFLOW_TABS: Array<{
   {
     id: "create",
     label: "Create",
+    // The sidebar nests this under Images, so "Create" alone is clear there.
+    heading: "Create images",
     requires: null,
     // Not the pencil: that is the sidebar's New chat icon.
     icon: SparklesIcon,

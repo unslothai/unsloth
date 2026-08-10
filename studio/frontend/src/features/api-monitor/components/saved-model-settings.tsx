@@ -34,6 +34,12 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.n_parallel) {
     parts.push(`${override.n_parallel} parallel slots`);
   }
+  if (override.n_batch) {
+    parts.push(`batch ${override.n_batch}`);
+  }
+  if (override.n_ubatch) {
+    parts.push(`ubatch ${override.n_ubatch}`);
+  }
   if (override.tensor_parallel) {
     parts.push("tensor parallel");
   }

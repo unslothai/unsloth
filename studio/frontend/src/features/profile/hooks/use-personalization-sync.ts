@@ -8,6 +8,7 @@ import {
   isDefaultCustomization,
   isPalette,
   loadPersonalization,
+  migrateShippedSidebarNavDefault,
   sanitizeCustomization,
   savePersonalization,
   setPalette,
@@ -18,11 +19,11 @@ import {
 } from "@/features/settings";
 import {
   DEFAULT_LOCALE_PREFERENCE,
+  type LocalePreference,
   getLocalePreference,
   isLocalePreference,
   setLocale,
   useLocalePreference,
-  type LocalePreference,
 } from "@/i18n";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -36,7 +37,8 @@ const PUSH_DEBOUNCE_MS = 800;
 // Version 2 payloads store the language preference ("auto" or a pinned
 // locale). Version 1 always serialized the resolved locale, so its "en" is
 // usually the old default rather than an explicit pick.
-const PERSONALIZATION_VERSION = 2;
+// Version 3 migrates untouched sidebar layouts to keep Video under More.
+const PERSONALIZATION_VERSION = 3;
 
 type ProfileSnapshot = {
   displayName: string;
@@ -261,8 +263,13 @@ export function usePersonalizationSync(enabled: boolean): void {
           const keepLocalPalette =
             remote.paletteSaved === false && localPalette !== "standard";
           const nextPalette = keepLocalPalette ? localPalette : remotePalette;
-          const remoteCustomization = sanitizeCustomization(
+          const storedRemoteCustomization = sanitizeCustomization(
             remote.appearance.customization,
+          );
+          const remoteCustomization = migrateShippedSidebarNavDefault(
+            storedRemoteCustomization,
+            remote.version,
+            PERSONALIZATION_VERSION,
           );
           const localCustomization = latestCustomizationRef.current;
           const keepLocalCustomization =
@@ -293,15 +300,18 @@ export function usePersonalizationSync(enabled: boolean): void {
           // lastSaved records what the server actually has (server-side defaults
           // for legacy fields) so the debounced push re-uploads preserved local
           // values.
-          lastSavedRef.current = serialized(
-            payload(
+          lastSavedRef.current = serialized({
+            ...payload(
               { ...nextProfile, showGreetingSloth: remoteGreeting },
               nextTheme,
               remotePalette,
-              remoteCustomization,
+              storedRemoteCustomization,
               nextLanguage,
             ),
-          );
+            // Preserve the server's actual version here so a legacy record is
+            // re-saved even when the sidebar layout itself was customized.
+            version: remote.version,
+          });
         } else {
           const rawProfile = profileSnapshot();
           const nextProfile = normalizeProfile(rawProfile);

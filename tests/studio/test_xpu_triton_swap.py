@@ -84,6 +84,9 @@ def _load(
     body = src[start:end]
     assert "_ensure_xpu_triton" in body, "extraction lost the swap"
     assert "_ensure_venv_pip" in body, "extraction lost the pip bootstrap"
+    # The WARN assertions need the stub wired to the name the slice actually calls;
+    # a rename would leave them silently dead.
+    assert "_safe_print(" in body, "extraction lost the print helper the WARN stub hooks"
 
     import glob as _glob
     import importlib.util as _importlib_util
@@ -185,7 +188,11 @@ def _load(
         "pip_install_try": fake_pip_install_try,
         "pip_install": fake_pip_install,
         "_red": lambda s: s,
-        "print": lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None,
+        # _safe_print, not print: the slice calls it by name, so stubbing "print"
+        # would leave _safe_print undefined at exec time.
+        "_safe_print": (
+            lambda *a, **k: log.append("WARN") if a and "left in place" in str(a[0]) else None
+        ),
     }
     exec(compile(body, str(STACK), "exec"), ns)
     mod.__dict__.update(ns)

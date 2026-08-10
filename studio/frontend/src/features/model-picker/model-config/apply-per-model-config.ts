@@ -49,12 +49,16 @@ export function applyPerModelConfigToRuntime(
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
+    mlxKvBits: config.mlxKvBits ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    // the diffusion runner ignores the llama-server batch flags
+    nBatch: options.isDiffusion ? null : (config.nBatch ?? null),
+    nUbatch: options.isDiffusion ? null : (config.nUbatch ?? null),
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
@@ -100,9 +104,12 @@ export function currentRuntimePerModelConfig(
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
+    mlxKvBits: s.mlxKvBits ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
+    nBatch: s.nBatch ?? null,
+    nUbatch: s.nUbatch ?? null,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
@@ -125,10 +132,13 @@ export function perModelConfigsEqual(
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
+    (a.mlxKvBits ?? null) === (b.mlxKvBits ?? null) &&
     normalizeSpeculativeType(a.speculativeType) ===
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    (a.nBatch ?? null) === (b.nBatch ?? null) &&
+    (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&

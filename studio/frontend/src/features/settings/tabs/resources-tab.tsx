@@ -26,9 +26,11 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
+import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
@@ -183,10 +185,14 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 
 export function ResourcesTab() {
   const t = useT();
-  const [liveUpdates, setLiveUpdates] = useState(true);
+  const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
+  const setLiveUpdates = useSettingsPanelPrefsStore(
+    (s) => s.setResourcesLiveUpdates,
+  );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  // always fetch once: the switch is persisted now, so gating the hook on it
+  // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
-    enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
@@ -562,6 +568,8 @@ export function ResourcesTab() {
         )}
       </SettingsSection>
 
+      <ModelMemorySection />
+
       <SettingsSection title={t("settings.resources.storage.title")}>
         <InfoRow
           label={t("settings.resources.storage.systemDisk")}
@@ -576,6 +584,7 @@ export function ResourcesTab() {
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
+          hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
         >
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">

@@ -325,6 +325,119 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
     )
 
 
+def test_forced_dspark_without_a_sidecar_stops_reloading():
+    """drafter_not_found covers both "the fetch failed" and "this repo publishes
+    none". The second is the permanent state of every repo but one, so retrying
+    it relaunched an identical server on every Apply."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Qwen3-7B-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = True,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/Qwen3-7B-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is True
+    )
+
+
+def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
+    """The other half: the repo does publish a sidecar and the download failed, so
+    the next Apply should reload and re-run _download_dspark."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = False,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_mtp_without_a_drafter_still_reloads_to_retry_the_fetch():
+    """Negative control for the above: the MTP retry must survive."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "mtp",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "mtp",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
+    )
+
+
+def test_auto_resolved_dspark_reuses_its_server_instead_of_reloading(tmp_path):
+    """Auto keeps arriving as "auto" while the launch stored the DSpark sidecar in
+    the drafter field. Comparing the MTP field (None for these repos) against it
+    would tear down and relaunch an identical server on every Apply."""
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "draft-dspark",
+        _mtp_draft_path = str(sidecar),
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = None,
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            dspark_draft_path = str(sidecar),
+            compare_mtp_draft = True,
+        )
+        is True
+    )
+
+
 def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
     assert (
@@ -680,6 +793,43 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] == "draft-mtp"
     assert caps["supports_mtp"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_detects_dspark(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    monkeypatch.setattr(
+        "utils.llama_cpp_freshness.read_install_marker",
+        lambda _binary: {"release_tag": "b10265-mix-89aa77b"},
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is False
+    assert caps["supports_mtp"] is True
+
+
+def test_dspark_release_gate_covers_the_whole_broken_window():
+    """Every prebuilt between the llama.cpp#26531 reshape regression and its #26577 fix
+    aborts on a DSpark load, not only the b10265 one that was first seen."""
+    broken = LlamaCppBackend._dspark_release_is_broken
+    assert broken("b10259-mix-abc1234") and broken("b10268-mix-abc1234")
+    assert not broken("b10258-mix-abc1234")
+    assert not broken("b10269-mix-abc1234")
+    assert not broken(None) and not broken("")
 
 
 @_NEEDS_BASH
@@ -1282,6 +1432,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # New canonical values pass through unchanged.
         ("auto", "auto"),
         ("mtp", "mtp"),
+        ("dspark", "dspark"),
         ("ngram", "ngram"),
         ("mtp+ngram", "mtp+ngram"),
         ("off", "off"),
@@ -1289,6 +1440,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # Legacy wire values map onto the new vocabulary.
         ("default", "auto"),
         ("draft-mtp", "mtp"),
+        ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
@@ -1330,6 +1482,7 @@ def _resolver_backend(
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "supports_dspark": True,
         "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
@@ -1457,7 +1610,205 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     assert backend.speculative_type is None
 
 
-@pytest.mark.parametrize("mode", ["auto", "mtp", "ngram", "mtp+ngram", "off"])
+def test_build_speculative_flags_dspark_requires_sidecar_and_leaves_fit_to_placement(
+    monkeypatch, tmp_path
+):
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert "--fit" not in parsed
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--spec-draft-n-max"] == "3"
+
+
+def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_build_speculative_flags_dspark_blames_the_binary_not_the_missing_sidecar(monkeypatch):
+    """The sidecar fetch is gated on the same supports_dspark answer, so on a
+    binary that cannot run DSpark the sidecar is legitimately absent. Reporting
+    drafter_not_found would tell the user to place a file that is not the problem,
+    and would reload the server on every Apply via the drafter_not_found dedup."""
+    backend = _resolver_backend(monkeypatch)
+    caps = LlamaCppBackend.probe_server_capabilities()
+    caps["supports_dspark"] = False
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
+# ── Auto defaults to DSpark, and only where a sidecar actually exists ──
+#
+# The three shapes are the real published repos, checked against the Hub:
+#   unsloth/DeepSeek-V4-Flash-0731-GGUF  -> dspark-*.gguf at the root and in dspark/
+#   unsloth/gemma-4-12b-it-GGUF          -> MTP/mtp-gemma-4-12b-it-*.gguf, no dspark
+#   unsloth/Qwen3.5-4B-MTP-GGUF          -> head baked into the main GGUF, neither file
+
+
+def test_auto_defaults_to_dspark_when_a_sidecar_is_available(monkeypatch, tmp_path):
+    """DSpark beats every other Auto outcome for this architecture, and without it
+    these models fall through to --spec-default, i.e. no drafter at all."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-draft-n-max"] == "3"
+    assert backend.spec_fallback_reason is None
+    # The request stays "auto": rewriting it would make the reuse check compare
+    # "dspark" against a caller that keeps sending "auto" and reload every Apply.
+    assert backend.requested_spec_mode == "auto"
+
+
+def test_auto_keeps_mtp_for_a_separate_drafter_model(monkeypatch, tmp_path):
+    """gemma-4-12b-it ships MTP/mtp-*.gguf and no dspark sidecar, so the DSpark
+    branch must not intercept it."""
+    backend = _resolver_backend(monkeypatch)
+    drafter = tmp_path / "mtp-gemma-4-12b-it-Q8_0.gguf"
+    drafter.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = str(drafter),
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert parsed["--model-draft"] == str(drafter)
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_keeps_embedded_mtp(monkeypatch):
+    """Qwen3.5-4B-MTP bakes the head into the main GGUF: no separate file of
+    either kind, so Auto must still emit MTP."""
+    backend = _resolver_backend(monkeypatch)
+    backend._nextn_predict_layers = 1
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed["--spec-type"] == "draft-mtp"
+    assert backend.spec_fallback_reason is None
+
+
+def test_auto_does_not_promote_dspark_on_a_binary_that_cannot_run_it(monkeypatch, tmp_path):
+    """_download_dspark still reports a cached sidecar an incapable binary cannot
+    launch. Promoting there would turn Auto's fallback into no speculation at all,
+    so the promotion is capability-gated and this model keeps its ngram-mod path."""
+    backend = _resolver_backend(monkeypatch)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "found": True,
+                "mtp_token": "draft-mtp",
+                "supports_mtp": True,
+                "supports_dspark": False,
+                "mtp_probe_inconclusive": False,
+                "ngram_mod_flavor": "new",
+                "supports_ngram_mod": True,
+                "spec_draft_n_max_flag": "--spec-draft-n-max",
+            }
+        ),
+    )
+    sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    assert "draft-dspark" not in _flags_dict(flags).get("--spec-type", "")
+    assert backend.speculative_type != "draft-dspark"
+
+
+def test_build_speculative_flags_dspark_engages_under_auto_fit(monkeypatch, tmp_path):
+    """--fit on is not a blocker. The sidecar borrows the target's token_embd and
+    output, so llama.cpp's fit step cannot build a standalone draft context to
+    measure it and skips the reserve; the load itself still gets the drafter."""
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+        dspark_fit_sized = False,
+    )
+    assert flags[flags.index("--spec-type") + 1] == "draft-dspark"
+    assert flags[flags.index("--model-draft") + 1] == str(sidecar)
+    assert backend.speculative_type == "draft-dspark"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off"])
 def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
     # The status round-trip is the contract that lets the UI dropdown
     # restore its picked value after reload / refresh.

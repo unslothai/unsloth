@@ -9,11 +9,13 @@ in-flight denoise step reaches its cancel callback (seconds to tens of seconds f
 video). Executed inline in the async route it would freeze every concurrent
 status/cancel/UI request -- the same reason start_diffusion_training offloads
 _free_gpu_for_diffusion_training via asyncio.to_thread. The backend guards the
-overlapping-starts window this offload opens with a compare-and-set flag.
+overlapping-starts window this offload opens with a compare-and-set reservation.
 """
 
 import asyncio
+import contextlib
 import threading
+from types import SimpleNamespace
 
 import routes.training as tr
 from models import TrainingStartRequest
@@ -49,6 +51,7 @@ def _request() -> TrainingStartRequest:
         training_type = "LoRA/QLoRA",
         format_type = "alpaca",
         hf_dataset = "org/data",
+        load_in_4bit = False,
         # Skip the YAML trust_remote_code lookup (needs the model catalog on disk).
         trust_remote_code = True,
     )
@@ -58,6 +61,18 @@ def test_start_route_offloads_blocking_start(monkeypatch):
     fake = _FakeBackend()
     monkeypatch.setattr(tr, "get_training_backend", lambda: fake)
     monkeypatch.setattr(tr, "_diffusion_training_active", lambda: False)
+    monkeypatch.setattr(tr, "_diffusion_gpu_admission", contextlib.nullcontext)
+    monkeypatch.setattr(
+        tr,
+        "_reject_untrainable_model_request",
+        lambda request, *_args: SimpleNamespace(
+            model_name = request.model_name,
+            cached_model_pin = None,
+            model_local_path = None,
+        ),
+    )
+    monkeypatch.setattr(tr, "_preflight_hf_dataset_request", lambda *_args: None)
+    monkeypatch.setattr("utils.hardware.ensure_hardware_detected", lambda: None)
 
     async def _run():
         return threading.current_thread(), await tr.start_training(
@@ -74,8 +89,8 @@ def test_start_route_offloads_blocking_start(monkeypatch):
 
 
 def test_backend_start_guard_blocks_overlapping_starts():
-    # With the route offloaded to worker threads, two overlapping /train/start requests can reach start_training concurrently,
-    # so the compare-and-set _start_in_progress flag must let exactly one of them spawn.
+    # With the route offloaded to worker threads, two overlapping /train/start requests can reach
+    # start_training concurrently, so the compare-and-set reservation must let exactly one proceed.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()
@@ -93,7 +108,7 @@ def test_backend_start_guard_blocks_overlapping_starts():
         release_first.wait(timeout = 5.0)
         return True
 
-    backend._start_training_impl = _slow_impl
+    backend._start_training_with_lifecycle_reserved = _slow_impl
 
     def _first():
         results["first"] = backend.start_training("job-a")
@@ -108,8 +123,9 @@ def test_backend_start_guard_blocks_overlapping_starts():
 
     assert results["first"] is True
     assert results["second"] is False
-    # The flag is cleared once the winning start returns, so a later start may proceed.
-    assert backend._start_in_progress is False
+    # The reservation is cleared once the winning start returns, so a later start may proceed.
+    assert backend._spawn_in_progress is False
+    assert backend._new_job_spawn_id is None
 
 
 def test_is_training_active_true_during_start_reservation():
@@ -134,7 +150,7 @@ def test_is_training_active_true_during_start_reservation():
         release.wait(timeout = 5.0)
         return True
 
-    backend._start_training_impl = _slow_impl
+    backend._start_training_with_lifecycle_reserved = _slow_impl
 
     t = threading.Thread(target = lambda: backend.start_training("job-a"), daemon = True)
     t.start()

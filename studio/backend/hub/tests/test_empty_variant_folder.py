@@ -121,7 +121,7 @@ def _force_compute_to_raise(monkeypatch):
     monkeypatch.setattr(gguf_variants, "list_gguf_variants", _boom, raising = False)
     monkeypatch.setattr(
         gguf_variants,
-        "list_gguf_variants_from_hf_cache",
+        "select_gguf_cache_snapshot",
         lambda repo_id, root = None: None,
         raising = False,
     )

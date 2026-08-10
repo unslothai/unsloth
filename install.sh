@@ -622,6 +622,23 @@ _start_studio_venv_replacement() {
     substep "previous environment preserved for rollback"
 }
 
+# Clear $VENV_DIR for a recreate without ever destroying the only copy. The
+# legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR
+# without going through _start_studio_venv_replacement, so a plain `rm -rf` there
+# is unrecoverable: if the `uv venv` that follows cannot resolve an interpreter
+# (offline, or a uv whose managed-Python manifest predates the patch being asked
+# for) the user is left with no environment at all. Move it aside instead and let
+# the exit/signal traps put it back. When a replacement is already in flight the
+# rollback copy holds the user's real environment and $VENV_DIR is this run's own
+# work, so plain removal stays correct.
+_discard_venv_for_recreate() {  # venv dir
+    if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
+       && _start_studio_venv_replacement "$1"; then
+        return 0
+    fi
+    rm -rf "$1"
+}
+
 _restore_studio_venv_replacement() {
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
@@ -960,10 +977,22 @@ create_studio_shortcuts() {
             echo "[WARN] Cannot create launcher: no entropy source for studio_install_id" >&2
             return 1
         fi
-        # Atomic write so a partial install can't leave a half-written id.
-        _css_id_tmp="$_css_id_file.$$.tmp"
-        printf '%s' "$_css_new_id" > "$_css_id_tmp" \
-            && mv "$_css_id_tmp" "$_css_id_file"
+        # Publish no-clobber: the desktop app mints this same id, so a plain mv
+        # could replace one a running backend already reported. ln fails with
+        # EEXIST instead and we adopt the winner; its lock is not shareable
+        # portably (no flock(1) on macOS). The id is in the temp name because
+        # $$ is the parent's pid inside a subshell in some shells.
+        _css_id_tmp="$_css_id_file.$$.$(printf '%.8s' "$_css_new_id").tmp"
+        if printf '%s' "$_css_new_id" > "$_css_id_tmp"; then
+            if ! ln "$_css_id_tmp" "$_css_id_file" 2>/dev/null; then
+                # A usable incumbent always wins. A zero-length file is an
+                # interrupted write, not an id, so replace it with one rename
+                # (no unlink, so the path never vanishes). This branch also
+                # covers filesystems without hard links (exFAT/FAT32).
+                [ -s "$_css_id_file" ] || mv "$_css_id_tmp" "$_css_id_file"
+            fi
+        fi
+        rm -f "$_css_id_tmp"
         chmod 600 "$_css_id_file" 2>/dev/null || true
         unset _css_new_id _css_id_tmp
     fi
@@ -1539,6 +1568,11 @@ DESKTOP_EOF
             echo "[ERROR] $_css_app exists but is not a directory; remove manually and re-run install" >&2
             return 1
         fi
+        # Older installs linked the Desktop shortcut with `ln -sf`, which followed the
+        # existing link and planted a self-referential copy one level inside the bundle.
+        if [ -L "$_css_app/Unsloth Studio.app" ]; then
+            rm -f "$_css_app/Unsloth Studio.app" 2>/dev/null || true
+        fi
         mkdir -p "$_css_macos_dir" "$_css_res_dir"
 
         # Info.plist
@@ -1617,9 +1651,10 @@ STUB_EOF
         # Touch so Finder indexes it
         touch "$_css_app"
 
-        # Symlink on Desktop
+        # Symlink on Desktop. -n is required: without it a re-run follows the existing
+        # link into the bundle and creates the new one inside it, as the CLI shim guards.
         if [ -d "$HOME/Desktop" ]; then
-            ln -sf "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
+            ln -sfn "$_css_app" "$HOME/Desktop/Unsloth Studio" 2>/dev/null || true
         fi
         _css_created=1
 
@@ -1837,21 +1872,17 @@ if [ "$_NO_TORCH_FLAG" = true ] || [ "$MAC_INTEL" = true ]; then
     SKIP_TORCH=true
 fi
 
-# Apple Silicon: exclude broken mlx-lm 0.31.3 (QK-norm load regression for
-# gemma4 / qwen3_5; mlx-lm #1242). A curl-piped install has no overrides file
-# and skips the guarded MLX step (SKIP_STUDIO_BASE=1), so this is the only cover.
-_MLX_LM_EXCLUDE_ARG=""
-
 # Apple Silicon: override mlx-vlm / mlx-lm's transformers pin (see overrides file).
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
-    _MLX_LM_EXCLUDE_ARG="mlx-lm!=0.31.3"
     _OVERRIDES_FILE="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)/studio/backend/requirements/single-env/overrides-darwin-arm64.txt"
     if [ -f "$_OVERRIDES_FILE" ]; then
         # uv splits UV_OVERRIDE on whitespace, so a repo path with whitespace
         # truncates it and aborts every later uv call (issue #6503). Hand uv a copy.
         case "$_OVERRIDES_FILE" in
             *[[:space:]]*)
-                _UV_OVERRIDE_TMPDIR=$(mktemp -d 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
+                _UV_OVERRIDE_TMP_ROOT=${TMPDIR:-/tmp}
+                case "$_UV_OVERRIDE_TMP_ROOT" in *[[:space:]]*) _UV_OVERRIDE_TMP_ROOT=/tmp ;; esac
+                _UV_OVERRIDE_TMPDIR=$(mktemp -d "$_UV_OVERRIDE_TMP_ROOT/unsloth_uv.XXXXXX" 2>/dev/null) || _UV_OVERRIDE_TMPDIR=""
                 case "$_UV_OVERRIDE_TMPDIR" in
                     "") ;;
                     *[[:space:]]*) rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true; _UV_OVERRIDE_TMPDIR="" ;;
@@ -2208,7 +2239,15 @@ esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.8.16"
+# 0.9.3 is the first uv whose managed-Python manifest carries CPython 3.13.9.
+# Anything older tops out at 3.13.8, which cannot import torch (see PYTHON_SKIP),
+# so a bare "3.13" request on an older uv resolves straight to the broken patch.
+UV_MIN_VERSION="0.9.3"
+# The floor before this raised it. An offline host may keep a uv between the two,
+# since those installs worked without touching the network; below it the
+# installer rejected the uv outright and still has to, or it proceeds on a uv
+# missing flags it is about to be handed (--default-index, --torch-backend).
+UV_OFFLINE_MIN_VERSION="0.8.16"
 
 # When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
 : "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
@@ -2262,25 +2301,118 @@ version_ge() {
     return 0
 }
 
-_uv_version_ok() {
+# Patch releases the stack cannot run, space separated.
+#   3.13.8: python/cpython#139783 makes inspect.getsourcelines() drop a function
+#   body when a decorator is followed by a comment, which is the shape torch
+#   2.11's nn/modules/rnn.py has, and _overload_method reads its own source at
+#   import time -- so `import torch` dies with IndentationError. 3.13.9 was an
+#   expedited release carrying only that fix.
+PYTHON_SKIP="3.13.8"
+
+# Every entry above is skipped for one reason: it cannot `import torch`. A
+# --no-torch install never imports it, so refusing the interpreter there would
+# fail a GGUF-only setup on a locked-down host over a package it will not
+# install. SKIP_TORCH is set well before any of this runs.
+_python_skip_applies() {
+    [ "$SKIP_TORCH" != true ]
+}
+
+_python_is_skipped() {  # full x.y.z version
+    _python_skip_applies || return 1
+    for _bad in $PYTHON_SKIP; do
+        [ "$1" = "$_bad" ] && return 0
+    done
+    return 1
+}
+
+# uv picks the patch itself for a bare "3.13", so name a range it cannot satisfy
+# with a skipped release rather than checking afterwards. uv accepts a PEP 440
+# specifier as a python request, and the exclusions come straight from
+# PYTHON_SKIP so there is one list to maintain.
+#
+# The exclusion is spelled "!=3.13.8" rather than ">=3.13.9" on purpose: a host
+# that is offline, or whose uv is too old to know 3.13.9, may still have a
+# perfectly good cached 3.13.7, and a floor would refuse it and fail the install
+# outright. Measured against uv 0.10.7 with only 3.13.7 and 3.13.8 installed and
+# --offline: "3.13" gives 3.13.8, ">=3.13.9,<3.14" errors, ">=3.13,<3.14,!=3.13.8"
+# gives 3.13.7.
+_python_request() {  # requested version -> what uv is asked for
+    _python_skip_applies || { echo "$1"; return 0; }
+    case "$1" in
+        # An explicit patch is the caller's own choice, and a path or a uv
+        # download name is not a version at all. Pass those through untouched.
+        [0-9]*.[0-9]*.*|*/*|*\\*) echo "$1"; return 0 ;;
+        [0-9]*.[0-9]*) ;;
+        *) echo "$1"; return 0 ;;
+    esac
+    _req_minor=${1#*.}
+    # Only a plain X.Y gets a range. "3.13rc1", or a relative path like
+    # "3.13/bin/python" that slipped past the globs above, would otherwise reach
+    # the arithmetic below, and dash aborts the whole install on "Illegal number".
+    case "$_req_minor" in
+        ''|*[!0-9]*) echo "$1"; return 0 ;;
+    esac
+    _req=">=$1,<${1%%.*}.$((_req_minor + 1))"
+    for _bad in $PYTHON_SKIP; do
+        case "$_bad" in
+            "$1".*) _req="$_req,!=$_bad" ;;
+        esac
+    done
+    echo "$_req"
+}
+
+_uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
+    _floor=${2:-$UV_MIN_VERSION}
     _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
     [ -n "$_raw" ] || return 1
     _ver=${_raw%%[-+]*}
     case "$_ver" in
         ''|*[!0-9.]*) return 1 ;;
     esac
-    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
+    version_ge "$_ver" "$_floor" || return 1
     # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
-    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
+    [ "$_ver" = "$_floor" ] && [ "$_raw" != "$_ver" ] && return 1
     return 0
 }
 
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
+    # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those
+    # installs used to succeed without touching the network, so a download
+    # failure must not be fatal for them. An unreadable version counts as
+    # present: that is a minimal image without awk, not an old uv.
+    _uv_present_before=false
+    if command -v uv >/dev/null 2>&1; then
+        # `|| _uv_prev_ver=`: on an image with no awk the pipeline exits 127 and
+        # set -e would kill the install here, which is exactly the host this
+        # block exists to keep working.
+        _uv_prev_ver=$(uv --version 2>/dev/null | awk '{print $2}' 2>/dev/null) \
+            || _uv_prev_ver=""
+        if [ -z "$_uv_prev_ver" ] || _uv_version_ok uv "$UV_OFFLINE_MIN_VERSION"; then
+            _uv_present_before=true
+        fi
+    fi
     substep "installing uv package manager..."
-    _uv_tmp=$(mktemp)
-    download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    run_maybe_quiet sh "$_uv_tmp" </dev/null
-    rm -f "$_uv_tmp"
+    _uv_refreshed=true
+    # download() exits the shell outright when neither curl nor wget is present,
+    # which an `if` cannot catch, so probe first: a minimal image with uv copied
+    # in but no downloader must keep the install it had before the floor moved.
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        _uv_tmp=$(mktemp)
+        if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+        else
+            _uv_refreshed=false
+        fi
+        rm -f "$_uv_tmp"
+    else
+        _uv_refreshed=false
+    fi
+    if [ "$_uv_refreshed" = false ] && [ "$_uv_present_before" = false ]; then
+        tauri_log "ERROR" "Could not install uv"
+        step "error" "could not download uv, and none is installed" "$C_ERR"
+        substep "Check the network, or install uv manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
     fi
@@ -2387,7 +2519,8 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
     else
-        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
     fi
 fi
 
@@ -2439,7 +2572,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     if [ "$_VENV_ARCH" = "x86_64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
-        rm -rf "$VENV_DIR"
+        _discard_venv_for_recreate "$VENV_DIR"
         run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
         if [ -x "$VENV_DIR/bin/python" ]; then
@@ -2451,13 +2584,31 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         _PY_VER=${_info##* }
     fi
 
-    if [ "$_PY_VER" = "3.13.8" ]; then
-        echo "  WARNING: Python 3.13.8 has a known torch import bug."
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv with Python 3.12..."
-        rm -rf "$VENV_DIR"
+        _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
         run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# The request above only decides what a *new* venv gets. A venv from an earlier
+# run, on any platform, can still hold a skipped interpreter, and reusing it is
+# how the reported installs stayed broken across re-runs. Honour --python.
+if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_VER=$("$VENV_DIR/bin/python" -c \
+        'import sys; print("{}.{}.{}".format(*sys.version_info[:3]))' 2>/dev/null || echo "")
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
+        echo "  Recreating venv..."
+        _discard_venv_for_recreate "$VENV_DIR"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2491,6 +2642,15 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
+# Whether the scripts next to install.sh may be trusted. A piped install (curl ... | sh)
+# has $0 = "sh", so _REPO_ROOT is just the caller's cwd and a file planted there would run.
+# Marker files cannot decide this (whoever can plant a helper can plant those), so require
+# the explicit --local intent AND a run from the file itself; else fetch the official copy.
+_REPO_IS_CHECKOUT=0
+case "$0" in
+    */install.sh|install.sh)
+        [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
+esac
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
 _find_no_torch_runtime() {
@@ -3349,10 +3509,12 @@ _maybe_bootstrap_rocm_wsl() {
     substep "Setting up ROCm-on-WSL (ROCm 7.2 + librocdxg) automatically to enable this GPU."
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
-    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it.
+    # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The local
+    # copy counts only for a --local checkout run, since this executes with no prompt and
+    # _REPO_ROOT may otherwise be the caller's cwd. The fetch pulls the same script.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
-    if [ ! -r "$_rw_helper" ]; then
+    if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
         _rw_tmp="$(mktemp 2>/dev/null || echo /tmp/_unsloth_rocm_wsl.sh)"
         if download "https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/install_rocm_wsl_strixhalo.sh" "$_rw_tmp" 2>/dev/null; then
             _rw_helper="$_rw_tmp"
@@ -3923,6 +4085,49 @@ esac
 tauri_log "STEP" "Installing PyTorch"
 _VENV_PY="$VENV_DIR/bin/python"
 
+# A piped/standalone install.sh has no sibling requirements tree. Bootstrap only
+# the Unsloth wheel so its canonical Darwin override becomes available before
+# the first with-dependencies resolution; this avoids backtracking mlx-vlm and
+# then repairing it in a later phase. No-torch has no such resolve; repository,
+# local, and caller-configured installs already have an override and skip this.
+_bootstrap_packaged_mlx_override() {
+    [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] || return 0
+    [ "$SKIP_TORCH" = false ] || return 0
+    [ -f "${_OVERRIDES_FILE:-}" ] && return 0
+    [ -n "${UV_OVERRIDE:-}" ] && return 0
+
+    substep "preparing Apple Silicon model support..."
+    run_install_cmd_retry "prepare Apple Silicon dependencies" \
+        uv pip install --python "$_VENV_PY" --no-deps \
+        --upgrade-package "$PACKAGE_NAME" -- "$PACKAGE_NAME"
+
+    _PACKAGED_MLX_OVERRIDES=$("$_VENV_PY" -I -c "
+import importlib.resources
+path = importlib.resources.files('studio') / 'backend' / 'requirements' / 'single-env' / 'overrides-darwin-arm64.txt'
+print(path if path.is_file() else '')
+" 2>/dev/null || true)
+    if [ ! -f "$_PACKAGED_MLX_OVERRIDES" ]; then
+        substep "[WARN] Latest Apple Silicon model support could not be enabled. Installation will continue, but some newer models may be unavailable." "$C_WARN"
+        return 0
+    fi
+
+    _MLX_OVERRIDE_TMP_ROOT=${TMPDIR:-/tmp}
+    case "$_MLX_OVERRIDE_TMP_ROOT" in *[[:space:]]*) _MLX_OVERRIDE_TMP_ROOT=/tmp ;; esac
+    _UV_OVERRIDE_TMPDIR=$(mktemp -d "$_MLX_OVERRIDE_TMP_ROOT/unsloth_uv.XXXXXX" 2>/dev/null) \
+        || _UV_OVERRIDE_TMPDIR=""
+    if [ -z "$_UV_OVERRIDE_TMPDIR" ] \
+       || ! cp "$_PACKAGED_MLX_OVERRIDES" "$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"; then
+        [ -n "$_UV_OVERRIDE_TMPDIR" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+        _UV_OVERRIDE_TMPDIR=""
+        substep "[WARN] Latest Apple Silicon model support could not be enabled. Installation will continue, but some newer models may be unavailable." "$C_WARN"
+        return 0
+    fi
+    _OVERRIDES_FILE="$_UV_OVERRIDE_TMPDIR/overrides-darwin-arm64.txt"
+    export UV_OVERRIDE="$_OVERRIDES_FILE"
+}
+
+_bootstrap_packaged_mlx_override
+
 # A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares
 # torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio,
 # swapping the pinned +cuXXX/+rocm build for PyPI's default. The flavor guard
@@ -3971,7 +4176,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.3" "unsloth-zoo>=2026.8.3"
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -3982,13 +4187,11 @@ if [ "$_MIGRATED" = true ]; then
             run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
-        # Pin mlx-lm away from 0.31.3 here too: a curl-piped migration has no
-        # overrides file, so UV_OVERRIDE is unset and this positional is the only cover.
         _build_unsloth_torch_overrides
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.3" "unsloth-zoo>=2026.8.3" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4222,7 +4425,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.3" "unsloth-zoo>=2026.8.3"
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4241,7 +4444,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.3" "unsloth-zoo>=2026.8.3"
+            --upgrade-package unsloth "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4251,7 +4454,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     else
         run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth -- "$PACKAGE_NAME" ${_MLX_LM_EXCLUDE_ARG:-}
+            --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
     [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
     _UNSLOTH_TORCH_OVERRIDES=""
@@ -4270,7 +4473,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.3" "unsloth>=2026.8.3" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.9" "unsloth>=2026.8.12" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

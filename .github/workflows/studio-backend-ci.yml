@@ -40,11 +40,15 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
   push:
-    branches: [main, pip]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Latest-only on branches, never on main. Pushes to main land in bursts, so
+  # cancelling superseded runs there throws away the run that would have
+  # reported a regression, and the run that writes the shared caches. Same
+  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -53,17 +57,21 @@ jobs:
   pytest:
     name: (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 30, not 15: the suite now runs 14.1 to 15.0 minutes on every interpreter in the matrix, so a
+    # 15 minute budget cancels whichever jobs happen to land on the slow side of the median and the
+    # result is a coin flip rather than a verdict. This guards against a hang, which 30 still does;
+    # it was never meant to be a performance budget. The suite's own runtime is the real problem.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         python: ['3.10', '3.11', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '${{ matrix.python }}'
           cache: 'pip'
@@ -113,13 +121,14 @@ jobs:
     # succeeds on CPU.
     name: Repo tests (CPU)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Same reason as the matrix above: this one measured 13.4 minutes against the same 15.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -129,7 +138,7 @@ jobs:
       #     compile a tiny TS harness against the frontend chat sources.
       #   - tests/python/* spawn fresh `uv venv`s to verify the no-torch
       #     install path; they self-skip when uv is missing.
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 

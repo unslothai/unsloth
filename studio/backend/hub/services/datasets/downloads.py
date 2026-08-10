@@ -188,6 +188,12 @@ async def download_dataset_response(
             "state": claim_state,
             "accepted": _registry.adoptable(key),
             "generation": generation,
+            # An adopted job keeps the transport it started on, so report it
+            # rather than let the caller assume the one it asked for.
+            "transport": _registry.job_transport(key),
+            # And its cancel marker: a run that fell back from Xet to HTTP
+            # still cancels into a restart-only partial.
+            "cancel_transport": _registry.job_cancel_transport(key),
         }
     download_manifest.clear_cancel_marker(
         "dataset",
@@ -220,6 +226,9 @@ async def download_dataset_response(
         "state": state,
         "accepted": True,
         "generation": generation,
+        # See models: the resolved transport, which a downgrade can make
+        # different from the one requested.
+        "transport": transport,
     }
 
 

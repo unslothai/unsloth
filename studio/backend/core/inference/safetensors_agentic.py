@@ -66,6 +66,10 @@ from core.inference.tool_loop_controller import (
     status_for_tool,
     tool_event_provenance,
 )
+from core.inference.chat_template_helpers import (
+    append_assistant_turn,
+    trailing_assistant_text,
+)
 from core.inference.tool_stream_exec import stream_tool_execution
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -492,6 +496,7 @@ def run_safetensors_tool_loop(
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
     reasoning_prefilled: bool = False,
+    continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
 ) -> Generator[dict, None, None]:
@@ -540,9 +545,11 @@ def run_safetensors_tool_loop(
 
     # off never prompts, so (like auto) it must not lose first-pass retrieval
     # even if a direct caller passes a stale confirm_tool_calls flag.
+    # A resumed turn must keep the partial trailing: autoinject appends a tool call
+    # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    )
+    ) or bool(continue_final_message and trailing_assistant_text(conversation))
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
@@ -1047,7 +1054,13 @@ def run_safetensors_tool_loop(
                         MAX_ACT_REPROMPTS,
                         len(intent_text),
                     )
-                    conversation.append({"role": "assistant", "content": intent_text})
+                    # Merges into a resumed partial: the nudge that follows is a user
+                    # turn, so a second assistant turn breaks alternation.
+                    append_assistant_turn(
+                        conversation,
+                        {"role": "assistant", "content": intent_text},
+                        continue_final_message = continue_final_message,
+                    )
                     tool_hint = " or ".join(_active_tool_names(active_tools)) or "an available tool"
                     conversation.append(
                         {
@@ -1189,7 +1202,11 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    conversation.append(assistant_msg)
+                    append_assistant_turn(
+                        conversation,
+                        assistant_msg,
+                        continue_final_message = continue_final_message,
+                    )
                     assistant_appended = True
                 if provisional_match and not provisional_resolved:
                     # A provisional render_html card is already on screen for
@@ -1213,7 +1230,13 @@ def run_safetensors_tool_loop(
 
             if not assistant_appended:
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
-                conversation.append(assistant_msg)
+                # Merges into a resumed partial, so a continued turn that calls a tool
+                # stays one assistant message.
+                append_assistant_turn(
+                    conversation,
+                    assistant_msg,
+                    continue_final_message = continue_final_message,
+                )
                 assistant_appended = True
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())

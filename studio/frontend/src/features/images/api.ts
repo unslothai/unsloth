@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-// One Advanced control's resolved value + provenance, for the "Auto: X" badges. `value` is the engaged value (null when off),
-// `source` is "auto" (this backend decided) or "explicit" (the caller set it); `reason` is the tooltip why.
+// One Advanced control's resolved value + provenance, for the Advanced-panel badges. `value` is the engaged value (null when
+// off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto" (this backend decided) or
+// "explicit" (the caller set it), `status` says whether the ask survived, and `reason` is the tooltip why.
 export interface DiffusionResolvedControl {
   value: string | boolean | null;
+  // Absent on backends predating the requested/actual split.
+  requested?: string | boolean | null;
   source: "auto" | "explicit";
+  // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
+  status?: "applied" | "fell_back" | "unsupported";
   reason: string;
 }
 
@@ -21,7 +27,26 @@ export interface DiffusionStatus {
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
+  // Selected GGUF quant. Newer backends report this separately from the compute dtype.
+  gguf_variant?: string | null;
   cpu_offload: boolean;
+  // The ENGAGED runtime build. The backend has always sent these; declaring them is what lets the UI
+  // report what actually ran instead of echoing the load request back at the user.
+  // Transformer quant engaged on the dense fast path ("int8" | "fp8" | ...), null = the GGUF ran as-is.
+  transformer_quant?: string | null;
+  // Text-encoder quant engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4"), null = dense bf16.
+  text_encoder_quant?: string | null;
+  // Memory mode the load ran under: "auto" | "fast" | "balanced" | "low_vram".
+  memory_mode?: string | null;
+  // Offload policy actually engaged: "none" | "group" | "model" | "sequential".
+  offload_policy?: string | null;
+  speed_mode?: string | null;
+  // Speed optimisations actually engaged.
+  speed_optims?: string[];
+  // Attention backend engaged via the diffusers dispatcher (e.g. "_native_cudnn"), null = default SDPA.
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  vae_tiling?: boolean;
   // Image workflows the loaded family supports (drives tab gating). Absent when nothing is loaded or on the native engine.
   workflows?: string[];
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
@@ -61,6 +86,9 @@ export interface DiffusionLoadRequest {
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
+  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host
+  // cannot run it, rather than loading dense and reporting nothing.
+  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
   attention_backend?:
     | "auto"
     | "native"
@@ -160,6 +188,10 @@ export interface GalleryImage {
   model_kind?: string | null;
   gguf_filename?: string | null;
   transformer_quant?: string | null;
+  // The rest of the precision picture, all ENGAGED values. Absent on records written before this existed.
+  text_encoder_quant?: string | null;
+  memory_mode?: string | null;
+  offload_policy?: string | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;
@@ -183,8 +215,10 @@ async function parseJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function getDiffusionStatus(): Promise<DiffusionStatus> {
-  return parseJson(await authFetch("/api/inference/images/status"));
+export async function getDiffusionStatus(
+  signal?: AbortSignal,
+): Promise<DiffusionStatus> {
+  return parseJson(await authFetch("/api/inference/images/status", { signal }));
 }
 
 // One family's bf16 component sizes + estimated resident footprint per quant scheme. Hardware-independent, so it can be fetched before anything is loaded.
@@ -206,8 +240,12 @@ export async function getDiffusionInferenceInfo(): Promise<DiffusionInferenceInf
   return parseJson(await authFetch("/api/inference/images/info"));
 }
 
-export async function getDiffusionLoadProgress(): Promise<DiffusionLoadProgress> {
-  return parseJson(await authFetch("/api/inference/images/load-progress"));
+export async function getDiffusionLoadProgress(
+  signal?: AbortSignal,
+): Promise<DiffusionLoadProgress> {
+  return parseJson(
+    await authFetch("/api/inference/images/load-progress", { signal }),
+  );
 }
 
 export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> {
@@ -215,12 +253,21 @@ export async function getGenerateProgress(): Promise<DiffusionGenerateProgress> 
 }
 
 export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<DiffusionStatus> {
-  return parseJson(
-    await authFetch("/api/inference/images/load", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
+  // Announced so the loaded models indicator shows the load for as long as the
+  // toast does, rather than up to one 5s poll later. This POST only starts the
+  // load, so the notice settles from load-progress, not from the response.
+  return withBackgroundLoadNotice(
+    "image",
+    body.model_path,
+    async () =>
+      parseJson<DiffusionStatus>(
+        await authFetch("/api/inference/images/load", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      ),
+    async (signal) => (await getDiffusionLoadProgress(signal)).phase,
   );
 }
 
@@ -230,8 +277,21 @@ export interface DiffusionDownloadPlan {
     files: string[];
     bytes: number;
     gguf_filename: string | null;
+    /** Whether this entry holds the selected model. Only the planner knows, because a gated pick is staged from an ungated mirror under a different repo id. Optional: an older backend omits it. */
+    checkpoint?: boolean;
   }[];
   total_bytes: number;
+  /** Full declared footprint, including files already present in cache. */
+  required_bytes?: number;
+  /** Selected checkpoint's contribution to required_bytes. */
+  checkpoint_bytes?: number;
+  /**
+   * Why this pick cannot load as selected (a FLUX.2 GGUF paired with a different-size base), or
+   * null/undefined when nothing is known to be wrong. The backend reads metadata only, so it stays
+   * silent rather than guessing; when it does speak, refuse the pick here -- the alternative is the
+   * loader saying the same thing after a ~19 GB download. Optional: an older backend omits it.
+   */
+  incompatible_reason?: string | null;
 }
 
 /** What to stage through the download manager before loading this pick. */
@@ -288,6 +348,23 @@ export async function generateDiffusionImage(
     throw new GenerateResponseLostError(detail);
   }
   return parseJson(response);
+}
+
+/** Request a cancel. Best-effort: the diffusers sampler stops at the next step boundary (the native engine kills its sd-cli run outright) and the in-flight generate POST unwinds as a 409 with nothing persisted. `cancelled` is false when there was nothing to stop. */
+export async function cancelDiffusionGeneration(
+  signal?: AbortSignal,
+): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    // No network retry, and abortable. The endpoint always targets whichever generation is active
+    // NOW, so a retry or a 401 refresh-and-replay firing after the stopped run settled can land on
+    // a run the user started meanwhile and stop that one instead. Not retryable, unlike the
+    // idempotent GETs; the signal lets the caller drop a pending one when its run is over.
+    await authFetch(
+      "/api/inference/images/generate/cancel",
+      { method: "POST", signal },
+      { retryNetworkErrors: false },
+    ),
+  );
 }
 
 export async function unloadDiffusionModel(): Promise<DiffusionStatus> {
@@ -381,6 +458,15 @@ export interface DiffusionTrainingStartRequest {
   cache_variants?: number;
   // Allow TF32 matmuls on Ampere+ for a throughput win at negligible quality cost.
   enable_tf32?: boolean;
+  // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
+  // stop-and-save always writes one, so Resume stays available either way.
+  save_steps?: number;
+  save_total_limit?: number;
+  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it.
+  // train_steps then means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
+  resume_from_checkpoint?: string | null;
+  // The run being continued. Recorded in the history for lineage only.
+  resumed_from_job_id?: string | null;
   // Forwarded to the pipeline's from_pretrained for a gated/private base repo (e.g. FLUX).
   hf_token?: string | null;
 }
@@ -421,6 +507,12 @@ export interface DiffusionTrainingStatus {
   // Live throughput + peak VRAM (from the trainer's progress events).
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // The newest resume checkpoint this job wrote, the step it holds, why one could not be written,
+  // and the step a resumed job picked up from. Absent on an older backend.
+  checkpoint_path?: string | null;
+  checkpoint_step?: number | null;
+  resume_blocked_reason?: string | null;
+  resumed_from_step?: number | null;
   // Bounded step/loss/lr history for the live charts.
   metric_history?: DiffusionMetricHistory | null;
 }
@@ -464,6 +556,18 @@ export interface DiffusionTrainingRunSummary {
   instance_prompt?: string | null;
   started_at?: number | null;
   ended_at?: number | null;
+  // The run's adapter directory, which is what a Resume replays as resume_from_checkpoint.
+  output_dir?: string | null;
+  // Whether the run can be continued, re-derived from the checkpoints on disk on every read, with
+  // the step the newest bundle holds. When false, resume_blocked_reason says why (tooltip text).
+  can_resume?: boolean;
+  checkpoint_step?: number | null;
+  // The exact bundle a resume would continue; sent back as resume_from_checkpoint.
+  checkpoint_path?: string | null;
+  resume_blocked_reason?: string | null;
+  // Lineage: the run this one continued, and the step it picked up from.
+  resumed_from_job_id?: string | null;
+  resumed_from_step?: number | null;
 }
 
 export interface DiffusionTrainingRunDetail extends DiffusionTrainingRunSummary {
@@ -493,12 +597,22 @@ export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingSta
   return parseJson(await authFetch("/api/train/diffusion/status"));
 }
 
-// One image-dataset folder under the Studio datasets root (GET /api/train/diffusion/info).
+// One dataset folder under the Studio datasets root (GET /api/train/diffusion/info): images,
+// clips, or both. `clip_count` is absent on older backends, hence optional.
 export interface DiffusionDatasetSummary {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
+}
+
+/** trainable items in a dataset folder, of whichever kind. */
+export function datasetItemCount(d: {
+  image_count: number;
+  clip_count?: number;
+}): number {
+  return d.image_count + (d.clip_count ?? 0);
 }
 
 // Per-family training defaults (from GET /api/train/diffusion/info). Absent on older backends; the Train tab then falls back to a hardcoded list.
@@ -527,8 +641,25 @@ export interface DiffusionTrainableFamily {
   recommended_precision?: string;
   // Whether the family's transformer can be torch.compile'd (gates the Speed > Compile row).
   supports_compile?: boolean;
+  // Whether the family's loop writes checkpoint bundles (gates the "Checkpoint every" field).
+  // Undefined on an older backend, which has no checkpointless family, so it reads as true.
+  supports_checkpoints?: boolean;
+  /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
+  max_train_batch_size?: number | null;
   // When set, deploying a LoRA trained on this family previews it on this repo instead of the checkpoint it trained on (Krea trains on Raw, runs on Turbo).
   deploy_base?: string | null;
+  // Variant-specific training-base to inference-base pairs, including public mirror ids.
+  deploy_bases?: Record<string, string>;
+  // Per-checkpoint facts that overlay the family-level chips for multi-size families.
+  base_specs?: Record<
+    string,
+    {
+      params?: string | null;
+      qlora_vram_gb?: number | null;
+      gated?: boolean | null;
+      note?: string | null;
+    }
+  >;
 }
 
 // Where diffusion training reads/writes on this Studio, plus usable dataset folders.
@@ -561,14 +692,23 @@ export async function uploadDiffusionDataset(
   );
 }
 
-// One image in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned images.
+// One item in a training dataset folder, with its resolved caption. `caption_source` records where it came from, so the labeling grid can highlight uncaptioned items.
+// `kind` is absent on older backends, which listed images only; treat a missing value as "image".
 export interface DiffusionDatasetImageRecord {
   filename: string;
   caption: string | null;
   caption_source: "sidecar" | "metadata" | "none";
+  kind?: "image" | "clip";
   width: number;
   height: number;
   size_bytes: number;
+}
+
+/** the records the labeling grid can render: clips have no thumbnail endpoint. */
+export function imageRecordsOnly(
+  records: DiffusionDatasetImageRecord[],
+): DiffusionDatasetImageRecord[] {
+  return records.filter((r) => (r.kind ?? "image") === "image");
 }
 
 export interface DiffusionDatasetImages {
@@ -648,6 +788,7 @@ export interface DiffusionDatasetImportResult {
   name: string;
   path: string;
   image_count: number;
+  clip_count?: number;
   caption_count: number;
   imported: number;
   license: string;

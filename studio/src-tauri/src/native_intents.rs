@@ -1,23 +1,30 @@
 use crate::native_backend_lease::{
     encode_secret_env, now_ms, random_token, sign_path_lease, NativePathKind,
-    NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
+    NativePathLeaseRequest, NativePathLeaseResponse, NativePathOperation, NativePathSourceKind,
+    NativePathType,
 };
 use crate::native_path_policy::{
-    classify_artifact_path, classify_native_attachment_path, classify_native_model_path,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
+    classify_native_document_folder, classify_native_model_path, reveal_target, ClassifiedPath,
+    NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+
 const TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 // How long after the OS reports a drop the renderer may still register those paths.
 const DROP_GRACE: Duration = Duration::from_secs(2 * 60);
 
+#[cfg(any(windows, test))]
 fn normalize_windows_verbatim_path(path: String) -> String {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{rest}");
@@ -50,11 +57,14 @@ struct NativePathEntry {
     expires_at_ms: u64,
     size_bytes: Option<u64>,
     modified_ms: Option<u64>,
+    device_id: String,
+    file_id: String,
 }
 
 #[derive(Clone, Copy, Debug)]
 enum NativePathValidationPolicy {
     Model,
+    Dataset,
     Attachment,
     Artifact(NativeArtifactKind),
 }
@@ -80,6 +90,13 @@ pub struct NativeIntent {
     source_kind: NativePathSourceKind,
     path: NativePathRef,
     display_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDocumentFolderSelection {
+    token: String,
+    display_name: String,
 }
 
 #[derive(Default)]
@@ -132,7 +149,9 @@ impl NativeIntakeState {
     /// Record what the OS dropped on the window. Called from the window event handler,
     /// never from the renderer.
     pub fn note_dropped_paths(&self, paths: &[PathBuf]) {
-        let Ok(mut inner) = self.inner.lock() else { return };
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
         let now = now_ms();
         inner.recent_drops.retain(|_, expires| *expires > now);
         let expires_at = now + DROP_GRACE.as_millis() as u64;
@@ -168,6 +187,18 @@ impl NativeIntakeState {
         )
     }
 
+    fn register_dataset_path(
+        &self,
+        path: impl AsRef<Path>,
+        source_kind: NativePathSourceKind,
+    ) -> Result<NativeIntent, String> {
+        let classified = classify_native_dataset_path(path.as_ref())?;
+        if !self.was_recently_dropped(&classified.canonical_path)? {
+            return Err("Datasets must come from a file dropped on the window.".to_string());
+        }
+        self.register_classified_path(classified, source_kind, NativePathValidationPolicy::Dataset)
+    }
+
     fn register_artifact(
         &self,
         kind: NativeArtifactKind,
@@ -180,6 +211,34 @@ impl NativeIntakeState {
             NativePathValidationPolicy::Artifact(kind),
         )?;
         Ok(entry.to_ref())
+    }
+
+    fn sign_document_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        let classified = classify_native_document_folder(path.as_ref())?;
+        let token = random_token("path_");
+        let lease = sign_path_lease(
+            &self.lease_secret,
+            NativePathLeaseRequest {
+                operation: NativePathOperation::LinkDocuments,
+                canonical_path: portable_path_string(&classified.canonical_path),
+                path_kind: classified.path_kind,
+                path_type: classified.path_type,
+                source_kind: NativePathSourceKind::Dialog,
+                token,
+                display_label: classified.display_label,
+                size_bytes: classified.size_bytes,
+                modified_ms: None,
+                device_id: Some(classified.device_id),
+                file_id: Some(classified.file_id),
+            },
+        )?;
+        Ok(NativeDocumentFolderSelection {
+            token: lease.native_path_lease,
+            display_name: lease.display_label,
+        })
     }
 
     fn register_classified_path(
@@ -218,6 +277,8 @@ impl NativeIntakeState {
             expires_at_ms,
             size_bytes: classified.size_bytes,
             modified_ms: classified.modified_ms,
+            device_id: classified.device_id,
+            file_id: classified.file_id,
         };
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         inner.tokens.insert(token, entry.clone());
@@ -256,15 +317,19 @@ impl NativeIntakeState {
         validate_entry_path(&entry, operation)?;
         sign_path_lease(
             &self.lease_secret,
-            operation,
-            entry.canonical_path.to_string_lossy().to_string(),
-            entry.path_kind,
-            entry.path_type,
-            entry.source_kind,
-            &entry.token,
-            entry.display_label,
-            entry.size_bytes,
-            entry.modified_ms,
+            NativePathLeaseRequest {
+                operation,
+                canonical_path: entry.canonical_path.to_string_lossy().to_string(),
+                path_kind: entry.path_kind,
+                path_type: entry.path_type,
+                source_kind: entry.source_kind,
+                token: entry.token,
+                display_label: entry.display_label,
+                size_bytes: entry.size_bytes,
+                modified_ms: entry.modified_ms,
+                device_id: Some(entry.device_id),
+                file_id: Some(entry.file_id),
+            },
         )
     }
 
@@ -285,6 +350,7 @@ fn validate_entry_path(
 ) -> Result<(), String> {
     let classified = match entry.validation_policy {
         NativePathValidationPolicy::Model => classify_native_model_path(&entry.canonical_path)?,
+        NativePathValidationPolicy::Dataset => classify_native_dataset_path(&entry.canonical_path)?,
         NativePathValidationPolicy::Attachment => {
             classify_native_attachment_path(&entry.canonical_path)?
         }
@@ -302,6 +368,8 @@ fn validate_entry_path(
         || !classified.allowed_operations.contains(&operation)
         || (check_fingerprint && classified.size_bytes != entry.size_bytes)
         || (check_fingerprint && classified.modified_ms != entry.modified_ms)
+        || (check_fingerprint && classified.device_id != entry.device_id)
+        || (check_fingerprint && classified.file_id != entry.file_id)
     {
         return Err("Native path changed after it was selected.".to_string());
     }
@@ -368,6 +436,16 @@ pub fn register_native_attachment_path(
 }
 
 #[tauri::command]
+pub fn register_native_dataset_path(
+    window: WebviewWindow,
+    state: tauri::State<'_, NativeIntakeState>,
+    path: String,
+) -> Result<NativeIntent, String> {
+    ensure_main_window(&window)?;
+    state.register_dataset_path(path, NativePathSourceKind::Drop)
+}
+
+#[tauri::command]
 pub async fn pick_native_model(
     window: WebviewWindow,
     app: AppHandle,
@@ -419,6 +497,29 @@ pub async fn pick_hugging_face_cache_dir(
         return Err("The selected location is not a folder.".to_string());
     }
     Ok(Some(portable_path_string(&canonical)))
+}
+
+#[tauri::command]
+pub async fn pick_native_document_folder(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, NativeIntakeState>,
+) -> Result<Option<NativeDocumentFolderSelection>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Link a document folder")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    state.sign_document_folder_path(path).map(Some)
 }
 
 #[tauri::command]
@@ -494,9 +595,145 @@ pub fn open_path_token(
     open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
+// Covers the largest client-side limit (audio, 25 MB).
+const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
+// Images stop lower: the composer throws over 20 MB without a toast and the
+// drain swallows it, so a larger read loses them silently.
+const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAttachmentFile {
+    name: String,
+    mime_type: String,
+    base64: String,
+}
+
+fn attachment_mime_type(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "ogg" | "oga" => Some("audio/ogg"),
+        "flac" => Some("audio/flac"),
+        _ => None,
+    }
+}
+
+// Same shape as the clipboard reader: never traverse a link swapped in after
+// the path was validated, and never block the caller on a FIFO.
+fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
+    let unavailable = || "Path is no longer available.".to_string();
+    let metadata = fs::symlink_metadata(path).map_err(|_| unavailable())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(unavailable());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|_| unavailable())
+    }
+    // Windows analogue: open the reparse point itself, then refuse it. Literals
+    // because windows-sys is not built with Win32_Storage_FileSystem here.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+            .map_err(|_| unavailable())?;
+        let opened = file.metadata().map_err(|_| unavailable())?;
+        if opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !opened.is_file() {
+            return Err(unavailable());
+        }
+        Ok(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        fs::File::open(path).map_err(|_| unavailable())
+    }
+}
+
+fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
+    let path = &entry.canonical_path;
+    let mime_type = attachment_mime_type(path).ok_or_else(|| {
+        "Only chat image and audio attachments can be read inline.".to_string()
+    })?;
+    let max_bytes = if mime_type.starts_with("image/") {
+        MAX_NATIVE_IMAGE_BYTES
+    } else {
+        MAX_NATIVE_ATTACHMENT_BYTES
+    };
+    let file = open_attachment_file(path)?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Path is no longer available: {e}"))?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return Err("Attachment is unavailable or too large.".to_string());
+    }
+    // path_for_operation validated a fingerprint against the path; bind the
+    // handle we are about to read to that same one, or a swap in between wins.
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64);
+    if Some(metadata.len()) != entry.size_bytes || modified_ms != entry.modified_ms {
+        return Err("Native path changed after it was selected.".to_string());
+    }
+    // The file can grow between the stat and the read, so cap the reader itself.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read attachment: {e}"))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err("Attachment is unavailable or too large.".to_string());
+    }
+    let name = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| entry.display_label.clone());
+    Ok(NativeAttachmentFile {
+        name,
+        mime_type: mime_type.to_string(),
+        base64: BASE64.encode(bytes),
+    })
+}
+
+// Async: a sync command would base64 up to 20 MiB on the main thread. Only the
+// token lookup stays here; State is not 'static and validation hits the disk.
+#[tauri::command]
+pub async fn read_native_attachment_file(
+    window: WebviewWindow,
+    state: tauri::State<'_, NativeIntakeState>,
+    token: String,
+) -> Result<NativeAttachmentFile, String> {
+    ensure_main_window(&window)?;
+    let entry = state.entry_for_operation(&token, NativePathOperation::Attach)?;
+    tokio::task::spawn_blocking(move || {
+        validate_entry_path(&entry, NativePathOperation::Attach)?;
+        read_attachment_payload(&entry)
+    })
+    .await
+    .map_err(|_| "Image attachment reader stopped unexpectedly.".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -509,6 +746,115 @@ mod tests {
             "unsloth-native-intents-{name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
+        let state = new_native_intake_state();
+        state.note_dropped_paths(std::slice::from_ref(&path.to_path_buf()));
+        let intent = state
+            .register_attachment_path(path, NativePathSourceKind::Drop)
+            .unwrap();
+        let entry = state
+            .path_for_operation(&intent.path.token, NativePathOperation::Attach)
+            .unwrap();
+        (state, entry)
+    }
+
+    // The reader maps its own mime types; an unmapped one refuses an accepted file.
+    #[test]
+    fn audio_read_round_trips_with_its_mime_type() {
+        for (ext, mime) in [
+            ("wav", "audio/wav"),
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+            ("ogg", "audio/ogg"),
+            ("oga", "audio/ogg"),
+            ("flac", "audio/flac"),
+        ] {
+            let path = temp_path("clip").with_extension(ext);
+            fs::write(&path, b"ID3AUDIO").unwrap();
+            let (_state, entry) = attachment_entry(&path);
+            let payload = read_attachment_payload(&entry)
+                .unwrap_or_else(|error| panic!(".{ext} was unreadable: {error}"));
+            assert_eq!(payload.mime_type, mime);
+            assert_eq!(BASE64.decode(payload.base64).unwrap(), b"ID3AUDIO");
+            assert!(payload.name.ends_with(&format!(".{ext}")));
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn image_read_round_trips_and_names_the_file() {
+        let path = temp_path("photo").with_extension("png");
+        fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).unwrap();
+        assert_eq!(payload.mime_type, "image/png");
+        assert_eq!(BASE64.decode(payload.base64).unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert!(payload.name.ends_with(".png"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn document_token_is_refused_by_the_image_reader() {
+        let path = temp_path("note").with_extension("pdf");
+        fs::write(&path, b"%PDF-1.4").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("Only chat image and audio attachments"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn image_read_rejects_a_file_swapped_in_after_validation() {
+        let path = temp_path("swap").with_extension("png");
+        fs::write(&path, b"the dropped image").unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        fs::write(&path, b"a different file entirely").unwrap();
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("changed"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    // Reading past the image cap would make the file disappear instead of
+    // reporting it.
+    #[test]
+    fn image_read_refuses_more_than_the_image_cap() {
+        let path = temp_path("huge").with_extension("png");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
+    }
+
+    // Audio keeps the larger cap: the caps are per kind, not one shared ceiling.
+    #[test]
+    fn audio_read_allows_more_than_the_image_cap() {
+        let path = temp_path("clip").with_extension("wav");
+        fs::write(&path, vec![0u8; MAX_NATIVE_IMAGE_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let payload = read_attachment_payload(&entry).expect("audio under the audio cap reads");
+        assert_eq!(payload.mime_type, "audio/wav");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audio_read_refuses_more_than_the_audio_cap() {
+        let path = temp_path("huge").with_extension("wav");
+        fs::write(&path, vec![0u8; MAX_NATIVE_ATTACHMENT_BYTES as usize + 1]).unwrap();
+        let (_state, entry) = attachment_entry(&path);
+        let Err(err) = read_attachment_payload(&entry) else {
+            panic!("expected the read to be refused");
+        };
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -546,6 +892,22 @@ mod tests {
     }
 
     #[test]
+    fn dataset_token_issues_an_import_grant() {
+        let state = new_native_intake_state();
+        let path = temp_path("dataset").with_extension("jsonl");
+        fs::write(&path, b"{\"text\":\"hello\"}\n").unwrap();
+        state.note_dropped_paths(std::slice::from_ref(&path));
+        let intent = state
+            .register_dataset_path(&path, NativePathSourceKind::Drop)
+            .unwrap();
+        let grant = state
+            .sign_grant(&intent.path.token, NativePathOperation::DatasetImport)
+            .unwrap();
+        assert!(grant.display_label.ends_with(".jsonl"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn model_token_revalidates_path_changes() {
         let state = new_native_intake_state();
         let path = temp_path("model").with_extension("gguf");
@@ -573,7 +935,7 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("dropped on the window"));
 
-        state.note_dropped_paths(&[path.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&path));
         let intent = state
             .register_attachment_path(&path, NativePathSourceKind::Drop)
             .unwrap();
@@ -595,7 +957,7 @@ mod tests {
         fs::write(&dropped, b"dropped").unwrap();
         fs::write(&sibling, b"sibling").unwrap();
 
-        state.note_dropped_paths(&[dropped.clone()]);
+        state.note_dropped_paths(std::slice::from_ref(&dropped));
         assert!(state
             .register_attachment_path(&sibling, NativePathSourceKind::Drop)
             .is_err());
@@ -613,6 +975,38 @@ mod tests {
             normalize_windows_verbatim_path(r"\\?\UNC\server\share\cache".to_string()),
             r"\\server\share\cache"
         );
+    }
+
+    #[test]
+    fn document_folder_picker_grant_is_not_a_reusable_path_token() {
+        let state = new_native_intake_state();
+        let path = temp_path("document-folder");
+        fs::create_dir(&path).unwrap();
+
+        let lease = state.sign_document_folder_path(&path).unwrap();
+        assert!(lease.token.contains('.'));
+        let payload = lease.token.split('.').next().unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert!(payload["modified_ms"].is_null());
+        assert!(payload["device_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert!(payload["file_id"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
+        assert_eq!(
+            lease.display_name,
+            path.file_name().unwrap().to_string_lossy()
+        );
+        let response = serde_json::to_value(&lease).unwrap();
+        assert_eq!(response["token"], lease.token);
+        assert_eq!(response["displayName"], lease.display_name);
+        assert!(response.get("path").is_none());
+        assert!(state
+            .entry_for_operation("path_token", NativePathOperation::LinkDocuments)
+            .is_err());
+        let _ = fs::remove_dir(path);
     }
 
     #[cfg(unix)]

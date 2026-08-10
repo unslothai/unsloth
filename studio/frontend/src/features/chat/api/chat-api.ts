@@ -3,15 +3,17 @@
 
 import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
-// These helpers are deliberately API-layer-only and are not part of their
-// features' React-facing public barrels.
+// These helpers are deliberately API-layer-only, not part of their features' public barrels.
+// eslint-disable-next-line no-restricted-imports
+import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
   ModelType,
@@ -43,10 +45,25 @@ import { assertCompletedPaddedBody } from "./padded-response";
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
 
+// bounds the request itself so a wedged socket cannot stall every reader waiting on the write
+const THREAD_WRITE_TIMEOUT_MS = 30_000;
+
+/** authFetch under a disposed timeout, so the ponyfill path leaves no timer behind. */
+async function threadWriteFetch(
+  input: string,
+  init: RequestInit,
+): Promise<Response> {
+  const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  try {
+    return await authFetch(input, { ...init, signal: timeout.signal });
+  } finally {
+    timeout.dispose();
+  }
+}
+
 /**
- * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a
- * finish_reason chunk): the connection dropped mid-generation. The adapter
- * surfaces it as an explicit interrupted state instead of ending the turn.
+ * Thrown when the chat SSE stream ends without a terminal signal (`[DONE]` or a finish_reason
+ * chunk): the connection dropped mid-generation, surfaced as an explicit interrupted state.
  */
 export class StreamInterruptedError extends Error {
   constructor() {
@@ -59,9 +76,8 @@ export class StreamInterruptedError extends Error {
 }
 
 /**
- * Thrown when a reasoning model consumes its output budget before emitting any
- * standard content. Keeping this distinct from a dropped connection lets the
- * chat UI explain why a completed stream contains only a thinking panel.
+ * Thrown when a reasoning model consumes its output budget before emitting any standard
+ * content, so the chat UI can explain a completed stream holding only a thinking panel.
  */
 export class GenerationLengthError extends Error {
   constructor() {
@@ -87,20 +103,12 @@ function notifyChatProjectsUpdated(): void {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
 }
 
 /**
- * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
- * request out, which commits the status before the work finishes: a failure found
- * after that can only arrive in-band, under a 200, as `_deferred_error`.
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the request out,
+ * which commits the status early: a later failure can only arrive in-band as `_deferred_error`.
  */
 function deferredError(
   body: unknown,
@@ -123,9 +131,8 @@ function deferredError(
 }
 
 /**
- * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded
- * routes may, since a truncated body means unfinished there but is legitimate elsewhere.
- */
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded routes may,
+ * since a truncated body means unfinished there but is legitimate elsewhere. */
 async function parseJsonOrThrow<T>(
   response: Response,
   paddedLabel?: string,
@@ -159,8 +166,10 @@ export async function listLoras(
   return parseJsonOrThrow<ListLorasResponse>(response);
 }
 
-export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status");
+export async function getInferenceStatus(
+  signal?: AbortSignal,
+): Promise<InferenceStatusResponse> {
+  const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -196,8 +205,7 @@ export interface ActiveGenerationsResponse {
 
 /**
  * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
- * that map is per-tab, empty after a reload and blind to a second tab, and /load and /unload
- * 409 on these.
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these.
  */
 export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
   const response = await authFetch("/api/inference/active-generations");
@@ -213,17 +221,22 @@ export async function loadModel(
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
-  const response = await authFetch("/api/inference/load", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...payload,
-      hf_token: preparedToken.token,
-      native_path_lease: payload.nativePathLease ?? null,
-      nativePathLease: undefined,
-    }),
+  // Announced after the token prompt, so a cancelled load never shows a row.
+  // The indicator otherwise had nothing to show until its next 5s poll, while
+  // the toast reported the load immediately.
+  return withModelLoadNotice("chat", payload.model_path ?? null, async () => {
+    const response = await authFetch("/api/inference/load", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        hf_token: preparedToken.token,
+        native_path_lease: payload.nativePathLease ?? null,
+        nativePathLease: undefined,
+      }),
+    });
+    return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
   });
-  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
 }
 
 export async function countChatInputTokens(payload: {
@@ -263,34 +276,37 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
-      // Intended load settings so validate's preflight matches the follow-up
-      // /load. Default placement is sized against the selected GPUs.
+      // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
       cache_type_kv: payload.cache_type_kv ?? null,
       tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
-      // Manual placement is an explicit override: Auto layers use llama.cpp
-      // --fit, while a pinned layer count is owned by the user. Tell validate
-      // so it applies the same training-guard policy as /load.
+      // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
+      // layer count is owned by the user. Tell validate so it applies the same policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
-      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places
-      // no layers, so validate must not refuse what /load would accept.
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places no layers.
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // batch sizes scale the same estimate; omitted when blank so they never read as set
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
+      // The estimate charges a drafter whose size differs by kind (a DSpark
+      // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
+      // with /load in both directions.
+      speculative_type: payload.speculative_type ?? null,
+      spec_draft_n_max: payload.spec_draft_n_max ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
 }
 
 /**
- * Read a GGUF's header dims (native context length, total layer count, MoE
- * expert-layer count) from its local file (no GPU load, no download). All are
- * null when the file isn't downloaded yet, the model isn't a GGUF, or it's
- * gated. For a native (drag-drop / picked) file, pass `nativePathToken` so the
- * backend reads the granted local path. Used by the deferred-load staging flow
- * to size the context, GPU-layers and MoE sliders before the single load.
+ * Read a GGUF's header dims (native context length, layer count, MoE expert-layer count) from
+ * its local file (no GPU load, no download). All null when the file isn't downloaded, isn't a
+ * GGUF, or is gated. For a native (drag-drop) file, pass `nativePathToken`. Used by the
+ * deferred-load staging flow to size the context, GPU-layers and MoE sliders before the load.
  */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
@@ -313,8 +329,7 @@ export async function fetchGgufStagedMetadata(payload: {
         await consumeNativePathToken(payload.nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      // Nothing was read, so the diffusion answer is unknown rather than false.
+      // Lease expired / revoked: degrade to no metadata (the load can re-mint). Nothing was read, so diffusion is unknown, not false.
       return {
         contextLength: null,
         layerCount: null,
@@ -356,11 +371,9 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
 }
 
 /**
- * Allow or deny a tool call that is paused awaiting user confirmation
- * (when the "Confirm tool calls" toggle is on). The call is identified by
- * the backend ``approvalId`` echoed in the tool_start event; ``sessionId``
- * is a scope check. Resolves to ``true`` only when the backend matched a
- * pending call, so the caller can surface a retry on a stale/failed post.
+ * Allow or deny a tool call paused awaiting user confirmation. Identified by the backend
+ * ``approvalId`` echoed in the tool_start event; ``sessionId`` is a scope check. Resolves to
+ * ``true`` only when the backend matched a pending call, so a stale post can offer a retry.
  */
 export async function resolveToolConfirmation(
   sessionId: string,
@@ -427,12 +440,17 @@ export async function getGgufDownloadProgress(
 
 export interface DownloadProgressResponse {
   downloaded_bytes: number;
+  /**
+   * Finalized-blob bytes only. Bytes still landing in a `.incomplete` blob count
+   * toward `downloaded_bytes` but not here, so the two are equal exactly when
+   * nothing is in flight.
+   */
+  completed_bytes: number;
   expected_bytes: number;
   progress: number;
   /**
-   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
-   * Null when nothing has been written to the cache for this repo.
-   */
+   * On-disk path of the snapshot dir (or cache repo root if no snapshot yet); null when
+   * nothing has been written to the cache for this repo. */
   cache_path: string | null;
 }
 
@@ -448,7 +466,9 @@ export async function getDatasetDownloadProgress(
   repoId: string,
 ): Promise<DownloadProgressResponse> {
   const params = new URLSearchParams({ repo_id: repoId });
-  const response = await authFetch(`/api/datasets/download-progress?${params}`);
+  const response = await authFetch(
+    `/api/hub/datasets/download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -456,9 +476,8 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 
 export interface LoadProgressResponse {
   /**
-   * Load phase: "mmap" while llama-server pages weight shards into RAM,
-   * "ready" once healthy, or null when no load is in flight.
-   */
+   * Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once
+   * healthy, or null when no load is in flight. */
   phase: ModelLoadPhase;
   bytes_loaded: number;
   bytes_total: number;
@@ -466,12 +485,11 @@ export interface LoadProgressResponse {
 }
 
 /**
- * Fetch the active GGUF load's mmap/upload progress. Complements the download
- * progress endpoints for the "download complete" -> "chat ready" window, which
- * for large MoE models can be several minutes of otherwise-opaque spinning.
+ * Fetch the active GGUF load's mmap/upload progress. Complements the download progress
+ * endpoints for the "download complete" -> "chat ready" window, minutes for large MoE models.
  */
 export async function getLoadProgress(): Promise<LoadProgressResponse> {
-  const response = await authFetch(`/api/inference/load-progress`);
+  const response = await authFetch("/api/inference/load-progress");
   return parseJsonOrThrow(response);
 }
 
@@ -481,11 +499,9 @@ export interface LocalModelInfo {
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
-  // Backend-detected weights format ("gguf" when known), so the UI can
-  // classify scanned folders whose name lacks a -GGUF suffix.
+  // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
-  // Set when a cached snapshot holds an incomplete download, so consumers can skip
-  // weights that cannot load yet.
+  // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
   // HF pipeline task inferred from the GGUF architecture, so the Images picker can filter to diffusion ("text-to-image"). Optional for older backends.
@@ -518,6 +534,9 @@ export interface CachedModelRepo {
   repo_id: string;
   load_id?: string | null;
   size_bytes: number;
+  /** Weights format; "adapter" is a LoRA with no base weights of its own.
+   * Optional for older-backend compatibility. */
+  model_format?: string | null;
   /** Epoch seconds of the newest downloaded weight file; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
@@ -527,6 +546,8 @@ export interface CachedModelRepo {
   partial?: boolean;
   /** True for a diffusion repo with no model_index.json: a single-file checkpoint loadable only via from_single_file, so task pickers must not offer it as a pipeline load unless the curated catalog carries its artifact. */
   single_file?: boolean;
+  /** True for an sd.cpp companion mirror (VAE / text encoders, no denoiser): listed so it can be seen and deleted, never offered as a load. */
+  companion?: boolean;
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
@@ -643,8 +664,7 @@ export async function listChatThreads(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/threads${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
 }
 
@@ -717,37 +737,74 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
+  options: { bounded?: boolean } = {},
 ): Promise<ThreadRecord | null> {
-  const response = await authFetch(
-    `/api/chat/threads/${encodeURIComponent(threadId)}`,
-  );
-  if (response.status === 404) return null;
-  return parseJsonOrThrow<ThreadRecord>(response);
+  // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
+  // the write timeout exists to keep moving. Callers on a render path stay unbounded.
+  const timeout = options.bounded
+    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
+    : null;
+  try {
+    const response = await authFetch(
+      `/api/chat/threads/${encodeURIComponent(threadId)}`,
+      timeout ? { signal: timeout.signal } : undefined,
+    );
+    if (response.status === 404) return null;
+    return parseJsonOrThrow<ThreadRecord>(response);
+  } finally {
+    timeout?.dispose();
+  }
+}
+
+export class ChatThreadDeletedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChatThreadDeletedError";
+  }
 }
 
 export async function saveChatThread(
   thread: ThreadRecord,
 ): Promise<ThreadRecord> {
-  const response = await authFetch("/api/chat/threads", {
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(thread),
   });
+  if (response.status === 410) {
+    const body = await response.json().catch(() => null);
+    throw new ChatThreadDeletedError(parseErrorText(response.status, body));
+  }
   const savedThread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
   return savedThread;
 }
 
+export interface UpdateChatThreadOptions {
+  /** Apply only while the row still holds this title, else 409. */
+  expectedTitle?: string;
+  /** And only while this is still the thread's opening user message. */
+  expectedOpeningMessageId?: string;
+}
+
 export async function updateChatThread(
   threadId: string,
   patch: Partial<ThreadRecord>,
+  options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
-  const response = await authFetch(
+  const body: Record<string, unknown> = { ...patch };
+  if (options.expectedTitle !== undefined) {
+    body.expectedTitle = options.expectedTitle;
+  }
+  if (options.expectedOpeningMessageId !== undefined) {
+    body.expectedOpeningMessageId = options.expectedOpeningMessageId;
+  }
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
+      body: JSON.stringify(body),
     },
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
@@ -794,15 +851,20 @@ export async function getForkCount(
   return data.count;
 }
 
-export async function deleteChatThreads(threadIds: string[]): Promise<void> {
-  if (threadIds.length === 0) return;
-  const response = await authFetch("/api/chat/threads", {
+/** Thread ids whose sandbox still holds files, for a caller that never asked. */
+export async function deleteChatThreads(
+  threadIds: string[],
+  args: { deleteFiles?: boolean } = {},
+): Promise<string[]> {
+  if (threadIds.length === 0) return [];
+  const response = await threadWriteFetch("/api/chat/threads", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: threadIds }),
+    body: JSON.stringify({ ids: threadIds, delete_files: !!args.deleteFiles }),
   });
-  await parseJsonOrThrow<unknown>(response);
+  const data = await parseJsonOrThrow<{ sandboxes_kept?: string[] }>(response);
   notifyChatHistoryUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatProjects(
@@ -815,8 +877,7 @@ export async function listChatProjects(
   const qs = params.toString();
   const response = await authFetch(`/api/chat/projects${qs ? `?${qs}` : ""}`);
   const data = await parseJsonOrThrow<{ projects: ProjectRecord[] }>(response);
-  // Always hand back an array: an older or misbehaving backend may omit the
-  // field or send a non-array, which would crash list consumers.
+  // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.projects) ? data.projects : [];
 }
 
@@ -860,10 +921,11 @@ export async function updateChatProject(
   return project;
 }
 
+/** Member thread ids whose sandbox still holds files, from the route. */
 export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
-): Promise<void> {
+): Promise<string[]> {
   const params = new URLSearchParams();
   if (args.deleteFiles) params.set("delete_files", "true");
   const qs = params.toString();
@@ -871,8 +933,11 @@ export async function deleteChatProject(
     `/api/chat/projects/${encodeURIComponent(projectId)}${qs ? `?${qs}` : ""}`,
     { method: "DELETE" },
   );
-  await parseJsonOrThrow<ProjectRecord>(response);
+  const data = await parseJsonOrThrow<
+    ProjectRecord & { sandboxes_kept?: string[] }
+  >(response);
   notifyChatProjectsUpdated();
+  return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
 export async function listChatMessages(
@@ -887,10 +952,8 @@ export async function listChatMessages(
 }
 
 /**
- * Fetch messages for many threads in one HTTP call. Falls back to
- * per-thread listChatMessages on 404/405 (older servers without the
- * batch route).
- */
+ * Fetch messages for many threads in one HTTP call. Falls back to per-thread
+ * listChatMessages on 404/405 (older servers without the batch route). */
 export async function batchListChatMessages(
   threadIds: string[],
 ): Promise<Map<string, MessageRecord[]>> {
@@ -950,7 +1013,7 @@ export async function syncChatMessages(
   messages: MessageRecord[],
   options: { pruneMissing?: boolean } = {},
 ): Promise<MessageRecord[]> {
-  const response = await authFetch(
+  const response = await threadWriteFetch(
     `/api/chat/threads/${encodeURIComponent(threadId)}/messages`,
     {
       method: "PUT",
@@ -972,14 +1035,41 @@ export async function countBackendChats(): Promise<number> {
   return data.count;
 }
 
+/** Thread ids whose sandbox still holds files, passed through from the route. */
 export async function clearBackendChats(
-  options: { notify?: boolean } = {},
-): Promise<void> {
-  const response = await authFetch("/api/chat", { method: "DELETE" });
-  await parseJsonOrThrow<unknown>(response);
+  options: {
+    notify?: boolean;
+    operationId?: string;
+    tombstoneThreadIds?: string[];
+    deleteFiles?: boolean;
+  } = {},
+): Promise<{ deletedThreadIds: string[]; sandboxesKept: string[] }> {
+  const response = await threadWriteFetch(
+    `/api/chat${options.deleteFiles ? "?delete_files=true" : ""}`,
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: options.tombstoneThreadIds ?? [],
+        operationId: options.operationId,
+      }),
+    },
+  );
+  const data = await parseJsonOrThrow<{
+    deletedThreadIds?: string[];
+    sandboxes_kept?: string[];
+  }>(response);
   if (options.notify !== false) {
     notifyChatHistoryUpdated();
   }
+  return {
+    deletedThreadIds: Array.isArray(data?.deletedThreadIds)
+      ? data.deletedThreadIds
+      : [],
+    sandboxesKept: Array.isArray(data?.sandboxes_kept)
+      ? data.sandboxes_kept
+      : [],
+  };
 }
 
 export async function buildBackendChatExport(): Promise<{
@@ -994,14 +1084,12 @@ export async function buildBackendChatExport(): Promise<{
   return parseJsonOrThrow(response);
 }
 
-// Legacy-Dexie import ledger: server-side source of truth replacing the
-// boolean localStorage sentinel, so a studio.db wipe keeps the import
-// recoverable.
+// Legacy-Dexie import ledger: a server-side source of truth replacing the localStorage
+// sentinel, so a studio.db wipe keeps the import recoverable.
 export async function listChatImportLedger(): Promise<Set<string>> {
   const response = await authFetch("/api/chat/import-ledger");
-  // Backends without this endpoint behave like an empty ledger -- caller
-  // re-imports every legacy thread. syncChatMessages UPSERTs prevent
-  // duplicates, so this fallback is safe.
+  // Backends without this endpoint behave like an empty ledger -- the caller re-imports every
+  // legacy thread, and syncChatMessages UPSERTs prevent duplicates.
   if (response.status === 404 || response.status === 405) return new Set();
   const data = await parseJsonOrThrow<{ threadIds: string[] }>(response);
   return new Set(data.threadIds);
@@ -1010,9 +1098,8 @@ export async function listChatImportLedger(): Promise<Set<string>> {
 export interface RecordChatImportLedgerResult {
   accepted: number;
   inserted: number;
-  // false when the backend predates /api/chat/import-ledger (404/405/501) so
-  // the caller avoids poisoning the localStorage perf hint; next launch
-  // retries the (idempotent) import.
+  // false when the backend predates /api/chat/import-ledger, so the caller does not poison the
+  // localStorage perf hint; the next launch retries the (idempotent) import.
   supported: boolean;
 }
 
@@ -1074,8 +1161,7 @@ export async function browseFolders(
   if (path !== undefined && path !== null) params.set("path", path);
   if (showHidden) params.set("show_hidden", "true");
   const qs = params.toString();
-  // Forward the AbortSignal through authFetch -> fetch so a cancelled FolderBrowser navigation cancels the request server-side, instead of
-  // dropping the response while the backend keeps walking large directory trees.
+  // Forward the AbortSignal through authFetch so a cancelled FolderBrowser navigation also cancels the server-side walk.
   const response = await authFetch(
     `/api/models/browse-folders${qs ? `?${qs}` : ""}`,
     signal ? { signal } : undefined,
@@ -1232,8 +1318,7 @@ export async function* streamChatCompletions(
   const decoder = new TextDecoder();
   let buffer = "";
   let completed = false;
-  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
-  // mid-generation: surface as interrupted, not silent success.
+  // EOF without `[DONE]` or a finish_reason chunk means the stream was cut mid-generation.
   let sawTerminalSignal = false;
   let terminalFinishReason: string | null = null;
   let sawAssistantContent = false;
@@ -1333,8 +1418,7 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        // finish_reason is a valid terminal signal for providers that close
-        // the stream without an explicit [DONE] sentinel.
+        // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (
           parsed as {
             choices?: Array<{

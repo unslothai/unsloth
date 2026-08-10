@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
+  MTMD_STT_MODELS,
   applyDictationDictionary,
   isCuratedSttModel,
   recordRecentDictation,
@@ -14,6 +17,9 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
+import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
+// Re-exported so the one public entry point for dictation is unchanged.
+export { SttModelNotDownloadedError } from "./stt-errors";
 import {
   beginDictationSession,
   markDictationFailed,
@@ -59,11 +65,14 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine, decided by the model: curated ids run GGML through
- * whisper.cpp; a custom HF repo is safetensors and runs through Transformers. */
-export type SttEngine = "transformers" | "gguf";
+/** Backend STT engine, decided by the model: Whisper ids run GGML through
+ * whisper.cpp, mtmd ids run through llama.cpp, and a custom HF repo is
+ * safetensors on Transformers. */
+export type SttEngine = "transformers" | "gguf" | "mtmd";
 
 export function sttEngineFor(model: string): SttEngine {
+  // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
+  if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
@@ -105,7 +114,7 @@ export async function transcribeAudioBlob(
         "Speech-to-text is not available on this server. Run `unsloth studio update` to install it.",
       );
     }
-    throw new Error(detail);
+    throw sttRequestError(response.status, detail);
   }
   const data = (await response.json()) as { text?: string };
   return (data.text ?? "").trim();
@@ -115,6 +124,8 @@ export interface SttDownloadStatus {
   downloading: boolean;
   model: string | null;
   error: string | null;
+  /** The last download was stopped by the user rather than failing. */
+  cancelled?: boolean;
   bytes_total: number | null;
   bytes_done: number | null;
 }
@@ -125,7 +136,7 @@ export interface SttEngineStatus {
   loading: boolean;
   device: string | null;
   keep_alive_seconds: number;
-  default_model: string;
+  default_model: string | null;
   models: string[];
   downloaded_models: string[];
   download: SttDownloadStatus;
@@ -142,6 +153,7 @@ export interface SttStatus {
   /** Per-engine state; absent on servers predating the engine split. */
   transformers?: SttEngineStatus;
   gguf?: SttEngineStatus;
+  mtmd?: SttEngineStatus;
 }
 
 // Keep load/unload requests ordered so a new recording cannot race an unload
@@ -171,6 +183,19 @@ export async function fetchSttStatus(
   return (await response.json()) as SttStatus;
 }
 
+/** The engine block that owns `model`. A curated Whisper prefers whisper.cpp,
+ * but without whisper-server the backend serves it through Transformers, so
+ * that is the fallback. mtmd models run nowhere else. */
+export function sttEngineStatusFor(
+  status: SttStatus,
+  model: string,
+): SttEngineStatus | undefined {
+  const engine = sttEngineFor(model);
+  if (engine === "mtmd") return status.mtmd;
+  if (engine === "gguf" && status.gguf?.available) return status.gguf;
+  return status.transformers;
+}
+
 /** Verify a custom Hub repository is a Transformers Whisper checkpoint. */
 export async function validateSttModel(
   model: string,
@@ -195,7 +220,9 @@ export async function validateSttModel(
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
-  return queueSttLifecycle(async () => {
+  // Announced so the indicator shows the load immediately, as the toast does.
+  return queueSttLifecycle(() =>
+    withModelLoadNotice("stt", model, async () => {
     const response = await authFetch("/api/inference/audio/stt/load", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -205,9 +232,11 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
       } | null;
-      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      const detail = body?.detail ?? `HTTP ${response.status}`;
+      throw sttRequestError(response.status, detail);
     }
-  });
+    }),
+  );
 }
 
 /** Start a background download of a dictation model. */
@@ -221,6 +250,22 @@ export async function startSttDownload(
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
+    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
+}
+
+/** Stop an in-flight model download. Partial files stay cached, so starting the
+ * same download again resumes from where it stopped. */
+export async function cancelSttDownload(model: string): Promise<void> {
+  const response = await authFetch("/api/inference/audio/stt/download/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, engine: sttEngineFor(model) }),
   });
   if (!response.ok) {
@@ -333,20 +378,35 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let finalCutDone = false;
     let reportedTranscriptionError = false;
 
-    const reportTranscriptionError = (error: unknown) => {
+    const reportTranscriptionError = (
+      error: unknown,
+      stage: "preload" | "segment" = "segment",
+    ) => {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
+      console.error("STT transcription error:", error);
+      // An undownloaded model is the ordinary first-run state, not a failure.
+      // Point at the download; never start it here.
+      if (error instanceof SttModelNotDownloadedError) {
+        requestSttDownload(sessionModel);
+        finishSession("cancelled");
+        return;
+      }
       const message =
         error instanceof Error && error.message
           ? error.message
           : "A recorded segment could not be transcribed.";
-      console.error("STT transcription error:", error);
       toast.error(message, {
         action: {
           label: "Open Voice settings",
           onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
         },
       });
+      // The preload runs cache-only, so nothing it reports is transient: a
+      // missing runtime or a load refused for training means no segment of
+      // this session can be transcribed. End it rather than let the user keep
+      // speaking into a recorder whose audio is already lost.
+      if (stage === "preload") finishSession("cancelled");
     };
 
     const buildTranscript = () =>
@@ -629,8 +689,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Warm the model only after mic access. The backend loads cache-only
         // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch(
-          reportTranscriptionError,
+        void loadSttModel(sessionModel, sessionEngine).catch((error: unknown) =>
+          reportTranscriptionError(error, "preload"),
         );
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);

@@ -11,18 +11,31 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
-/** The link between the two media pages (Images and Video). Kept out of either page's mode
- *  strip, which switches modes within a page, and parked at the far right past a divider so
- *  it reads as leaving rather than as another mode. */
+/** The link out to another page's workspace (Images, Video, image training). Kept out of the
+ *  page's mode strip, which switches modes within a page, and parked at the far right past a
+ *  divider so it reads as leaving rather than as another mode. */
 export function MediaPageLink({
   to,
   label,
   icon,
+  tooltip,
+  onNavigate,
+  labelClassName,
+  arrowClassName,
 }: {
   to: "/images" | "/video";
   label: string;
   icon: IconSvgElement;
+  /** Needed on a translated page: the default prefix below is English. */
+  tooltip?: string;
+  /** Runs before the route change, for a destination whose mode lives in a store. */
+  onNavigate?: () => void;
+  /** Responsive callers can visually collapse the label while the button keeps its accessible name. */
+  labelClassName?: string;
+  /** Kept separate from the label because the outbound arrow is the first compact affordance to drop. */
+  arrowClassName?: string;
 }) {
   const navigate = useNavigate();
   return (
@@ -37,20 +50,22 @@ export function MediaPageLink({
         <TooltipTrigger asChild={true}>
           <button
             type="button"
+            aria-label={label}
             onClick={() => {
+              onNavigate?.();
               navigate({ to });
             }}
-            className="flex h-[34px] shrink-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex h-[34px] min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <HugeiconsIcon icon={icon} className="size-4 shrink-0" />
-            <span>{label}</span>
+            <span className={cn("min-w-0 truncate", labelClassName)}>{label}</span>
             <HugeiconsIcon
               icon={ArrowRight02Icon}
-              className="size-3.5 shrink-0 opacity-60"
+              className={cn("size-3.5 shrink-0 opacity-60", arrowClassName)}
             />
           </button>
         </TooltipTrigger>
-        <TooltipContent>Go to {label}</TooltipContent>
+        <TooltipContent>{tooltip ?? `Go to ${label}`}</TooltipContent>
       </Tooltip>
     </>
   );

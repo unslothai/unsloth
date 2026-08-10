@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
   thinkEffortAriaLabel,
@@ -23,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
@@ -30,12 +32,21 @@ import {
 } from "@/features/chat/adapters/studio-dictation-adapter";
 import type { StudioDictationSession } from "@/features/chat/adapters/studio-web-speech-dictation-adapter";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
-import { AUDIO_ACCEPT, MAX_AUDIO_SIZE, fileToBase64 } from "@/lib/audio-utils";
+import {
+  AUDIO_ACCEPT,
+  fileToBase64,
+  getAudioSizeError,
+} from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
+import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { cancelPreStreamRunReservations } from "./utils/pre-stream-run-reservation";
+import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
@@ -67,6 +78,7 @@ import {
   exportConversationShareGPT,
   exportConversationRawJsonl,
   exportConversationCsv,
+  exportConversationMarkdown,
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
@@ -100,6 +112,7 @@ import {
   providerTypeSupportsVision,
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
+import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   PLUS_MENU_ORDER,
@@ -376,13 +389,37 @@ export function RegisterCompareHandle({
       cancel: () => aui.thread().cancelRun(),
       isRunning: () => aui.thread().getState().isRunning,
       waitForRunEnd: () =>
-        new Promise<void>((resolve) => {
-          let wasRunning = false;
-          const unsub = useChatRuntimeStore.subscribe((state) => {
-            const anyRunning = Object.keys(state.runningByThreadId).length > 0;
-            if (anyRunning) wasRunning = true;
-            if (wasRunning && !anyRunning) {
-              unsub();
+        new Promise<void>((resolve, reject) => {
+          const runtime =
+            aui.threads().__internal_getAssistantRuntime?.();
+          const itemState = aui.threadListItem().getState();
+          const threadIds = Array.from(
+            new Set(
+              [itemState.id, itemState.remoteId].filter(
+                (id): id is string => Boolean(id),
+              ),
+            ),
+          );
+          let thread = null;
+          for (const threadId of threadIds) {
+            try {
+              thread = runtime?.threads.getById(threadId) ?? null;
+              if (thread) break;
+            } catch {
+              // Thread hydration can retire an alias; try the next one.
+            }
+          }
+          if (!thread) {
+            reject(new Error("Comparison thread is unavailable"));
+            return;
+          }
+          let wasRunning = thread.getState().isRunning;
+          let unsubscribe = () => {};
+          unsubscribe = thread.subscribe(() => {
+            const isRunning = thread.getState().isRunning;
+            if (isRunning) wasRunning = true;
+            if (wasRunning && !isRunning) {
+              unsubscribe();
               resolve();
             }
           });
@@ -446,7 +483,7 @@ function resolveCompareSpecDraftNMax(
   speculativeType: string | null,
   value: number | null,
 ): number | null {
-  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+  return speculativeType != null && DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
     ? value
     : null;
 }
@@ -494,6 +531,14 @@ export function SharedComposer({
     base64: string;
     contentType: string;
   } | null>(null);
+  const textRef = useRef(text);
+  const pendingImagesRef = useRef(pendingImages);
+  const pendingAudioRef = useRef(pendingAudio);
+  useEffect(() => {
+    textRef.current = text;
+    pendingImagesRef.current = pendingImages;
+    pendingAudioRef.current = pendingAudio;
+  }, [text, pendingImages, pendingAudio]);
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -755,7 +800,12 @@ export function SharedComposer({
     (showWebFetchPill ? 1 : 0) +
     (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
-  const pillsCompact = isMobile || pillCount > 4;
+  // Under the count threshold the row still overflows on long labels, wrapping
+  // onto a second line inside the action bar. Measuring collapses just enough
+  // to keep it beside the dictate/send controls.
+  const { pillRowRef, pillCompact } = useComposerPillFit(
+    isMobile || pillCount > 4,
+  );
   // Backwards-compatible alias for call sites still referencing
   // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
@@ -780,14 +830,21 @@ export function SharedComposer({
     return () => clearInterval(id);
   }, [handlesRef]);
 
+  function resetPromptQueue() {
+    if (!isQueueRunningRef.current && queueRef.current.length === 0) {
+      return;
+    }
+    isQueueRunningRef.current = false;
+    setIsQueueRunning(false);
+    queueRef.current = [];
+    queueIndexRef.current = 0;
+    setQueueProgress({ current: 0, total: 0 });
+  }
+
   function advanceQueue() {
     const nextIndex = queueIndexRef.current + 1;
     if (nextIndex >= queueRef.current.length) {
-      isQueueRunningRef.current = false;
-      setIsQueueRunning(false);
-      queueRef.current = [];
-      queueIndexRef.current = 0;
-      setQueueProgress({ current: 0, total: 0 });
+      resetPromptQueue();
       toast.success("Prompt queue complete");
       return;
     }
@@ -808,11 +865,7 @@ export function SharedComposer({
     prevComparingRef.current = comparing;
     if (!isQueueRunningRef.current || !wasComparing || comparing) return;
     if (!compareStepSucceededRef.current) {
-      isQueueRunningRef.current = false;
-      setIsQueueRunning(false);
-      queueRef.current = [];
-      queueIndexRef.current = 0;
-      setQueueProgress({ current: 0, total: 0 });
+      resetPromptQueue();
       toast.error("Prompt queue stopped", {
         description: "A compare step failed; remaining prompts were not sent.",
       });
@@ -851,11 +904,17 @@ export function SharedComposer({
       if (!files?.length) return;
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
+      let audioSizeError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         // Handle audio files
-        if (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) {
+        if (file.type.match(/^audio\//i)) {
+          const sizeError = getAudioSizeError(file.size);
+          if (sizeError) {
+            audioSizeError ??= sizeError;
+            continue;
+          }
           fileToBase64(file).then((base64) => {
             setPendingAudio({ name: file.name, base64, contentType: file.type });
             setPendingAudioStore(base64, file.name);
@@ -874,6 +933,9 @@ export function SharedComposer({
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
+      if (audioSizeError) {
+        toast.error(audioSizeError);
+      }
       setPendingImages((prev) => [...prev, ...next]);
     },
     [setPendingAudioStore, attachUnavailableReason],
@@ -884,9 +946,10 @@ export function SharedComposer({
       pasteClipboardFiles(
         event,
         async (files) => {
+          // Let addFiles report audio size errors.
           const supported = files.some(
             (file) =>
-              (file.type.match(/^audio\//i) && file.size <= MAX_AUDIO_SIZE) ||
+              file.type.match(/^audio\//i) ||
               (file.type.match(/^image\/(jpeg|png|webp|gif)$/i) &&
                 file.size <= MAX_IMAGE_SIZE),
           );
@@ -941,9 +1004,18 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current) return;
-    const msg = text.trim();
-    if (!msg && pendingImages.length === 0 && !pendingAudio) return;
+    if (composingRef.current) {
+      resetPromptQueue();
+      return;
+    }
+    const submittedText = text;
+    const submittedImages = pendingImages;
+    const submittedAudio = pendingAudio;
+    const msg = submittedText.trim();
+    if (!msg && submittedImages.length === 0 && !submittedAudio) {
+      resetPromptQueue();
+      return;
+    }
 
     const hasCompareHandles = Boolean(
       handlesRef.current["model1"] || handlesRef.current["model2"],
@@ -961,11 +1033,12 @@ export function SharedComposer({
         description:
           "Use the model dropdown above each pane, then send your prompt.",
       });
+      resetPromptQueue();
       return;
     }
 
     if (
-      pendingImages.length > 0 &&
+      submittedImages.length > 0 &&
       !isGeneralizedCompare &&
       imageUnavailableReason
     ) {
@@ -974,11 +1047,12 @@ export function SharedComposer({
       // for its side, and the chat-adapter's pre-stream gate runs per-side
       // against that fresh state.
       toast.error(imageUnavailableReason);
+      resetPromptQueue();
       return;
     }
 
     const content: CompareMessagePart[] = [];
-    for (const { file } of pendingImages) {
+    for (const { file } of submittedImages) {
       try {
         const image = await fileToBase64DataURL(file);
         content.push({ type: "image", image });
@@ -986,23 +1060,98 @@ export function SharedComposer({
         // skip failed image
       }
     }
-    if (pendingAudio) {
+    if (submittedAudio) {
       content.push({
         type: "audio",
-        name: pendingAudio.name,
-        audio: `data:${pendingAudio.contentType};base64,${pendingAudio.base64}`,
+        name: submittedAudio.name,
+        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
       });
     }
     if (msg) {
       content.push({ type: "text", text: msg });
     }
-    if (content.length === 0) return;
+    if (content.length === 0) {
+      resetPromptQueue();
+      return;
+    }
 
-    setText("");
-    setPendingImages([]);
-    setPendingAudio(null);
-    clearPendingAudioStore();
-    textareaRef.current?.focus();
+    let compareLifecycleLease: ModelLifecycleLease | null = null;
+    if (isGeneralizedCompare) {
+      compareLifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (compareLifecycleLease === null) {
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        resetPromptQueue();
+        return;
+      }
+    }
+    const releaseCompareModelLifecycle = () => {
+      if (compareLifecycleLease === null) {
+        return;
+      }
+      useChatRuntimeStore.getState().endModelLoading(compareLifecycleLease);
+      compareLifecycleLease = null;
+    };
+    const acquireCompareModelLifecycle = () => {
+      if (compareLifecycleLease !== null) {
+        return;
+      }
+      compareLifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (compareLifecycleLease === null) {
+        throw new Error("Another model load started during comparison");
+      }
+    };
+    const submittedDraftIsCurrent = () =>
+      textRef.current === submittedText &&
+      pendingImagesRef.current === submittedImages &&
+      pendingAudioRef.current === submittedAudio;
+    const keepChangedDraft = () => {
+      releaseCompareModelLifecycle();
+      resetPromptQueue();
+      toast.info("Message changed while preparing", {
+        description: "Your updated draft was kept. Send it again when ready.",
+      });
+    };
+    const clearSubmittedDraft = () => {
+      setText("");
+      setPendingImages([]);
+      setPendingAudio(null);
+      clearPendingAudioStore();
+      textareaRef.current?.focus();
+    };
+
+    let compareStopDecision: Awaited<
+      ReturnType<typeof confirmStopRunningChatsIfNeeded>
+    > | null = null;
+    if (isGeneralizedCompare) {
+      try {
+        compareStopDecision = await confirmStopRunningChatsIfNeeded(
+          "Loading models for comparison",
+          "reload",
+        );
+      } catch (error) {
+        releaseCompareModelLifecycle();
+        resetPromptQueue();
+        toast.error("Compare failed", {
+          description: error instanceof Error ? error.message : "Unknown error",
+        });
+        return;
+      }
+      if (!compareStopDecision.proceed) {
+        releaseCompareModelLifecycle();
+        resetPromptQueue();
+        return;
+      }
+    }
+    if (!submittedDraftIsCurrent()) {
+      keepChangedDraft();
+      return;
+    }
 
     // Generalized compare: load each model before dispatching to its side
     if (isGeneralizedCompare) {
@@ -1021,8 +1170,17 @@ export function SharedComposer({
 
       // Warm the device cache before the snapshot below reconciles the GPU
       // pick: on a cold cache the reconcile passes a stale pick through.
-      if (store.selectedGpuIds != null) {
-        await ensureGpuDeviceCache();
+      try {
+        if (store.selectedGpuIds != null) {
+          await ensureGpuDeviceCache();
+        }
+      } catch (error) {
+        releaseCompareModelLifecycle();
+        resetPromptQueue();
+        toast.error("Compare failed", {
+          description: error instanceof Error ? error.message : "Unknown error",
+        });
+        return;
       }
       // The GPU/offload knobs both compare loads must use, snapshotted at Send.
       // ensureModelLoaded runs sequentially and the first load's response echo
@@ -1038,9 +1196,28 @@ export function SharedComposer({
         selectedGpuIds: store.selectedGpuIds,
         selectedGpuIndexKind: store.selectedGpuIndexKind,
       };
+      if (!submittedDraftIsCurrent()) {
+        keepChangedDraft();
+        return;
+      }
+      clearSubmittedDraft();
       // Set when an accepted transformers install unloaded the active model
       // server-side; a later failure must then clear the stale checkpoint.
       let upgradeUnloadedActive = false;
+      const compareSelectionNeedsLoad = (sel: CompareModelSelection) => {
+        const currentStore = useChatRuntimeStore.getState();
+        const isAlreadyActive =
+          currentStore.params.checkpoint === sel.id &&
+          (currentStore.activeGgufVariant ?? null) ===
+            (sel.ggufVariant ?? null);
+        return !isAlreadyActive || sel.config != null || loadedFromConfig;
+      };
+      const applyCompareStopDecision = () => {
+        cancelPreStreamRunReservations(
+          compareStopDecision?.preStreamRunTokens ?? [],
+        );
+        requestLocalPromptQueueStop(compareStopDecision?.promptQueueThreadIds);
+      };
       // Helper: load a model and update store checkpoint
       async function ensureModelLoaded(
         sel: CompareModelSelection,
@@ -1061,6 +1238,7 @@ export function SharedComposer({
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
         if (isAlreadyActive && !config && !loadedFromConfig) {
+          applyCompareStopDecision();
           return "ready";
         }
         const targetIsGguf =
@@ -1189,6 +1367,13 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                // omitted when blank: a null counts as set and strips inherited -b / -ub
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });
@@ -1199,6 +1384,8 @@ export function SharedComposer({
             upgrade: validation.transformers_upgrade,
             // No installable release: custom-code models may fall back to the trust_remote_code gate below.
             trustRemoteCodeFallback: validation.requires_trust_remote_code,
+            forceCancelActive:
+              compareStopDecision?.forceCancelActive ?? false,
           });
           // The install unloads the active model before the swap (even when the
           // swap then fails); if a later gate cancels or the load fails, the UI
@@ -1236,6 +1423,7 @@ export function SharedComposer({
             );
           }
         }
+        applyCompareStopDecision();
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
@@ -1247,9 +1435,12 @@ export function SharedComposer({
           approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
+          mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          force_cancel_active:
+            compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
             ? {
                 gpu_memory_mode: effectiveGpuMemoryMode,
@@ -1258,6 +1449,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });
@@ -1295,6 +1492,15 @@ export function SharedComposer({
           targetIsGguf && !(resp.is_diffusion ?? false)
             ? (ownConfig.nParallel ?? null)
             : null;
+        // same rule for the batch sizes
+        const committedNBatch =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nBatch ?? null)
+            : null;
+        const committedNUbatch =
+          targetIsGguf && !(resp.is_diffusion ?? false)
+            ? (ownConfig.nUbatch ?? null)
+            : null;
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
@@ -1303,9 +1509,14 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           kvCacheDtype: resp.cache_type_kv ?? null,
           loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          nBatch: committedNBatch,
+          loadedNBatch: committedNBatch,
+          nUbatch: committedNUbatch,
+          loadedNUbatch: committedNUbatch,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
@@ -1402,6 +1613,7 @@ export function SharedComposer({
             duration: Infinity,
           });
           const status1 = await ensureModelLoaded(model1);
+          releaseCompareModelLifecycle();
           toast("Generating with Model 1…", {
             id: toastId,
             description: `${name1} (${status1})`,
@@ -1414,10 +1626,18 @@ export function SharedComposer({
 
         // Side 2: load → generate → wait
         if (handle2 && model2?.id) {
-          const needsLoad =
-            model2.id.toLowerCase() !== (model1?.id || "").toLowerCase() ||
-            (model2.ggufVariant ?? "") !== (model1?.ggufVariant ?? "");
+          acquireCompareModelLifecycle();
+          const needsLoad = compareSelectionNeedsLoad(model2);
           if (needsLoad) {
+            const currentStopDecision =
+              await confirmStopRunningChatsIfNeeded(
+                "Loading the second model for comparison",
+                "reload",
+              );
+            if (!currentStopDecision.proceed) {
+              throw new Error("Second comparison model load cancelled.");
+            }
+            compareStopDecision = currentStopDecision;
             toast("Loading Model 2…", {
               id: toastId,
               description: name2,
@@ -1425,6 +1645,7 @@ export function SharedComposer({
             });
           }
           const status2 = await ensureModelLoaded(model2);
+          releaseCompareModelLifecycle();
           toast("Generating with Model 2…", {
             id: toastId,
             description: `${name2} (${status2})`,
@@ -1439,6 +1660,7 @@ export function SharedComposer({
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
         compareStepSucceededRef.current = false;
+        resetPromptQueue();
         // The install already unloaded the previously active model; drop the
         // checkpoint so the UI does not keep pointing at an unloaded model.
         if (upgradeUnloadedActive) {
@@ -1450,10 +1672,12 @@ export function SharedComposer({
           duration: 4000,
         });
       } finally {
+        releaseCompareModelLifecycle();
         setComparing(false);
       }
     } else {
       // Original behavior: fire all handles simultaneously
+      clearSubmittedDraft();
       for (const handle of Object.values(handlesRef.current)) {
         handle.append(content);
       }
@@ -1597,6 +1821,10 @@ export function SharedComposer({
             { label: "Raw JSONL", fn: exportConversationRawJsonl },
             { label: "CSV", fn: exportConversationCsv },
             { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+            {
+              label: CONVERSATION_MARKDOWN_LABEL,
+              fn: exportConversationMarkdown,
+            },
           ].map(({ label, fn }) => (
             <DropdownMenuItem
               key={label}
@@ -1801,8 +2029,9 @@ export function SharedComposer({
       />
       <div className="composer-action-wrapper">
         <div
+          ref={pillRowRef}
           className="flex min-w-0 flex-wrap items-center gap-0.5"
-          data-pill-compact={pillsCompact ? "true" : undefined}
+          data-pill-compact={pillCompact}
         >
           <input
             ref={fileInputRef}
@@ -2327,11 +2556,7 @@ export function SharedComposer({
             <button
               type="button"
               onClick={() => {
-                isQueueRunningRef.current = false;
-                setIsQueueRunning(false);
-                queueRef.current = [];
-                queueIndexRef.current = 0;
-                setQueueProgress({ current: 0, total: 0 });
+                resetPromptQueue();
                 stop();
               }}
               aria-label="Stop prompt queue"
