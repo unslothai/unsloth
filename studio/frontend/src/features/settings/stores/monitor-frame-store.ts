@@ -293,6 +293,12 @@ export function stackGeometry(
 export type StackPlacement = StackGeometry & {
   /** Attach to the stack container so its height feeds back into the placement. */
   ref: (node: HTMLElement | null) => void;
+  /**
+   * The cards need more room than the cap allows, so the stack is scrolling.
+   * It is click-through the rest of the time, which also costs it its
+   * scrollbar, and a scroller nobody can drag hides the cards below the fold.
+   */
+  overflowing: boolean;
 };
 
 /**
@@ -315,6 +321,7 @@ export function useStackGeometry(): StackPlacement {
     height: typeof window === "undefined" ? 0 : window.innerHeight,
   }));
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
+  const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const onResize = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -328,6 +335,7 @@ export function useStackGeometry(): StackPlacement {
       // An empty stack asks for nothing, so nothing is dodged for it.
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
+        setOverflowing((current) => (current ? false : current));
         return;
       }
       // Drop the cap and put it back in one synchronous block, so scrollHeight
@@ -345,6 +353,12 @@ export function useStackGeometry(): StackPlacement {
         node.scrollTop = scrolled;
       }
       setNeededRoom((current) => (current === natural ? current : natural));
+      // Whether the stack scrolls is read back from the capped box, not from
+      // `natural` against the cap: under the cap the cards give up height of
+      // their own, so a stack that asks for more than the cap can still fit
+      // inside it. Only the box that scrolls knows that it does.
+      const scrolls = node.scrollHeight > node.clientHeight;
+      setOverflowing((current) => (current === scrolls ? current : scrolls));
     };
     measure();
     // Every box inside the stack, not just the stack itself. At its cap the container's
@@ -401,5 +415,6 @@ export function useStackGeometry(): StackPlacement {
   return {
     ...stackGeometry(published, viewport.width, viewport.height, neededRoom),
     ref,
+    overflowing,
   };
 }

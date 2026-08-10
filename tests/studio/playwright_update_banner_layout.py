@@ -225,6 +225,16 @@ MEASURE = """
     copy: clip(clip(copy, surface), rail),
     footer: rect(footer),
     llamaText: llama ? (llama.innerText || '') : '',
+    // pointer-events-none costs the rail its scrollbar, so it may only be
+    // click-through while there is nothing under the fold to scroll to.
+    railScrolls: rail ? rail.scrollHeight > rail.clientHeight : null,
+    railPointerEvents: rail ? getComputedStyle(rail).pointerEvents : null,
+    // What a click on the rail's own gutter lands on when it is click-through.
+    gutterIsRail: rail ? (() => {
+      const r = rail.getBoundingClientRect();
+      return document.elementFromPoint(
+        Math.round(r.right - 2), Math.round(r.top + r.height / 2)) === rail;
+    })() : null,
   };
 }
 """
@@ -273,6 +283,20 @@ def measure(page, label: str) -> dict:
             f"{label}: the {name} stays inside the viewport",
             inside(facts[name], view),
             f"{name}={facts[name]} viewport={view}",
+        )
+    if facts["railScrolls"] is not None:
+        scrolls = facts["railScrolls"]
+        check(
+            f"{label}: the rail takes pointer input exactly when it scrolls",
+            facts["railPointerEvents"] == ("auto" if scrolls else "none"),
+            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']}",
+        )
+        # Click-through is what pointer-events-none is for, and the gutter is
+        # the widest part of the rail that no card covers.
+        check(
+            f"{label}: a rail with nothing to scroll to stays click-through",
+            scrolls or facts["gutterIsRail"] is False,
+            f"scrolls={scrolls} gutterIsRail={facts['gutterIsRail']}",
         )
     # The notes are allowed to yield all of their height, and do; the controls
     # are not, and a card clipped to nothing is the failure being tested for.

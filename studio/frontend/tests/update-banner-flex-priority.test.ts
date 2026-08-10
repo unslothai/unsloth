@@ -25,6 +25,7 @@ const WEB = read("components/web/update-banner.tsx");
 const LLAMA = read("components/llama-update-banner.tsx");
 const NOTES = read("components/update/release-notes-panel.tsx");
 const PROVIDER = read("app/provider.tsx");
+const STORE = read("features/settings/stores/monitor-frame-store.ts");
 
 /** The class string opened by `anchor`, up to its closing quote. */
 function classes(source: string, anchor: string): string {
@@ -152,7 +153,7 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
 });
 
 test("the rail scrolls rather than spilling its cards", () => {
-  const rails = PROVIDER.split("pointer-events-none fixed right-4 z-[9998]");
+  const rails = PROVIDER.split("fixed right-4 z-[9998]");
   // The desktop rail and the browser rail.
   assert.equal(rails.length - 1, 2, "the rail count changed");
   for (const rail of rails.slice(1)) {
@@ -174,4 +175,28 @@ test("the rail scrolls rather than spilling its cards", () => {
       "vertical padding on the measured node inflates the measured height",
     );
   }
+});
+
+// pointer-events-none takes the rail's scrollbar with it, and only the cards
+// opt back in, so a scrolling rail nobody can drag hides the cards under the
+// fold. It is click-through only while there is nothing to scroll to.
+test("a scrolling rail takes pointer input, a fitting one stays click-through", () => {
+  const rails = PROVIDER.split("fixed right-4 z-[9998]");
+  assert.equal(rails.length - 1, 2, "the rail count changed");
+  for (const rail of rails.slice(1)) {
+    const branch = rail.slice(0, rail.indexOf("style={{"));
+    assert.match(
+      branch,
+      /stack\.overflowing\s*\?\s*"pointer-events-auto"\s*:\s*"pointer-events-none"/,
+      "the rail is click-through unconditionally",
+    );
+  }
+  // Read from the capped box. Comparing the natural height against the cap
+  // instead reports every stack whose cards are giving up height, which is
+  // most of them, and hands the rail pointer input it does not need.
+  assert.match(
+    STORE,
+    /const scrolls = node\.scrollHeight > node\.clientHeight;/,
+    "the overflow flag is not measured on the capped box",
+  );
 });
