@@ -2642,19 +2642,16 @@ TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
-# A piped install (curl ... | sh) has $0 = "sh", so _REPO_ROOT is whatever directory the
-# user happened to be in, not a checkout. Only a real checkout may be trusted for the
-# scripts sitting next to it, or an install run from a writable or shared directory would
-# execute that directory's copy instead of ours. Run as a file AND surrounded by the repo
-# itself: install.sh downloaded on its own into such a directory is not a checkout.
+# Whether _REPO_ROOT may be trusted for the scripts sitting next to install.sh. A piped
+# install (curl ... | sh) has $0 = "sh", so _REPO_ROOT is whatever directory the user
+# happened to be in; running from a writable or shared one would execute that directory's
+# copy instead of ours. Marker files cannot decide this (anyone who can plant a helper can
+# plant those too), so require the user to have asked for a local install AND to have run
+# install.sh as a file. Everything else fetches the official helper.
 _REPO_IS_CHECKOUT=0
 case "$0" in
     */install.sh|install.sh)
-        if [ -r "$0" ] && [ -f "$_REPO_ROOT/pyproject.toml" ] \
-           && [ -f "$_REPO_ROOT/unsloth/__init__.py" ]; then
-            _REPO_IS_CHECKOUT=1
-        fi
-        ;;
+        [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -r "$0" ] && _REPO_IS_CHECKOUT=1 ;;
 esac
 
 # ── Helper: find no-torch-runtime.txt (local repo or site-packages) ──
@@ -3515,10 +3512,10 @@ _maybe_bootstrap_rocm_wsl() {
     substep "One-time, uses sudo and a large download. (skip: re-run with UNSLOTH_SKIP_ROCM_WSL_SETUP=1)"
 
     # Locate the helper: prefer the copy shipped beside install.sh, else fetch it. The
-    # local copy counts only for a real checkout run: this executes automatically with no
-    # prompt, so on a piped install _REPO_ROOT is the caller's cwd and a file planted
-    # there would run instead. Fetching the official helper is the same code path that
-    # already runs whenever the local copy is absent.
+    # local copy counts only for a --local checkout run: this executes automatically with
+    # no prompt, so otherwise _REPO_ROOT may be the caller's cwd and a file planted there
+    # would run instead. Fetching the official helper is the same code path that already
+    # runs whenever the local copy is absent, and pulls the same script.
     _rw_helper="${_REPO_ROOT:-.}/scripts/install_rocm_wsl_strixhalo.sh"
     _rw_tmp=""
     if [ "$_REPO_IS_CHECKOUT" != "1" ] || [ ! -r "$_rw_helper" ]; then
