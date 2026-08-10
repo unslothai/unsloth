@@ -3766,6 +3766,8 @@ def test_every_video_fetch_resolves_both_cache_roots():
             f"{name}: {calls - optins} of {calls} video fetches resolve only the active cache "
             "root, so the planner's both-roots probe can drop a file the load cannot then find"
         )
+
+
 # ── unified-memory oversize refusal, at the video load seam ───────────────────
 
 
