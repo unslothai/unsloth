@@ -97,15 +97,9 @@ def test_the_guard_would_catch_an_unstubbed_module(tmp_path):
     assert _imports_trainer_at_module_scope(tree)
     assert not _stubs_before_that_import(unstubbed.read_text(encoding = "utf-8"), tree)
 
-    stubbed_source = (
-        '_stub_if_missing("unsloth", ())\n'
-        "from core.training import trainer as t\n"
-    )
+    stubbed_source = '_stub_if_missing("unsloth", ())\n' "from core.training import trainer as t\n"
     assert _stubs_before_that_import(stubbed_source, ast.parse(stubbed_source))
 
     # And a stub that lands too late does not count.
-    too_late = (
-        "from core.training import trainer as t\n"
-        '_stub_if_missing("unsloth", ())\n'
-    )
+    too_late = "from core.training import trainer as t\n" '_stub_if_missing("unsloth", ())\n'
     assert not _stubs_before_that_import(too_late, ast.parse(too_late))
