@@ -5307,12 +5307,20 @@ def _remote_gguf_companion_bytes(
     include_dspark: bool = False,
     include_dflash: bool = False,
     dspark_first: bool = False,
+    weight_name: Optional[str] = None,
 ) -> int:
     """Bytes of companion GGUFs the requested launch downloads. 0 on error.
 
     ``dspark_first`` mirrors the loader's Auto rule: the DFlash fetch stands down
     once DSpark has resolved, so a repo publishing both kinds only ever pays for
     the DSpark sidecar.
+
+    ``weight_name`` is the basename of the main GGUF this load selects. A repo
+    hosting more than one family ships a DFlash sidecar per family, and the
+    loader pairs them against that weight, so the guard has to be told which
+    weight it is pricing or it can charge a different (possibly smaller) sidecar
+    than the one the load will fetch, and wave through a load that then exhausts
+    VRAM beside a running training job.
     """
     try:
         from core.inference.llama_cpp import (
@@ -5320,17 +5328,24 @@ def _remote_gguf_companion_bytes(
             _is_dspark_drafter_path,
         )
         from huggingface_hub import model_info
-        from utils.models.model_config import dflash_preference_key, dspark_preference_key
+        from utils.models.model_config import dflash_repo_preference_key, dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_candidates: list[tuple[str, int]] = []
+        # The weights a DFlash sidecar could be naming instead of this one, which
+        # is what tells a neighbour's sidecar apart from one naming no family at
+        # all. Derived from the listing exactly as _download_dflash derives it,
+        # so the guard ranks the candidates off the same evidence.
+        other_weight_names: list[str] = []
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
             if not base.endswith(".gguf"):
                 continue
+            if not _is_dflash_drafter_path(name):
+                other_weight_names.append(Path(name).name)
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
@@ -5354,7 +5369,13 @@ def _remote_gguf_companion_bytes(
         # charging the unused ~1.5 GiB only makes the guard 409 a load that fits.
         # An explicitly forced DFlash is not the Auto race and still pays.
         if dflash_candidates and not (dspark_first and dspark_candidates):
-            total += min(dflash_candidates, key = lambda c: dflash_preference_key(c[0]))[1]
+            # dflash_repo_preference_key, not the name-only key: it is the key the
+            # downloader sorts with, and in a multi-family repo the two disagree
+            # about which sidecar this weight gets.
+            total += min(
+                dflash_candidates,
+                key = lambda c: dflash_repo_preference_key(c[0], weight_name, other_weight_names),
+            )[1]
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -5682,11 +5703,15 @@ def _estimate_gguf_required_gb(
             from utils.models.model_config import list_gguf_variants
 
             variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
-            main_bytes = next(
-                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
-            )
+            selected = next((v for v in variants if v.quant.lower() == variant.lower()), None)
+            main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
+            # The variant record names the file this load opens, which is what the
+            # DFlash sizing needs to price the sidecar the loader will pair with
+            # it. A lister that reported no name leaves it None and the ranking
+            # falls back to precision alone, exactly as before.
+            selected_weight = Path(getattr(selected, "filename", "") or "").name or None
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
@@ -5706,6 +5731,11 @@ def _estimate_gguf_required_gb(
                 # DFlash sidecar too is not caution, it is a refusal for bytes
                 # that never land.
                 dspark_first = _auto_dspark,
+                # The weight this load actually opens. A multi-family repo ships a
+                # DFlash sidecar per family and the loader pairs them by name, so
+                # without it the guard can price a foreign (and smaller) sidecar
+                # than the one that lands.
+                weight_name = selected_weight,
             )
             # Plus the local --model-draft, if the caller named one: the repo
             # listing cannot see it, and it is resident next to these weights.

@@ -1556,6 +1556,69 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
             self.assertFalse(comp.call_args.kwargs["dspark_first"])
 
+    _MULTI_FAMILY_SIBLINGS = [
+        SimpleNamespace(rfilename = "model-A-Q4_K_M.gguf", size = 10 * 1024**3),
+        SimpleNamespace(rfilename = "model-B-Q4_K_M.gguf", size = 10 * 1024**3),
+        # Named after model A and higher precision, so the name-only key ranks it
+        # first for every weight in the repo.
+        SimpleNamespace(rfilename = "dflash-model-A-Q8_0.gguf", size = 1024**3),
+        SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 4 * 1024**3),
+    ]
+
+    def test_remote_dflash_sizing_prices_the_sidecar_this_weight_pairs_with(self):
+        """The loader ranks DFlash candidates against the weight being loaded
+        (dflash_repo_preference_key), so a multi-family repo hands model B the
+        generic sidecar. Sizing by the name-only key priced model A's smaller
+        one instead, and the guard admitted a load that then exhausts VRAM
+        beside a running training job."""
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
+        ):
+            for weight, expected_gib in (
+                ("model-B-Q4_K_M.gguf", 4),
+                ("model-A-Q4_K_M.gguf", 1),
+            ):
+                total = self.route._remote_gguf_companion_bytes(
+                    "org/repo",
+                    hf_token = None,
+                    include_mmproj = False,
+                    include_mtp = False,
+                    include_dflash = True,
+                    weight_name = weight,
+                )
+                self.assertEqual(total, expected_gib * 1024**3, weight)
+
+    def test_remote_estimate_passes_the_selected_weight_to_the_dflash_sizing(self):
+        """End to end: the guard's own estimate has to carry the selected
+        filename down, or the sizing has nothing to pair the sidecar against."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(
+            filename = "model-B-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 10 * 1024**3
+        )
+        with (
+            patch.object(mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)),
+            patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = self._MULTI_FAMILY_SIBLINGS),
+            ),
+            self._dflash_capable(),
+        ):
+            gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dflash")
+        # 10 GiB of weights plus the 4 GiB generic sidecar model B actually gets,
+        # not the 1 GiB one named after model A.
+        self.assertAlmostEqual(gb, 14.0, places = 6)
+
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc
         cfg = SimpleNamespace(

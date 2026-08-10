@@ -8307,6 +8307,39 @@ class LlamaCppBackend:
         self._dflash_sidecar_absent = outcome.get("listed") is False
         return found
 
+    def _dspark_wins_auto(
+        self,
+        *,
+        binary: Optional[str],
+        dspark_draft_path: Optional[str],
+        spec_canon: str,
+        extra_args: Optional[list[str]],
+    ) -> bool:
+        """Whether Auto will actually resolve this load to DSpark.
+
+        A DSpark path on its own does not answer that. _download_dspark reports
+        an already-cached sidecar even when the binary has no usable
+        ``--spec-type draft-dspark`` (deliberately: the route rediscovers it on
+        every Apply, and answering None there would reload the same server each
+        time), so the capability has to be applied by everything that reads the
+        path as "DSpark is what Auto picks". Without it a binary that supports
+        DFlash but not DSpark stands down on the DFlash fetch for a sidecar it
+        can never launch and the load ends up with no drafter at all.
+
+        A raised probe answers False, which keeps Auto on its other options
+        exactly as the promotion does. probe_server_capabilities caches on
+        (binary path, mtime), so asking here and at the promotion is one probe.
+        """
+        if spec_canon != "auto" or not dspark_draft_path:
+            return False
+        if _extra_args_set_spec_type(extra_args):
+            return False
+        try:
+            return bool(self.probe_server_capabilities(binary).get("supports_dspark"))
+        except Exception as exc:
+            logger.debug("DSpark capability probe failed during Auto: %s", exc)
+            return False
+
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
     ) -> Optional[str]:
@@ -9898,12 +9931,21 @@ class LlamaCppBackend:
                     # below, so a repo that ships both kinds would never launch
                     # the DFlash sidecar. Fetching it anyway costs ~1.5 GiB of
                     # bandwidth and cache for a file that cannot be used, so the
-                    # Auto fetch stands down once DSpark has resolved. An
-                    # explicit "dflash" request still fetches.
+                    # Auto fetch stands down once DSpark has resolved. It has to
+                    # be the same "resolved" the promotion means, capability and
+                    # all: a DSpark path this binary cannot launch loses the
+                    # promotion, so standing down on it would leave a
+                    # DFlash-capable binary with no drafter at all. An explicit
+                    # "dflash" request still fetches.
                     if (
                         not dflash_draft_path
                         and _spec_canon in ("auto", "dflash")
-                        and not (_spec_canon == "auto" and dspark_draft_path)
+                        and not self._dspark_wins_auto(
+                            binary = binary,
+                            dspark_draft_path = dspark_draft_path,
+                            spec_canon = _spec_canon,
+                            extra_args = extra_args,
+                        )
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         dflash_draft_path = self._download_dflash(
@@ -9924,21 +9966,18 @@ class LlamaCppBackend:
 
             # Auto resolves to DSpark whenever a sidecar is available and this
             # binary can run it: 1.84x decode on 4x B200 and 1.91x on one, against
-            # the ngram-mod fallback this architecture would otherwise get. Gated
-            # on the capability because _download_dspark also reports a cached
-            # sidecar an incapable binary cannot launch, and promoting there would
-            # turn Auto's fallback into no speculative decoding at all.
-            if (
-                _spec_canon == "auto"
-                and dspark_draft_path
-                and not _extra_args_set_spec_type(extra_args)
+            # the ngram-mod fallback this architecture would otherwise get. The
+            # capability gate lives in _dspark_wins_auto, shared with the DFlash
+            # fetch above so the fetch and the promotion cannot disagree about
+            # whether Auto is going to end up on DSpark.
+            if self._dspark_wins_auto(
+                binary = binary,
+                dspark_draft_path = dspark_draft_path,
+                spec_canon = _spec_canon,
+                extra_args = extra_args,
             ):
-                try:
-                    if self.probe_server_capabilities(binary).get("supports_dspark"):
-                        _spec_canon = "dspark"
-                        logger.info("Auto: DSpark sidecar available, using draft-dspark.")
-                except Exception as exc:
-                    logger.debug("DSpark capability probe failed during Auto: %s", exc)
+                _spec_canon = "dspark"
+                logger.info("Auto: DSpark sidecar available, using draft-dspark.")
 
             # DFlash is the other Auto promotion, on the same capability gate.
             # DSpark keeps first refusal (llama.cpp's own downloader ranks it

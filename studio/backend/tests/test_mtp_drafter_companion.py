@@ -2529,3 +2529,119 @@ def test_local_and_remote_dflash_architecture_checks_agree(tmp_path):
     assert is_dflash_architecture(str(sidecar)) is True
     assert is_dflash_architecture(str(tmp_path / "missing.gguf")) is False
     assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
+
+
+# ── Auto only stands down on DFlash for a DSpark it can launch ───────
+#
+# _download_dspark reports an already-cached sidecar even when the binary has no
+# usable --spec-type draft-dspark (so the route's reuse check does not reload the
+# same server on every Apply), and the promotion refuses that path. The DFlash
+# fetch read the bare path as "DSpark won" and stood down, so a repo shipping
+# both companions left a DFlash-capable binary with NO drafter at all.
+
+
+class _StopAfterDownloads(Exception):
+    """Ends the load once Phase 2 is done, which is all these tests observe."""
+
+
+def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dflash, dspark_cached):
+    """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
+
+    Drives the real load path: the suppression lives inline in load_model's
+    download phase, so nothing short of running it can pin the interaction.
+    """
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(
+            lambda cls, binary = None: {
+                "found": True,
+                "supports_dspark": supports_dspark,
+                "supports_dflash": supports_dflash,
+            }
+        ),
+    )
+    monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "_hf_offline_if_unreachable",
+        lambda: __import__("contextlib").nullcontext(),
+    )
+
+    backend = LlamaCppBackend()
+    seen: dict = {"dflash_fetched": False}
+    monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
+    monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: False)
+    monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None: [(0, 4096, 8192)])
+    monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
+    monkeypatch.setattr(backend, "_kill_process", lambda: None)
+    monkeypatch.setattr(
+        backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
+    )
+    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: None)
+    # Exactly what _download_dspark does for a cached sidecar on a binary that
+    # cannot run it: the path comes back regardless of the capability.
+    monkeypatch.setattr(backend, "_download_dspark", lambda **_kwargs: dspark_cached)
+
+    def _fetch_dflash(**_kwargs):
+        seen["dflash_fetched"] = True
+        return "/cache/snap/dflash-kquant.gguf"
+
+    monkeypatch.setattr(backend, "_download_dflash", _fetch_dflash)
+
+    def _stop(*_args, **_kwargs):
+        raise _StopAfterDownloads
+
+    # The first call past the download phase; the resolved drafter is already
+    # settled by then.
+    monkeypatch.setattr(backend, "_read_gguf_metadata", _stop)
+
+    with pytest.raises(_StopAfterDownloads):
+        backend.load_model(
+            GgufLoadIntent(
+                hf_repo = "org/repo",
+                hf_variant = "Q4_K_M",
+                model_identifier = "org/repo",
+                speculative_type = "auto",
+            )
+        )
+    return seen
+
+
+def test_auto_still_fetches_dflash_when_the_binary_cannot_run_dspark(monkeypatch):
+    """The regression: a cached DSpark sidecar this binary cannot launch is not
+    a reason to skip the drafter it CAN launch."""
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = "/cache/snap/dspark-model-Q8_0.gguf",
+    )
+    assert seen["dflash_fetched"] is True
+
+
+def test_auto_stands_down_on_dflash_for_a_dspark_it_can_launch(monkeypatch):
+    """Unchanged where the stand-down was right: DSpark takes first refusal, so
+    the ~1.5 GiB DFlash fetch would buy a file the load never opens."""
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = True,
+        supports_dflash = True,
+        dspark_cached = "/cache/snap/dspark-model-Q8_0.gguf",
+    )
+    assert seen["dflash_fetched"] is False
+
+
+def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
+    """Positive control: nothing about the DSpark capability gates a repo that
+    publishes only the DFlash companion."""
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = True,
+        supports_dflash = True,
+        dspark_cached = None,
+    )
+    assert seen["dflash_fetched"] is True
