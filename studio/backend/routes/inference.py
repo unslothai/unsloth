@@ -13680,7 +13680,7 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
-@router.get("/sandbox/{session_id}/{filename:path}")
+@router.api_route("/sandbox/{session_id}/{filename:path}", methods = ["GET", "HEAD"])
 async def serve_sandbox_file(
     session_id: str,
     filename: str,
@@ -13741,6 +13741,12 @@ async def serve_sandbox_file(
         return handle, info.st_size
 
     handle, size = await run_in_threadpool(_open_checked)
+    head_only = getattr(request, "method", "GET").upper() == "HEAD"
+    if head_only:
+        # FastAPI does not add HEAD to a GET route, and the client asks with one
+        # to refresh the session and settle whether the file is still there.
+        # Nothing is read: the artifact can be gigabytes.
+        os.close(handle)
 
     ext = os.path.splitext(safe_filename)[1].lower()
     media_type = _SANDBOX_MEDIA_TYPES.get(ext)
@@ -13758,6 +13764,8 @@ async def serve_sandbox_file(
         )
 
     headers["Content-Length"] = str(size)
+    if head_only:
+        return Response(status_code = 200, media_type = media_type, headers = headers)
 
     def _read():
         with os.fdopen(handle, "rb") as opened:

@@ -5364,5 +5364,138 @@ def test_the_file_download_button_refreshes_the_session_first():
     assert view.index("authFetch(apiUrl(path)") < view.index("const token = getAuthToken()")
 
 
+def test_the_download_route_answers_the_probe_the_button_sends(tmp_path, monkeypatch):
+    """FastAPI does not add HEAD to a GET route, so the probe would 405 and no
+    sandbox file could be saved at all."""
+    import asyncio
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from routes import inference
+
+    methods = {
+        frozenset(r.methods)
+        for r in inference.router.routes
+        if getattr(r, "path", "") == "/sandbox/{session_id}/{filename:path}"
+    }
+    assert methods == {frozenset({"GET", "HEAD"})}, methods
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "report.csv").write_text("a,b\n", encoding = "utf-8")
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: str(sandbox),
+    )
+
+    class _Head:
+        method = "HEAD"
+
+    response = asyncio.new_event_loop().run_until_complete(
+        inference.serve_sandbox_file(
+            "thread-1", "report.csv", request = _Head(), token = None, session = None,
+        )
+    )
+    assert response.status_code == 200
+    assert response.headers["content-length"] == "4"
+    assert response.body == b"", "the file was read to answer a HEAD"
+
+
+def test_a_project_id_a_filename_cannot_hold_is_still_recorded(tmp_path, monkeypatch):
+    """Project ids are the client's, and a record refused here loses both the
+    deferred delete and the cards of a fork that kept the files."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    project_id = "Ünsloth/Notes " + "x" * 80
+    workspace = tmp_path / "Notes-project"
+    (workspace / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project(project_id, str(workspace / "sandbox"), True, str(workspace))
+
+    records = tools.list_orphaned_projects()
+    assert [(r[0], r[3]) for r in records] == [(project_id, True)], records
+    assert tools._recorded_project_workdir(project_id) == str((workspace / "sandbox").resolve())
+
+    tools.forget_orphaned_project(project_id)
+    assert tools.list_orphaned_projects() == []
+
+
+def test_a_chat_and_a_project_with_one_id_keep_their_own_records(tmp_path, monkeypatch):
+    """They are different tables, so the same client-supplied id can name both,
+    and one record overwriting the other stranded a folder."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    shared_id = "notes1234"
+    workspace = tmp_path / "Notes-notes123"
+    (workspace / "sandbox").mkdir(parents = True)
+    chat_dir = Path(tools.get_sandbox_workdir(shared_id))
+    (chat_dir / "chat.csv").write_text("a,b\n", encoding = "utf-8")
+
+    tools.record_orphaned_project(shared_id, str(workspace / "sandbox"), True, str(workspace))
+    tools.record_kept_sandbox(shared_id)
+
+    records = sorted(tools.list_orphaned_projects(), key = lambda r: r[4])
+    assert [r[0] for r in records] == [shared_id, shared_id]
+    assert [r[4] for r in records] == [False, True], "one record overwrote the other"
+    assert records[0][1] == str((workspace / "sandbox").resolve())
+    assert records[1][1] == str(chat_dir.resolve())
+    # And the project's own resolve is unaffected by the chat's record.
+    assert tools._recorded_project_workdir(shared_id) == str((workspace / "sandbox").resolve())
+
+
+def test_a_kept_workspace_is_found_past_a_crowd_of_records(tmp_path, monkeypatch):
+    """A bounded listing meant a busy install could never see the newest
+    records, so their folders were unreachable and their deletes never ran."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+
+    _forget_sandbox_state(tools)
+    crowd = tmp_path / "crowd"
+    crowd.mkdir()
+    for n in range(50):
+        tools.record_orphaned_project(f"aaaa{n:04d}", str(crowd), False, None)
+
+    project_id = "zzzz9999"
+    workspace = tmp_path / "Notes-zzzz9999"
+    (workspace / "sandbox").mkdir(parents = True)
+    tools.record_orphaned_project(project_id, str(workspace / "sandbox"), True, str(workspace))
+
+    monkeypatch.setattr(tools, "_MAX_ORPHAN_RECORDS", 4)
+    assert tools._recorded_project_workdir(project_id) == str((workspace / "sandbox").resolve())
+
+
+def test_a_project_created_during_the_record_write_keeps_its_files(tmp_path, monkeypatch):
+    """The record write is an await, and a project created in that window
+    resolves to the same default workspace path."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+
+    from core.inference import tools
+    from routes import chat_history
+    from storage import studio_db
+
+    _forget_sandbox_state(tools)
+    project_id = "proj13131"
+    workspace = tmp_path / "Notes-proj1313"
+    (workspace / "sandbox").mkdir(parents = True)
+    (workspace / "sandbox" / "fresh.csv").write_text("a,b\n", encoding = "utf-8")
+
+    answers = [None, {"id": project_id}]
+    monkeypatch.setattr(
+        chat_history, "get_chat_project", lambda pid: answers.pop(0) if answers else None,
+    )
+    monkeypatch.setattr(studio_db, "get_chat_project", lambda pid: {"id": pid})
+    monkeypatch.setattr(studio_db, "sandbox_is_referenced_elsewhere", lambda s, e = None: False)
+    _deleted_project(tmp_path, monkeypatch, project_id, workspace)
+
+    assert (workspace / "sandbox" / "fresh.csv").is_file(), "the new project's files went"
+    assert tools.list_orphaned_projects() == [], "a live project was left recorded"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q", "-s"]))

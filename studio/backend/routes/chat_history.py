@@ -699,6 +699,7 @@ async def delete_project(
 
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
+            forget_orphaned_project,
             forget_orphaned_project_if_gone,
             project_session_id,
             record_orphaned_project,
@@ -766,13 +767,25 @@ async def delete_project(
                 True,
                 project.get("rootPath"),
             )
-            await run_in_threadpool(delete_project_workspace, project)
-            await run_in_threadpool(
-                forget_orphaned_project_if_gone,
-                project_id,
-                project["sandboxPath"],
-                project.get("rootPath"),
-            )
+            # Once more, next to the delete itself: the record write above is
+            # an await, and a project created in that window resolves to this
+            # same path.
+            if await run_in_threadpool(get_chat_project, project_id) is not None:
+                logger.warning(
+                    "Kept project workspace %s: a project was created with that id",
+                    project_id,
+                )
+                # The new row knows where its files are, so the record written a
+                # moment ago is about a workspace that is somebody's again.
+                await run_in_threadpool(forget_orphaned_project, project_id)
+            else:
+                await run_in_threadpool(delete_project_workspace, project)
+                await run_in_threadpool(
+                    forget_orphaned_project_if_gone,
+                    project_id,
+                    project["sandboxPath"],
+                    project.get("rootPath"),
+                )
         elif delete_files and not recreated:
             # Written down so it can be resolved and later collected: the row
             # that knew where it lives is gone. The root as well, since the

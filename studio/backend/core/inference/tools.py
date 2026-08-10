@@ -7212,6 +7212,36 @@ def _orphan_records_dir() -> str:
         )
 
 
+# One record per kept folder. Chats and projects live in different tables and
+# can carry the same client-supplied id, and a project id is not always
+# something a filename can hold, so the name is the kind plus a digest and the
+# exact id lives inside the record.
+_ORPHAN_CHAT = "chat"
+_ORPHAN_PROJECT = "project"
+# A pass reads every record: they are a few hundred bytes each, one per deleted
+# folder still kept, and a cap here would strand everything past it for good.
+_MAX_ORPHAN_RECORDS = 10_000
+
+
+def _orphan_record_name(kind: str, record_id: str) -> str:
+    """The filename a record is kept under."""
+    digest = hashlib.sha256(record_id.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    return f"{kind}-{digest}"
+
+
+def _read_orphan_record(kind: str, record_id: str) -> "dict | None":
+    """One record by key, without listing the directory."""
+    import json as _json
+
+    path = os.path.join(_orphan_records_dir(), _orphan_record_name(kind, record_id))
+    try:
+        with open(path, encoding = "utf-8") as fh:
+            record = _json.loads(fh.read(4096).strip())
+    except (OSError, ValueError, TypeError):
+        return None
+    return record if isinstance(record, dict) and record.get("path") else None
+
+
 def record_orphaned_project(
     project_id: str,
     workspace: str,
@@ -7225,11 +7255,10 @@ def record_orphaned_project(
     for it. ``pending_delete`` is what separates "keep this, just make it
     reachable" from "the user asked for it, finish when nothing is using it".
     """
-    if not project_id or not _usable_session_id(project_id) or not workspace:
+    if not project_id or not workspace:
         return
-    import json as _json
-
     _write_orphan_record(
+        _ORPHAN_PROJECT,
         project_id,
         {
             "path": os.path.realpath(workspace),
@@ -7241,12 +7270,15 @@ def record_orphaned_project(
     )
 
 
-def _write_orphan_record(record_id: str, record: dict) -> None:
-    """One small JSON file per kept folder, named by the id that owned it."""
+def _write_orphan_record(kind: str, record_id: str, record: dict) -> None:
+    """One small JSON file per kept folder, under its kind and id."""
     import json as _json
+
+    record = {**record, "id": record_id, "chat": kind == _ORPHAN_CHAT}
     try:
         os.makedirs(_orphan_records_dir(), exist_ok = True)
-        with open(os.path.join(_orphan_records_dir(), record_id), "w", encoding = "utf-8") as fh:
+        name = _orphan_record_name(kind, record_id)
+        with open(os.path.join(_orphan_records_dir(), name), "w", encoding = "utf-8") as fh:
             fh.write(_json.dumps(record))
     except OSError:
         logger.warning("Could not record kept folder for %s", record_id)
@@ -7258,7 +7290,7 @@ def record_kept_sandbox(session_id: str) -> None:
     The user asked for those files and the chat is gone, so nothing would come
     back to that folder: the fork's own delete finishes the job instead.
     """
-    if not session_id or not _usable_session_id(session_id):
+    if not session_id:
         return
     try:
         workdir = os.path.realpath(resolve_sandbox_workdir(session_id))
@@ -7267,22 +7299,19 @@ def record_kept_sandbox(session_id: str) -> None:
     if not os.path.isdir(workdir):
         return
     _write_orphan_record(
+        _ORPHAN_CHAT,
         session_id,
-        {
-            "path": workdir,
-            "rootPath": None,
-            "pendingDelete": True,
-            "chat": True,
-        },
+        {"path": workdir, "rootPath": None, "pendingDelete": True},
     )
 
 
-def forget_orphaned_project(project_id: str) -> None:
-    """Drop the record once the workspace has gone."""
-    if not project_id or not _usable_session_id(project_id):
+def forget_orphaned_project(project_id: str, is_chat: bool = False) -> None:
+    """Drop the record once the folder has gone."""
+    if not project_id:
         return
+    kind = _ORPHAN_CHAT if is_chat else _ORPHAN_PROJECT
     try:
-        os.unlink(os.path.join(_orphan_records_dir(), project_id))
+        os.unlink(os.path.join(_orphan_records_dir(), _orphan_record_name(kind, project_id)))
     except OSError:
         pass
 
@@ -7293,12 +7322,14 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
 
     records = []
     try:
-        names = sorted(os.listdir(_orphan_records_dir()))[:_MAX_SNAPSHOT_DIRS]
+        names = sorted(os.listdir(_orphan_records_dir()))
     except OSError:
         return records
+    if len(names) > _MAX_ORPHAN_RECORDS:
+        logger.warning("%d kept-folder records; reading the first %d", len(names),
+                       _MAX_ORPHAN_RECORDS)
+        names = names[:_MAX_ORPHAN_RECORDS]
     for name in names:
-        if not _usable_session_id(name):
-            continue
         try:
             with open(os.path.join(_orphan_records_dir(), name), encoding = "utf-8") as fh:
                 raw = fh.read(4096).strip()
@@ -7309,12 +7340,13 @@ def list_orphaned_projects() -> "list[tuple[str, str, str | None, bool, bool]]":
             path, pending = record["path"], bool(record.get("pendingDelete"))
             root = record.get("rootPath") or None
             is_chat = bool(record.get("chat"))
+            record_id = record["id"]
         except (ValueError, TypeError, KeyError):
             continue
         if _recorded_workspace_remains(path, root):
-            records.append((name, path, root, pending, is_chat))
+            records.append((record_id, path, root, pending, is_chat))
         else:
-            forget_orphaned_project(name)
+            forget_orphaned_project(record_id, is_chat)
     return records
 
 
@@ -7331,12 +7363,14 @@ def _recorded_workspace_remains(workspace: str, root: "str | None") -> bool:
     return False
 
 
-def forget_orphaned_project_if_gone(project_id: str, workspace: str, root: "str | None") -> None:
-    """Drop the record only once the workspace really has gone."""
+def forget_orphaned_project_if_gone(
+    project_id: str, workspace: str, root: "str | None", is_chat: bool = False,
+) -> None:
+    """Drop the record only once the folder has gone."""
     if _recorded_workspace_remains(workspace, root):
         logger.warning("Workspace for %s is still there; left pending", project_id)
         return
-    forget_orphaned_project(project_id)
+    forget_orphaned_project(project_id, is_chat)
 
 
 def _delete_recorded_workspace(project_id: str, workspace: str, root: "str | None") -> None:
@@ -7386,7 +7420,7 @@ def collect_orphaned_project_workspaces() -> None:
                 _delete_recorded_workspace(record_id, workspace, root)
             # A locked file on Windows, or a network volume having a bad
             # moment: the record stays so the next launch tries again.
-            forget_orphaned_project_if_gone(record_id, workspace, root)
+            forget_orphaned_project_if_gone(record_id, workspace, root, is_chat)
         except Exception:  # noqa: BLE001 - a stuck record must not break a delete
             logger.warning("Could not collect workspace for %s", record_id, exc_info = True)
 
@@ -7415,13 +7449,18 @@ def finish_workspace_delete_when_idle(
 
 
 def _recorded_project_workdir(project_id: str) -> "str | None":
-    """The kept workspace of a deleted project, wherever the user put it."""
-    for name, path, _root, _pending, is_chat in list_orphaned_projects():
-        # Only a sandbox still there: a record kept alive by the rest of its
-        # workspace names a directory nothing can be served from.
-        if name == project_id and not is_chat and os.path.isdir(path):
-            return path
-    return None
+    """The kept workspace of a deleted project, wherever the user put it.
+
+    By key: a resolve happens on every tool call for such a project, and no
+    number of other records may keep it from finding its own.
+    """
+    record = _read_orphan_record(_ORPHAN_PROJECT, project_id)
+    if not record:
+        return None
+    path = record["path"]
+    # Only a sandbox still there: a record kept alive by the rest of its
+    # workspace names a directory nothing can be served from.
+    return path if os.path.isdir(path) else None
 
 
 def _orphaned_project_workdir(project_id: str) -> "str | None":
