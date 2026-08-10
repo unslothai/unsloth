@@ -4820,6 +4820,26 @@ def test_h3_native_generate_stages_both_keyframes_on_the_canvas(monkeypatch):
     assert result["conditioning"] == "fl2va"
 
 
+def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
+    """_run_generate persists these with result.get(...), so a field the native path omits lands
+    in the gallery sidecar as null. Clips generated from different GGUF quantizations of the same
+    repo then cannot be told apart or reproduced from their saved recipe, unlike the diffusers
+    path, which records the same set off the engaged state."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+
+    state = backend._state
+    assert result["model_kind"] == state.kind == "gguf"
+    assert result["gguf_filename"] == state.gguf_filename
+    assert result["memory_mode"] == state.memory_mode
+    assert result["offload_policy"] == state.offload_policy
+    assert result["transformer_quant"] == state.transformer_quant
+    assert result["text_encoder_quant"] == state.text_encoder_quant
+
+
 def test_h3_native_generate_names_each_keyframe_combination(monkeypatch):
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
@@ -6235,6 +6255,7 @@ def test_plan_keeps_the_bf16_budget_without_a_hosted_pre_cast_encoder(fake_runti
 def test_plan_is_unchanged_when_no_text_encoder_quant_is_requested(fake_runtime, monkeypatch):
     # The whole change is inert on a default load: every family keeps its bf16-table budget, so no
     # existing decision on any device moves.
+    from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES
 
     _allow_te_prequant(monkeypatch)
@@ -6296,6 +6317,182 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
         (transformer_gb * _QUANT_STEADY_FACTOR["int8"] + text_encoder_gb * scale + vae_gb)
         * _MIB_PER_GB
     )
+
+
+# ── MiniMax-H3: the denoiser partition a ref2va load actually needs ──────────
+
+
+_H3_TWO_PARTITION_SIBLINGS = [
+    _sibling("model_index.json", 1),
+    _sibling("modular_model_index.json", 1),
+    _sibling("scheduler/scheduler_config.json", 1),
+    _sibling("audio_scheduler/scheduler_config.json", 1),
+    _sibling("vae/diffusion_pytorch_model.safetensors", 10),
+    _sibling("audio_vae/diffusion_pytorch_model.safetensors", 1),
+    _sibling("text_encoder/model-00001-of-00002.safetensors", 66),
+    _sibling("tokenizer/tokenizer.json", 1),
+    _sibling("processor/preprocessor_config.json", 1),
+    _sibling("transformer/config.json", 1),
+    _sibling("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 66),
+    _sibling("transformer_ref/config.json", 1),
+    _sibling("transformer_ref/diffusion_pytorch_model-00001-of-00002.safetensors", 66),
+    _sibling("FL2VA/single_file.safetensors", 144),
+    _sibling("Ref2VA/single_file.safetensors", 144),
+]
+
+
+def test_a_ref2va_pick_stages_the_reference_denoiser_and_only_that_one():
+    """MiniMaxAI/MiniMax-H3 ships two 66.28 GB denoisers, and the modular load builds exactly
+    one: diffusers' ref2va denoise step is constructed with transformer_name="transformer_ref".
+    Staging only transformer/ therefore downloaded the keyframe partition for a References load
+    and left the one it opens to be fetched inline, outside the download manager."""
+    info = types.SimpleNamespace(siblings = _H3_TWO_PARTITION_SIBLINGS)
+
+    ref = [n for n, _ in VideoBackend._base_download_files(info, "pipeline", h3_task = "ref2va")]
+    assert any(n.startswith("transformer_ref/") for n in ref)
+    assert not any(n.startswith("transformer/") for n in ref)
+
+    # The default (and an explicit keyframe task) keeps the fl2va partition and drops the other.
+    for task in (None, "fl2va"):
+        keyframes = [
+            n for n, _ in VideoBackend._base_download_files(info, "pipeline", h3_task = task)
+        ]
+        assert any(n.startswith("transformer/") for n in keyframes)
+        assert not any(n.startswith("transformer_ref/") for n in keyframes)
+
+    # Neither partition doubles the stage, and the packaged single-file dirs stay excluded.
+    assert not any(n.startswith(("FL2VA/", "Ref2VA/")) for n in ref)
+
+
+def test_download_plan_keys_the_h3_denoiser_on_the_requested_task(monkeypatch):
+    # The plan is what the Hub download manager stages, so the task has to reach it: without it
+    # a References pick paid for 66.28 GB of keyframe denoiser it never opens.
+    _cuda_bf16_target(monkeypatch)
+    _plan_api(monkeypatch, {"MiniMaxAI/MiniMax-H3": _H3_TWO_PARTITION_SIBLINGS})
+
+    def files_for(task):
+        plan = VideoBackend().download_plan(
+            "MiniMaxAI/MiniMax-H3",
+            family_override = "minimax-h3",
+            model_kind = "pipeline",
+            h3_task = task,
+        )
+        by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+        return by_repo["MiniMaxAI/MiniMax-H3"]["files"]
+
+    assert any(n.startswith("transformer_ref/") for n in files_for("ref2va"))
+    assert not any(n.startswith("transformer/") for n in files_for("ref2va"))
+    assert any(n.startswith("transformer/") for n in files_for(None))
+
+
+def test_h3_records_the_guidance_that_actually_ran(monkeypatch):
+    """MiniMax-H3 declares supports_cfg=False: the diffusers branch forwards no CFG kwarg and
+    the native branch pins --cfg-scale 1.0, so a requested guidance reaches no sampler. Keeping
+    the request in the result labelled the clip and its gallery sidecar with a number that did
+    nothing, and two clips run at 1.0 read back as different recipes."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544, guidance = 7.5)
+
+    assert result["guidance"] == backend._state.family.default_guidance == 1.0
+    # And that default is exactly what the engine was told to run.
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
+def test_h3_guidance_normalises_to_its_own_default_not_a_neighbours(monkeypatch):
+    """The normalisation above has to use the FAMILY default, not the identifier-derived one.
+
+    ``default_video_generation_params`` matches on the repo id or path, so a local H3 file under
+    a folder named after another family picks up that family's guidance. Recording it writes back
+    exactly the inaccurate recipe this normalisation exists to prevent, and with a number no H3
+    sampler can have produced.
+    """
+    import dataclasses
+
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    local = "/models/wan/minimax_h3_fl2va-Q4_K_M.gguf"
+    backend._state = dataclasses.replace(backend._state, repo_id = local)
+
+    # Precondition: the identifier really does resolve to a different family's guidance, so the
+    # test cannot pass by that lookup happening to agree with H3.
+    from core.inference.video import default_video_generation_params
+
+    fam = backend._state.family
+    _steps, derived = default_video_generation_params(
+        local, fallback = (fam.default_steps, fam.default_guidance)
+    )
+    assert derived != fam.default_guidance
+
+    result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
+    assert result["guidance"] == fam.default_guidance == 1.0
+    assert calls[-1]["params"].cfg_scale == 1.0
+
+
+def test_h3_records_no_negative_prompt_because_neither_engine_takes_one(monkeypatch):
+    """The same rule as the guidance above, for the other half of the unconditional branch. A
+    negative prompt IS the unconditional branch, so a guidance-distilled family consumes none:
+    the diffusers call adds the kwarg only when the pipeline signature has it (H3's modular
+    workflow does not) and ``SdCppVideoGenParams`` carries no field for one at all. Persisting the
+    caller's string left the gallery sidecar and its restored recipe claiming conditioning that
+    never reached a sampler."""
+    pytest.importorskip("PIL.Image")
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+
+    result = backend.generate(
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+        width = 960,
+        height = 544,
+    )
+
+    assert result["negative_prompt"] is None
+    assert not hasattr(calls[-1]["params"], "negative_prompt")
+
+
+def test_the_video_sidecar_records_the_negative_prompt_that_ran(monkeypatch, tmp_path):
+    """The recipe the gallery reads back comes from the RESULT, like guidance beside it, not from
+    the request the worker was handed: normalising inside generate() alone would have left
+    _run_generate persisting the caller's original string."""
+    from core.inference import video as video_mod
+    from core.inference import video_gallery
+
+    saved: list = []
+    monkeypatch.setattr(
+        video_gallery, "save", lambda data, meta: (saved.append(meta), {"id": "v1"})[1]
+    )
+
+    backend = VideoBackend()
+    result = {
+        "mp4_bytes": b"MP4",
+        "seed": 7,
+        "repo_id": "unsloth/MiniMax-H3-GGUF",
+        "width": 960,
+        "height": 544,
+        "num_frames": 124,
+        "fps": 24,
+        "duration_s": 5.0,
+        "has_audio": True,
+        "conditioning": "t2va",
+        "steps": 30,
+        "guidance": 1.0,
+        "negative_prompt": None,
+    }
+    monkeypatch.setattr(backend, "generate", lambda **kw: result)
+    monkeypatch.setattr(backend, "_finish_generate_job", lambda **kw: None)
+
+    backend._run_generate(
+        cancel_event = threading.Event(),
+        prompt = "a fox runs through snow",
+        negative_prompt = "blurry, watermark",
+    )
+
+    assert saved and saved[-1]["negative_prompt"] is None
+    assert saved[-1]["prompt"] == "a fox runs through snow"
 
 
 def test_a_managed_h3_native_run_holds_the_install_off(monkeypatch, tmp_path):

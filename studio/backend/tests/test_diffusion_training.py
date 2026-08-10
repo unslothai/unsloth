@@ -252,6 +252,46 @@ def test_apply_event_transitions():
     assert svc.status()["status"] == "error" and svc.status()["message"] == "boom"
 
 
+def test_the_joint_losses_reach_status_and_history():
+    """MiniMax-H3 trains video and audio against one objective, and the combined loss can hold
+    steady while one half degrades. The trainer emits ``video_loss`` / ``audio_loss`` per step
+    for exactly that, so the service has to carry them: an emission the queue drops is a
+    diagnostic that silently does not exist.
+
+    Also pinned here: they stay index-aligned with ``steps``. A family that reports only the
+    combined loss contributes nulls rather than short arrays, so the two curves can be drawn
+    against the same x axis as the loss."""
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    svc._apply_event(
+        {
+            "type": "progress",
+            "step": 1,
+            "total_steps": 2,
+            "loss": 0.5,
+            "video_loss": 0.4,
+            "audio_loss": 0.1,
+        }
+    )
+    st = svc.status()
+    assert st["video_loss"] == 0.4 and st["audio_loss"] == 0.1
+    assert st["metric_video_loss"] == [0.4] and st["metric_audio_loss"] == [0.1]
+
+    # A step that reports only the combined loss keeps the series aligned rather than short.
+    svc._apply_event({"type": "progress", "step": 2, "total_steps": 2, "loss": 0.4})
+    st = svc.status()
+    assert st["metric_steps"] == [1, 2]
+    assert len(st["metric_video_loss"]) == len(st["metric_steps"])
+    assert len(st["metric_audio_loss"]) == len(st["metric_steps"])
+
+    # And a single-modality family reports neither, so the whole series is null and the chart
+    # can tell "not a joint run" from "a joint run whose audio loss was zero".
+    solo = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    solo._apply_event({"type": "progress", "step": 1, "total_steps": 1, "loss": 0.5})
+    st = solo.status()
+    assert st["video_loss"] is None and st["audio_loss"] is None
+    assert st["metric_video_loss"] == [None] and st["metric_audio_loss"] == [None]
+
+
 def test_progress_nulls_non_finite_floats_for_strict_json():
     # A divergent step can push loss / avg_loss / learning_rate to NaN or Infinity, which strict JSON forbids, so the service must null them.
     import json
@@ -587,6 +627,75 @@ def test_route_start_preflights_gated_base_off_the_coroutine_thread(client, monk
     r = client.post("/api/train/diffusion/start", json = _BODY)
     assert r.status_code == 200, r.text
     assert threads["preflight"] is not threads["inline"]  # offloaded to a worker, not run inline
+
+
+def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, monkeypatch):
+    """The refusal exists to protect the IMAGE discovery, so it must not outrank a clip family.
+
+    It ran unconditionally and fires on any folder with a clip in it, above the discovery that
+    was already taught to branch on the family. So every valid MiniMax-H3 request, whose dataset
+    is captioned clips and nothing else, came back 400 "training from clips is not supported
+    yet": the trainer this branch adds, unreachable through its own route.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    consulted: list[str] = []
+
+    def _refusal(data_dir):
+        consulted.append(str(data_dir))
+        return "'clips' holds 2 video clips. Training from clips is not supported yet."
+
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", _refusal)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 200, r.text
+    assert consulted == [], "the clip refusal was consulted for a clip-trained family"
+
+    # Control: an image family with the same dataset is still turned away, and by this refusal.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 400
+    assert "not supported yet" in r.json()["detail"]
+    assert len(consulted) == 1
+
+
+def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch):
+    """Exempting a clip family from the clip refusal must not exempt it from the mixed case.
+
+    discover_clip_caption_pairs enumerates video extensions only, so a still in a clip folder
+    is dropped from the run while /diffusion/info and the picker both count it as a training
+    item: the same silent partial dataset the clip refusal exists to prevent, in the other
+    direction.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    monkeypatch.setattr(
+        tr,
+        "_image_dataset_refusal",
+        lambda data_dir: "'d' holds 3 still images alongside its clips.",
+    )
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", lambda data_dir: None)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 400
+    assert "alongside its clips" in r.json()["detail"]
+
+    # And an image family never sees that one: its stills are exactly what it trains on.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.parametrize(

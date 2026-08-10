@@ -1234,6 +1234,7 @@ class VideoBackend:
                         ltx23 = True,
                         te_sources = te_sources,
                         skip_transformer_weights = skip_transformer_weights,
+                        h3_task = kwargs.get("h3_task"),
                         h3_te_scheme = h3_te_scheme,
                     )
                     with self._lock:
@@ -1976,17 +1977,18 @@ class VideoBackend:
           meta-inits the encoder from the base repo's component config;
         - the dense weight shards of the denoiser partition this load opens, under
           ``skip_transformer_weights``, supplied instead by a hosted PRE-QUANTIZED
-          denoiser checkpoint (H3's transformer is 66.3 GB of its base repo). The
-          partition, not the literal ``transformer/``: a reference load stages
-          ``transformer_ref/``, so skipping the other name would skip nothing and
-          leave 66.28 GB in a plan the load never opens. The partition's
-          ``config.json`` is kept for the same reason the pre-cast encoders keep
-          theirs: the pre-quant loader meta-inits the DiT from it, so dropping it
-          would break the very load that made the skip safe.
+          denoiser checkpoint (H3's transformer is 66.3 GB of its base repo).
+          ``transformer/config.json`` is kept for the same reason the pre-cast
+          encoders keep theirs: the pre-quant loader meta-inits the DiT from it,
+          so dropping it would break the very load that made the skip safe.
 
-        ``h3_task`` picks the H3 denoiser partition. The base repo ships two 66.28 GB partitions and
-        a load brings up one: ``transformer/`` for fl2va (which also covers text-only),
-        ``transformer_ref/`` for ref2va. The scoped list carries exactly one, never both."""
+        ``h3_task`` picks the H3 denoiser partition. The base repo ships two, and a load only ever
+        brings up one: ``transformer/`` for fl2va (which also covers text-only) and
+        ``transformer_ref/`` for ref2va. They are 66.28 GB each, so the scoped list carries exactly
+        one of them, never both. Substituting rather than listing both is what keeps the stage at
+        one denoiser: listing only ``transformer/`` staged the wrong 66.28 GB for a ref2va load and
+        left the right one to be fetched inline, outside the download manager's disk preflight and
+        cancellation."""
         from .diffusion_te_prequant import is_prequant_covered_weight
         from .video_minimax_h3 import H3_TASK_REFERENCES
 
@@ -2118,7 +2120,8 @@ class VideoBackend:
 
         ``h3_task`` picks which MiniMax-H3 denoiser partition is staged. It was swallowed by
         ``**load_kwargs`` too, so a ref2va plan staged the fl2va ``transformer/`` and left the
-        66.28 GB ``transformer_ref/`` the load needs to be pulled inline."""
+        66.28 GB ``transformer_ref/`` the load then needs to be pulled inline, outside the
+        download manager."""
         from huggingface_hub import HfApi
 
         fam = _detect_load_family(repo_id, gguf_filename, family_override)
@@ -4219,7 +4222,11 @@ class VideoBackend:
                 result["mp4_bytes"],
                 {
                     "prompt": gen_kwargs["prompt"],
-                    "negative_prompt": gen_kwargs.get("negative_prompt"),
+                    # From the RESULT, not the request, exactly like guidance below: a
+                    # guidance-distilled family consumes no negative prompt on either engine, and
+                    # persisting the caller's string made the restored recipe claim conditioning
+                    # that never reached a sampler.
+                    "negative_prompt": result.get("negative_prompt"),
                     "width": result["width"],
                     "height": result["height"],
                     "num_frames": result["num_frames"],
@@ -4357,11 +4364,28 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+                # A guidance-free family (supports_cfg=False, MiniMax-H3) forwards no CFG control
+                # to either engine: the diffusers branch below skips the kwarg entirely and the
+                # native branch pins --cfg-scale 1.0. The requested number therefore never reached
+                # a sampler, so recording it would label the clip and its gallery sidecar with a
+                # parameter that did nothing. Normalise to the family default instead of refusing:
+                # the value is inert, and a 422 would break every caller that sends the generic
+                # default. negative_prompt goes the same way and for the same reason: a negative
+                # prompt IS the unconditional branch, so a family without one consumes it on
+                # neither engine (the diffusers call adds the kwarg only when the pipeline
+                # signature has it, which a guidance-distilled workflow does not, and
+                # SdCppVideoGenParams has no field for it at all). Left as sent, it reached the
+                # gallery sidecar and the restored recipe claimed conditioning that never touched
+                # a sampler.
+                # fam.default_guidance, NOT the identifier-derived one:
+                # default_video_generation_params matches on the repo id or path, so a local
+                # H3 file whose path happens to contain another family's keyword (say
+                # /models/wan/minimax_h3_fl2va-Q4.gguf) picks up that family's 5.0. Recording
+                # it would write back the inaccurate recipe this normalisation exists to
+                # prevent, and with a number no H3 sampler can ever have seen.
                 if not fam.supports_cfg:
-                    # A CFG-free family never reads this: diffusers gets no guidance kwarg and the
-                    # native path pins cfg_scale to 1.0. Clamped so the recipe cannot record a
-                    # guidance that did not run.
                     guidance = float(fam.default_guidance)
+                    negative_prompt = None
                 shift, audio_shift = self._resolve_flow_shifts(
                     fam, state.engine, flow_shift, audio_flow_shift
                 )
@@ -4664,6 +4688,10 @@ class VideoBackend:
                     "conditioning": conditioning,
                     "steps": steps,
                     "guidance": guidance,
+                    # The EFFECTIVE negative prompt, like guidance beside it: a guidance-distilled
+                    # family normalises it away above, so the sidecar records what conditioned the
+                    # clip instead of what the caller happened to send.
+                    "negative_prompt": negative_prompt,
                     "flow_shift": shift,
                     "audio_flow_shift": audio_shift,
                     # The BUILD this clip came off, read from the ENGAGED state and never from the
@@ -5040,6 +5068,10 @@ class VideoBackend:
                     "conditioning": conditioning,
                     "steps": steps,
                     "guidance": guidance,
+                    # sd-cli's vid_gen mode has no negative-prompt input at all
+                    # (SdCppVideoGenParams carries no field for one), and this path serves only
+                    # MiniMax-H3, which is guidance-distilled. Recorded as the None it ran with.
+                    "negative_prompt": None,
                     "flow_shift": flow_shift,
                     # sd.cpp pins the audio schedule, so the recipe records what it actually ran.
                     "audio_flow_shift": state.family.default_audio_flow_shift,

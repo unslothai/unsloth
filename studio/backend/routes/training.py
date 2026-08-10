@@ -2775,6 +2775,16 @@ async def start_diffusion_training(
             ),
         )
 
+    # Same rule for the MiniMax-H3 trainer's own restrictions, which are config-only and so
+    # answerable here: a batch > 1, a non-bf16 precision, a weighting scheme, a compile
+    # request or a conditioning-cache directory used to reach the worker and 400 there, with
+    # the user's resident models already evicted for a run that never started.
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    _h3_reason = h3_train_unsupported_reason(normalized_cfg)
+    if _h3_reason:
+        raise HTTPException(status_code = 400, detail = _h3_reason)
+
     # Preflight the requested DiT precision BEFORE freeing GPU residents: the trainer's own
     # checks fire only in the child, AFTER eviction. Fail fast (400).
     from core.training.diffusion_train_common import training_precision_preflight_error
@@ -2837,10 +2847,19 @@ async def start_diffusion_training(
             raise HTTPException(status_code = 400, detail = str(e))
 
     # Run the trainers' trust gate here too, so an untrusted/typoed base 400s BEFORE freeing GPU residents rather than failing in the child.
-    from core.training.diffusion_train_common import _assert_trusted_base_model
+    from core.training.diffusion_train_common import (
+        MODULAR_BASE_FAMILIES,
+        _assert_trusted_base_model,
+    )
 
     try:
-        _assert_trusted_base_model(config.get("base_model", ""))
+        # Same answer the trainer's own call reaches. A local MiniMax-H3 pipeline is a modular
+        # directory (modular_model_index.json, no model_index.json); without this the gate here
+        # rejected it and returned 400 before the trainer that CAN load it ever ran.
+        _assert_trusted_base_model(
+            config.get("base_model", ""),
+            allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+        )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
@@ -2865,16 +2884,24 @@ async def start_diffusion_training(
         # Fail closed on clips BEFORE that discovery, which cannot see them: clip-only it
         # reports the folder as uncaptioned, and mixed it succeeds on the images and trains on
         # that subset without saying so.
+        # For the IMAGE-trained families only. A clip-trained family is the case this refusal
+        # was written to protect against, so leaving it unconditional rejected every valid
+        # MiniMax-H3 request with "training from clips is not supported yet" -- the trainer this
+        # branch adds, unreachable through its own route. discover_training_pairs below already
+        # branches on the family; this is the same question asked one step earlier.
         # In a worker thread like the discovery below it, and for the same reason: the scan stats
         # every file and reads the caption sidecars, which on a large or network-mounted dataset
         # would hold the event loop and stall status/stop alongside it.
-        clip_refusal = await asyncio.to_thread(_clip_dataset_refusal, config["data_dir"])
-        if clip_refusal is not None:
-            raise HTTPException(status_code = 400, detail = clip_refusal)
+        mixed_refusal = await asyncio.to_thread(
+            _mixed_media_refusal, config["data_dir"], normalized_cfg.resolved_family
+        )
+        if mixed_refusal is not None:
+            raise HTTPException(status_code = 400, detail = mixed_refusal)
         # Preflight the dataset: a missing/empty/uncaptionable data_dir otherwise fails inside the trainer AFTER eviction. Same discovery the trainer runs, so the two cannot disagree.
         try:
             pairs = await asyncio.to_thread(
-                _dtc.discover_image_caption_pairs,
+                _dtc.discover_training_pairs,
+                normalized_cfg.resolved_family,
                 config["data_dir"],
                 instance_prompt = config.get("instance_prompt") or None,
                 caption_column = config.get("caption_column") or "text",
@@ -2947,6 +2974,8 @@ async def diffusion_training_status(current_subject: str = Depends(get_current_s
         loss = snap.pop("metric_loss", []),
         lr = snap.pop("metric_lr", []),
         grad_norm = snap.pop("metric_grad_norm", []),
+        video_loss = snap.pop("metric_video_loss", []),
+        audio_loss = snap.pop("metric_audio_loss", []),
     )
     return DiffusionTrainingStatusResponse(**snap, metric_history = metric_history)
 
@@ -3106,6 +3135,41 @@ def _diffusion_dataset_summary(folder: Path) -> DiffusionDatasetSummary:
     )
 
 
+def _mixed_media_refusal(data_dir: str, resolved_family: str) -> Optional[str]:
+    """Why ``resolved_family`` cannot train on this folder as it stands, or None.
+
+    Both discoveries read one medium and ignore the other, so a mixed folder trains on a
+    subset the picker counted as trainable and says nothing. The rule is the same in both
+    directions, only the medium that is out of place changes: refuse the folder rather than
+    quietly train part of it.
+    """
+    from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES
+
+    if str(resolved_family or "").strip().lower() in CLIP_TRAINED_FAMILIES:
+        return _image_dataset_refusal(data_dir)
+    return _clip_dataset_refusal(data_dir)
+
+
+def _image_dataset_refusal(data_dir: str) -> Optional[str]:
+    """The converse of ``_clip_dataset_refusal``, for a family that trains from clips.
+
+    ``discover_clip_caption_pairs`` enumerates video extensions only, so a still sitting in a
+    clip folder is dropped from the run while /diffusion/info and the picker both count it as
+    a training item. Same failure as the mixed case below, same answer."""
+    try:
+        summary = _diffusion_dataset_summary(Path(data_dir).expanduser())
+    except OSError:
+        return None
+    if summary.image_count <= 0:
+        return None
+    images = f"{summary.image_count} still image" + ("" if summary.image_count == 1 else "s")
+    return (
+        f"'{Path(data_dir).expanduser().name}' holds {images} alongside its clips. This model "
+        "trains from clips, so a run started here would leave the stills out. Take the images "
+        "out of this folder, or choose a dataset of clips."
+    )
+
+
 def _clip_dataset_refusal(data_dir: str) -> Optional[str]:
     """Why a folder holding clips cannot be trained on yet, or None when it can.
 
@@ -3133,13 +3197,79 @@ def _clip_dataset_refusal(data_dir: str) -> Optional[str]:
     )
 
 
+def _listed_dataset_clip_count(summary: DiffusionDatasetSummary) -> int:
+    """How many trainable CLIPS a listed dataset folder holds, as the dataset layer reports it.
+
+    Read off the summary with a 0 default rather than recounted here. Counting clips is the
+    dataset layer's job, and while that layer is still image-only the summary carries no clip
+    count at all, so every folder answers 0 -- which is precisely the state
+    ``_ui_trainable_families`` below has to detect. When the layer starts reporting clips this
+    starts returning them, with no edit here."""
+    try:
+        return int(getattr(summary, "clip_count", 0) or 0)
+    except (TypeError, ValueError):  # a non-numeric count is no evidence of a clip dataset
+        return 0
+
+
+def _listed_dataset_trains_clips(summary: DiffusionDatasetSummary) -> bool:
+    """Whether a listed folder could actually start a clip run, not merely whether it holds clips.
+
+    The same two conditions ``_image_dataset_refusal`` applies at Start, read off the summary the
+    listing already built: clips present, and no stills mixed in with them. Kept beside the count
+    helper above so the advertisement and the refusal cannot drift into disagreeing about which
+    folders a clip family can use."""
+    if _listed_dataset_clip_count(summary) <= 0:
+        return False
+    try:
+        return int(getattr(summary, "image_count", 0) or 0) <= 0
+    except (TypeError, ValueError):  # a non-numeric count is no evidence either way; be strict
+        return False
+
+
+def _ui_trainable_families(datasets: list[DiffusionDatasetSummary]) -> list[dict]:
+    """The trainable families to ADVERTISE in the Train picker, given the datasets this same
+    response lists as selectable.
+
+    ``family_train_infos()`` describes every family that has a trainer, which is the right
+    answer for the API: ``/diffusion/start`` accepts any of them and must keep doing so. It is
+    the wrong answer for the picker, because the picker offers a family and a dataset together.
+    The families in ``CLIP_TRAINED_FAMILIES`` train from captioned video clips and from nothing
+    else, so while every selectable dataset is stills, choosing one of them can only end in
+    Start failing with "No captioned video clips found" -- an option that cannot be completed
+    from the UI it is offered in.
+
+    Gated on the LISTED datasets rather than on a family name or a feature flag, so this needs
+    no follow-up edit: the moment the dataset layer lists a folder of clips, the family that
+    trains on clips is advertised alongside it, and if the clip listing were ever withdrawn the
+    advertisement withdraws with it. Nothing here decides whether clips are listable; it only
+    reads what the listing already said.
+
+    "Has clips" is not enough on its own. ``_image_dataset_refusal`` turns a MIXED folder away
+    from a clip family, so counting clips alone advertises the family on the strength of a
+    folder Start will then refuse -- an option that still cannot be completed, just one that
+    fails later and with a different message. The qualifying folder is one that would survive
+    that refusal: clips and no stills."""
+    from core.training.diffusion_train_common import CLIP_TRAINED_FAMILIES, family_train_infos
+
+    infos = family_train_infos()
+    if any(_listed_dataset_trains_clips(s) for s in datasets):
+        return infos
+    return [
+        i for i in infos if str(i.get("name") or "").strip().lower() not in CLIP_TRAINED_FAMILIES
+    ]
+
+
 @router.get("/diffusion/info", response_model = DiffusionTrainingInfoResponse)
 async def diffusion_training_info(current_subject: str = Depends(get_current_subject)):
     """Describe where diffusion training reads/writes, and list usable dataset folders.
 
     A dataset folder is any direct child of the datasets root that contains at least one
     trainable item: an image, or a clip for the families that train from video. The UI uses
-    this to offer a picker instead of a blind free-text path."""
+    this to offer a picker instead of a blind free-text path.
+
+    The family list is the trainable set NARROWED to what these datasets can feed: see
+    ``_ui_trainable_families``. Only the advertisement narrows -- ``/diffusion/start`` still
+    accepts every family that has a trainer."""
     from utils.paths import datasets_root, outputs_root
 
     def scan() -> DiffusionTrainingInfoResponse:
@@ -3163,9 +3293,7 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             # A clip-only folder is a real dataset for the video families, so admit on either count.
             if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
-        from core.training.diffusion_train_common import family_train_infos
-
-        families = [DiffusionTrainableFamily(**info) for info in family_train_infos()]
+        families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
@@ -3543,7 +3671,7 @@ def _safe_dataset_image_path(folder: Path, filename: str) -> Path:
 
 def _load_metadata_captions(folder: Path) -> dict[str, str]:
     """Read metadata.jsonl / captions.jsonl into {file_name: caption}, mirroring the
-    trainer's discovery (keys file_name/image/file; caption in the ``text`` column)."""
+    trainer's discovery (keys file_name/video/image/file; caption in the ``text`` column)."""
     import json
 
     out: dict[str, str] = {}
@@ -3566,7 +3694,10 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
                 continue
             if not isinstance(row, dict):
                 continue
-            key = row.get("file_name") or row.get("image") or row.get("file")
+            # "video" too: the clip discovery accepts it, so without it a clip dataset whose
+            # metadata.jsonl uses that key reports caption_count 0 and the panel demands a
+            # trigger prompt the trainer does not need.
+            key = row.get("file_name") or row.get("video") or row.get("image") or row.get("file")
             value = row.get("text")
             # A JSON null is "no caption", not the string "None".
             if key and value is not None:
