@@ -625,6 +625,39 @@ def test_a_clip_trained_family_is_not_turned_away_by_the_clip_refusal(client, mo
     assert len(consulted) == 1
 
 
+def test_a_clip_family_still_refuses_a_folder_holding_stills(client, monkeypatch):
+    """Exempting a clip family from the clip refusal must not exempt it from the mixed case.
+
+    discover_clip_caption_pairs enumerates video extensions only, so a still in a clip folder
+    is dropped from the run while /diffusion/info and the picker both count it as a training
+    item: the same silent partial dataset the clip refusal exists to prevent, in the other
+    direction.
+    """
+    import routes.training as tr
+    from core.training import diffusion_train_common as _dtc
+
+    monkeypatch.setattr(
+        tr,
+        "_image_dataset_refusal",
+        lambda data_dir: "'d' holds 3 still images alongside its clips.",
+    )
+    monkeypatch.setattr(tr, "_clip_dataset_refusal", lambda data_dir: None)
+    monkeypatch.setattr(
+        _dtc, "discover_training_pairs", lambda family, data_dir, **kw: [("a.mp4", "a rabbit")]
+    )
+
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "base_model": "MiniMaxAI/MiniMax-H3", "instance_prompt": "p"},
+    )
+    assert r.status_code == 400
+    assert "alongside its clips" in r.json()["detail"]
+
+    # And an image family never sees that one: its stills are exactly what it trains on.
+    r = client.post("/api/train/diffusion/start", json = _BODY)
+    assert r.status_code == 200, r.text
+
+
 def test_route_start_forwards_extra_training_knobs(client):
     # max_grad_norm and lora_target_modules must reach the service, not be silently dropped.
     body = {**_BODY, "max_grad_norm": 0.5, "lora_target_modules": ["to_q", "to_v"]}

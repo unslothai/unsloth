@@ -390,6 +390,36 @@ def test_start_refuses_a_mixed_folder_rather_than_training_the_images_alone(tmp_
     assert "1 video clip" in detail and "1 video clips" not in detail
 
 
+def test_the_summary_reads_a_video_keyed_metadata_caption(tmp_path):
+    """The clip discovery accepts {"video": ..., "text": ...}; the summary loader must too.
+
+    It knew only file_name/image/file, so a clip dataset written with the video key reported
+    caption_count 0 while the trainer had a caption for every clip, and the panel blocked Start
+    on a trigger prompt that was not needed.
+    """
+    import json
+
+    folder = tmp_path / "video-keyed"
+    folder.mkdir()
+    for stem in ("a", "b"):
+        (folder / f"{stem}.mp4").write_bytes(_MP4_BYTES)
+    (folder / "metadata.jsonl").write_text(
+        "\n".join(
+            json.dumps({"video": f"{stem}.mp4", "text": f"clip {stem}"}) for stem in ("a", "b")
+        ),
+        encoding = "utf-8",
+    )
+
+    summary = _diffusion_dataset_summary(folder)
+    assert summary.clip_count == 2
+    assert summary.caption_count == 2
+
+    # And the trainer agrees, which is the disagreement this closes.
+    from core.training.diffusion_h3_clips import discover_clip_caption_pairs
+
+    assert len(discover_clip_caption_pairs(folder)) == 2
+
+
 def test_start_leaves_an_image_only_folder_alone(tmp_path):
     """No clips, no refusal: the ordinary uncaptioned-folder error still speaks for itself."""
     from routes.training import _clip_dataset_refusal

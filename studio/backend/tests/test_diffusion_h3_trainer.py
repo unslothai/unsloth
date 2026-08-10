@@ -1377,6 +1377,33 @@ def test_h3_advertises_that_it_cannot_checkpoint():
     _cfg(save_steps = 0).normalized()
 
 
+def test_the_batch_cap_survives_the_response_model():
+    """family_train_infos emitting it is not enough: the route builds a DiffusionTrainableFamily
+    from that dict, and Pydantic drops any field the model does not declare. Undeclared, the
+    panel reads the cap as undefined, keeps rendering Batch, and sends a carried-over value the
+    validation refuses -- the clamp exists but never receives its input."""
+    from core.training.diffusion_train_common import (
+        SINGLE_SEQUENCE_FAMILIES,
+        family_train_infos,
+    )
+    from models.training import DiffusionTrainableFamily
+
+    infos = {info["name"]: info for info in family_train_infos()}
+    assert "minimax-h3" in SINGLE_SEQUENCE_FAMILIES
+    for name, info in infos.items():
+        expected = 1 if name in SINGLE_SEQUENCE_FAMILIES else None
+        assert info["max_train_batch_size"] == expected, name
+        # Through the wire model, which is where it was being dropped.
+        assert DiffusionTrainableFamily(**info).max_train_batch_size == expected, name
+    # And the cap has to agree with the validation, or the panel hides a control that works.
+    from core.training.diffusion_train_common import h3_train_unsupported_reason
+
+    assert "batch size 1" in (
+        h3_train_unsupported_reason(_cfg(train_batch_size = 2).normalized()) or ""
+    )
+    assert h3_train_unsupported_reason(_cfg(train_batch_size = 1).normalized()) is None
+
+
 def test_the_h3_conditioner_load_carries_the_hub_token(monkeypatch):
     """``ModularPipeline.from_pretrained``'s token opens the modular INDEX only: every component
     is fetched by its own ``from_pretrained`` inside ``load_components``, which swallows a failure
