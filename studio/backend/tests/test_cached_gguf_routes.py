@@ -4862,3 +4862,49 @@ def _hf_cache_snapshot_repo_id_ok(snapshot) -> bool:
         and decode(None) is None
         and decode("/plain/folder/model") is None
     )
+def test_a_pipeline_index_outranks_a_family_keyword_in_an_ancestor_directory(tmp_path):
+    """A local pipeline whose path contains another family's keyword must still load as the family
+    its own ``model_index.json`` declares.
+
+    ``detect_family_for_pick`` used to try the path name first and consult the index only when that
+    answered nothing, so a keyword in ANY ancestor segment shadowed the index. The listing reads the
+    index, so the two named different families for one directory and the model was shown as one and
+    instantiated as another, which is the same listing-versus-loader split #8407 is about. Reported
+    against a ``QwenImagePipeline`` saved under a ``flux.1`` parent, which is the shape here.
+    """
+    from core.inference import diffusion_families as families
+
+    checkpoint = tmp_path / "flux.1" / "checkpoint"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "model_index.json").write_text(
+        json.dumps({"_class_name": "QwenImagePipeline", "_diffusers_version": "0.39.0"})
+    )
+    path = str(checkpoint)
+
+    from_index = families.detect_family_by_pipeline_index(path)
+    assert from_index is not None
+    # The listing classifies on the index, so the loader has to reach the same answer.
+    assert families.detect_family_for_pick(path) is from_index
+    # ... and specifically not the ancestor directory's family.
+    assert families.detect_family(path, None) is not from_index
+
+
+def test_reading_the_index_first_leaves_remote_picks_and_overrides_alone(tmp_path):
+    """The index only ever answers for a local directory that saved one, so a remote repo id, an
+    explicit override and the local-GGUF filename fallback all behave exactly as before."""
+    from core.inference import diffusion_families as families
+
+    for repo_id in ("black-forest-labs/FLUX.1-dev", "Qwen/Qwen-Image"):
+        assert families.detect_family_for_pick(repo_id) is families.detect_family(repo_id, None)
+
+    checkpoint = tmp_path / "flux.1" / "checkpoint"
+    checkpoint.mkdir(parents = True)
+    (checkpoint / "model_index.json").write_text(json.dumps({"_class_name": "QwenImagePipeline"}))
+    # An explicit override still wins over both the index and the path.
+    assert families.detect_family_for_pick(str(checkpoint), override = "flux.1") is (
+        families.detect_family(str(checkpoint), "flux.1")
+    )
+    # A bare directory with no index still resolves through the GGUF filename.
+    assert families.detect_family_for_pick(
+        str(tmp_path / "anon"), gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    ) is families.detect_family("x/flux1-dev-Q4_K_M.gguf", None)

@@ -606,11 +606,20 @@ def detect_family_for_pick(
     commit hash; the pick the picker then sends is that same opaque path with no family_override,
     so without this the model is shown as text-to-image and refused as an unsupported family
     (#8407)."""
-    fam = detect_family(repo_id, override)
+    fam = None
+    if not override:
+        # The checkpoint's own declaration outranks any guess made from its path. A family keyword
+        # in ANY ancestor segment otherwise shadows the index entirely: a QwenImagePipeline saved
+        # under `.../flux.1/checkpoint` matched FLUX on the directory name and never reached the
+        # index. The listing reads the index, so the two named different families for one
+        # directory and the model was listed as one and instantiated as another.
+        # Remote picks are unaffected: with no local model_index.json this returns None and the
+        # name-based paths below run exactly as before.
+        fam = detect_family_by_pipeline_index(repo_id)
+    if fam is None:
+        fam = detect_family(repo_id, override)
     if fam is None and gguf_filename and not override:
         fam = detect_family(f"{repo_id}/{gguf_filename}", override)
-    if fam is None and not override:
-        fam = detect_family_by_pipeline_index(repo_id)
     return fam
 
 
