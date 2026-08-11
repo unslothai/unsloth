@@ -381,9 +381,7 @@ def run(page, state: Runtime) -> None:
         "new chat hides the redundant loaded-models card",
         page.locator(CARD).count() == 0,
     )
-    page.screenshot(
-        path = str(ART / f"chat-active-1920x411-{PLAYWRIGHT_BROWSER}.png")
-    )
+    page.screenshot(path = str(ART / f"chat-active-1920x411-{PLAYWRIGHT_BROWSER}.png"))
     page.goto(
         BASE + "/chat?thread=loaded-models-regression",
         wait_until = "domcontentloaded",
