@@ -127,6 +127,28 @@ test("a monitor filling the viewport pushes the panel off the right edge", () =>
   assert.equal(anchor.top, H - PANEL_MARGIN - PANEL.height);
 });
 
+// The same rescue, in a window narrow enough that the right-hand anchor's own
+// left coordinate falls left of the midpoint. Reading the side back out of the
+// coordinates called that a left-hand refuge, so it tied with the real one,
+// won on order, and left the panel over the controls it was moving to clear.
+test("a narrow window still sends the panel off the right edge", () => {
+  for (const width of [768, 800, 832]) {
+    const viewport = { width, height: 700 };
+    const monitor: PanelRect = {
+      left: PANEL_MARGIN,
+      top: PANEL_MARGIN,
+      right: width - PANEL_MARGIN,
+      bottom: 700 - PANEL_MARGIN,
+    };
+    const anchor = placeFloatingPanel(PANEL, [monitor], viewport);
+    assert.equal(
+      anchor.left,
+      PANEL_MARGIN,
+      `at ${width}px the panel stayed in the right column, over Close and the grip`,
+    );
+  }
+});
+
 test("the panel always lands fully on screen", () => {
   const monitor = monitorCorner(600);
   for (const viewport of [
