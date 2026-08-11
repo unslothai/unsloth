@@ -2916,7 +2916,7 @@ _hsa_spoofed_physical_gfx() {
     # passes raw `rocminfo | grep -oE gfx...` output, which repeats the token once
     # per Name/ISA line -- counting lines would see 2 or 3 for a single GPU and
     # never fire (which is exactly what #7331's own host looks like).
-    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF && !seen[$0]++' | wc -l | tr -d '[:space:]')
+    _hsp_n=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF && !seen[$0]++ { n++ } END { print n + 0 }')
     [ "${_hsp_n:-0}" -ne 1 ] && return 0
     _hsp_probed=$(printf '%s\n' "$_hsp_probed_all" | awk 'NF { print; exit }')
     [ -n "$_hsp_probed" ] || return 0
@@ -2934,6 +2934,10 @@ _hsa_spoofed_physical_gfx() {
         if [ "$_hsp_kfd" = "$_hsp_inferred" ]; then
             echo "  [WARN] KFD topology sysfs reports $_hsp_inferred -- $_hsp_probed is a spoof." >&2
             printf '%s\n' "$_hsp_inferred"
+        else
+            # Say so rather than leaving "Checking for a spoof." hanging: on a real
+            # gfx1100 card in a Ryzen AI Max chassis this is the CORRECT outcome.
+            echo "  [WARN] The kernel does not corroborate a spoof; keeping $_hsp_probed." >&2
         fi
         # Several GPU nodes: the single-arch premise was wrong (the spoof
         # collapsed a mixed host into one apparent arch). Decline.
@@ -2953,7 +2957,11 @@ _hsa_spoofed_physical_gfx() {
         if [ "$_hsp_re" = "$_hsp_inferred" ]; then
             echo "  [WARN] rocminfo reports $_hsp_inferred with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
             printf '%s\n' "$_hsp_inferred"
+        else
+            echo "  [WARN] rocminfo does not corroborate a spoof; keeping $_hsp_probed." >&2
         fi
+    else
+        echo "  [WARN] No rocminfo to re-probe and no KFD sysfs; keeping $_hsp_probed." >&2
     fi
     return 0
 }

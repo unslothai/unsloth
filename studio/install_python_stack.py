@@ -1701,6 +1701,13 @@ def _hsa_spoofed_physical_gfx(
                 f"physical arch.\n"
             )
             return inferred_gfx
+        # Say so, rather than leaving "Checking whether..." hanging: on a real
+        # gfx1100 card in a Ryzen AI Max chassis this is the CORRECT outcome, and
+        # a user who sees only the question will read the silence as a failure.
+        _safe_print(
+            f"   {source} does not corroborate a spoof "
+            f"({physical or 'no answer'}); keeping {probed}.\n"
+        )
         return None
 
     # 1. The kernel, which the override cannot reach. Decisive either way: if it
