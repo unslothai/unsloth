@@ -27,12 +27,11 @@ from playwright_image_model_footprint import (
     CHECKPOINT_BYTES,
     COMPANION_BYTES,
     FILENAME,
-    KLEIN_ROW,
     REPO_ID,
     REQUIRED_BYTES,
     _api_payload,
-    klein_row,
     _json,
+    klein_row,
 )
 
 
