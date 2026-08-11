@@ -172,7 +172,7 @@ awk "/<<'PYEOF'/{f=1;next} f&&/^PYEOF\$/{exit} f" "$BUILD_SH" > "$_PATCHER"
 assert_eq "patcher extracted from the build script" "yes" \
     "$([ -s "$_PATCHER" ] && echo yes || echo no)"
 
-_LINK="/tmp/.unsloth-wk-1000"
+_LINK="/tmp/.unsloth-webkit"
 _mk_wk() {  # $1 = dir, $2.. = NUL-terminated strings to embed
     mkdir -p "$1"; _f="$1/libwebkit2gtk-4.1.so.0"; : > "$_f"; shift
     for _s in "$@"; do printf '%s\0' "$_s" >> "$_f"; done
@@ -228,10 +228,33 @@ assert_eq "AppRun puts the bundle first" "yes" \
     "$(grep -q 'export LD_LIBRARY_PATH="\$libdir' "$BUILD_SH" && echo yes || echo no)"
 assert_eq "WebKit helper path exported" "yes" \
     "$(grep -q 'WEBKIT_EXEC_PATH' "$BUILD_SH" && echo yes || echo no)"
+
 assert_eq "GIO modules redirected" "yes" \
     "$(grep -q 'GIO_MODULE_DIR' "$BUILD_SH" && echo yes || echo no)"
 assert_eq "pixbuf loaders redirected" "yes" \
     "$(grep -q 'GDK_PIXBUF_MODULE_FILE' "$BUILD_SH" && echo yes || echo no)"
+
+echo "=== behavioural: AppRun refuses a WebKit link it does not control ==="
+# The link path is fixed and /tmp is world-writable, so another user can pre-create it;
+# the sticky bit then blocks our replace. Swallowing that leaves WebKit spawning THEIR
+# helpers, so the guard must abort instead. The foreign-owner case needs a second uid,
+# but it fails through the same arm as a target with no helpers in it.
+_GUARD="$_TMP/guard.sh"
+awk '/^WEBKIT_LINK="__WEBKIT_LINK_PATH__"$/,/^fi$/' "$BUILD_SH" > "$_GUARD"
+assert_eq "guard extracted from AppRun" "yes" \
+    "$([ -s "$_GUARD" ] && echo yes || echo no)"
+_run_guard() {  # $1 = appdir -> ok/refused
+    _l="$_TMP/link-$2"
+    sed "s|__WEBKIT_LINK_PATH__|$_l|" "$_GUARD" > "$_TMP/g.sh"
+    if (appdir="$1"; . "$_TMP/g.sh") 2>/dev/null; then echo ok; else echo refused; fi
+}
+_good="$_TMP/good/usr/libexec/unsloth-webkit"
+mkdir -p "$_good"; : > "$_good/WebKitNetworkProcess"; chmod +x "$_good/WebKitNetworkProcess"
+assert_eq "a real bundle is accepted" "ok" "$(_run_guard "$_TMP/good" good)"
+mkdir -p "$_TMP/empty/usr/libexec/unsloth-webkit"
+assert_eq "a target with no helpers is refused" "refused" "$(_run_guard "$_TMP/empty" empty)"
+assert_eq "the failure is never swallowed" "no" \
+    "$(grep -q 'ln -sfn .*unsloth-webkit.* || true' "$BUILD_SH" && echo yes || echo no)"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

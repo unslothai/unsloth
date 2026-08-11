@@ -571,7 +571,10 @@ fi
 # passed and shipped an AppImage with exactly the fault this patch exists to fix.
 # So: patch the directories we actually copied from, fall back to a layout-agnostic
 # pattern, and treat "nothing matched" as a build failure.
-WEBKIT_LINK_PATH="/tmp/.unsloth-wk-$(id -u 2>/dev/null || echo 0)"
+# A build-time `id -u` would bake the CI runner's uid, which says nothing about who runs
+# the AppImage, so the path is a plain constant and AppRun proves at launch that the link
+# is one it owns (see there). Must stay no longer than the paths it replaces.
+WEBKIT_LINK_PATH="/tmp/.unsloth-webkit"
 python3 - "$libdir" "$WEBKIT_LINK_PATH" \
          "${WEBKIT_HELPER_SRC:-}" "${WEBKIT_INJECTED_SRC:-}" <<'PYEOF'
 import pathlib, re, sys
@@ -656,8 +659,25 @@ export GSETTINGS_SCHEMA_DIR="$appdir/usr/share/glib-2.0/schemas"
 # the build rewrote that string to the fixed path below. Point it at this mount.
 # Re-created every launch: the mount point changes each run, and a stale link
 # from a previous version would silently spawn the wrong helpers.
+#
+# The path is fixed and /tmp is world-writable, so another user can pre-create it. The
+# sticky bit then stops us replacing it, and a swallowed failure would leave WebKit
+# spawning THEIR WebKitNetworkProcess/WebKitWebProcess and loading their injected
+# bundle, in this session. So never continue with a link we do not control: the target
+# must be owned by us and hold the helpers. Concurrent launches of the same app race
+# here harmlessly, since either mount satisfies both checks.
 WEBKIT_LINK="__WEBKIT_LINK_PATH__"
-ln -sfn "$appdir/usr/libexec/unsloth-webkit" "$WEBKIT_LINK" 2>/dev/null || true
+webkit_src="$appdir/usr/libexec/unsloth-webkit"
+rm -f -- "$WEBKIT_LINK" 2>/dev/null || true
+ln -sn "$webkit_src" "$WEBKIT_LINK" 2>/dev/null || true
+if [ ! -L "$WEBKIT_LINK" ] || [ ! -O "$WEBKIT_LINK" ] \
+   || [ ! -x "$WEBKIT_LINK/WebKitNetworkProcess" ]; then
+  printf '%s\n' \
+    "Unsloth cannot start: $WEBKIT_LINK is not a link this session controls." \
+    "WebKit's helper path is compiled in, so continuing would run another user's" \
+    "helper binaries. Remove that path (or ask its owner to) and start again." >&2
+  exit 126
+fi
 
 # Software rendering fallback. The bundle deliberately does NOT carry libGL, so
 # rendering uses the host driver; when there is none that works (headless, a
