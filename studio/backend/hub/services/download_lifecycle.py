@@ -475,8 +475,8 @@ def _try_transport_retry(
     the stall retry: same transport, same marker, one more child, bounded by
     *xet_attempt* rather than by the transport check that stops the HTTP one.
 
-    *allow_ambient_token* rides along unchanged: a job that started anonymous because an API
-    caller named the repo must not pick the backend's own HF_TOKEN up on a lower rung.
+    *allow_ambient_token* rides along unchanged, so a job that started anonymous cannot pick
+    the backend's own HF_TOKEN up on a lower rung.
 
     *pending_xet_failure* is a stall verdict held back from the health tracker
     and carried into the next worker, so a download that recovers on its second

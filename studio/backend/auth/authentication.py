@@ -189,11 +189,10 @@ async def authenticated_via_api_key(
 async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
     """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
 
-    A UI session is the installation's owner: Settings hands it the saved Hugging Face token on
-    request, so letting its downloads use the ambient one grants it nothing it did not have. An
-    sk-unsloth API key is the lesser credential -- ``require_ui_session`` refuses it that same
-    token -- so it must not reach the operator's private repos by naming one in a download
-    request instead. Programmatic callers send their own token in ``X-Unsloth-HF-Token``.
+    A UI session already gets the saved token from Settings, so the ambient one grants it
+    nothing new. ``require_ui_session`` refuses an sk-unsloth API key that same token, so it
+    must not reach private repos by naming one in a download instead; it sends its own token
+    in ``X-Unsloth-HF-Token``.
     """
     return not via_api_key
 
