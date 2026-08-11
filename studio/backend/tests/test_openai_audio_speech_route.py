@@ -175,9 +175,7 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     # Minus the codec wrapper too: the backends generate from a formatted prompt, not the
     # raw text, so budgeting the whole remainder left the few delimiter tokens to overflow.
     assert budget == (
-        2048
-        - routes_module._prompt_token_estimate(text)
-        - routes_module._TTS_PROMPT_FORMAT_RESERVE
+        2048 - routes_module._prompt_token_estimate(text) - routes_module._TTS_PROMPT_FORMAT_RESERVE
     )
 
 
@@ -235,8 +233,12 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1000")
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", str(4 * 1024))
     meta = {
-        "prompt": "p", "model": "m", "audio_type": "snac", "sample_rate": 24000,
-        "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+        "prompt": "p",
+        "model": "m",
+        "audio_type": "snac",
+        "sample_rate": 24000,
+        "duration_s": 0.1,
+        "created_at": "2026-01-01T00:00:00Z",
     }
     ids = [gallery.save(b"R" * 1024, meta)["id"] for _ in range(10)]
 
@@ -245,9 +247,7 @@ def test_the_gallery_is_bounded_by_bytes_not_only_by_count(monkeypatch, tmp_path
     assert set(ids[-4:]) == set(remaining)
 
 
-def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(
-    monkeypatch, tmp_path
-):
+def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(monkeypatch, tmp_path):
     """The newest clip is the one the caller just generated. Pruning it because it alone
     exceeds the quota would read as a silent failure."""
     import core.inference.audio_gallery as gallery
@@ -255,8 +255,12 @@ def test_one_oversized_clip_is_still_returned_rather_than_pruned_immediately(
     monkeypatch.setattr(gallery, "gallery_dir", lambda: tmp_path)
     monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_BYTES", "64")
     meta = {
-        "prompt": "p", "model": "m", "audio_type": "snac", "sample_rate": 24000,
-        "duration_s": 0.1, "created_at": "2026-01-01T00:00:00Z",
+        "prompt": "p",
+        "model": "m",
+        "audio_type": "snac",
+        "sample_rate": 24000,
+        "duration_s": 0.1,
+        "created_at": "2026-01-01T00:00:00Z",
     }
     saved = gallery.save(b"R" * 4096, meta)
 

@@ -142,7 +142,9 @@ def _prune_to_cap() -> int:
     if removed:
         logger.info(
             "audio_gallery.pruned: removed %d clip(s) over the %d clip / %d byte cap",
-            removed, cap, byte_cap,
+            removed,
+            cap,
+            byte_cap,
         )
     return removed
 
