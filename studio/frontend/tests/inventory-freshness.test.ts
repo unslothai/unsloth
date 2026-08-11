@@ -6,7 +6,7 @@ import test from "node:test";
 
 import {
   inventoryRefreshDecision,
-  isEmptyRevalidation,
+  nextRevalidationStamp,
   isInventoryStampFresh,
 } from "../src/features/hub/inventory/inventory-freshness.ts";
 
@@ -148,23 +148,53 @@ test("isInventoryStampFresh rejects a null, an expired and a future stamp", () =
   assert.equal(isInventoryStampFresh(NOW, NOW, 30_000), true);
 });
 
-test("only a forced scan confirming an empty inventory stamps revalidation", () => {
-  const empty = { key: KEY, ready: true, error: null, rowCount: 0 };
-  assert.equal(isEmptyRevalidation(true, empty, KEY), true);
+test("the revalidation stamp tracks both ends of a confirmed empty inventory", () => {
+  const emptyPrev = {
+    key: KEY,
+    ready: true,
+    error: null,
+    rowCount: 0,
+    revalidatedAt: null as number | null,
+  };
+  const call = (over: Record<string, unknown>) =>
+    nextRevalidationStamp({
+      force: true,
+      requestKey: KEY,
+      previous: emptyPrev,
+      rowCount: 0,
+      now: NOW,
+      ...over,
+    });
 
-  // A manual refresh of a POPULATED inventory that happens to come back empty is the first
-  // scan to see the empty state, not its confirmation. Stamping it settles the picker on
-  // "no models" after one scan.
+  // A forced second look at an inventory already seen empty is the confirmation.
+  assert.equal(call({}), NOW);
+
+  // Rows came back, so the inventory is not empty: the stamp must be cleared, or a later
+  // FIRST empty scan inside the window reads as already confirmed and the picker settles
+  // on "no models" after one look.
+  assert.equal(call({ rowCount: 3 }), null);
   assert.equal(
-    isEmptyRevalidation(true, { ...empty, rowCount: 4 }, KEY),
-    false,
+    call({ rowCount: 3, previous: { ...emptyPrev, revalidatedAt: NOW - 1_000 } }),
+    null,
   );
-  // Not forced, a different key, unready, or previously failed: none of those confirm.
-  assert.equal(isEmptyRevalidation(false, empty, KEY), false);
-  assert.equal(isEmptyRevalidation(true, { ...empty, key: "other" }, KEY), false);
-  assert.equal(isEmptyRevalidation(true, { ...empty, ready: false }, KEY), false);
+
+  // First empty scan after a populated one is an observation, not a confirmation.
   assert.equal(
-    isEmptyRevalidation(true, { ...empty, error: "scan failed" }, KEY),
-    false,
+    call({ previous: { ...emptyPrev, rowCount: 4, revalidatedAt: null } }),
+    null,
+  );
+  // Not forced, unready or previously failed: carry, never stamp.
+  assert.equal(call({ force: false }), null);
+  assert.equal(call({ previous: { ...emptyPrev, ready: false } }), null);
+  assert.equal(call({ previous: { ...emptyPrev, error: "scan failed" } }), null);
+  // A key change drops the previous confirmation.
+  assert.equal(
+    call({ previous: { ...emptyPrev, key: "other", revalidatedAt: NOW - 10 } }),
+    null,
+  );
+  // Same key, nothing decisive: carry what was there.
+  assert.equal(
+    call({ force: false, previous: { ...emptyPrev, revalidatedAt: NOW - 500 } }),
+    NOW - 500,
   );
 });

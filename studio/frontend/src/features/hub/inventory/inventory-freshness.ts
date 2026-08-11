@@ -26,30 +26,46 @@ export function isInventoryStampFresh(
   return age >= 0 && age < Math.max(0, maxAgeMs);
 }
 
-/** Whether a completed forced scan CONFIRMS a previously observed empty inventory.
+/** The `revalidatedAt` a completed scan should leave behind.
  *
- * Only such a scan may stamp `revalidatedAt`. Stamping every force instead means a manual
- * refresh of a populated inventory that happens to come back empty records itself as its
- * own confirmation, so `useHubInventory` settles the picker on "no models" after ONE scan
- * and the intended second look never happens.
+ * The stamp means one thing only: "an empty inventory has been seen TWICE, so the emptiness
+ * is confirmed". `useHubInventory` skips its second look while the stamp is fresh, so it has
+ * to track both ends of that claim.
+ *
+ * - rows came back, so the inventory is not empty: clear it. Keeping it would let a later
+ *   FIRST empty scan land inside the window and read as already confirmed.
+ * - a forced scan over an inventory already observed empty: this is the second look, stamp
+ *   it. Stamping every force instead lets a manual refresh that happens to return empty
+ *   record itself as its own confirmation.
+ * - anything else: carry the stamp for the same key, and drop it when the key changes.
  */
-export function isEmptyRevalidation(
-  force: boolean,
+export function nextRevalidationStamp({
+  force,
+  requestKey,
+  previous,
+  rowCount,
+  now,
+}: {
+  force: boolean;
+  requestKey: string;
   previous: {
     key: string | null;
     ready: boolean;
     error: string | null;
     rowCount: number;
-  },
-  requestKey: string,
-): boolean {
-  return (
-    force &&
-    previous.key === requestKey &&
-    previous.ready &&
-    previous.error === null &&
-    previous.rowCount === 0
-  );
+    revalidatedAt: number | null;
+  };
+  rowCount: number;
+  now: number;
+}): number | null {
+  if (rowCount > 0) {
+    return null;
+  }
+  const sameKey = previous.key === requestKey;
+  if (force && sameKey && previous.ready && previous.error === null && previous.rowCount === 0) {
+    return now;
+  }
+  return sameKey ? previous.revalidatedAt : null;
 }
 
 export function inventoryRefreshDecision(

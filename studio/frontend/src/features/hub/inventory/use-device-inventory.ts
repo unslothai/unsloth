@@ -22,7 +22,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import {
   inventoryRefreshDecision,
-  isEmptyRevalidation,
+  nextRevalidationStamp,
 } from "./inventory-freshness";
 
 export type DeviceInventorySource =
@@ -254,20 +254,19 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
           error: null,
           key,
           refreshedAt,
-          revalidatedAt: isEmptyRevalidation(
-            Boolean(options.force),
-            {
+          revalidatedAt: nextRevalidationStamp({
+            force: Boolean(options.force),
+            requestKey: key,
+            previous: {
               key: current.key,
               ready: current.ready,
               error: current.error,
               rowCount: current.rows.length,
+              revalidatedAt: current.revalidatedAt,
             },
-            key,
-          )
-            ? refreshedAt
-            : current.key === key
-              ? current.revalidatedAt
-              : null,
+            rowCount: rows.length,
+            now: refreshedAt,
+          }),
         });
       }
       return rows;
