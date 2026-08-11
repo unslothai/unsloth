@@ -542,7 +542,14 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
     Read with a size cap and no schema assumptions: an index is a small JSON manifest, and neither
     a listing nor a load may be held up (or brought down) by whatever a scan folder happens to
     contain. ``_class_name`` is a LIST for a remote-code community pipeline, which Studio cannot
-    load anyway, so only a plain string answers."""
+    load anyway, so only a plain string answers.
+
+    ``utf-8-sig`` because a hand-authored index is an ordinary thing to find beside a converted
+    checkpoint and Windows PowerShell writes JSON with a BOM; read as ``utf-8`` that file raises
+    and the model stays hidden, which is #8407 again by another road. ``RecursionError`` is caught
+    with the rest because a nesting bomb raises it and it is NOT a ``ValueError``: both callers
+    wrap this in a blanket except that reads a raise as detection having succeeded, so an index
+    this cannot parse has to come back as None rather than as an answer."""
     root = Path(path or "")
     if not str(root):
         return None
@@ -551,8 +558,8 @@ def pipeline_class_from_index(path: Optional[str]) -> Optional[str]:
             index = root / name
             if not index.is_file() or index.stat().st_size > 1_000_000:
                 continue
-            payload = json.loads(index.read_text(encoding = "utf-8"))
-        except (OSError, ValueError, UnicodeError):
+            payload = json.loads(index.read_text(encoding = "utf-8-sig"))
+        except (OSError, ValueError, RecursionError):
             continue
         if isinstance(payload, dict):
             value = payload.get("_class_name")
