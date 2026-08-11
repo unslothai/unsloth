@@ -111,6 +111,20 @@ test("a step naming only a repo id routes by that name", () => {
   assert.equal(classifyPreparation("Loading checkpoint shards", {}), "model");
 });
 
+test("an id shared by both repos routes by wording, not by the tie-break", () => {
+  // The Hub allows the same owner/name as a model and as a dataset, and then the id says
+  // nothing about which row a message belongs to. The longer-id tie-break handed every one
+  // of those to the dataset, so the model row sat empty for the whole load.
+  const resources = { modelName: "org/foo", datasetName: "org/foo" };
+  assert.equal(classifyPreparation("Loading org/foo", resources), "model");
+  assert.equal(classifyPreparation("Tokenizing org/foo", resources), "dataset");
+  assert.equal(classifyPreparation("Loading checkpoint shards", resources), "model");
+  // A genuine prefix pair still resolves by length rather than falling through.
+  const distinct = { modelName: "org/foo-base", datasetName: "org/foo" };
+  assert.equal(classifyPreparation("Loading org/foo-base", distinct), "model");
+  assert.equal(classifyPreparation("Loading org/foo", distinct), "dataset");
+});
+
 test("the preparation row covers the gap up to the first step", () => {
   assert.equal(shouldShowPreparationStatus("finalizing", 0, false), false);
   assert.equal(shouldShowPreparationStatus("completed", 0, false), false);

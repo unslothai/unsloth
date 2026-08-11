@@ -234,6 +234,51 @@ def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monke
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
+def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
+    monkeypatch, tmp_path
+):
+    """The metadata FILE names must not prune directories. `datasets` excludes only hidden and
+    `__`-prefixed dirs, so it resolves `license/train.parquet` happily, and applying the file
+    list to the directory took the whole subtree out and hid the dataset from On Device."""
+    repo_root = _dataset_snapshot(
+        monkeypatch,
+        tmp_path,
+        ("README.md", "license/train.parquet"),
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
+def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monkeypatch, tmp_path):
+    """A directory link pointing back inside the snapshot passes the containment test, so it
+    is only the visited set that stops the descent. The case that matters is a Windows junction:
+    `os.walk(followlinks = False)` descends those, because neither `is_symlink()` nor a pre-3.12
+    `is_junction()` reports the reparse point. Linux `os.walk` declines the symlink on its own,
+    which would make this pass either way, so the walk here descends the link the way Windows
+    does and the test asserts the pruning that ends it."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
+    data = next((repo_root / "snapshots").iterdir()) / "data"
+    (data / "loop").symlink_to(data, target_is_directory = True)
+    depth = 0
+
+    def _walk_following_junctions(top, followlinks = False, onerror = None):
+        nonlocal depth
+        stack = [Path(top)]
+        while stack:
+            base = stack.pop()
+            depth = max(depth, len(base.parts))
+            assert depth < 40, "the walk never pruned the link back to an ancestor"
+            names = sorted(entry.name for entry in base.iterdir())
+            dirnames = [name for name in names if (base / name).is_dir()]
+            filenames = [name for name in names if name not in dirnames]
+            yield str(base), dirnames, filenames
+            stack.extend(base / name for name in dirnames)
+
+    monkeypatch.setattr(cache_inventory.os, "walk", _walk_following_junctions)
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+
 def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(monkeypatch, tmp_path):
     """`_data_suffix` drops a trailing compression suffix and then walks the rest, so a gzipped
     card or script is still metadata while `train.parquet.gz` and `records.parquet.backup` are

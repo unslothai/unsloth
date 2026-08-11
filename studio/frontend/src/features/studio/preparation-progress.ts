@@ -106,12 +106,18 @@ export function classifyPreparation(
   const modelName = resources.modelName?.toLowerCase();
   const datasetHit = mentionsResource(haystack, datasetName);
   const modelHit = mentionsResource(haystack, modelName);
+  // the Hub allows the same owner/name as both a model and a dataset, and then the id says
+  // nothing about which row a message belongs to. fall through to the wording rather than
+  // handing every one of them to the dataset, which left the model row with no status at all.
+  const ambiguous = datasetHit && modelHit && datasetName === modelName;
   // the longer id wins when both match, because one can contain the other:
   // `Loading org/foo-base` mentions the model AND the dataset `org/foo`.
-  if (datasetHit && (!modelHit || datasetName!.length >= modelName!.length)) {
-    return "dataset";
+  if (!ambiguous) {
+    if (datasetHit && (!modelHit || datasetName!.length >= modelName!.length)) {
+      return "dataset";
+    }
+    if (modelHit) return "model";
   }
-  if (modelHit) return "model";
   if (MODEL_PREPARATION_RE.test(title)) return "model";
   return DATASET_PREPARATION_RE.test(title) ? "dataset" : "model";
 }

@@ -139,19 +139,25 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 _DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
 
 
+def _is_payload_dir(name: str) -> bool:
+    # The only rule `datasets` applies to a directory: a dotted or `__`-prefixed one is skipped
+    # unless a pattern names it, so nothing beneath it can supply rows. That covers a `__MACOSX`
+    # tree left by a Mac zip. The metadata FILE names are deliberately not applied here -- a
+    # directory called `license/` can hold the parquet the resolver would happily load, and
+    # pruning that subtree hid the dataset from On Device.
+    return not name.startswith(".") and not name.startswith("__")
+
+
 def _is_payload_name(name: str) -> bool:
-    # The rule `datasets` resolves data files by: a dotted name or a `__`-prefixed dir is
-    # skipped unless a pattern names it, so it can never supply rows. That covers
-    # `.gitignore` and every other dotfile the list above does not enumerate, plus an
-    # AppleDouble sidecar (`._train.parquet`) and a `__MACOSX` tree left by a Mac zip.
-    if name.startswith(".") or name.startswith("__"):
+    # As above, plus the metadata names: an AppleDouble sidecar (`._train.parquet`),
+    # `.gitignore` and every other dotfile the list does not enumerate, and the cards and
+    # licences that a cancelled download leaves behind.
+    if not _is_payload_dir(name):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
 
 
 def _is_payload_file(name: str) -> bool:
-    # the suffix rule is for files only: a directory keeps counting as payload whatever it is
-    # named, because the rows can be anywhere beneath it.
     if not _is_payload_name(name):
         return False
     # the resolver's own suffix rule rather than a second reading of the name: it walks the
@@ -192,6 +198,14 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
     except OSError:
         return None
 
+    # Every directory this walk has already entered, by resolved path. A junction pointing at
+    # one of its own ancestors resolves back inside the snapshot, so containment alone does not
+    # stop it: `os.walk(followlinks = False)` keeps descending `data/loop/loop/...` until the
+    # path length gives out, and the inventory request hangs. Recording what has been visited
+    # ends that on every runtime, which matters most on the pre-3.12 Windows this supports,
+    # where neither `is_symlink()` nor a missing `is_junction()` can report the reparse point.
+    seen: set[Path] = {root}
+
     def _redirects_outside(entry: Path) -> bool:
         # Containment rather than a link-type test. `Path.is_symlink()` is false for a Windows
         # junction (only `S_IFLNK` sets it) and `Path.is_junction()` does not exist before 3.12,
@@ -203,6 +217,16 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         except (OSError, RuntimeError, ValueError):
             return True
 
+    def _already_walked(entry: Path) -> bool:
+        try:
+            resolved = entry.resolve(strict = True)
+        except (OSError, RuntimeError, ValueError):
+            return True
+        if resolved in seen:
+            return True
+        seen.add(resolved)
+        return False
+
     try:
         for directory, dirnames, filenames in os.walk(snapshot, followlinks = False, onerror = _note):
             base = Path(directory)
@@ -211,13 +235,17 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                 # Nothing under a hidden or `__`-prefixed dir can supply rows, by the same
                 # rule `datasets` resolves data files with, so it is neither walked nor
                 # counted -- a `.hidden/notes.txt` must not clear `partial`.
-                if not _is_payload_name(name):
+                if not _is_payload_dir(name):
                     continue
                 # A directory that leaves the snapshot is not descended into -- it can point
                 # anywhere -- but its name IS evidence of payload, and pruning it silently hid
                 # migrated and shared caches that keep their data behind one.
                 if _redirects_outside(base / name):
                     return True
+                # A redirect back to somewhere already walked is not new payload, and following
+                # it is what loops.
+                if _already_walked(base / name):
+                    continue
                 kept.append(name)
             dirnames[:] = kept
             if any(_is_present_payload_file(base / name) for name in filenames):
