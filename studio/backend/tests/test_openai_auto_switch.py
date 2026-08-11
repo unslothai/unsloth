@@ -214,7 +214,7 @@ def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monk
     entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
     resolver.invalidate_index(additions_only = True)
-    assert resolver._scan[0] == resolver._ADDITIONS_ONLY_STAMP
+    assert resolver._scan[0] < 0.0  # additions-only: the time of the invalidation
     assert resolver.index_is_built() is False
 
     def _resolve(name, **kwargs):
@@ -6434,7 +6434,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         == "complete"
     )
     stamp, entries = resolver._scan
-    assert stamp == resolver._ADDITIONS_ONLY_STAMP
+    assert stamp < 0.0 and resolver._snapshot_is_trusted(stamp, time.monotonic())
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
@@ -7380,3 +7380,60 @@ def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_pat
     assert backend.is_loaded is True
     assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
     assert kw._kv_resume is None
+
+
+def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
+    # A background rebuild that keeps failing must not leave the retained entries
+    # trusted forever: a model deleted on disk would still trigger a switch.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+    monkeypatch.setattr(resolver, "_scan", (-(time.monotonic() - 600.0), resolver._scan[1]))
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is None
+
+
+def test_additions_only_trust_outlasts_a_scan_slower_than_the_ttl(monkeypatch):
+    # The window tracks the rebuild's own cost, so the install this fix targets (a
+    # multi-second multi-root scan) is not pushed back onto the request path.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_last_scan_s", 16.0)
+    monkeypatch.setattr(
+        resolver, "_scan", (-(time.monotonic() - (resolver._CACHE_TTL_S * 4)), {"org/a": entry})
+    )
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+
+
+def test_a_dead_warm_worker_releases_the_slot(monkeypatch):
+    # BaseException out of the scan used to leave _warming set, killing background
+    # warming for the life of the process and putting scans back on requests.
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+
+    def _die():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(resolver, "_build_index", _die)
+    resolver.warm_index_soon()
+    for _ in range(100):
+        if not resolver._warming:
+            break
+        time.sleep(0.05)
+    assert resolver._warming is False
+    assert resolver._warm_pending is False
+
+
+def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
+    # monotonic() counts from boot, so on a host whose uptime is still under the
+    # TTL an invalidated stamp used to read as recent and serve what was revoked.
+    monkeypatch.setattr(resolver.time, "monotonic", lambda: 1.0)
+    for kwargs in ({}, {"additions_only": True}):
+        monkeypatch.setattr(resolver, "_scan", (1.0, {"org/a": "entry"}))
+        resolver.invalidate_index(**kwargs)
+        built = []
+        monkeypatch.setattr(resolver, "_build_index", lambda: (built.append(1), {})[1])
+        resolver._index()
+        assert built == [1], kwargs

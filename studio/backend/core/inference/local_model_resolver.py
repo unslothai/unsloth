@@ -32,9 +32,9 @@ class _LocalGgufEntry:
 
 
 _CACHE_TTL_S = 5.0
-# Monotonic timestamps are nonnegative. This sentinel keeps additions-only trust
-# inside the atomically published _scan tuple instead of in a second global.
-_ADDITIONS_ONLY_STAMP = -1.0
+# Monotonic timestamps are nonnegative, so a negative stamp encodes "additions-only
+# invalidated at -stamp". Keeps that trust inside the atomically published _scan
+# tuple instead of a second global, and keeps it time-bounded like any other.
 _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 # Not _lock: that is held for the whole scan, so the request path would wait on it.
@@ -43,9 +43,9 @@ _warm_lock = threading.Lock()
 # else covers them until the next scan, and the request path must not call them absent.
 _just_downloaded: set[str] = set()
 _warming = False
-# An invalidation that lands while a warmer owns the slot must make that worker
-# scan again after its current pass. Otherwise the stale snapshot can survive
-# until a request performs the rebuild synchronously.
+# An invalidation landing while a warmer owns the slot asks it for another pass, so
+# a snapshot published already-stale is rebuilt off the request path. Callers still
+# pair invalidate_index() with warm_index_soon() for the case where it has retired.
 _warm_pending = False
 _last_scan_s = 0.0
 # Rescan at most a tenth of the time: on the TTL alone a slow scan would run continuously.
@@ -348,6 +348,21 @@ def recently_downloaded(repo_id: str) -> bool:
     return repo_id.strip().lower() in _just_downloaded
 
 
+def _snapshot_is_trusted(timestamp: float, now: float) -> bool:
+    """Whether a snapshot stamped *timestamp* may answer a model switch at *now*.
+
+    Positive is an ordinary scan, trusted for the TTL. Negative is when an
+    additions-only download invalidated it, trusted only while its rebuild could
+    still be running: one that keeps failing must not leave entries trusted forever,
+    or a model deleted on disk could still trigger a switch. Zero is revoked.
+    """
+    if timestamp > 0.0:
+        return now - timestamp < _CACHE_TTL_S
+    if timestamp < 0.0:
+        return now + timestamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY)
+    return False
+
+
 def invalidate_index(*, additions_only: bool = False) -> None:
     """Mark the cached scan stale.
 
@@ -358,14 +373,12 @@ def invalidate_index(*, additions_only: bool = False) -> None:
     """
     global _scan, _warm_pending
     with _lock:
+        now = time.monotonic()
         timestamp, retained = _scan
-        was_trusted = timestamp == _ADDITIONS_ONLY_STAMP or (
-            timestamp > 0.0 and time.monotonic() - timestamp < _CACHE_TTL_S
-        )
         # Publish entries and their trust state together. A lock-free reader sees
         # either the complete old snapshot or the complete invalidated one, never a
         # fresh timestamp paired with already-revoked trust.
-        stamp = _ADDITIONS_ONLY_STAMP if additions_only and was_trusted else 0.0
+        stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
         _scan = (stamp, retained)
     # _index() holds _lock for the whole scan. If this invalidation waited for an
     # active warmer to publish, that worker may still own the warm slot even though
@@ -384,7 +397,9 @@ def _index() -> dict[str, _LocalGgufEntry]:
     with _lock:
         now = time.monotonic()
         ts, cached = _scan
-        if now - ts < _CACHE_TTL_S:
+        # ``ts > 0``: monotonic() counts from boot, so under a TTL of uptime an
+        # invalidated stamp reads as recent and would serve what was just revoked.
+        if ts > 0.0 and now - ts < _CACHE_TTL_S:
             return cached
         fresh = _build_index()
         # Stamp AFTER the scan, not with the pre-scan ``now``: a multi-root scan on
@@ -419,10 +434,7 @@ def resolve_trusted_cached_local_gguf(requested: str) -> Optional[tuple[str, Opt
     resolved = _resolve_from_index(requested, snapshot[1])
     if resolved is None or _scan is not snapshot:
         return None
-    timestamp, _ = snapshot
-    fresh = timestamp > 0.0 and time.monotonic() - timestamp < _CACHE_TTL_S
-    additions_only = timestamp == _ADDITIONS_ONLY_STAMP
-    trusted = fresh or additions_only
+    trusted = _snapshot_is_trusted(snapshot[0], time.monotonic())
     return resolved if trusted and _scan is snapshot else None
 
 
@@ -435,7 +447,8 @@ def warm_index_soon() -> None:
     for the life of the process. Never blocks, and never touches ``_lock``.
     """
     global _warming, _warm_pending
-    if time.monotonic() - _scan[0] < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
+    stamp = _scan[0]
+    if stamp > 0.0 and time.monotonic() - stamp < max(_CACHE_TTL_S, _last_scan_s * _WARM_DUTY):
         return
     with _warm_lock:
         if _warming:
@@ -445,19 +458,27 @@ def warm_index_soon() -> None:
 
     def _run() -> None:
         global _warming, _warm_pending, _last_scan_s
-        while True:
-            started = time.monotonic()
-            try:
-                _index()
-            except Exception:
-                pass
-            _last_scan_s = time.monotonic() - started
-            with _warm_lock:
-                if _warm_pending:
-                    _warm_pending = False
-                    continue
-                _warming = False
-                return
+        released = False
+        try:
+            while True:
+                started = time.monotonic()
+                try:
+                    _index()
+                except Exception:
+                    pass
+                _last_scan_s = time.monotonic() - started
+                with _warm_lock:
+                    if _warm_pending:
+                        _warm_pending = False
+                        continue
+                    _warming, released = False, True
+                    return
+        finally:
+            # Only on a BaseException: leaving the slot held would kill background
+            # warming for the life of the process and put scans back on requests.
+            if not released:
+                with _warm_lock:
+                    _warming = _warm_pending = False
 
     threading.Thread(target = _run, name = "local-model-index-warm", daemon = True).start()
 

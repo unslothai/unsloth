@@ -4754,8 +4754,10 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     """Whether an explicit resident identity answers to *requested*.
 
     Unlike :func:`_loaded_satisfies`, this excludes a public id derived from a
-    filesystem path. That alias still has to pass through the resolver so the
-    serving backend can record it for responses and ``/v1/models``.
+    filesystem path, so a request naming that alias still passes through the
+    resolver and the serving backend records it for responses and ``/v1/models``.
+    A request naming the load path itself matches here and skips that recording,
+    leaving the public id path-derived until an alias request arrives.
     """
     from core.inference.openai_auto_download import split_model_ref
 
