@@ -601,13 +601,17 @@ class TestInstallShParity:
         _unset = [
             ln for ln in _sh_func("_hsa_spoofed_physical_gfx").splitlines() if "(unset " in ln
         ]
-        assert len(_unset) == 1, _unset
-        for _var in (
-            "HSA_OVERRIDE_GFX_VERSION",
-            "ROCR_VISIBLE_DEVICES",
-            "HIP_VISIBLE_DEVICES",
-        ):
-            assert _var in _unset[0], (_var, _unset[0])
+        # One per re-probe tool (rocminfo, then the two amd-smi fallbacks); every
+        # one of them has to drop all three, since any that did not would re-probe
+        # a masked or still-spoofed machine.
+        assert _unset, _unset
+        for _line in _unset:
+            for _var in (
+                "HSA_OVERRIDE_GFX_VERSION",
+                "ROCR_VISIBLE_DEVICES",
+                "HIP_VISIBLE_DEVICES",
+            ):
+                assert _var in _line, (_var, _line)
 
         seen = {}
 

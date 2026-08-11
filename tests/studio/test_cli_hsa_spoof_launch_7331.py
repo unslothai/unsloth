@@ -35,8 +35,20 @@ def _make_venv(
     tmp_path: Path,
     dist: "str | None",
     layout: str = "posix",
+    orphans: "tuple[str, ...]" = (),
 ) -> Path:
-    """A venv tree carrying at most one rocm_sdk_libraries_* dist-info."""
+    """A venv tree shaped like a real AMD per-gfx install.
+
+    ``dist`` is the ACTIVE runtime, so it gets both its own distribution and the
+    ``rocm`` meta-package whose Requires-Dist names it -- the real layout, verified
+    against repo.amd.com/rocm/whl/gfx1151, where rocm 7.13.0 carries
+    ``Requires-Dist: rocm-sdk-libraries-gfx1151==7.13.0; extra == "libraries"``.
+    ``None`` is a generic multi-arch index, which installs neither.
+
+    ``orphans`` are superseded runtimes left behind by a family switch. pip has no
+    autoremove and the old distribution keeps its own name, so they accumulate; a
+    fixture that never carried one could not tell an orphan from the active family.
+    """
     venv = tmp_path / "unsloth_studio"
     sp = (
         venv / "lib" / "python3.12" / "site-packages"
@@ -44,8 +56,20 @@ def _make_venv(
         else venv / "Lib" / "site-packages"
     )
     sp.mkdir(parents = True)
+    for _orphan in orphans:
+        (sp / f"rocm_sdk_libraries_{_orphan}-7.12.0.dist-info").mkdir()
     if dist is not None:
         (sp / f"{dist}-7.13.0.dist-info").mkdir()
+        _family = dist.replace("rocm_sdk_libraries_", "")
+        _meta = sp / "rocm-7.13.0.dist-info"
+        _meta.mkdir()
+        (_meta / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: rocm\nVersion: 7.13.0\n"
+            "Provides-Extra: libraries\n"
+            f'Requires-Dist: rocm-sdk-libraries-{_family}==7.13.0; extra == "libraries"\n'
+            "Requires-Dist: rocm-sdk-core==7.13.0\n",
+            encoding = "utf-8",
+        )
     return venv
 
 
@@ -208,3 +232,89 @@ def test_the_installer_and_the_cli_agree_on_the_spoofable_arches():
         encoding = "utf-8"
     )
     assert re.search(r"gfx1151\|gfx1150\|gfx1152", install_sh)
+
+
+class TestOrphanedRuntimesFromAFamilySwitch:
+    """pip never uninstalls the superseded arch-specific runtime across a family
+    switch: `rocm` is upgraded in place, but rocm-sdk-libraries-<old> keeps its own
+    distribution name and stays on disk. Reading the arch by globbing for that
+    directory therefore reads whichever one the filesystem happens to hand back,
+    and clearing an override on a stale reading breaks a working machine.
+    install_python_stack.py's _installed_rocm_wheel_family documents the same
+    hazard; this is the launcher's copy of the rule."""
+
+    def test_the_active_family_wins_over_an_orphan(self, tmp_path):
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151", orphans = ("gfx1100",))
+        assert studio_cli._installed_rocm_single_arch(venv) == "gfx1151"
+
+    def test_an_orphan_alone_arbitrates_nothing(self, tmp_path):
+        """Switched to generic wheels: `rocm` is gone, the old runtime is not.
+        There is no active single-arch install, so nothing may be cleared."""
+        venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
+        assert studio_cli._installed_rocm_single_arch(venv) is None
+
+    def test_switching_to_generic_wheels_keeps_the_override(self, tmp_path, monkeypatch):
+        """The failure the orphan causes, end to end: a host that once had gfx1151
+        wheels and now runs generic ones would have had its override removed on the
+        strength of a directory nothing uses."""
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, None, orphans = ("gfx1151",))
+        assert studio_cli._clear_hsa_override_contradicting_install(venv) is None
+        assert os.environ["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
+
+    def test_a_multi_arch_family_contradicts_nothing(self, tmp_path):
+        """gfx120x-all carries kernels for several ISAs, so an override naming one
+        of them is not asking for code the install lacks."""
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx120X-all")
+        assert studio_cli._installed_rocm_single_arch(venv) is None
+
+    def test_two_families_named_by_the_metadata_decline(self, tmp_path):
+        """Nothing to arbitrate with; guess and you break one of the two."""
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
+        _meta = next(venv.rglob("rocm-7.13.0.dist-info")) / "METADATA"
+        _meta.write_text(
+            _meta.read_text(encoding = "utf-8")
+            + 'Requires-Dist: rocm-sdk-libraries-gfx1100==7.13.0; extra == "other"\n',
+            encoding = "utf-8",
+        )
+        assert studio_cli._installed_rocm_single_arch(venv) is None
+
+
+class TestEveryLaunchEntryPointClearsIt:
+    """`unsloth studio` is not the only way in. The group callback returns as soon
+    as a subcommand is named, and `unsloth run` is bound straight to studio_run, so
+    the two commands people actually use to start a model would keep the spoof."""
+
+    def test_run_clears_it_itself(self):
+        source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
+        _run_at = source.find("\ndef run(\n")
+        assert _run_at != -1, "the run command moved"
+        assert "_clear_hsa_override_before_launch(" in source[_run_at:], (
+            "`unsloth studio run` and the `unsloth run` alias bypass the group "
+            "callback's clear, so run() has to perform it itself"
+        )
+
+    def test_the_group_callback_uses_the_same_helper(self):
+        source = Path(studio_cli.__file__).resolve().read_text(encoding = "utf-8")
+        assert source.count("_clear_hsa_override_before_launch(") >= 3, (
+            "one definition plus a call from each entry point"
+        )
+
+    def test_the_helper_is_idempotent(self, tmp_path, monkeypatch):
+        """studio_default and run can both run in one process; the second call
+        must not raise on an already-removed key."""
+        monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+        monkeypatch.setattr(studio_cli.platform, "system", lambda: "Linux")
+        venv = _make_venv(tmp_path, "rocm_sdk_libraries_gfx1151")
+        monkeypatch.setattr(studio_cli, "STUDIO_HOME", venv.parent)
+        assert studio_cli._clear_hsa_override_before_launch(silent = True) == "gfx1151"
+        assert studio_cli._clear_hsa_override_before_launch(silent = True) is None
+        assert "HSA_OVERRIDE_GFX_VERSION" not in os.environ
+
+    def test_the_top_level_run_alias_is_the_same_function(self):
+        """unsloth_cli/__init__.py binds `unsloth run` to studio_run directly, so
+        anything the group callback does is skipped there."""
+        import unsloth_cli
+
+        assert unsloth_cli.studio_run is studio_cli.run

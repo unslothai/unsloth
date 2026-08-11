@@ -277,21 +277,55 @@ def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
 
 
 def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
-    """gfx arch of the per-arch AMD ROCm libraries in *venv_dir*, or None.
+    """gfx arch the ROCm runtime in *venv_dir* ACTIVELY carries kernels for, or None.
 
-    AMD's per-gfx index ships one distribution per architecture, named
-    ``rocm_sdk_libraries_<arch>``, and the torch beside it carries code objects
-    for that architecture alone. The dist-info name therefore states the single
-    ISA this install has kernels for, without probing any hardware. A generic
-    multi-arch index installs no such distribution and yields None.
+    AMD's per-gfx index ships one runtime distribution per architecture,
+    ``rocm-sdk-libraries-<family>``, and the torch beside it holds code objects for
+    that family alone. Which one is live has to come from the ``rocm`` meta-package,
+    whose ``Requires-Dist`` names the family AMD's torch resolved (verified on
+    repo.amd.com/rocm/whl/gfx1151: ``rocm-sdk-libraries-gfx1151==7.13.0; extra ==
+    "libraries"``). Globbing for a ``rocm_sdk_libraries_gfx*`` directory instead
+    would read an ORPHAN: ``rocm`` upgrades in place across a family switch while
+    the superseded runtime keeps its own distribution name and is never
+    uninstalled, so a venv that has changed families holds both. Same reasoning,
+    and the same hazard, as _installed_rocm_wheel_family in
+    studio/install_python_stack.py.
+
+    None means "do not act": no ``rocm``, unreadable metadata, more than one family
+    named, or a MULTI-arch family such as gfx120x-all, whose runtime carries kernels
+    for several ISAs and so contradicts no override. Callers leave the environment
+    alone on None.
     """
+    _metadata: Optional[Path] = None
     for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
         for sp in venv_dir.glob(sp_pattern):
-            for info in sp.glob("rocm_sdk_libraries_gfx*.dist-info"):
-                m = re.match(r"rocm_sdk_libraries_(gfx[0-9a-z]+)-", info.name)
-                if m:
-                    return m.group(1).lower()
-    return None
+            for info in sp.glob("rocm-*.dist-info"):
+                # rocm-sdk-core, rocm-sdk-libraries-* and friends all start "rocm-";
+                # only the bare `rocm` meta-package arbitrates.
+                if re.fullmatch(r"rocm-[^-]+\.dist-info", info.name) and (
+                    info / "METADATA"
+                ).is_file():
+                    _metadata = info / "METADATA"
+                    break
+    if _metadata is None:
+        return None
+    try:
+        _text = _metadata.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    _families = set()
+    for _line in _text.splitlines():
+        if not _line.lower().startswith("requires-dist:"):
+            continue
+        _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([0-9a-zA-Z]+)", _line)
+        if _m:
+            _families.add(_m.group(1).lower())
+    if len(_families) != 1:
+        return None  # nothing to arbitrate with, or two runtimes and no tie-break
+    _family = _families.pop()
+    # Single ISA only. gfx120x-all style families cover several architectures, so
+    # an override naming one of them is not contradicted by anything.
+    return _family if re.fullmatch(r"gfx[0-9a-f]+", _family) else None
 
 
 def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
@@ -328,6 +362,30 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
         return None
     os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
     return arch
+
+
+def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
+    """Run the #7331 spoof clear for whichever entry point is about to launch.
+
+    Every launch needs it, not just plain ``unsloth studio``: the group callback
+    returns early once a subcommand is named, and ``unsloth run`` is bound
+    straight to ``studio_run``, so both would otherwise reach llama-server and the
+    backend with the contradicting override still set. Idempotent, since the
+    variable is gone after the first call, so the entry points that chain are free
+    to call it twice.
+    """
+    _venv = STUDIO_HOME / "unsloth_studio"
+    _arch = _clear_hsa_override_contradicting_install(
+        Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    )
+    if _arch is not None and not silent:
+        typer.echo(
+            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_arch} kernels "
+            f"only, so the runtime has to report the real arch. Remove the export "
+            f"from your shell profile as well, or the next terminal restores it.",
+            err = True,
+        )
+    return _arch
 
 
 def _find_run_py() -> Optional[Path]:
@@ -1628,16 +1686,7 @@ def studio_default(
     # handed to a child: an override that contradicts single-arch wheels makes
     # every kernel launch fail, and the installer's own unset cannot reach a
     # launch it does not perform (#7331).
-    _spoof_arch = _clear_hsa_override_contradicting_install(
-        Path(sys.prefix) if in_studio_venv else studio_venv_dir
-    )
-    if _spoof_arch is not None and not silent:
-        typer.echo(
-            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_spoof_arch} "
-            f"kernels only, so the runtime has to report the real arch. Remove the "
-            f"export from your shell profile as well, or the next terminal restores it.",
-            err = True,
-        )
+    _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2186,6 +2235,11 @@ def run(
     inherited_start_api_key_marker = _consume_start_api_key_marker_env()
     start_api_key_marker = start_api_key_marker or inherited_start_api_key_marker
     runtime_gate_handoff = _studio_runtime_gate.consume_runtime_gate_handoff()
+    # The group callback returns before its own clear once a subcommand is named,
+    # and `unsloth run` is bound straight here, so this path has to do it itself or
+    # llama-server and the backend both start with the contradicting override
+    # (#7331). Idempotent, so the chained entry points may reach it twice.
+    _clear_hsa_override_before_launch(silent = bool(silent))
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)

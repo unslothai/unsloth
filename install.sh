@@ -2951,17 +2951,32 @@ _hsa_spoofed_physical_gfx() {
     # evidence FOR the probe: the override went away and the name did not move,
     # so the silicon really is what was reported. That is the reading that keeps
     # a genuine gfx1100 dGPU in a Ryzen AI Max chassis on its own wheels.
+    _hsp_re=""
     if command -v rocminfo >/dev/null 2>&1; then
         _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
                     rocminfo 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
-        if [ "$_hsp_re" = "$_hsp_inferred" ]; then
-            echo "  [WARN] rocminfo reports $_hsp_inferred with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
-            printf '%s\n' "$_hsp_inferred"
-        else
-            echo "  [WARN] rocminfo does not corroborate a spoof; keeping $_hsp_probed." >&2
+    fi
+    # rocminfo is the source that FAILS on the very host this exists for: strip the
+    # override on a ROCm stack that predates the physical arch and ROCr has no ISA
+    # entry for it, so hsa_init errors and no agent is listed. amd-smi reads the
+    # driver and is override-immune either way, and _detect_amd_gfx_codes falls
+    # through to it -- so mirror that here, or a `studio update` corrects a host
+    # that a fresh `curl | sh` install leaves on the segfaulting wheels.
+    if [ -z "$_hsp_re" ] && command -v amd-smi >/dev/null 2>&1; then
+        _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                    amd-smi list 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
+        if [ -z "$_hsp_re" ]; then
+            _hsp_re=$( (unset HSA_OVERRIDE_GFX_VERSION ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES; \
+                        amd-smi static --asic 2>/dev/null) | grep -oE 'gfx[1-9][0-9a-z]{2,3}' | awk 'NF && !seen[$0]++' || true)
         fi
+    fi
+    if [ -z "$_hsp_re" ]; then
+        echo "  [WARN] Nothing left to re-probe and no KFD sysfs; keeping $_hsp_probed." >&2
+    elif [ "$_hsp_re" = "$_hsp_inferred" ]; then
+        echo "  [WARN] $_hsp_inferred reported with HSA_OVERRIDE_GFX_VERSION unset -- spoof confirmed." >&2
+        printf '%s\n' "$_hsp_inferred"
     else
-        echo "  [WARN] No rocminfo to re-probe and no KFD sysfs; keeping $_hsp_probed." >&2
+        echo "  [WARN] the re-probe does not corroborate a spoof; keeping $_hsp_probed." >&2
     fi
     return 0
 }
