@@ -48,7 +48,11 @@ WIDTH = 8  # square lm_head: vocab_size == hidden_size, the ambiguous case
 
 
 class _Output:
-    def __init__(self, logits, hidden_states = None):
+    def __init__(
+        self,
+        logits,
+        hidden_states = None,
+    ):
         self.logits = logits
         self.hidden_states = hidden_states
 
@@ -70,7 +74,12 @@ class _SquareModel(torch.nn.Module):
     def get_output_embeddings(self):
         return self.lm_head
 
-    def forward(self, input_ids = None, pixel_values = None, **kwargs):
+    def forward(
+        self,
+        input_ids = None,
+        pixel_values = None,
+        **kwargs,
+    ):
         batch, length = input_ids.shape
         hidden = torch.full((batch, length, WIDTH), 0.5)
         logits = torch.full((batch, length, WIDTH), -0.5)
@@ -110,9 +119,9 @@ def test_a_degraded_call_does_not_poison_the_next_call(hidden_states_env, mode):
     assert returns_hidden_states(model, degraded.logits, head) is False
 
     honoured = model.forward(input_ids = ids)
-    assert torch.equal(honoured.logits, torch.full((1, 3, WIDTH), 0.5)), (
-        "the second call really did hand back hidden states"
-    )
+    assert torch.equal(
+        honoured.logits, torch.full((1, 3, WIDTH), 0.5)
+    ), "the second call really did hand back hidden states"
     assert returns_hidden_states(model, honoured.logits, head) is True
 
 
@@ -166,7 +175,11 @@ def test_the_fallback_retry_does_not_reuse_the_rejected_kwargs(hidden_states_env
 def test_dropping_positional_kwargs_never_hands_back_the_callers_dict():
     import inspect
 
-    def forward(input_ids = None, pixel_values = None, **kwargs):
+    def forward(
+        input_ids = None,
+        pixel_values = None,
+        **kwargs,
+    ):
         pass
 
     signature = inspect.signature(forward)

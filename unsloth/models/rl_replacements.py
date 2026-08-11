@@ -2477,8 +2477,7 @@ def _unsloth_grpo_hidden_states_signal(model):
     ):
         # the wrapper honours the flag unless it recorded that this call could not
         if any(
-            hasattr(candidate, "_unsloth_grpo_hidden_states_degraded")
-            for candidate in candidates
+            hasattr(candidate, "_unsloth_grpo_hidden_states_degraded") for candidate in candidates
         ):
             return not any(
                 getattr(candidate, "_unsloth_grpo_hidden_states_degraded", False)

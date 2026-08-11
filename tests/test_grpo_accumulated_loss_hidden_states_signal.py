@@ -39,8 +39,7 @@ def _load_helpers():
     body = []
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name)
-            and target.id in {PATTERN_NAME, CANDIDATE_PATTERN_NAME}
+            isinstance(target, ast.Name) and target.id in {PATTERN_NAME, CANDIDATE_PATTERN_NAME}
             for target in node.targets
         ):
             body.append(node)
@@ -224,7 +223,7 @@ def test_source_patch_still_accepts_the_installed_zoo():
     ]
     if len(functions) != 1:
         pytest.skip("this unsloth_zoo has no single grpo_accumulated_loss")
-    body = "\n".join(lines[functions[0].lineno - 1: functions[0].end_lineno])
+    body = "\n".join(lines[functions[0].lineno - 1 : functions[0].end_lineno])
     patched = patch_gradient_source(body)
     assert DISPATCH_HELPER in patched
 

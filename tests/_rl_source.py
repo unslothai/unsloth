@@ -57,9 +57,7 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
             wanted.append(node)
 
     found = {
-        node.name
-        for node in wanted
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node.name for node in wanted if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     missing = set(names) - found - set(OPTIONAL_NAMES)
     names = tuple(name for name in names if name in found)
