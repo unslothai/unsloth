@@ -12,15 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# The single source of truth for the version of THIS package.
+# The single source of truth for this package's version.
 #
-# It lives alone in a module with no imports for two reasons. First, pyproject.toml
-# reads it through `version = {attr = "unsloth._version.__version__"}`, and setuptools
-# resolves that with a static AST parse as long as the value stays a plain string
-# literal -- so building a wheel never has to import torch. Keep it a literal.
-# Second, the MLX path in `unsloth/__init__.py` is deliberately torch-free and cannot
-# reach `unsloth.models._utils`, where this used to live; importing that module pulls
-# in torch, transformers, trl, peft and the Triton kernels. A leaf module both paths
-# can import is what stops the MLX branch from having to borrow unsloth_zoo's version
-# instead, which reported a different package's number entirely.
+# Keep it a plain literal in a module with no imports. pyproject reads it through
+# `attr:`, which setuptools resolves by static AST parse, so a build never imports torch;
+# and the torch-free MLX path in __init__.py imports it directly, which it cannot do for
+# models/_utils.py (torch, transformers, trl, peft, Triton). That is why the MLX branch
+# used to borrow unsloth_zoo's version, reporting a different package's number.
 __version__ = "2026.8.12"

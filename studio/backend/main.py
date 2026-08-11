@@ -359,12 +359,9 @@ def get_unsloth_version() -> str:
     except PackageNotFoundError:
         pass
 
-    # _version.py first: the literal lives in a leaf module so that pyproject's `attr:`
-    # and the torch-free MLX path can both read it. models/_utils.py is still tried after
-    # it, because it held the literal before and now holds only a re-export, which this
-    # prefix scan does not match -- so a tree where only one of the two files is current
-    # (a partial `unsloth studio update`, a stale checkout) still reports a real version
-    # instead of silently falling through to "dev".
+    # Both files: the literal moved to _version.py, and models/_utils.py now holds only a
+    # re-export, which this prefix scan does not match. Trying both keeps a half-updated
+    # tree reporting a real version instead of falling through to "dev".
     root = _Path(__file__).resolve().parents[2] / "unsloth"
     for version_file in (root / "_version.py", root / "models" / "_utils.py"):
         try:
