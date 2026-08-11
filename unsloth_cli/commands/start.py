@@ -524,6 +524,14 @@ def _hermes_resume_oneshot_args(args: list[str]) -> list[str]:
             raise typer.BadParameter(
                 "Hermes cannot resume a one-shot session with --usage-file; remove that option."
             )
+        # `chat -Q -q` is the only mode that can resume a session, but it does not
+        # inherit hermes' one-shot approval semantics: `-z` itself sets
+        # HERMES_YOLO_MODE=1 and HERMES_ACCEPT_HOOKS=1 for the call (hermes_cli/
+        # oneshot.py in _HERMES_INSTALL_COMMIT), because a one-shot has no user at
+        # the terminal to answer a prompt. Re-add the equivalent flags so a resumed `-z` keeps behaving like a
+        # plain `-z` instead of stalling on an approval nobody can answer. This is
+        # parity with the flag the user already typed, not the --yolo option: a
+        # resumed *interactive* session still prompts as usual.
         prefix = ["chat", "-Q"]
         if "--yolo" not in rewritten:
             prefix.append("--yolo")

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 
+import core.inference.gallery_flags as gallery_flags
 import core.inference.video_gallery as gallery
 
 
@@ -540,3 +541,141 @@ def test_gif_export_bounds_frames_and_edge(monkeypatch):
         except EOFError:
             pass
     assert frames <= 4, frames
+
+
+# --- pin / archive flags ---------------------------------------------------------------------
+
+
+def test_records_carry_default_flags():
+    _save_with_mtime("a", 100.0)
+    record = gallery.list_videos()[0]
+    assert record["pinned"] is False and record["archived"] is False
+
+
+def test_pinned_videos_sort_ahead_of_newer_ones():
+    old = _save_with_mtime("old", 100.0)
+    _save_with_mtime("new", 200.0)
+    gallery.set_flags(old["id"], pinned = True)
+    assert [r["prompt"] for r in gallery.list_videos()] == ["old", "new"]
+    assert gallery.list_videos()[0]["pinned"] is True
+
+
+def test_most_recently_pinned_leads_the_pinned_group():
+    first = _save_with_mtime("first", 100.0)
+    second = _save_with_mtime("second", 200.0)
+    gallery.set_flags(second["id"], pinned = True)
+    gallery.set_flags(first["id"], pinned = True)  # pinned later, so it leads
+    assert [r["prompt"] for r in gallery.list_videos()] == ["first", "second"]
+
+
+def test_unpinning_returns_a_video_to_newest_first_order():
+    old = _save_with_mtime("old", 100.0)
+    _save_with_mtime("new", 200.0)
+    gallery.set_flags(old["id"], pinned = True)
+    gallery.set_flags(old["id"], pinned = False)
+    assert [r["prompt"] for r in gallery.list_videos()] == ["new", "old"]
+
+
+def test_archived_videos_leave_the_default_listing():
+    keep = _save_with_mtime("keep", 100.0)
+    shelved = _save_with_mtime("shelved", 200.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    assert [r["id"] for r in gallery.list_videos()] == [keep["id"]]
+    archived = gallery.list_videos(archived = True)
+    assert [r["id"] for r in archived] == [shelved["id"]]
+    assert archived[0]["archived"] is True
+
+
+def test_restoring_puts_a_video_back_on_the_strip():
+    record = _save_with_mtime("a", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    gallery.set_flags(record["id"], archived = False)
+    assert [r["id"] for r in gallery.list_videos()] == [record["id"]]
+
+
+def test_archived_videos_do_not_consume_a_page_slot():
+    for i in range(4):
+        record = _save_with_mtime(f"a{i}", 100.0 + i)
+        if i % 2 == 0:
+            gallery.set_flags(record["id"], archived = True)
+    assert [r["prompt"] for r in gallery.list_videos(limit = 2)] == ["a3", "a1"]
+    assert len(gallery.list_videos(limit = 3)) == 2
+    assert [r["prompt"] for r in gallery.list_videos(archived = True)] == ["a2", "a0"]
+
+
+def test_pinning_survives_pagination():
+    oldest = _save_with_mtime("oldest", 100.0)
+    for i in range(1, 4):
+        _save_with_mtime(f"a{i}", 100.0 + i)
+    gallery.set_flags(oldest["id"], pinned = True)
+    assert gallery.list_videos(limit = 1, offset = 0)[0]["prompt"] == "oldest"
+
+
+def test_set_flags_refuses_a_foreign_or_unknown_id():
+    assert gallery.set_flags("does-not-exist", pinned = True) is None
+    orphan = gallery.gallery_dir() / "orphan.mp4"
+    orphan.write_bytes(_mp4())  # no sidecar, so not ours
+    assert gallery.set_flags("orphan", pinned = True) is None
+
+
+def test_delete_prunes_the_flag_entry():
+    record = _save_with_mtime("a", 100.0)
+    gallery.set_flags(record["id"], pinned = True)
+    assert gallery.delete(record["id"]) is True
+    assert gallery_flags.read(gallery.gallery_dir()) == {}
+
+
+def test_clear_spares_archived_videos():
+    active = _save_with_mtime("active", 100.0)
+    shelved = _save_with_mtime("shelved", 200.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    assert gallery.clear() == 1
+    assert [r["id"] for r in gallery.list_videos(archived = True)] == [shelved["id"]]
+    assert set(gallery_flags.read(gallery.gallery_dir())) == {shelved["id"]}
+    assert gallery.video_path(active["id"]) is None
+
+
+def test_clear_can_include_archived_videos():
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    assert gallery.clear(include_archived = True) == 1
+    assert gallery.list_videos(archived = True) == []
+    assert gallery_flags.read(gallery.gallery_dir()) == {}
+
+
+def test_flags_are_not_required_sidecar_keys():
+    # Flags live in their own store, so a clip written before they existed must still list.
+    record = _save_with_mtime("older-schema", 100.0)
+    sidecar = gallery.gallery_dir() / f"{record['id']}.json"
+    assert "pinned" not in json.loads(sidecar.read_text(encoding = "utf-8"))
+    assert [r["id"] for r in gallery.list_videos()] == [record["id"]]
+
+
+def test_clear_refuses_when_the_flag_store_cannot_be_read():
+    # Fail CLOSED: an unreadable store reads as "nothing archived", which would delete the archive.
+    record = _save_with_mtime("shelved", 100.0)
+    gallery.set_flags(record["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.video_path(record["id"]) is not None
+
+
+def test_clear_all_still_works_with_an_unreadable_store():
+    record = _save_with_mtime("a", 100.0)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    assert gallery.clear(include_archived = True) == 1
+    assert gallery.video_path(record["id"]) is None
+
+
+def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
+    # Same escape hatch as the image gallery: a corrupt store surviving the wipe would leave every
+    # later default clear refusing, for clips generated long afterwards.
+    _save_with_mtime("a", 100.0)
+    _save_with_mtime("b", 200.0)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        '{"version": 1, "items": {"a": {"archi', encoding = "utf-8"
+    )
+    assert gallery.clear(include_archived = True) == 2
+    _save_with_mtime("c", 300.0)
+    assert gallery.clear() == 1

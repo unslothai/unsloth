@@ -78,6 +78,7 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      audio: "Audio",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
@@ -970,6 +971,10 @@ export const en = {
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
       archivedChatsDescription: "View and manage chats you have archived.",
+      archivedImages: "Archived images",
+      archivedImagesDescription: "View and manage images you have archived.",
+      archivedVideos: "Archived videos",
+      archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",

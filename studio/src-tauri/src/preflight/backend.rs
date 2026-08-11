@@ -213,7 +213,10 @@ pub(super) async fn backend_desktop_auth_status(
 
     match root_status {
         BackendRootStatus::AmbiguousRoot | BackendRootStatus::ExpectedUnavailable => {
-            return BackendProbe::ExternalConflict {
+            // Not adoptable, and not proof that our own install is serving: an
+            // id-less backend is just as likely a remote Studio reached through
+            // a port forward. Starting is fine, the port simply is not free.
+            return BackendProbe::Unrelated {
                 port,
                 reason: "ambiguous_root_external_backend_active".to_string(),
             };
@@ -289,10 +292,13 @@ pub(super) async fn backend_desktop_auth_status(
     }
 }
 
-pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
+/// Classify every candidate port. Callers pick from the result, because launch
+/// and mutation weigh the outcomes differently: launch may step over a backend
+/// it cannot adopt, a venv rewrite may not.
+pub(super) async fn probe_backend_ports(ignored_ports: &[u16]) -> Vec<BackendProbe> {
     let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
-        Err(_) => return BackendProbe::Missing,
+        Err(_) => return Vec::new(),
     };
 
     // Fan out health probes concurrently. The desktop-auth probe is still
@@ -314,21 +320,27 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
     }
 
     let expected_studio_root_id = crate::desktop_backend_owner::read_expected_studio_root_id();
-    let mut first_conflict = None;
-    let mut first_ready = None;
-    let mut first_old = None;
+    let mut probes = Vec::new();
     for (port, health) in candidates {
         if ignored_ports.contains(&port) {
             continue;
         }
-        match backend_desktop_auth_status(
-            &client,
-            port,
-            &health,
-            expected_studio_root_id.as_deref(),
-        )
-        .await
-        {
+        probes.push(
+            backend_desktop_auth_status(&client, port, &health, expected_studio_root_id.as_deref())
+                .await,
+        );
+    }
+    probes
+}
+
+/// Pick the outcome that decides a launch. An `Unrelated` backend is not a
+/// verdict at all: the port is taken, the backend picks the next one.
+fn select_launch_probe(probes: Vec<BackendProbe>) -> BackendProbe {
+    let mut first_conflict = None;
+    let mut first_ready = None;
+    let mut first_old = None;
+    for probe in probes {
+        match probe {
             conflict @ BackendProbe::ExternalConflict { .. } if first_conflict.is_none() => {
                 first_conflict = Some(conflict)
             }
@@ -336,6 +348,9 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
                 first_ready = Some(ready)
             }
             old @ BackendProbe::Old { .. } if first_old.is_none() => first_old = Some(old),
+            BackendProbe::Unrelated { port, reason } => {
+                info!("Desktop preflight: skipping port {port} ({reason})");
+            }
             _ => {}
         }
     }
@@ -344,6 +359,10 @@ pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendPro
         .or(first_ready)
         .or(first_old)
         .unwrap_or(BackendProbe::Missing)
+}
+
+pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
+    select_launch_probe(probe_backend_ports(ignored_ports).await)
 }
 
 #[cfg(test)]
@@ -366,8 +385,45 @@ mod tests {
         }
     }
 
+    fn unrelated(port: u16) -> BackendProbe {
+        BackendProbe::Unrelated {
+            port,
+            reason: "ambiguous_root_external_backend_active".to_string(),
+        }
+    }
+
+    /// A tunnelled or id-less Studio anywhere in 8888..=8908 used to poison the
+    /// whole launch, even with every other port free.
+    #[test]
+    fn unrelated_backends_never_decide_a_launch() {
+        assert_eq!(
+            select_launch_probe(vec![unrelated(8888), unrelated(8899)]),
+            BackendProbe::Missing
+        );
+        assert_eq!(
+            select_launch_probe(vec![unrelated(8888), BackendProbe::Ready { port: 8890 }]),
+            BackendProbe::Ready { port: 8890 }
+        );
+    }
+
+    #[test]
+    fn a_genuine_conflict_still_decides_a_launch() {
+        let conflict = BackendProbe::ExternalConflict {
+            port: 8890,
+            reason: "desktop_owned_backend_active".to_string(),
+        };
+        assert_eq!(
+            select_launch_probe(vec![
+                unrelated(8888),
+                BackendProbe::Ready { port: 8889 },
+                conflict.clone(),
+            ]),
+            conflict
+        );
+    }
+
     /// Minting an id at startup must not reclassify a backend that predates
-    /// ownership: it reports no id, or an empty one, and stays a conflict.
+    /// ownership: it reports no id, or an empty one, and stays unadoptable.
     #[test]
     fn ownerless_backends_stay_ambiguous_once_a_local_id_exists() {
         for reported in [None, Some(""), Some("not-hex"), Some("AAAA")] {

@@ -184,7 +184,12 @@ test("the search list is built from the seeds as well as the listing pool", () =
 
 test("row meta falls back to the curated seeds", () => {
   const text = declarationText("recommendedMeta");
-  assert.match(text, /recommendedSearch\.results\s*,\s*\.\.\.catalogSeedRows/);
+  // Ordered: seeds behind the listing, community last. A community row ahead of the seeds
+  // would let a metadata-poor listing row shadow a curated one, and the map keeps the first.
+  assert.match(
+    text,
+    /recommendedSearch\.results\s*,\s*\.\.\.catalogSeedRows\s*,\s*\.\.\.communityBrowse\.results/,
+  );
   // Listing first, and the first entry per id wins.
   assert.match(text, /if\s*\(map\.has\(r\.id\)\)\s*continue;/);
 });

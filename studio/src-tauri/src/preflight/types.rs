@@ -41,4 +41,9 @@ pub(super) enum BackendProbe {
     Ready { port: u16 },
     Old { port: u16, reason: String },
     ExternalConflict { port: u16, reason: String },
+    /// A backend answered here, but it is not adoptable and not provably ours:
+    /// it reports no install id, so it may be a remote Studio behind a tunnel or
+    /// an install that predates the id. Launching skips the port; mutating flows
+    /// still refuse, since they cannot rule out our own venv underneath it.
+    Unrelated { port: u16, reason: String },
 }

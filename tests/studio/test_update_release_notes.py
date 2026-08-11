@@ -1081,10 +1081,13 @@ def test_notes_repair_the_shared_previews_width_reset():
 def test_only_the_notes_region_scrolls(banner):
     """The dismiss control sits inside the card, so the card must not scroll."""
     src = banner.read_text(encoding = "utf-8")
-    assert "flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden" in src
+    assert "flex max-h-[calc(100dvh_-_2rem)] min-h-0 flex-col overflow-hidden" in src
     assert 'className="min-h-0 flex-1"' in src
     panel = PANEL.read_text(encoding = "utf-8")
     assert "max-h-64 min-h-0 flex-1 overflow-y-auto" in panel
+    # The collapsed summary scrolls too: without it the bullets were painted
+    # over the row of buttons once the card's slot for them got small.
+    assert "min-h-0 flex-1 space-y-1 overflow-y-auto" in panel
 
 
 def test_a_comment_marker_in_prose_cannot_swallow_later_releases(notes_module):
@@ -1258,21 +1261,47 @@ def test_code_span_closers_ignore_backslashes():
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 
+# The card's incompressible height, a fixed part plus a part that follows
+# Settings > Appearance rather than one number measured at the default 15px: at
+# the 20px maximum the action row wraps at every card width. The two cards have
+# their own constants because the desktop one carries an extra status line;
+# scaling one whole box for both asked 256px where 209 was needed, and a floor
+# nothing can meet makes the stack cover the composer for no gain.
+_SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
+# Below 384px the action pair wraps onto its own row and the card needs a
+# whole extra one: 259px at the 20px setting where the wide card needs 209.
+_NARROW_FLOOR_WEB = "max-[383px]:min-h-[calc(139px+96px*var(--ui-font-scale,1))]"
+_SCALED_FLOOR_TAURI = "min-h-[calc(117px+93px*var(--ui-font-scale,1))]"
+_NARROW_FLOOR_TAURI = "max-[383px]:min-h-[calc(24px+224px*var(--ui-font-scale,1))]"
+
+
+def _overlay_stacks(provider: str) -> int:
+    """How many bottom-right overlay stacks the provider renders."""
+    return len(re.findall(r"z-\[9998\][^\"]*flex flex-col items-end gap-2", provider))
+
+
 def test_the_overlay_stack_fits_the_viewport():
     """The card's own cap does not account for a download list stacked beneath
     it. The cap is `stackGeometry` now, checked numerically in
     studio/frontend/tests/monitor-stack-inset.test.ts; here the stack must read it."""
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
-    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    # Counted by the layer they sit on, not by a literal z-index: the
+    # overlay rail reads its depth from Z_LAYER now.
+    stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert stacks, "the bottom-right overlay stack is gone"
     # Counted, not merely present: capping only one of the stacks is the bug here.
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "every stack is capped"
     panel = (FRONTEND / "features/hub/download-manager/download-manager-panel.tsx").read_text(
         encoding = "utf-8"
     )
-    # Both overlays scroll internally, so they can give up height.
+    # The download list scrolls internally, so it can give up height.
     assert "flex min-h-0" in panel
-    assert "flex min-h-0" in WEB_BANNER.read_text(encoding = "utf-8")
+    # The update card cannot: its header and buttons are fixed and only its
+    # notes yield, so it floors instead and the stack scrolls past it.
+    web = WEB_BANNER.read_text(encoding = "utf-8")
+    assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
+    assert _NARROW_FLOOR_WEB in web, "the floor misses the narrow card's extra button row"
+    assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
 def test_the_desktop_stack_is_capped_like_the_browser_one():
@@ -1280,7 +1309,9 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding = "utf-8")
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
-    assert "flex min-h-0" in TAURI_BANNER.read_text(encoding = "utf-8")
+    tauri = TAURI_BANNER.read_text(encoding = "utf-8")
+    assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
+    assert _NARROW_FLOOR_TAURI in tauri, "the floor misses the narrow card's extra button row"
 
 
 def test_the_stack_geometry_is_checked_numerically():
@@ -1482,7 +1513,9 @@ def test_the_download_panel_can_shrink_inside_the_capped_stack():
     )
     assert 'positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end"' in panel
     provider = (FRONTEND / "app/provider.tsx").read_text(encoding="utf-8")
-    stacks = provider.count("z-[9998] flex flex-col items-end gap-2")
+    # Counted by the layer they sit on, not by a literal z-index: the
+    # overlay rail reads its depth from Z_LAYER now.
+    stacks = provider.count("zIndex: Z_LAYER.OVERLAY_STACK")
     assert provider.count("maxHeight: stack.maxHeight") == stacks, "the cap this has to absorb"
 
 

@@ -212,6 +212,33 @@ def _run(model, hf_token = None):
         # Still a path, not a variant: no Hub repo precedes the colon.
         ("/home/me/models/x:build/llama-13b", ("/home/me/models/x:build/llama-13b", None)),
         ("D:/models/repo:build/llama-13b", ("D:/models/repo:build/llama-13b", None)),
+        # A native Windows path is one reference: the drive letter is no repo id, so
+        # reading the rest of the path as its variant refused a model already loaded.
+        ("C:\\models\\qwen.gguf", ("C:\\models\\qwen.gguf", None)),
+        ("c:\\qwen.gguf", ("c:\\qwen.gguf", None)),
+        ("\\\\server\\share\\qwen.gguf", ("\\\\server\\share\\qwen.gguf", None)),
+        # A quant still pins one, on either spelling of the path.
+        ("C:\\models\\qwen.gguf:Q4_K_M", ("C:\\models\\qwen.gguf", "Q4_K_M")),
+        ("C:/models/qwen.gguf:Q4_K_M", ("C:/models/qwen.gguf", "Q4_K_M")),
+        ("\\\\server\\share\\qwen.gguf:Q4_K_M", ("\\\\server\\share\\qwen.gguf", "Q4_K_M")),
+        # A backslash-qualified variant key still parses behind a real Hub repo.
+        ("org/repo:build\\model.gguf", ("org/repo", "build\\model.gguf")),
+        ("D:\\models\\repo:build\\llama-13b", ("D:\\models\\repo:build\\llama-13b", None)),
+        # Extended-length and device-namespace prefixes, used past MAX_PATH.
+        ("\\\\?\\C:\\models\\qwen.gguf", ("\\\\?\\C:\\models\\qwen.gguf", None)),
+        ("\\\\.\\C:\\models\\qwen.gguf", ("\\\\.\\C:\\models\\qwen.gguf", None)),
+        ("\\\\?\\C:\\models\\qwen.gguf:UD-Q4_K_XL", ("\\\\?\\C:\\models\\qwen.gguf", "UD-Q4_K_XL")),
+        # Drive-relative: no separator after the colon at all.
+        ("C:models\\x.gguf", ("C:models\\x.gguf", None)),
+        # Mixed separators, and the bare drive root.
+        ("C:/models\\x.gguf", ("C:/models\\x.gguf", None)),
+        ("C:\\models/x.gguf", ("C:\\models/x.gguf", None)),
+        ("C:\\", ("C:\\", None)),
+        # An admin UNC share.
+        ("\\\\server\\share$\\qwen.gguf", ("\\\\server\\share$\\qwen.gguf", None)),
+        # An Ollama tag must still split, or a foreign id starts being served locally.
+        ("name:latest", ("name", "latest")),
+        ("llama3:8b", ("llama3", "8b")),
     ],
 )
 def test_split_model_ref(raw, expected):
@@ -241,6 +268,32 @@ def test_not_downloadable(raw):
 )
 def test_downloadable(raw):
     assert auto_dl.is_downloadable_ref(raw) is True
+
+
+@pytest.mark.parametrize(
+    "repo_id,expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("org/nope-GGUF", True),
+        ("unsloth/typo-vision", True),
+        ("openai/gpt-4o", False),
+        ("anthropic/claude-3.5-sonnet", False),
+        ("meta-llama/llama-3-70b-instruct", False),
+        ("org/Unlisted", False),
+        ("gpt-4", False),
+    ],
+)
+def test_looks_like_gguf_hub_repo_id(repo_id, expected):
+    assert auto_dl.looks_like_gguf_hub_repo_id(repo_id) is expected
+
+
+def test_a_mistyped_gguf_repo_is_refused_while_another_model_is_loaded(monkeypatch):
+    # #8376: a mistyped GGUF catalog id must 404, not be answered by the resident model.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject("unsloth/typo-vision-GGUF", loaded, monkeypatch)
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail["error"]["code"] == "model_not_found"
 
 
 def test_gguf_variants_skips_companions():
@@ -1032,6 +1085,40 @@ def test_diagnosis_failure_never_breaks_a_servable_request(monkeypatch):
     assert asyncio.run(inference_route._reject_unservable_model("unsloth/B-GGUF", _Req())) is None
 
 
+def _reject_with_active(model, active, monkeypatch):
+    """Refusal check with a non-GGUF backend resident under *active*."""
+    idle = type("B", (), {"is_loaded": False, "model_identifier": None, "hf_variant": None})()
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: idle)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: type("B", (), {"active_model_name": active})(),
+    )
+    monkeypatch.setattr(
+        "core.inference.local_model_resolver.resolve_local_gguf", lambda _n, **_kw: None
+    )
+    monkeypatch.setattr(inference_route, "_unavailable_model_message", _fake_unavailable_message)
+    return asyncio.run(inference_route._reject_unservable_model(model, _Req()))
+
+
+def test_a_directory_loaded_model_is_not_refused_under_its_own_hub_id(monkeypatch):
+    # ModelConfig.identifier is the path for a local load, so the model is advertised
+    # under a bare name that no org/name request can be told apart from. Refusing one
+    # 404s the weights serving right now.
+    local = "/srv/models/gemma-3-4b-it"
+    assert _reject_with_active("unsloth/gemma-3-4b-it", local, monkeypatch) is None
+    assert _reject_with_active("unsloth/gemma-3-4b-it:latest", local, monkeypatch) is None
+
+
+def test_an_hf_cache_load_keeps_its_namespace_and_still_refuses_a_typo(monkeypatch):
+    # A cache path maps back to org/name, so the resident id stays comparable there.
+    cache = "/h/.cache/huggingface/hub/models--unsloth--gemma-3-4b-it/snapshots/abc"
+    assert _reject_with_active("unsloth/gemma-3-4b-it", cache, monkeypatch) is None
+    with pytest.raises(HTTPException) as excinfo:
+        _reject_with_active("unsloth/typo-vision-GGUF", cache, monkeypatch)
+    assert excinfo.value.status_code == 404
+
+
 def test_anthropic_surface_gets_its_own_envelope(monkeypatch):
     loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
@@ -1176,6 +1263,18 @@ def test_an_ollama_tag_still_matches_the_resident_gguf(monkeypatch):
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:8b") is True
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:UD-Q4_K_XL") is True
     assert inference_route._loaded_satisfies("unsloth/A-GGUF:Q8_0") is False
+
+
+def test_a_windows_path_matches_the_gguf_loaded_from_it(monkeypatch):
+    # The drive letter read as the repo and the rest of the path as an explicit quant, so a
+    # model loaded from that path never matched its own name and the call was refused instead.
+    loaded = _Loaded("C:\\models\\qwen.gguf", "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: loaded)
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf") is True
+    # Either spelling of the same path names the same weights.
+    assert inference_route._loaded_satisfies("C:/models/qwen.gguf") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q4_K_M") is True
+    assert inference_route._loaded_satisfies("C:\\models\\qwen.gguf:Q8_0") is False
 
 
 def test_a_probing_adoption_never_releases_the_slot(hub, monkeypatch):

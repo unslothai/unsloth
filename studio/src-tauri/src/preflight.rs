@@ -165,7 +165,11 @@ fn choose_ownerless_spawned_preflight(
 
 fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendConflict> {
     match probe {
-        BackendProbe::ExternalConflict { port, reason } => {
+        // A launch may step over an unadoptable backend; rewriting the venv may
+        // not. We cannot prove an id-less backend is not running out of our own
+        // install, so a mutation still refuses, exactly as it did before.
+        BackendProbe::ExternalConflict { port, reason }
+        | BackendProbe::Unrelated { port, reason } => {
             Some(ExternalBackendConflict { port, reason })
         }
         BackendProbe::Ready { port } => Some(ExternalBackendConflict {
@@ -179,7 +183,10 @@ fn mutation_blocker_from_probe(probe: BackendProbe) -> Option<ExternalBackendCon
 pub async fn mutation_blocking_backend_ignoring(
     ignored_ports: &[u16],
 ) -> Option<ExternalBackendConflict> {
-    mutation_blocker_from_probe(probe_existing_backends(ignored_ports).await)
+    backend::probe_backend_ports(ignored_ports)
+        .await
+        .into_iter()
+        .find_map(mutation_blocker_from_probe)
 }
 
 pub async fn desktop_preflight_result() -> DesktopPreflightResult {
@@ -913,7 +920,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_missing_root_id_is_external_conflict_before_auth_probe() {
+    async fn backend_missing_root_id_is_unrelated_before_auth_probe() {
         let probe = probe_test_backend(
             r#"{"status":"healthy","service":"Unsloth UI Backend","desktop_protocol_version":1,"supports_desktop_auth":true}"#,
             "401 Unauthorized",
@@ -922,7 +929,7 @@ exit 1
 
         assert!(matches!(
             probe,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
@@ -930,7 +937,7 @@ exit 1
     }
 
     #[tokio::test]
-    async fn backend_expected_root_id_missing_is_external_conflict_before_auth_probe() {
+    async fn backend_expected_root_id_missing_is_unrelated_before_auth_probe() {
         install_test_owner();
         let port = backend_server(desktop_ready_health(EXPECTED_ROOT_ID), "401 Unauthorized").await;
         let client = crate::loopback_http::client(std::time::Duration::from_secs(2)).unwrap();
@@ -938,11 +945,48 @@ exit 1
 
         assert!(matches!(
             backend_desktop_auth_status(&client, port, &health, None).await,
-            BackendProbe::ExternalConflict {
+            BackendProbe::Unrelated {
                 reason,
                 ..
             } if reason == "ambiguous_root_external_backend_active"
         ));
+    }
+
+    /// The report this came from: an id-less Studio answered on a candidate
+    /// port, and a perfectly healthy install refused to launch at all.
+    #[test]
+    fn an_unrelated_backend_does_not_block_a_launch() {
+        let result = choose_preflight(
+            ManagedProbe::Ready {
+                bin: PathBuf::from("/bin/unsloth"),
+            },
+            BackendProbe::Unrelated {
+                port: 8888,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            },
+        );
+
+        assert_eq!(
+            result.disposition,
+            DesktopPreflightDisposition::ManagedReady
+        );
+        assert_eq!(result.port, None);
+    }
+
+    /// ...but a venv rewrite underneath it is still refused, because we cannot
+    /// rule out that it is our own install serving from a terminal.
+    #[test]
+    fn an_unrelated_backend_still_blocks_mutations() {
+        assert_eq!(
+            mutation_blocker_from_probe(BackendProbe::Unrelated {
+                port: 8899,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            }),
+            Some(ExternalBackendConflict {
+                port: 8899,
+                reason: "ambiguous_root_external_backend_active".to_string(),
+            })
+        );
     }
 
     #[tokio::test]

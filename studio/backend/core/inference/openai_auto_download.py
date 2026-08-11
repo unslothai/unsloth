@@ -99,16 +99,17 @@ def _public_label(repo_id: str, variant: Optional[str]) -> str:
 def split_model_ref(requested: str) -> tuple[str, Optional[str]]:
     """``org/repo:QUANT`` -> ``("org/repo", "QUANT")``; no suffix -> variant None.
 
-    Splits on the last colon. A slash-bearing suffix is only a variant when a real
-    Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key the catalog
-    advertises, while "C:/models/x.gguf" leaves a drive letter that is no repo id.
+    Splits on the last colon. A suffix bearing either separator is only a variant
+    when a real Hub repo precedes it: "build/llama-13b" is a subdirectory GGUF key
+    the catalog advertises, while "C:/models/x.gguf" -- and the native Windows
+    "C:\\models\\x.gguf" -- leaves a drive letter that is no repo id.
     """
     text = (requested or "").strip()
     base, sep, suffix = text.rpartition(":")
     if not sep or not base or not suffix:
         return text, None
     stripped = base.strip()
-    if "/" in suffix:
+    if "/" in suffix.replace("\\", "/"):
         from hub.utils.paths import is_valid_repo_id
         if "/" not in stripped or not is_valid_repo_id(stripped):
             return text, None
@@ -131,6 +132,27 @@ def is_downloadable_ref(requested: str) -> bool:
         from hub.utils.paths import is_valid_gguf_variant
         return is_valid_gguf_variant(variant)
     return True
+
+
+def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
+    """Whether *repo_id* names a Studio catalog entry, not a LiteLLM/OpenRouter label.
+
+    Namespaced ids without a GGUF suffix are foreign routing labels (``openai/gpt-4o``).
+    ``-GGUF`` and the ``unsloth/`` namespace mark ids clients pick from this server's
+    model list (GGUF and Transformers-backed entries alike); a mistyped one must 404
+    instead of being answered by another loaded model.
+    """
+    text = (repo_id or "").strip()
+    if "/" not in text:
+        return False
+    from hub.utils.paths import is_valid_repo_id
+
+    if not is_valid_repo_id(text):
+        return False
+    name = text.rsplit("/", 1)[-1]
+    if name.lower().endswith("-gguf"):
+        return True
+    return text.lower().startswith("unsloth/")
 
 
 def looks_like_quant(variant: Optional[str]) -> bool:
