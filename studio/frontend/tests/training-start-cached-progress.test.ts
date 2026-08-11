@@ -30,6 +30,7 @@ function state(over: Partial<DownloadState> = {}): DownloadState {
     cachePath: "/home/u/.cache/huggingface/hub/datasets--unsloth--alpaca-cleaned",
     completeOnDisk: false,
     settled: false,
+    moving: false,
     ...over,
   };
 }
@@ -219,4 +220,46 @@ test("a stale reading cannot become the baseline the next poll settles against",
   const afterStale = downloadStateFromProgress(stale, settled);
   assert.equal(afterStale.settled, false);
   assert.equal(downloadStateFromProgress(stale, afterStale).totalBytes, 20 * GB);
+});
+
+test("an orphaned .incomplete blob stops the transfer without ever settling", () => {
+  // A dataset that loads from its processed Arrow cache can still have a stray `.incomplete`
+  // blob in the raw hub cache. `downloaded_bytes` counts it and `completed_bytes` does not, so
+  // the row can never settle -- but nothing is transferring either, and gating preparation on
+  // `!settled` left tokenization labelled Downloading for the whole pre-step window.
+  const stuck: DownloadProgressReading = {
+    downloaded_bytes: 14.1 * MB,
+    completed_bytes: 13.4 * MB,
+    expected_bytes: 26.8 * MB,
+    progress: 0.52,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/datasets--unsloth--alpaca-cleaned",
+  };
+  const quiet = pollTwice(stuck);
+  assert.equal(quiet.settled, false, "an unfinalized blob is never settled");
+  assert.equal(quiet.moving, false, "but no bytes are moving, so preparation may show");
+});
+
+test("a live transfer keeps reporting movement", () => {
+  const first = downloadStateFromProgress({
+    downloaded_bytes: 4 * GB,
+    completed_bytes: 3 * GB,
+    expected_bytes: 20 * GB,
+    progress: 0.2,
+    complete_on_disk: false,
+    cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+  });
+  const second = downloadStateFromProgress(
+    {
+      downloaded_bytes: 6 * GB,
+      completed_bytes: 5 * GB,
+      expected_bytes: 20 * GB,
+      progress: 0.3,
+      complete_on_disk: false,
+      cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+    },
+    first,
+  );
+  assert.equal(second.moving, true);
+  assert.equal(second.settled, false);
 });

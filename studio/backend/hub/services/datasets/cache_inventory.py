@@ -129,13 +129,13 @@ _DATASET_NON_PAYLOAD_FILENAMES = frozenset(
 
 
 def _is_payload_name(name: str) -> bool:
-    # `datasets` itself skips dotted names and `__`-prefixed dirs when resolving data files,
-    # so an AppleDouble sidecar (`._train.parquet`) or a `__MACOSX` tree left by a Mac zip is
-    # clutter by the same rule that makes `.DS_Store` clutter.
-    lowered = name.lower()
-    if lowered in _DATASET_NON_PAYLOAD_FILENAMES:
+    # The rule `datasets` resolves data files by: a dotted name or a `__`-prefixed dir is
+    # skipped unless a pattern names it, so it can never supply rows. That covers
+    # `.gitignore` and every other dotfile the list above does not enumerate, plus an
+    # AppleDouble sidecar (`._train.parquet`) and a `__MACOSX` tree left by a Mac zip.
+    if name.startswith(".") or name.startswith("__"):
         return False
-    return not (name.startswith("._") or name.startswith("__"))
+    return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
 
 
 def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
@@ -152,18 +152,36 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         unreadable = True
 
     try:
+        root = snapshot.resolve(strict = True)
+    except OSError:
+        return None
+
+    def _redirects_outside(entry: Path) -> bool:
+        # Containment rather than a link-type test. `Path.is_symlink()` is false for a Windows
+        # junction (only `S_IFLNK` sets it) and `Path.is_junction()` does not exist before 3.12,
+        # which this package still supports, so `os.walk(followlinks = False)` would descend
+        # through a junction into an arbitrary external tree. Comparing the resolved path to the
+        # snapshot root catches every redirect on every runtime, with no platform branch.
+        try:
+            return not entry.resolve(strict = True).is_relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            return True
+
+    try:
         for directory, dirnames, filenames in os.walk(snapshot, followlinks = False, onerror = _note):
             base = Path(directory)
             kept = []
             for name in dirnames:
-                entry = base / name
-                # A linked directory is not descended into -- it can point anywhere -- but a
-                # non-metadata name IS evidence of payload, and pruning it silently hid
-                # migrated and shared caches that keep their data behind one.
-                if entry.is_symlink() or getattr(entry, "is_junction", bool)():
-                    if _is_payload_name(name):
-                        return True
+                # Nothing under a hidden or `__`-prefixed dir can supply rows, by the same
+                # rule `datasets` resolves data files with, so it is neither walked nor
+                # counted -- a `.hidden/notes.txt` must not clear `partial`.
+                if not _is_payload_name(name):
                     continue
+                # A directory that leaves the snapshot is not descended into -- it can point
+                # anywhere -- but its name IS evidence of payload, and pruning it silently hid
+                # migrated and shared caches that keep their data behind one.
+                if _redirects_outside(base / name):
+                    return True
                 kept.append(name)
             dirnames[:] = kept
             if any(_is_payload_name(name) for name in filenames):
@@ -174,32 +192,21 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
 
 
 def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
-    """Whether the repo holds anything beyond metadata, in any cached revision.
+    """Whether the snapshot a load would actually open holds anything beyond metadata.
 
     A cancelled download can leave the dataset card and nothing else, which every structural
     check reads as complete, so the repo was offered On Device and then failed in load_dataset().
 
-    Every cached snapshot counts, not only the one `refs/main` pins: `is_snapshot_partial`
-    judges the newest snapshot, and a repo whose ref still points at a card-only revision
-    beside a complete one was flagged partial by this check alone and vanished from On Device.
+    Only the revision `dataset_snapshot_from_cache_path` selects counts, which is the one
+    `training_dataset_cache_pin` pins for the run. A payload-bearing sibling revision is not
+    a reason to clear `partial`: the pin would still open the metadata-only revision this
+    resolves to, so the row would be offered and then fail, and fail hard offline.
     """
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:
         return False
-    pinned = _snapshot_holds_payload(snapshot)
-    if pinned is not False:
-        # True, or unreadable -- and an uninspectable cache is not an empty one.
-        return pinned is not False
-    try:
-        siblings = [path for path in snapshot.parent.iterdir() if path.is_dir()]
-    except OSError:
-        return False
-    for sibling in siblings:
-        if sibling == snapshot:
-            continue
-        if _snapshot_holds_payload(sibling) is not False:
-            return True
-    return False
+    # True, or unreadable -- and an uninspectable cache is not an empty one.
+    return _snapshot_holds_payload(snapshot) is not False
 
 
 def _scan_hub_dataset_cache_dirs() -> list[dict]:

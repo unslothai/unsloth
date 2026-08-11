@@ -216,10 +216,13 @@ def test_raw_dataset_cache_has_data_counts_a_linked_payload_directory(monkeypatc
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
-def test_raw_dataset_cache_has_data_accepts_payload_in_another_revision(monkeypatch, tmp_path):
-    """`refs/main` can still name a card-only revision while a complete one sits beside it.
-    `is_snapshot_partial` judges the newest snapshot, so checking only the pinned one made
-    the two disagree and took a usable dataset off On Device."""
+def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monkeypatch, tmp_path):
+    """A payload-bearing sibling revision does not make the row usable.
+
+    `training_dataset_cache_pin` resolves through `dataset_snapshot_from_cache_path`, which
+    prefers the revision `refs/main` names. Clearing `partial` because some other revision
+    holds data would offer a row whose pinned load path is the metadata-only revision, so the
+    run falls back to the network and fails outright offline."""
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
     (repo_root / "refs").mkdir(parents = True, exist_ok = True)
     (repo_root / "refs" / "main").write_text("abc")
@@ -227,7 +230,39 @@ def test_raw_dataset_cache_has_data_accepts_payload_in_another_revision(monkeypa
     other.mkdir(parents = True)
     (other / "train-00000-of-00001.parquet").write_bytes(b"PAR1")
 
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+
+def test_raw_dataset_cache_has_data_ignores_any_dotfile(monkeypatch, tmp_path):
+    """`.gitignore` and friends are not in the enumerated list, but `datasets` skips every
+    dotted name when resolving data files, so none of them can supply rows."""
+    repo_root = _dataset_snapshot(
+        monkeypatch,
+        tmp_path,
+        ("README.md", ".gitignore", ".gitattributes", ".hidden/notes.txt"),
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+
+def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch, tmp_path):
+    """The prune is a containment test, not a link-type test.
+
+    `Path.is_symlink()` is false for a Windows junction and `Path.is_junction()` does not
+    exist before 3.12, which this package still supports, so a link-type test would let
+    `os.walk` descend a junction into an arbitrary external tree. A directory that resolves
+    outside the snapshot is left unvisited whatever kind of redirect it is."""
+    outside = tmp_path / "outside"
+    (outside / "deep").mkdir(parents = True)
+    (outside / "deep" / "huge.parquet").write_bytes(b"PAR1")
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    # Named like clutter, so it is not payload evidence either, and the tree behind it is
+    # never entered -- which is what stops a scan from stalling on someone else's disk.
+    (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(
+        outside, target_is_directory = True
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
 def test_raw_dataset_cache_has_data_does_not_read_an_unreadable_tree_as_empty(

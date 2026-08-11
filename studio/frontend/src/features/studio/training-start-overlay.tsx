@@ -192,8 +192,10 @@ function ResourceRow({
   // next to a percent still below 100.
   const isComplete = state.settled && state.percent >= 100;
   // uploaded and S3 datasets never produce a transfer, so preparation is all this row has.
-  const preparing =
-    state.downloadedBytes > 0 && !state.settled ? null : preparation;
+  // Gated on bytes actually moving, not on `!settled`: an orphaned `.incomplete` blob in the
+  // raw hub cache keeps `downloaded !== completed` forever, so a dataset loaded from its
+  // processed Arrow cache stayed labelled Downloading through the whole tokenize.
+  const preparing = state.moving ? null : preparation;
   const statusLabel = preparing
     ? preparing.title
     : isComplete

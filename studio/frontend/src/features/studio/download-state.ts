@@ -28,6 +28,10 @@ export type DownloadState = {
   completeOnDisk: boolean;
   // nothing left to transfer, by verification or by standing still.
   settled: boolean;
+  // bytes moved between the last two readings. Not `!settled`: an orphaned `.incomplete`
+  // blob keeps `downloaded !== completed` forever, so a row that will never settle is still
+  // not transferring anything.
+  moving: boolean;
 };
 
 export const EMPTY_DOWNLOAD_STATE: DownloadState = {
@@ -38,6 +42,7 @@ export const EMPTY_DOWNLOAD_STATE: DownloadState = {
   cachePath: null,
   completeOnDisk: false,
   settled: false,
+  moving: false,
 };
 
 // a training run fetches a subset of the repo, so completed_bytes never reaches expected_bytes
@@ -63,6 +68,7 @@ export function downloadStateFromProgress(
     cachePath: reading.cache_path ?? null,
     completeOnDisk,
     settled: completeOnDisk || (nothingInFlight && unchanged),
+    moving: !unchanged,
   };
 }
 
