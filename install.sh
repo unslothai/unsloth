@@ -4125,7 +4125,11 @@ case "$_torch_index_leaf" in
             # native $_strix_gfx wheels are going in; the paths that keep generic
             # wheels still need the override as their only source of kernels.
             # Mirrors _clear_confirmed_hsa_spoof in studio/install_python_stack.py.
-            if [ -n "$_spoof_physical" ]; then
+            # SKIP_TORCH is the other half of "the wheels are going in": --no-torch (and the
+            # Intel Mac auto-detection) reaches this branch and then installs nothing, so
+            # clearing the override there would strand the host with the generic wheels it
+            # already has AND no override, which is strictly worse than either alone.
+            if [ -n "$_spoof_physical" ] && [ "$SKIP_TORCH" = false ]; then
                 unset HSA_OVERRIDE_GFX_VERSION
                 echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
                 echo "  [WARN] the $_strix_gfx wheels carry $_strix_gfx kernels, so the runtime has" >&2

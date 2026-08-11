@@ -1041,3 +1041,44 @@ class TestConfirmedSpoofIsClearedBeforeLaunch:
             if ln.strip().startswith("unset HSA_OVERRIDE_GFX_VERSION")
         ]
         assert _lasting == ["unset HSA_OVERRIDE_GFX_VERSION"], _lasting
+
+
+def _spoof_clear_guard() -> str:
+    """The real `if` condition guarding the HSA_OVERRIDE_GFX_VERSION unset, out of install.sh."""
+    source = _INSTALL_SH.read_text(encoding = "utf-8")
+    marker = "\n                unset HSA_OVERRIDE_GFX_VERSION\n"
+    at = source.find(marker)
+    assert at != -1, "the spoof-clearing unset is no longer in install.sh"
+    line_start = source.rfind("\n            if ", 0, at)
+    assert line_start != -1, "no guarding if for the spoof-clearing unset"
+    return source[line_start + 1 : at].strip()
+
+
+def test_no_torch_keeps_the_override_because_no_per_gfx_wheels_are_installed():
+    """--no-torch must not clear the spoof, since it installs nothing to replace it.
+
+    Clearing is only sound because native per-gfx wheels are going in on that branch. `--no-torch`
+    (and the Intel Mac auto-detection, which sets the same SKIP_TORCH) reaches the reroute and then
+    installs no torch at all, so clearing there strands the host with the generic wheels it already
+    had AND no override, which is strictly worse than either alone: the override was that host's
+    only source of usable kernels.
+
+    Executes the guard as written rather than matching its text, so a rewrite that keeps the words
+    and loses the behaviour still fails.
+    """
+    guard = _spoof_clear_guard()
+    assert "SKIP_TORCH" in guard, guard
+
+    for skip_torch, expected in (("false", "<cleared>"), ("true", "11.0.0")):
+        out = _run_sh(
+            f'{guard}\n'
+            "    unset HSA_OVERRIDE_GFX_VERSION\n"
+            "fi\n"
+            'printf "%s\\n" "${HSA_OVERRIDE_GFX_VERSION:-<cleared>}"\n',
+            env = {
+                "SKIP_TORCH": skip_torch,
+                "_spoof_physical": "gfx1151",
+                "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+            },
+        )
+        assert out.strip() == expected, f"SKIP_TORCH={skip_torch}: {out!r}"
