@@ -76,6 +76,11 @@ import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
+import {
+  downloadFile,
+  downloadUrl,
+  isDownloadCancelled,
+} from "@/lib/native-files";
 import { resolveDiffusionGgufFilename } from "@/lib/diffusion-gguf-filename";
 import { createPickGuard, runGgufRepoPick } from "@/lib/diffusion-gguf-pick";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
@@ -320,52 +325,71 @@ function exportFilename(image: GalleryImage, format: ImageExportFormat = "png"):
   return `Unsloth_${stamp}_${image.seed}${suffix}.${ext}`;
 }
 
-function saveBlobUrl(href: string, filename: string) {
-  const link = document.createElement("a");
-  link.href = href;
-  link.download = filename;
-  link.click();
+// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
+async function reencodeImage(
+  src: string,
+  format: Exclude<ImageExportFormat, "png">,
+): Promise<Blob> {
+  const el = new Image();
+  el.decoding = "async";
+  el.src = src;
+  await el.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = el.naturalWidth;
+  canvas.height = el.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("canvas 2d context unavailable");
+  }
+  if (format === "jpeg") {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  ctx.drawImage(el, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, `image/${format}`, 0.95),
+  );
+  if (!blob) {
+    throw new Error(`could not encode ${format}`);
+  }
+  return blob;
 }
 
-// PNG saves the stored bytes verbatim (keeping the embedded recipe); JPEG / WebP re-encode client-side, JPEG flattened onto white.
 async function downloadImage(
   src: string,
   image: GalleryImage,
   format: ImageExportFormat = "png",
 ) {
-  if (format === "png") {
-    saveBlobUrl(src, exportFilename(image, format));
-    return;
-  }
-  try {
-    const el = new Image();
-    el.decoding = "async";
-    el.src = src;
-    await el.decode();
-    const canvas = document.createElement("canvas");
-    canvas.width = el.naturalWidth;
-    canvas.height = el.naturalHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("canvas 2d context unavailable");
-    if (format === "jpeg") {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    ctx.drawImage(el, 0, 0);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, `image/${format}`, 0.95),
-    );
-    if (!blob) throw new Error(`could not encode ${format}`);
-    const url = URL.createObjectURL(blob);
+  let outputFormat = format;
+  let outputBlob: Blob | null = null;
+
+  if (format !== "png") {
     try {
-      saveBlobUrl(url, exportFilename(image, format));
-    } finally {
-      // Give the click a tick to start before revoking.
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      outputBlob = await reencodeImage(src, format);
+    } catch {
+      // Conversion failed, so preserve the original PNG instead.
+      outputFormat = "png";
+      outputBlob = null;
     }
-  } catch {
-    // Conversion failed (decode/encode); fall back to the original PNG bytes.
-    saveBlobUrl(src, exportFilename(image, "png"));
+  }
+
+  const filename = exportFilename(image, outputFormat);
+  try {
+    if (outputBlob) {
+      await downloadFile(outputBlob, filename, outputBlob.type);
+    } else {
+      await downloadUrl(src, filename);
+    }
+    if (isTauri) {
+      toast.success("Image saved", { description: filename });
+    }
+  } catch (error) {
+    if (isDownloadCancelled(error)) {
+      return;
+    }
+    toast.error("Could not save image", {
+      description: error instanceof Error ? error.message : undefined,
+    });
   }
 }
 

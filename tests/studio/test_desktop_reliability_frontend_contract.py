@@ -210,6 +210,29 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "fs::write(&path, content)" not in native_dialogs
 
 
+def test_media_galleries_save_natively_with_feedback():
+    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
+    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
+    download = images_page.split("async function downloadImage(", 1)[1].split(
+        "\n}\n\nfunction formatTimestamp", 1
+    )[0]
+    video_download = video_page.split("const handleDownload = useCallback(", 1)[1].split(
+        "\n\n  const handleDelete", 1
+    )[0]
+
+    assert "await downloadUrl(src, filename);" in download
+    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
+    assert "isDownloadCancelled(error)" in download
+    assert "if (isTauri)" in download
+    assert 'toast.success("Image saved", { description: filename });' in download
+    assert 'document.createElement("a")' not in download
+
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "if (isTauri)" in video_download
+    assert 'toast.success("Video saved"' in video_download
+    assert "function saveLink(" not in video_page
+
+
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
@@ -290,8 +313,9 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # WebM / GIF keep the blob-and-anchor route they already had; nothing forced a change.
-    assert "URL.createObjectURL(blob)" in video_page
+    # Converted exports cross the same native boundary after the backend returns their blob.
+    assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
+    assert "URL.createObjectURL(blob)" not in video_page
 
     # media-src, not just connect-src: the signed link is played by an element.
     tauri_config = (REPO / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
