@@ -5430,6 +5430,7 @@ def _remote_gguf_companion_bytes(
     include_dspark: bool = False,
     include_dflash: bool = False,
     dspark_first: bool = False,
+    weight_bytes: int = 0,
 ) -> int:
     """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
 
@@ -5485,8 +5486,10 @@ def _remote_gguf_companion_bytes(
             else 0
         )
         # Bounded rather than picked: see dflash_budget_bytes for why the max
-        # over whole shard sets is the answer a listing can give.
-        dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards)
+        # over whole shard sets is the answer a listing can give. Bounded by the
+        # target too, so the guard stops charging for the oversized candidates the
+        # fetch itself now refuses.
+        dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_candidates:
@@ -5855,6 +5858,10 @@ def _estimate_gguf_required_gb(
                 ),
                 include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
                 include_dflash = (_dflash_capable and (_auto_dflash or dflash_requested)),
+                # The size the DFlash bound measures candidates against, so the guard
+                # stops charging for weights the fetch would refuse as too big to be
+                # a drafter.
+                weight_bytes = int(main_bytes or 0),
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which
                 # kinds the repo has, charging the losers is not caution, it is a

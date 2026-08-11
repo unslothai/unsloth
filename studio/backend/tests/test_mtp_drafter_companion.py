@@ -3346,3 +3346,94 @@ def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkey
     )
     assert got is None
     assert downloads == []
+
+
+def test_variant_plans_skip_a_half_published_split_sidecar():
+    """Planning a set the listing only half carries reports the download complete and
+    then loses DFlash, since the loader refuses the partial set."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("model-Q4_K_M.gguf", 15_000, "main"),
+            _sib("dflash-kquant-00001-of-00002.gguf", 800, "d1"),
+        ]
+    )
+    assert not [f for f in plans["q4_k_m"].target_filenames if f.startswith("dflash-")]
+
+
+def test_variant_plans_fall_through_to_a_usable_sidecar_behind_an_oversized_one():
+    """Both plan rules filter before the ranking, so the impostor at the top of the
+    order steps aside instead of taking the whole plan down with it."""
+    plans = build_gguf_variant_plans(
+        [
+            _sib("model-B-Q4_K_M.gguf", 15_000, "main"),
+            # Ranks first (names this weight) but is a whole model.
+            _sib("dflash-model-B-BF16.gguf", 54_000, "impostor"),
+            _sib("dflash-kquant.gguf", 900, "real"),
+        ]
+    )
+    targets = plans["q4_k_m"].target_filenames
+    assert "dflash-kquant.gguf" in targets
+    assert "dflash-model-B-BF16.gguf" not in targets
+
+
+def test_download_dflash_sums_a_split_family_before_the_size_bound(monkeypatch, tmp_path):
+    """Each shard of a split ordinary weight can sit under the target while the set
+    does not, so bounding the picked shard alone still fetched the whole thing."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"x" * 10_000)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_remote_root_gguf_sizes",
+        staticmethod(
+            lambda repo, token = None: {
+                "dflash-big-00001-of-00002.gguf": 6_000,
+                "dflash-big-00002-of-00002.gguf": 6_000,
+                "dflash-kquant.gguf": 500,
+            }
+        ),
+    )
+    picked = _dflash_download_pick(
+        monkeypatch,
+        listing = [
+            "model-Q4_K_M.gguf",
+            "dflash-big-00001-of-00002.gguf",
+            "dflash-big-00002-of-00002.gguf",
+            "dflash-kquant.gguf",
+        ],
+        near_path = str(weight),
+    )
+    assert picked == "dflash-kquant.gguf"
+
+
+def test_download_companion_records_an_incomplete_listing_as_settled():
+    """The completeness rejection lands after outcome["listed"] was set true, so
+    without this the caller reads a settled answer as one worth retrying forever."""
+    import core.inference.llama_cpp as llama_cpp_module
+    import huggingface_hub
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    import pytest as _pytest
+
+    mp = _pytest.MonkeyPatch()
+    try:
+        mp.delenv("HF_HUB_OFFLINE", raising = False)
+        mp.setattr(llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None)
+        mp.setattr(
+            huggingface_hub,
+            "list_repo_files",
+            lambda repo, token = None: ["dspark-kquant-00001-of-00002.gguf"],
+        )
+        outcome: dict = {}
+        got = LlamaCppBackend()._download_companion_gguf(
+            hf_repo = "org/repo",
+            hf_token = None,
+            pick = lambda files: next(iter(files), None),
+            label = "DSpark drafter",
+            outcome = outcome,
+        )
+    finally:
+        mp.undo()
+    assert got is None
+    assert outcome.get("listed") is False

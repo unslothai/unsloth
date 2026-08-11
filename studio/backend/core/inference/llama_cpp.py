@@ -1788,6 +1788,13 @@ def _with_gguf_load_marker(load: Callable):
     return wrapped
 
 
+def _drafter_set_bytes(sizes: Mapping[str, int], name: str) -> int:
+    """Total listed bytes of ``name``'s whole shard set (its own size when single)."""
+    return (sizes.get(name, 0) or 0) + sum(
+        sizes.get(shard, 0) or 0 for shard in _gguf_extra_shards(sizes, name)
+    )
+
+
 def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     m = _SHARD_FULL_RE.match(first_shard)
     if not m:
@@ -8115,6 +8122,11 @@ class LlamaCppBackend:
                 len(extra_shards) + 1,
                 _shard_total.group(3),
             )
+            # Settled, not retryable: the listing answered and this is what it said, so
+            # the caller records absence rather than reloading on every Apply hoping the
+            # same listing says something else.
+            if outcome is not None:
+                outcome["listed"] = False
             return None
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
@@ -8532,7 +8544,11 @@ class LlamaCppBackend:
                     for name in candidates
                     if _is_root_dflash_drafter_path(name)
                     and Path(name).name not in rejected
-                    and not (target_bytes and sizes.get(Path(name).name, 0) >= target_bytes)
+                    # Whole shard set, not the picked shard: each half of a split
+                    # ordinary weight can sit under the target while the set does not.
+                    and not (
+                        target_bytes and _drafter_set_bytes(sizes, Path(name).name) >= target_bytes
+                    )
                 ),
                 key = lambda name: dflash_repo_preference_key(name, weight_name, others),
             )

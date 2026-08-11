@@ -14,7 +14,9 @@ from typing import Callable, Mapping
 
 
 def dflash_budget_bytes(
-    sizes: Mapping[str, int], extra_shards: Callable[[Mapping[str, int], str], list]
+    sizes: Mapping[str, int],
+    extra_shards: Callable[[Mapping[str, int], str], list],
+    target_bytes: int = 0,
 ) -> int:
     """A safe bound on the DFlash sidecar a load may end up resident on.
 
@@ -32,11 +34,17 @@ def dflash_budget_bytes(
     sibling, all of which llama-server keeps resident. Sizing one shard would
     halve a two-shard sidecar, and under-estimating is the direction that waves
     a load through and then exhausts VRAM.
+
+    ``target_bytes`` drops the candidates the fetch itself now refuses: a drafter is
+    a few layers of its target, so a set at least that large is an ordinary weight
+    wearing the prefix and is never made resident. Zero means unknown, which keeps
+    every candidate, as before.
     """
+    totals = (
+        size + sum(sizes.get(shard, 0) for shard in extra_shards(sizes, name))
+        for name, size in sizes.items()
+    )
     return max(
-        (
-            size + sum(sizes.get(shard, 0) for shard in extra_shards(sizes, name))
-            for name, size in sizes.items()
-        ),
+        (total for total in totals if not target_bytes or total < target_bytes),
         default = 0,
     )

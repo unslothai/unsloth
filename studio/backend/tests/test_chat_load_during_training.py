@@ -1737,6 +1737,28 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(asked, 12.0, places = 6)
         self.assertAlmostEqual(forced, 10.0, places = 6)
 
+    def test_remote_dflash_sizing_drops_a_candidate_too_big_to_be_a_drafter(self):
+        """The fetch refuses an oversized root dflash-*.gguf, so charging for it is a
+        409 for bytes that will never be resident."""
+        siblings = [
+            SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-model-BF16.gguf", size = 40 * 1024**3),
+            SimpleNamespace(rfilename = "dflash-kquant.gguf", size = 1024**3),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            charged = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = None,
+                include_mmproj = False,
+                include_mtp = False,
+                include_dflash = True,
+                weight_bytes = 10 * 1024**3,
+            )
+        self.assertEqual(charged, 1024**3)
+
     # ── Auto charges ONE drafter, the one the promotion leaves resident ──
 
     def _auto_companion_bytes(self, siblings):

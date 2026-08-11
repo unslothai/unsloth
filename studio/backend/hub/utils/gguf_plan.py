@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -131,6 +132,12 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     return candidates[0] if candidates else None
 
 
+def _shard_set_size(path: str) -> Optional[int]:
+    """How many shards ``path``'s name says its set has, or None when it is single."""
+    match = re.search(r"-\d{5}-of-(\d{5})\.gguf$", path, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
 def preferred_dflash_sibling(
     siblings: Sequence,
     weight_name: Optional[str] = None,
@@ -173,30 +180,49 @@ def dflash_plan_files(
 
     Whole shard family, not just the ranked file: the loader refuses a companion whose
     split set is incomplete, so planning shard 1 alone reports the variant complete and
-    then loses DFlash on the load.
+    then loses DFlash on the load. A family the listing only half publishes is dropped
+    for the same reason, before it can be ranked.
 
     Bounded by ``max_bytes``, the variant's own weights. ``dflash-`` is a prefix real
-    weights carry too (Lucebox/Qwen3.6-27B-DFlash-GGUF), and a listing cannot read the
+    weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF), and a listing cannot read the
     ``general.architecture`` the loader rejects them by. A drafter is a few layers of
     its target, so one at least as large as the target cannot be drafting for it, and
     an unknown size on either side stays out rather than risk planning a whole model.
+
+    Both rules filter families BEFORE the ranking, so an oversized or half-published
+    name at the top of the order steps aside for a usable sidecar behind it instead of
+    taking the plan down with it.
     """
-    best = preferred_dflash_sibling(siblings, weight_name, other_weight_names)
-    if best is None:
+    from utils.models.drafters import dflash_repo_preference_key
+
+    families: dict[str, list[ExpectedFile]] = {}
+    for sibling in siblings:
+        name = _gguf_rfilename(sibling)
+        if not name or "/" in name or not name.lower().startswith("dflash-"):
+            continue
+        file = expected_file_from_sibling(sibling)
+        if file is not None:
+            families.setdefault(gguf_variant_family(name), []).append(file)
+
+    eligible: dict[str, tuple[ExpectedFile, ...]] = {}
+    for family, files in families.items():
+        shards = tuple(sorted(files, key = lambda file: file.path))
+        listed = _shard_set_size(shards[0].path)
+        if listed is not None and len(shards) != listed:
+            continue
+        total = sum(max(0, int(file.size or 0)) for file in shards)
+        if not total or max_bytes <= 0 or total >= max_bytes:
+            continue
+        eligible[family] = shards
+    if not eligible:
         return ()
-    family = gguf_variant_family(getattr(best, "rfilename"))
-    shards = tuple(
-        file
-        for sibling in siblings
-        if (name := _gguf_rfilename(sibling))
-        and "/" not in name
-        and gguf_variant_family(name) == family
-        and (file := expected_file_from_sibling(sibling)) is not None
+    best = min(
+        eligible,
+        key = lambda family: dflash_repo_preference_key(
+            eligible[family][0].path, weight_name, other_weight_names
+        ),
     )
-    total = sum(max(0, int(file.size or 0)) for file in shards)
-    if not total or max_bytes <= 0 or total >= max_bytes:
-        return ()
-    return tuple(sorted(shards, key = lambda file: file.path))
+    return eligible[best]
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
