@@ -765,6 +765,8 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     target = (wanted or "").strip().lower()
     if not target:
         return None
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant
+    # names both partitions, so it must miss rather than serve one of them.
     matches = [
         name
         for key, name in lowered.items()
