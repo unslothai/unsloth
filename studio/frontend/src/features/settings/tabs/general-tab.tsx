@@ -134,6 +134,9 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
   // Voice settings
   "unsloth_voice_settings",
+  // Retired keys. The onboarding wizard is gone, but installs that ran it still
+  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  "unsloth_onboarding_done",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
