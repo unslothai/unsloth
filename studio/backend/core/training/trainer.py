@@ -2455,6 +2455,15 @@ class UnslothTrainer:
         except Exception:  # noqa: BLE001 - never let log tidying stop a run
             pass
 
+        # Same "before any load" reason: an Audio column decodes while load_dataset() and
+        # format_and_template_dataset() below read rows, which is earlier than the audio
+        # branches that already call this. The format-check endpoint installs the shim in
+        # the API process; this worker is a different process and starts without it, so an
+        # audio dataset raised `datasets`' own "please install 'torchcodec'" from inside
+        # the load. A False here means neither backend works, which the audio branches
+        # further down still report with the message that names FFmpeg.
+        ensure_audio_decoding()
+
         s3_download = None
         try:
             self.dataset_loaded_from_exact_snapshot = False
