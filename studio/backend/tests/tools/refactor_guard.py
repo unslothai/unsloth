@@ -37,6 +37,7 @@ import json
 import random
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -530,12 +531,21 @@ def idempotence_failures(corpus) -> list:
             # parser's output (a tool name, a JSON blob) back into it proves nothing.
             if "strip" not in name or "parse" in name:
                 continue
-            witnessed = False
+            witnessed = set()
+            labels = None
             for text in corpus:
                 # A stripper with a boolean contract is driven at both values, so the
                 # driver hands back one result per variant. Skipping non-strings here
                 # would skip exactly the centralized strippers this check is for.
-                for variant, once in _variants(_drive(func, text)):
+                results = _variants(_drive(func, text))
+                if labels is None:
+                    labels = {variant for variant, _ in results}
+                for variant, once in results:
+                    # One witness per (function, variant), not per function: the
+                    # baseline is keyed the same way, and a failure recorded for
+                    # ``final = True`` must not stand in for the streaming path.
+                    if variant in witnessed:
+                        continue
                     if not isinstance(once, str) or once.startswith("<raised "):
                         continue
                     twice = dict(_variants(_drive(func, once))).get(variant)
@@ -550,10 +560,9 @@ def idempotence_failures(corpus) -> list:
                                 "twice": twice,
                             }
                         )
-                        witnessed = True
-                        break
-                if witnessed:
-                    break  # one witness per function is enough to fail the check
+                        witnessed.add(variant)
+                if labels is not None and witnessed >= labels:
+                    break  # every variant already has a witness
     return failures
 
 
@@ -586,17 +595,39 @@ def unresolvable_patch_targets(targets = None) -> list:
     for dotted, users in sorted(targets.items()):
         parts = dotted.split(".")
         obj = None
+        last_error = None
         for split in range(len(parts) - 1, 0, -1):
             try:
                 obj = importlib.import_module(".".join(parts[:split]))
-            except Exception:  # noqa: BLE001 - an unimportable prefix is just not the module
+            except Exception as exc:  # noqa: BLE001 - an unimportable prefix is not the module
+                last_error = exc
                 continue
             rest = parts[split:]
             break
         else:
-            broken.append(
-                {"target": dotted, "reason": "no importable module prefix", "tests": users}
+            # Nothing imported, and *why* decides what this is. A package whose
+            # ``__init__`` eagerly imports an optional dependency (``routes`` pulls in
+            # the whole app) makes every prefix raise, and discarding the exception
+            # reported four live targets as dead in any slim environment. The
+            # discrimination is the one the attribute branch below already makes: a
+            # ModuleNotFoundError naming a prefix of the target means the module is
+            # genuinely gone; naming anything else means the dependency is absent here.
+            environment = not (
+                isinstance(last_error, ModuleNotFoundError)
+                and last_error.name in {".".join(parts[:i]) for i in range(1, len(parts))}
             )
+            entry = {
+                "target": dotted,
+                "reason": (
+                    f"no importable module prefix, unimportable here: {last_error!r}"
+                    if environment
+                    else "no importable module prefix"
+                ),
+                "tests": users,
+            }
+            if environment:
+                entry["environment"] = True
+            broken.append(entry)
             continue
         for attr in rest:
             # ``core.inference`` resolves attributes through a PEP 562 ``__getattr__``
@@ -760,11 +791,24 @@ def _diff(
         and isinstance(new, list)
         and all(isinstance(v, str) for v in old + new)
     ):
-        # A name list (``dir()``): report what joined or left, not both full lists.
-        for name in sorted(set(new) - set(old)) if additions_matter else ():
-            problems.append(f"{label}: added {name!r}")
-        for name in sorted(set(old) - set(new)):
-            problems.append(f"{label}: REMOVED {name!r}")
+        # A name list (``dir()``) or an occurrence list (the same test file patching a
+        # target several times): report what joined or left, not both full lists. Counted
+        # rather than set-compared, so dropping one of several identical entries is not
+        # read as "unchanged" -- one patch out of twelve going away is exactly the kind of
+        # partial repoint this check exists to catch.
+        old_counts, new_counts = Counter(old), Counter(new)
+        for name in sorted(set(old) | set(new)):
+            delta = new_counts[name] - old_counts[name]
+            if delta > 0:
+                if additions_matter:
+                    problems.append(f"{label}: added {name!r}")
+            elif delta < 0:
+                if new_counts[name]:
+                    problems.append(
+                        f"{label}: {old_counts[name]} -> {new_counts[name]} x {name!r}"
+                    )
+                else:
+                    problems.append(f"{label}: REMOVED {name!r}")
     else:
         problems.append(f"{label}: {old!r} -> {new!r}")
     return problems
@@ -808,13 +852,18 @@ def verify() -> int:
     problems += _diff("runtime", _read("runtime_inventory.json"), runtime_inventory())
     problems += _diff("golden", _read("golden_outputs.json"), golden_outputs(corpus))
 
+    # Keyed by variant as well as by name: a pre-existing failure at ``final = True``
+    # is not a licence for a new one on the ``final = False`` streaming path.
     baseline_idempotence = {
-        (f["module"], f["function"]) for f in _read("idempotence_baseline.json")
+        (f["module"], f["function"], f.get("variant", ""))
+        for f in _read("idempotence_baseline.json")
     }
     for failure in idempotence_failures(corpus):
-        if (failure["module"], failure["function"]) not in baseline_idempotence:
+        key = (failure["module"], failure["function"], failure["variant"])
+        if key not in baseline_idempotence:
             problems.append(
-                f"idempotence.{failure['module']}.{failure['function']}: "
+                f"idempotence.{failure['module']}.{failure['function']}"
+                f"{'[' + failure['variant'] + ']' if failure['variant'] else ''}: "
                 f"f(f(x)) != f(x) for {failure['input']!r}"
             )
 

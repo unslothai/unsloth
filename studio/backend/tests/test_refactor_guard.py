@@ -63,17 +63,19 @@ def test_guarded_functions_produce_the_same_bytes(corpus):
 def test_no_new_non_idempotent_strip(corpus):
     """``strip(strip(x)) == strip(x)``, or display text depends on stream chunking.
 
-    Two functions already fail this and are recorded in the baseline; the check is that
-    the set does not grow.
+    The strippers that already fail are recorded in the baseline, one entry per boolean
+    variant; the check is that the set does not grow.
     """
+    # Keyed by boolean variant too: ``final = True`` failing already is not a licence
+    # for the ``final = False`` streaming path to start failing.
     baseline = {
-        (entry["module"], entry["function"])
+        (entry["module"], entry["function"], entry.get("variant", ""))
         for entry in refactor_guard._read("idempotence_baseline.json")
     }
     new = [
-        f"{entry['module']}.{entry['function']} for {entry['input']!r}"
+        f"{entry['module']}.{entry['function']}[{entry['variant']}] for {entry['input']!r}"
         for entry in refactor_guard.idempotence_failures(corpus)
-        if (entry["module"], entry["function"]) not in baseline
+        if (entry["module"], entry["function"], entry["variant"]) not in baseline
     ]
 
     assert not new, "\n".join(new)
