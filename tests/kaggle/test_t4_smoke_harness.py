@@ -267,6 +267,46 @@ def test_some_unreadable_statuses_do_not_block_a_readable_idle_account():
     assert concurrency_verdict(survey) == (True, "")
 
 
+def test_standing_down_while_the_account_is_busy_is_the_default():
+    """The documented policy: one kernel in flight and this job yields.
+
+    Kaggle would allow a second (2 kernels x 2 T4s = 4 payloads) and this
+    deliberately does not take it. The knob is ALLOWED_IN_FLIGHT_KERNELS;
+    the default being 0 rather than 1 is the decision under test.
+    """
+    from gate import ALLOWED_IN_FLIGHT_KERNELS, concurrency_verdict
+
+    assert ALLOWED_IN_FLIGHT_KERNELS == 0
+    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
+              "unreadable": 0, "window_hours": 13.0}
+    clear, why = concurrency_verdict(survey)
+    assert clear is False
+    assert "1 kernel(s) in flight" in why and "tolerates 0" in why
+
+
+def test_the_in_flight_tolerance_is_a_knob_and_not_a_constant():
+    """Raising it is a one-argument change, which is what makes the default
+    a policy rather than an accident of the implementation."""
+    from gate import concurrency_verdict
+
+    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
+              "unreadable": 0, "window_hours": 13.0}
+    assert concurrency_verdict(survey, 1) == (True, "")
+    assert concurrency_verdict(survey, 0)[0] is False
+
+
+def test_the_tolerance_can_never_be_raised_to_the_account_cap():
+    """Leaving no headroom races anything that starts after the survey."""
+    from gate import MAX_CONCURRENT_GPU_KERNELS, concurrency_verdict
+
+    survey = {"busy": [f"u/k{i} (RUNNING)" for i in
+                       range(MAX_CONCURRENT_GPU_KERNELS)],
+              "complete": True, "surveyed": 2, "unreadable": 0,
+              "window_hours": 13.0}
+    clear, why = concurrency_verdict(survey, MAX_CONCURRENT_GPU_KERNELS)
+    assert clear is False and "Standing down" in why
+
+
 def test_an_account_with_no_kernels_at_all_is_clear():
     from gate import concurrency_verdict, survey_kernels
 
@@ -275,7 +315,83 @@ def test_an_account_with_no_kernels_at_all_is_clear():
     assert concurrency_verdict(survey) == (True, "")
 
 
+# ---------------------------------------- gate: a skip is never a failure
+#
+# Every negative answer the gate can give has to exit 0. Not spending quota
+# is the designed outcome for most invocations, and a workflow that went red
+# on it would be ignored by the time it was ever right.
+
+def _run_gate(monkeypatch, tmp_path, *extra):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(sys, "argv",
+                        ["gate.py", "--budget-hours", "1",
+                         "--reserve-hours", "20", "--percent", "10",
+                         "--run-id", "12345", *extra])
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    import gate
+
+    code = gate.main()
+    outputs = dict(
+        line.split("=", 1) for line in
+        (tmp_path / "out.txt").read_text().splitlines() if "=" in line)
+    return code, outputs
+
+
+def test_a_missing_token_is_a_skip_not_a_failure(monkeypatch, tmp_path):
+    """What a fork pull request gets: no secret, and nothing red."""
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
+    code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    assert "fork" in outputs["reason"]
+
+
+def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
+    """An unreachable Kaggle API says nothing about the code under test."""
+    import gate
+
+    monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
+    monkeypatch.setattr(gate, "kaggle_client",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
+    assert code == 0
+    assert outputs["should_run"] == "false"
+    # The reason names the failure type but never the credential.
+    assert "RuntimeError" in outputs["reason"]
+    assert "not-a-real-token" not in (tmp_path / "out.txt").read_text()
+
+
+def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch,
+                                                         tmp_path):
+    from gate import sampled_in
+
+    unlucky = next(str(i) for i in range(1000) if not sampled_in(str(i), 10)[0])
+    code, outputs = _run_gate(monkeypatch, tmp_path, "--run-id", unlucky)
+    assert code == 0 and outputs["should_run"] == "false"
+    assert "not sampled" in outputs["reason"]
+
+
+def test_a_rerun_of_the_same_run_id_does_not_reroll(monkeypatch, tmp_path):
+    """A re-run must not be a fresh draw, or 10% is a floor, not a rate."""
+    first = _run_gate(monkeypatch, tmp_path / "a", "--run-attempt", "1")
+    second = _run_gate(monkeypatch, tmp_path / "b", "--run-attempt", "7")
+    assert first[1]["should_run"] == second[1]["should_run"]
+
+
 # ----------------------------------------------------------- reference band
+
+def _write_reference(path: Path, metrics: list[dict], max_steps: int) -> Path:
+    """A reference file shaped the way a captured one is.
+
+    ``config.max_steps`` is not decoration: check_reference refuses to
+    compare against a file that does not carry it, so a helper that omitted
+    it would make every test below a test of that refusal instead.
+    """
+    path.write_text(json.dumps({"metrics": metrics,
+                                "config": {"max_steps": max_steps}}))
+    return path
+
 
 @pytest.mark.parametrize(
     ("observed", "expected_status"),
@@ -286,28 +402,25 @@ def test_reference_band_accepts_drift_and_rejects_a_real_move(
     sys.path.insert(0, str(SMOKE_DIR))
     from run_t4_smoke import check_reference
 
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}]}))
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 1.0}], max_steps=1)
     verdict = check_reference([{"step": 1, "loss": observed}], ref,
-                              rel_tol=0.10, abs_floor=0.05)
+                              rel_tol=0.10, abs_floor=0.05, max_steps=1)
     assert verdict["status"] == expected_status
 
 
-def test_reference_band_absolute_floor_tolerates_near_zero_losses():
+def test_reference_band_absolute_floor_tolerates_near_zero_losses(tmp_path):
     """Late steps approach zero, where a tiny absolute drift is not a regression."""
     sys.path.insert(0, str(SMOKE_DIR))
     from run_t4_smoke import check_reference
 
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ref = Path(tmp) / "ref.json"
-        ref.write_text(json.dumps({"metrics": [{"step": 10, "loss": 0.0001}]}))
-        # 0.002 absolute against a 0.0001 reference is a 1900% relative move,
-        # but it is noise. The 0.05 floor is what stops it firing.
-        verdict = check_reference([{"step": 10, "loss": 0.002}], ref,
-                                  rel_tol=0.10, abs_floor=0.05)
-        assert verdict["status"] == "ok"
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 10, "loss": 0.0001}], max_steps=10)
+    # 0.002 absolute against a 0.0001 reference is a 1900% relative move,
+    # but it is noise. The 0.05 floor is what stops it firing.
+    verdict = check_reference([{"step": 10, "loss": 0.002}], ref,
+                              rel_tol=0.10, abs_floor=0.05, max_steps=10)
+    assert verdict["status"] == "ok"
 
 
 def test_reference_absent_is_not_a_failure():
@@ -315,8 +428,152 @@ def test_reference_absent_is_not_a_failure():
     from run_t4_smoke import check_reference
 
     verdict = check_reference([{"step": 1, "loss": 1.0}],
-                              Path("/nonexistent/ref.json"), 0.1, 0.05)
+                              Path("/nonexistent/ref.json"), 0.1, 0.05,
+                              max_steps=3)
     assert verdict["status"] == "absent"
+
+
+# ------------------------------------- the reference must be for THIS run
+#
+# The band check compares a run against a trace captured at one specific
+# step count. Comparing across counts is arithmetic that succeeds and means
+# nothing -- the fp16 scaler burns the front of every run, so a 3-step run
+# is all front, and step 4 of a 10-step trace is not a step a 3-step run
+# ever takes. These prove it fails, loudly, rather than sliding past.
+
+def test_a_reference_from_a_different_step_count_is_refused(tmp_path):
+    from run_t4_smoke import check_reference, reference_failures
+
+    ten = [{"step": i, "loss": 10.0 - i} for i in range(1, 11)]
+    ref = _write_reference(tmp_path / "ref.json", ten, max_steps=10)
+
+    verdict = check_reference(ten, ref, 0.10, 0.05, max_steps=3)
+    assert verdict["status"] == "step_count_mismatch"
+    assert verdict["reference_max_steps"] == 10
+    assert verdict["observed_max_steps"] == 3
+    # The refusal must reach the list that turns the job red, and it must
+    # name both counts: a reader has to be able to tell this from a real
+    # numeric regression without opening the artifact.
+    failures = reference_failures(verdict, 0.10)
+    assert len(failures) == 1
+    assert "max_steps=10" in failures[0] and "3 steps" in failures[0]
+
+
+def test_a_step_count_mismatch_is_refused_even_when_the_numbers_agree(tmp_path):
+    """The worst case: identical metrics, so nothing else would object.
+
+    A 10-step reference and a 3-step run whose logged values happen to
+    match would sail through the band, the length check and every tolerance
+    in the file. Only the declared step count catches it, which is why it is
+    checked first and returns before a single value is compared.
+    """
+    from run_t4_smoke import check_reference, reference_failures
+
+    metrics = [{"step": 1, "loss": 10.0, "grad_norm": 5.0}]
+    ref = _write_reference(tmp_path / "ref.json", metrics, max_steps=10)
+
+    verdict = check_reference(metrics, ref, 0.10, 0.05, max_steps=3)
+    assert verdict["status"] == "step_count_mismatch"
+    assert reference_failures(verdict, 0.10)
+    # No reassuring numbers may be produced from a comparison that was
+    # refused: an empty deviations list next to a "worst deviation 0.0"
+    # reads exactly like a pass.
+    assert verdict["deviations"] == []
+    assert verdict["worst_rel"] == {}
+
+
+def test_a_reference_that_does_not_say_its_step_count_is_refused(tmp_path):
+    """"It does not say" is not "it matches"."""
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = tmp_path / "ref.json"
+    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}]}))
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
+                              max_steps=3)
+    assert verdict["status"] == "reference_step_count_unknown"
+    assert reference_failures(verdict, 0.10)
+
+
+@pytest.mark.parametrize("config", [{"max_steps": "three"}, {"max_steps": None},
+                                    {}, "not-a-dict"])
+def test_an_unreadable_step_count_is_refused_rather_than_assumed(tmp_path,
+                                                                 config):
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = tmp_path / "ref.json"
+    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}],
+                               "config": config}))
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
+                              max_steps=3)
+    assert verdict["status"] == "reference_step_count_unknown"
+    assert reference_failures(verdict, 0.10)
+
+
+def test_a_matching_step_count_still_compares_the_numbers(tmp_path):
+    """The guard must not become a way to pass without being checked."""
+    from run_t4_smoke import check_reference, reference_failures
+
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 10.0},
+                            {"step": 2, "loss": 1.0},
+                            {"step": 3, "loss": 0.5}], max_steps=3)
+    good = check_reference([{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0},
+                            {"step": 3, "loss": 0.5}], ref, 0.10, 0.05,
+                           max_steps=3)
+    assert good["status"] == "ok" and reference_failures(good, 0.10) == []
+    bad = check_reference([{"step": 1, "loss": 10.0}, {"step": 2, "loss": 4.0},
+                           {"step": 3, "loss": 0.5}], ref, 0.10, 0.05,
+                          max_steps=3)
+    assert bad["status"] == "out_of_band" and reference_failures(bad, 0.10)
+
+
+def test_check_reference_cannot_be_called_without_a_step_count():
+    """Mandatory by signature, so no call site can omit it by accident."""
+    import inspect
+
+    from run_t4_smoke import check_reference
+
+    param = inspect.signature(check_reference).parameters["max_steps"]
+    assert param.kind is inspect.Parameter.KEYWORD_ONLY
+    assert param.default is inspect.Parameter.empty
+    with pytest.raises(TypeError):
+        check_reference([], Path("/nonexistent/ref.json"), 0.1, 0.05)
+
+
+def test_the_committed_reference_records_the_step_count_it_was_captured_at():
+    """Without this the file is unusable, and the failure is far away."""
+    from run_t4_smoke import reference_step_count
+
+    steps = reference_step_count(_committed_reference())
+    assert isinstance(steps, int) and steps > 0
+    # The trace has one logged row per step (logging_steps=1). If that ever
+    # stops holding, the declared count is the one to trust and this is the
+    # place to find out.
+    assert len(_committed_reference()["metrics"]) == steps
+
+
+def test_the_workflow_step_count_and_the_payload_default_agree():
+    """Two places state the step count; disagreeing costs a Kaggle session.
+
+    The workflow's input default is what CI runs and the payload's argparse
+    default is what a local reproduction runs, and a reference is only valid
+    for one number.
+    """
+    import re
+
+    from run_t4_smoke import main  # noqa: F401  (import proves it loads)
+
+    workflow = (REPO_ROOT / ".github" / "workflows"
+                / "kaggle-t4-notebook-ci.yml").read_text()
+    dispatch_default = re.search(
+        r"max_steps:\s*\n\s*description:.*\n\s*type: string\n\s*default: '(\d+)'",
+        workflow).group(1)
+    fallback = re.search(r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}",
+                         workflow).group(1)
+    payload = re.search(r'"--max-steps", type=int, default=(\d+)',
+                        (SMOKE_DIR / "run_t4_smoke.py").read_text()).group(1)
+    assert dispatch_default == fallback == payload, (
+        dispatch_default, fallback, payload)
 
 
 # ------------------------------------------- the band check, proved to fail
@@ -347,12 +604,25 @@ def _perturb(metrics: list[dict], index: int, field: str,
     return out
 
 
+def _committed_steps() -> int:
+    """The step count the committed reference was captured at.
+
+    Read from the file rather than hardcoded, so these tests keep testing
+    the numbers after a recapture at a different count instead of failing
+    for a reason that is not a regression.
+    """
+    from run_t4_smoke import reference_step_count
+
+    return reference_step_count(_committed_reference())
+
+
 def test_the_committed_reference_matches_itself(tmp_path):
     """The floor under the next test: an unperturbed comparison is clean."""
     from run_t4_smoke import check_reference, reference_failures
 
     metrics = _committed_reference()["metrics"]
-    verdict = check_reference(metrics, COMMITTED_REFERENCE, 0.10, 0.05)
+    verdict = check_reference(metrics, COMMITTED_REFERENCE, 0.10, 0.05,
+                              max_steps=_committed_steps())
     assert verdict["status"] == "ok", verdict["deviations"]
     assert reference_failures(verdict, 0.10) == []
 
@@ -362,6 +632,7 @@ def test_perturbing_the_committed_reference_turns_the_check_red():
     from run_t4_smoke import check_reference, reference_failures
 
     metrics = _committed_reference()["metrics"]
+    steps = _committed_steps()
     checked = 0
     for i, entry in enumerate(metrics):
         for field in ("loss", "grad_norm"):
@@ -370,7 +641,8 @@ def test_perturbing_the_committed_reference_turns_the_check_red():
                 continue
             checked += 1
             moved = _perturb(metrics, i, field)
-            verdict = check_reference(moved, COMMITTED_REFERENCE, 0.10, 0.05)
+            verdict = check_reference(moved, COMMITTED_REFERENCE, 0.10, 0.05,
+                                      max_steps=steps)
             assert verdict["status"] == "out_of_band", (i, field, verdict)
             assert reference_failures(verdict, 0.10), (i, field)
             assert any(d["step"] == entry["step"] and d["field"] == field
@@ -390,6 +662,7 @@ def test_whether_the_absolute_floor_is_reached_at_all(tmp_path):
     from run_t4_smoke import check_reference
 
     metrics = _committed_reference()["metrics"]
+    steps = _committed_steps()
     values = [abs(float(m[f])) for m in metrics for f in ("loss", "grad_norm")
               if m.get(f) is not None and float(m[f]) == float(m[f])]
     smallest = min(values)
@@ -401,50 +674,60 @@ def test_whether_the_absolute_floor_is_reached_at_all(tmp_path):
         # If this ever fails, the floor started mattering and the reason
         # belongs in the README before anyone relies on it.
         assert smallest >= 0.05
-        ref = tmp_path / "ref.json"
-        ref.write_text(json.dumps({"metrics": metrics}))
+        ref = _write_reference(tmp_path / "ref.json", metrics, steps)
         for index in range(len(metrics)):
             for field in ("loss", "grad_norm"):
                 if metrics[index].get(field) is None:
                     continue
                 moved = _perturb(metrics, index, field)
-                assert (check_reference(moved, ref, 0.10, 0.05)["status"]
-                        == check_reference(moved, ref, 0.10, 0.0)["status"])
+                assert (check_reference(moved, ref, 0.10, 0.05,
+                                        max_steps=steps)["status"]
+                        == check_reference(moved, ref, 0.10, 0.0,
+                                           max_steps=steps)["status"])
     else:
         # The floor engages. Then it must be what keeps a small absolute
         # drift at those steps in band, and removing it must fail them.
-        ref = tmp_path / "ref.json"
-        ref.write_text(json.dumps({"metrics": metrics}))
+        ref = _write_reference(tmp_path / "ref.json", metrics, steps)
         drifted = [dict(m) for m in metrics]
         for entry in drifted:
             value = entry.get("loss")
             if value is not None and value == value and abs(value) < 0.05:
                 entry["loss"] = value + 0.004
-        assert check_reference(drifted, ref, 0.10, 0.05)["status"] == "ok"
-        assert check_reference(drifted, ref, 0.10, 0.0)["status"] == "out_of_band"
+        assert check_reference(drifted, ref, 0.10, 0.05,
+                               max_steps=steps)["status"] == "ok"
+        assert check_reference(drifted, ref, 0.10, 0.0,
+                               max_steps=steps)["status"] == "out_of_band"
 
 
 def test_band_failure_reaches_the_failure_list(tmp_path):
     """out_of_band must propagate to what turns the job red, not just report."""
     from run_t4_smoke import check_reference, reference_failures
 
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 10.0},
-                                           {"step": 2, "loss": 1.0}]}))
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 10.0},
+                            {"step": 2, "loss": 1.0}], max_steps=2)
     verdict = check_reference([{"step": 1, "loss": 10.0},
-                               {"step": 2, "loss": 4.0}], ref, 0.10, 0.05)
+                               {"step": 2, "loss": 4.0}], ref, 0.10, 0.05,
+                              max_steps=2)
     assert verdict["status"] == "out_of_band"
     failures = reference_failures(verdict, 0.10)
     assert len(failures) == 1 and "outside +/-10%" in failures[0]
 
 
 def test_a_length_mismatch_is_a_failure_too(tmp_path):
+    """Same declared step count, different number of logged rows.
+
+    That is the trainer logging something other than one row per step -- a
+    change in the shape of the evidence, which no tolerance covers and the
+    step-count guard cannot see.
+    """
     from run_t4_smoke import check_reference, reference_failures
 
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}]}))
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 1.0}], max_steps=2)
     verdict = check_reference([{"step": 1, "loss": 1.0},
-                               {"step": 2, "loss": 1.0}], ref, 0.10, 0.05)
+                               {"step": 2, "loss": 1.0}], ref, 0.10, 0.05,
+                              max_steps=2)
     assert verdict["status"] == "length_mismatch"
     assert reference_failures(verdict, 0.10)
 
@@ -454,11 +737,11 @@ def test_matching_nan_grad_norms_are_within_band(tmp_path):
     from run_t4_smoke import check_reference
 
     nan = float("nan")
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 10.0,
-                                            "grad_norm": nan}]}))
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 10.0, "grad_norm": nan}],
+                           max_steps=1)
     verdict = check_reference([{"step": 1, "loss": 10.0, "grad_norm": nan}],
-                              ref, 0.10, 0.05)
+                              ref, 0.10, 0.05, max_steps=1)
     assert verdict["status"] == "ok"
 
 
@@ -474,11 +757,12 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 
     nan = float("nan")
     ref_value, obs_value = (5.0, nan) if swap else (nan, 5.0)
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 10.0,
-                                            "grad_norm": ref_value}]}))
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 10.0,
+                             "grad_norm": ref_value}], max_steps=1)
     verdict = check_reference(
-        [{"step": 1, "loss": 10.0, "grad_norm": obs_value}], ref, 0.10, 0.05)
+        [{"step": 1, "loss": 10.0, "grad_norm": obs_value}], ref, 0.10, 0.05,
+        max_steps=1)
     assert verdict["status"] == "out_of_band"
     assert verdict["deviations"][0]["field"] == "grad_norm"
 
@@ -486,11 +770,150 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 def test_a_field_that_stopped_being_logged_is_out_of_band(tmp_path):
     from run_t4_smoke import check_reference
 
-    ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0,
-                                            "grad_norm": 3.0}]}))
-    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05)
+    ref = _write_reference(tmp_path / "ref.json",
+                           [{"step": 1, "loss": 1.0, "grad_norm": 3.0}],
+                           max_steps=1)
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
+                              max_steps=1)
     assert verdict["status"] == "out_of_band"
+
+
+# -------------------------------------- did the run optimise anything at all
+#
+# The check that a short run needs. Under fp16 a step whose gradients
+# overflow logs grad_norm NaN and is SKIPPED, and the committed 10-step
+# trace has that at steps 1, 2 and 3 -- so a 3-step run of that same
+# configuration applies no optimizer update whatever. Everything downstream
+# still succeeds (finite loss, adapter saves, generation produces text), so
+# nothing else in the harness notices.
+
+def test_a_run_whose_every_step_was_skipped_is_a_failure():
+    from run_t4_smoke import optimisation_failures
+
+    nan = float("nan")
+    failures = optimisation_failures(
+        [{"step": 1, "loss": 10.3, "grad_norm": nan},
+         {"step": 2, "loss": 10.5, "grad_norm": nan},
+         {"step": 3, "loss": 9.9, "grad_norm": nan}])
+    assert any("skipped every one of the 3 steps" in f for f in failures)
+
+
+def test_the_committed_reference_trajectory_would_have_passed():
+    """The same check against real data, so it is not merely strict."""
+    from run_t4_smoke import optimisation_failures
+
+    assert optimisation_failures(_committed_reference()["metrics"]) == []
+
+
+def test_a_trainer_that_stops_logging_grad_norm_is_not_called_a_skip():
+    """Silence is not evidence of a skipped step."""
+    from run_t4_smoke import optimisation_failures
+
+    failures = optimisation_failures([{"step": 1, "loss": 10.0},
+                                      {"step": 2, "loss": 1.0}])
+    assert failures == []
+
+
+def test_one_applied_step_is_enough_for_the_skip_check():
+    from run_t4_smoke import optimisation_failures
+
+    nan = float("nan")
+    failures = optimisation_failures(
+        [{"step": 1, "loss": 10.0, "grad_norm": nan},
+         {"step": 2, "loss": 1.0, "grad_norm": 42.0}])
+    assert not any("skipped every" in f for f in failures)
+
+
+@pytest.mark.parametrize(
+    ("metrics", "expected"),
+    [([{"step": 1, "loss": float("nan"), "grad_norm": 1.0}], "non-finite"),
+     ([{"step": 1, "loss": 1.0, "grad_norm": 1.0},
+       {"step": 2, "loss": 2.0, "grad_norm": 1.0}], "did not decrease")],
+)
+def test_the_other_optimisation_checks_still_fire(metrics, expected):
+    from run_t4_smoke import optimisation_failures
+
+    assert any(expected in f for f in optimisation_failures(metrics))
+
+
+# ------------------------------------------------- the fp16 loss-scale pin
+
+class _FakeScaler:
+    def __init__(self, init_scale=65536.0, enabled=True):
+        self._init_scale = init_scale
+        self._enabled = enabled
+
+    def is_enabled(self):
+        return self._enabled
+
+    def get_scale(self):
+        return self._init_scale
+
+
+class _FakeTrainer:
+    def __init__(self, scaler):
+        self.accelerator = type("A", (), {"scaler": scaler})()
+
+
+def test_the_loss_scale_pin_lowers_the_starting_scale():
+    from run_t4_smoke import pin_initial_loss_scale
+
+    scaler = _FakeScaler()
+    state = pin_initial_loss_scale(_FakeTrainer(scaler), 2048.0)
+    assert state["applied"] is True
+    assert state["before"] == 65536.0 and state["after"] == 2048.0
+    assert scaler.get_scale() == 2048.0
+
+
+@pytest.mark.parametrize("trainer", [
+    _FakeTrainer(None),
+    _FakeTrainer(_FakeScaler(enabled=False)),
+    _FakeTrainer(object()),
+])
+def test_the_loss_scale_pin_is_never_fatal(trainer):
+    """A transformers release that moves the scaler must cost a footnote in
+    the report, not a Kaggle session."""
+    from run_t4_smoke import pin_initial_loss_scale
+
+    state = pin_initial_loss_scale(trainer, 2048.0)
+    assert state["applied"] is False and state["reason"]
+
+
+def test_the_loss_scale_pin_does_nothing_when_not_requested():
+    from run_t4_smoke import pin_initial_loss_scale
+
+    scaler = _FakeScaler()
+    state = pin_initial_loss_scale(_FakeTrainer(scaler), 0)
+    assert state["applied"] is False and scaler.get_scale() == 65536.0
+
+
+def test_every_setting_the_child_needs_is_forwarded_to_it():
+    """The cycles run as child processes, and the forwarding list is manual.
+
+    A setting added to train_once but not to that list is silently ignored
+    on the Kaggle run while working perfectly in a single-process local
+    reproduction, because the parent never runs train_once itself. Derived
+    from the source rather than listed here, so it cannot go stale.
+    """
+    import ast
+
+    tree = ast.parse((SMOKE_DIR / "run_t4_smoke.py").read_text())
+    functions = {n.name: n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef)}
+
+    read = {node.attr for node in ast.walk(functions["train_once"])
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name) and node.value.id == "args"}
+    forwarded = {c.value.lstrip("-").replace("-", "_")
+                 for c in ast.walk(functions["main"])
+                 if isinstance(c, ast.Constant) and isinstance(c.value, str)
+                 and c.value.startswith("--")}
+
+    # outdir is passed separately, per cycle, and must not be forwarded
+    # verbatim: each cycle gets its own directory.
+    missing = read - forwarded - {"outdir"}
+    assert not missing, f"train_once reads {sorted(missing)}, child never gets it"
+    assert "init_loss_scale" in read & forwarded
 
 
 # ------------------------------------------------------------ kernel build
@@ -547,7 +970,7 @@ def _build(tmp_path, *extra, payload_dir: Path = SMOKE_DIR) -> dict:
 # the workflow always takes and the one no local build had ever exercised.
 WORKFLOW_ARGS = ("--unsloth-ref", "main", "--zoo-ref", "main",
                  "--reference", "t4_qwen2.5-0.5b.json",
-                 "--smoke-args", "--max-steps 10",
+                 "--smoke-args", "--max-steps 3",
                  "--per-run-timeout", "2100")
 
 
@@ -761,6 +1184,57 @@ def test_the_dependency_probe_imports_unsloth_before_unsloth_zoo(tmp_path):
     assert modules.index('"unsloth"') < modules.index('"unsloth_zoo"')
 
 
+# --------------------------------------------------------------- workflow
+
+WORKFLOW = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
+            / "kaggle-t4-notebook-ci.yml")
+
+
+def _workflow() -> dict:
+    yaml = pytest.importorskip("yaml")
+    return yaml.safe_load(WORKFLOW.read_text())
+
+
+def test_the_workflow_parses_and_gates_the_expensive_job_on_the_cheap_one():
+    wf = _workflow()
+    jobs = wf["jobs"]
+    assert jobs["t4-smoke"]["needs"] == "gate"
+    assert "needs.gate.outputs.should_run == 'true'" in jobs["t4-smoke"]["if"]
+    # A stand-down leaves t4-smoke skipped, which is grey rather than red,
+    # and the gate itself exits 0 (see the gate tests above).
+    assert "fork != true" in jobs["gate"]["if"]
+    for job in jobs.values():
+        assert job["timeout-minutes"] >= 1
+
+
+def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
+    """A cancelled runner cannot stop the kernel it already pushed."""
+    wf = _workflow()
+    assert wf["concurrency"]["cancel-in-progress"] is False
+    assert (wf["jobs"]["t4-smoke"]["concurrency"]["cancel-in-progress"]
+            is False)
+
+
+def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
+    """The one way to run without a band check is explicit and it warns."""
+    source = WORKFLOW.read_text()
+    assert "REFERENCE='t4_qwen2.5-0.5b.json'" in source
+    assert 'if [ "$SKIP_BAND" = "true" ]' in source
+    assert "::warning title=Reference band check disabled" in source
+    # And nothing else may blank it.
+    assert source.count("REFERENCE=''") == 1
+
+
+def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
+    """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
+    preempt = json.loads(
+        (Path(__file__).resolve().parents[2] / ".github"
+         / "ci-preempt.json").read_text())
+    assert WORKFLOW.name in preempt["never"]
+    for machines in preempt["heavy"].values():
+        assert WORKFLOW.name not in machines
+
+
 # ----------------------------------------------------------------- report
 
 @pytest.mark.parametrize(
@@ -805,6 +1279,39 @@ def test_a_kernel_that_reported_nothing_still_names_its_cause(tmp_path):
     assert proc.returncode == 0
     assert "SyntaxError: invalid syntax" in proc.stdout
     assert "unrelated chatter" not in proc.stdout
+
+
+def test_the_summary_states_a_refused_reference_rather_than_an_empty_list():
+    """`deviations: []` next to a refusal reads exactly like a clean pass."""
+    sys.path.insert(0, str(CI_DIR))
+    from report import render
+
+    text = "\n".join(render({
+        "label": "gpu0", "model": "m", "metrics": [],
+        "config": {"max_steps": 3, "init_loss_scale": 2048.0},
+        "reference_check": {
+            "status": "step_count_mismatch", "deviations": [],
+            "reference_max_steps": 10, "observed_max_steps": 3,
+            "note": "captured at max_steps=10 and this run is 3 steps"},
+        "failures": ["refusing to band-check against a reference that is "
+                     "not for this run"]}))
+    assert "step_count_mismatch" in text
+    assert "captured at max_steps=10" in text
+    assert "max_steps `3`" in text
+
+
+def test_the_summary_says_when_the_loss_scale_pin_did_not_apply():
+    sys.path.insert(0, str(CI_DIR))
+    from report import render
+
+    text = "\n".join(render({
+        "label": "gpu0", "model": "m", "metrics": [],
+        "config": {"max_steps": 3, "init_loss_scale": 2048.0},
+        "runs": [{"run_index": 0, "generated": "x", "canary_found": True,
+                  "loss_scale": {"applied": False,
+                                 "reason": "trainer.accelerator.scaler is absent"}}],
+        "failures": []}))
+    assert "did NOT apply" in text and "scaler is absent" in text
 
 
 def test_a_plain_text_kernel_log_is_handled_too(tmp_path):

@@ -30,14 +30,39 @@ catches nondeterminism. The reference band is the weaker, cross-environment
 companion: it catches a change large enough to be a change in the
 optimisation rather than in the low bits.
 
+## The step count is part of the reference
+
+A reference is a trace of one run, and a run of a different length is a
+different run. Step 4 of a 10-step run and step 4 of a 3-step run are the
+same iterate only by coincidence: the fp16 scaler spends the front of a run
+discovering its loss scale, and a short run is all front.
+
+So every reference records the `max_steps` it was captured at, in its
+`config` block, and `check_reference` compares that against the step count
+of the run in hand **before** it looks at a single number. A mismatch is
+status `step_count_mismatch` and a hard failure. A reference with no
+recorded step count is status `reference_step_count_unknown` and also a hard
+failure -- "it does not say" is not "it matches".
+
+That refusal is deliberately louder than a skip. A band check quietly
+comparing a 3-step run against a 10-step trace would either fail for the
+wrong reason or, worse, pass on the first three steps of a curve it has
+nothing to do with, and report green while checking nothing.
+
+Changing `--max-steps`, `--init-loss-scale`, the learning rate, the model or
+the optimizer therefore invalidates the committed file. There is no
+tolerance that covers it and widening the band is never the answer.
+
 ## Tolerance
 
 Default `--rel-tol 0.10`, with `--abs-floor 0.05` on the denominator.
 
 10% is chosen to sit above environment drift and below anything meaningful.
-For scale, on the committed configuration the loss falls from about 10.3 to
-about 0.14 across ten steps, so a genuine regression in the optimisation
-moves a step by whole multiples, not by a few percent.
+For scale, on the configuration the committed file was captured with the
+loss falls from about 10.3 to about 0.09 across ten steps, so a genuine
+regression in the optimisation moves a step by whole multiples, not by a few
+percent. Every measurement in the two sections below is likewise about that
+ten-step capture, which is the only trace this directory has so far.
 
 **The absolute floor is currently inert, and that is a measurement.** The
 floor only engages where `|reference value| < 0.05`, and the smallest value
@@ -61,9 +86,20 @@ the committed file is in on every run rather than trusting this paragraph.
 scaler reports NaN on any step whose gradients overflowed and then skips
 that step. They are compared as NaN-equals-NaN.
 
-## Current state
+## Current state: STALE, and failing loudly on purpose
 
-`t4_qwen2.5-0.5b.json`, lifted from kernel
+`t4_qwen2.5-0.5b.json` was captured at **`max_steps=10`** and the workflow
+now runs **3** steps with the fp16 loss scale pinned. The two are not
+comparable, so every run band-checked against it fails with
+`step_count_mismatch` until it is recaptured. That is the designed
+behaviour, not a bug to route around: the file is kept, rather than deleted,
+precisely so the mismatch is stated out loud. Deleting it would make the
+band check report `absent`, which is not a failure, and the loss of coverage
+would be invisible.
+
+One Kaggle run fixes it. See "Recapturing after a configuration change".
+
+What the stale file still documents, from kernel
 `danielhanchen/unsloth-t4-ci-e3c6661f`, the first green run this workflow
 has had. What that run measured, on real `Tesla T4` / `sm_75` / 14.6 GB
 hardware:
@@ -88,7 +124,7 @@ fails for a reason that is not a regression.
 
 The reference is a whole-file copy of the per-step trace a green run already
 reports, so it does not need its own Kaggle session. From the
-`kaggle-t4-evidence-<run id>` artifact of a run whose verdict was `pass`:
+`kaggle-t4-evidence` artifact of a run whose verdict was `pass`:
 
 ```
 python - <<'PY'
@@ -113,7 +149,40 @@ strict JSON but Python's `json.loads` reads it back, which is what both the
 payload and the launcher use, and the alternative -- dropping those entries
 -- would silently exempt exactly the steps whose behaviour matters most.
 
+`config` is not optional. It carries the `max_steps` the trace was captured
+at, and without it every future comparison refuses with
+`reference_step_count_unknown`. Copy the block through verbatim; do not
+hand-edit `max_steps` to match a run it did not come from.
+
 Regenerate only when a metric change has been understood and accepted, never
 to silence a red run. The captured `environment` block travels with the file
 and is echoed in the job summary, so a reader can always see which machine
 the numbers came from.
+
+## Recapturing after a configuration change
+
+A change to `--max-steps`, `--init-loss-scale`, the learning rate, the model
+or the optimizer means the committed reference no longer describes the run.
+The band check then refuses, loudly, on every run. Clearing that takes
+exactly one Kaggle session:
+
+1. Dispatch **Kaggle T4 Notebook CI** with `skip_reference_band: true`. That
+   is the only supported way to run without a band check, it prints a
+   `::warning` saying so, and everything else still applies: the bitwise
+   run-to-run check, the canary, and the "did the optimizer actually update
+   anything" check all still gate the run. If the new configuration cannot
+   pass those, it has no business becoming a reference.
+2. Leave `max_steps` (and any other input) at the value the workflow will
+   use from then on. A reference captured at a step count nobody runs is
+   worth nothing.
+3. Download the `kaggle-t4-evidence` artifact from that run and apply the
+   recipe above.
+4. Commit the new file with the kernel slug in the message, and check the
+   diff: `config.max_steps` must be the new count, and `environment` must
+   still say `Tesla T4` / `sm_75`.
+
+The run in step 1 is also the first hardware evidence for the new
+configuration. If the canary goes missing at a shorter step count, or the
+report says the loss-scale pin did not apply, that is the answer to "is this
+configuration viable" and the step count goes back up rather than the
+assertions coming down.

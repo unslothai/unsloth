@@ -16,6 +16,15 @@
 # per-step metrics inside a band around a committed reference. See that
 # file's docstring for what each assertion is worth.
 #
+# The band check compares against a reference captured at ONE step count and
+# refuses, as a failure, to compare against one captured at another. The
+# committed reference is a 10-step trace and max_steps is now 3, so it is
+# STALE and every band check fails until it is recaptured -- one dispatch
+# with skip_reference_band, per
+# tests/kaggle/t4_smoke/references/README.md. That refusal is deliberate:
+# the alternative is a green check comparing a run against a curve it has
+# nothing to do with.
+#
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
 # ---------------------------------------------------------------------
@@ -40,11 +49,31 @@
 #      of the same account rather than competing with it.
 #   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2
 #      per ACCOUNT, and that cap is not workflow-aware. If anything of this
-#      account's is already in flight, this job stands down.
+#      account's is already in flight, this job stands down. That is
+#      stricter than the cap requires -- 2 kernels x 2 T4s is 4 payloads and
+#      this uses one -- and it is deliberate: the second slot belongs to
+#      whoever else is using the account, and a person whose notebook push
+#      is rejected has no way to know CI took it. The knob is
+#      ALLOWED_IN_FLIGHT_KERNELS in gate.py (`--allow-in-flight`), which
+#      carries the full argument; the default of 0 is the policy.
 #
-# Expected steady-state cost, with the numbers above: roughly 150-200
-# eligible invocations a week, ~10% sampled, one kernel each, bounded at 45
-# minutes and typically far under that. See
+# ARITHMETIC, at the current settings.
+#
+#   eligible invocations         150-200 / week (paths filters, measured)
+#   x sampling rate              0.10          (--percent 10)
+#   = launches                   15-20 / week
+#   x cost of one launch         0.08 h        (measured, and it is almost
+#                                              all pip install; the training
+#                                              itself is seconds)
+#   = EXPECTED SPEND             1.2-1.6 GPU-h / week, call it 1.4
+#
+# Against a 60.0 h weekly account budget that is roughly 2.3%. A dual-T4
+# session bills wall clock ONCE rather than per card, so running both
+# payloads costs the same as running one; the second T4 is free.
+#
+# Worst case, if every sampled launch somehow ran to the 45-minute kernel
+# ceiling: 20 x 0.75 = 15 GPU-h/week, which the 20 h reserve in the gate
+# still keeps clear of the last third of the budget. See
 # plans/kaggle_t4_notebook_ci.md for the full arithmetic.
 #
 # ---------------------------------------------------------------------
@@ -93,36 +122,61 @@ on:
         default: true
       payloads:
         description: 'Payloads per kernel (2 uses both T4s of one session)'
+        type: string
         default: '2'
       max_steps:
         description: 'Training steps per payload'
-        default: '10'
+        type: string
+        default: '3'
+      skip_reference_band:
+        description: 'Do not band-check against the committed reference. Set this for the ONE run that recaptures the reference after a config change'
+        type: boolean
+        default: false
       unsloth_ref:
         description: 'unslothai/unsloth ref to install and test'
+        type: string
         default: ''
 
 permissions:
   contents: read
 
+# Per-ref, like every other workflow here -- but NOT latest-only.
+#
+# The repo idiom is `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`,
+# and it is wrong for this one workflow. A cancelled runner cannot stop the
+# Kaggle kernel it has already pushed, and an orphaned kernel bills quota to
+# its own 45-minute ceiling with nobody left to read the result. Superseded
+# runs that have not STARTED are still discarded (GitHub keeps only the most
+# recent pending run per group), which is where the saving was anyway; only
+# a run that is already spending is left alone.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   gate:
     name: gate
+    # Fork pull requests never receive KAGGLE_ACCESS_TOKEN_GH, so this job
+    # could only ever reach "the token is not available to this context" --
+    # a runner spent to learn nothing. The gate handles the absent token
+    # cleanly regardless (it skips, and exits 0); this just does not start.
+    if: github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       reason: ${{ steps.decide.outputs.reason }}
     steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -134,7 +188,7 @@ jobs:
       #
       # reserve-hours is a backstop, not the primary control. The primary
       # control is the sampling rate, which bounds EXPECTED spend to roughly
-      # 5-7 GPU-hours a week (see the arithmetic at the top of this file).
+      # 1.4 GPU-hours a week (see the arithmetic at the top of this file).
       # The reserve exists for the case where that estimate is wrong, or
       # where another consumer of the same account has already spent most of
       # the week: at 20h it guarantees CI never touches the last third of
@@ -149,7 +203,7 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 10 \
-            --force '${{ github.event.inputs.force || 'false' }}' \
+            --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-t4-ci \
             --budget-hours 1 \
@@ -172,16 +226,16 @@ jobs:
       group: kaggle-t4-notebook-ci-account
       cancel-in-progress: false
     steps:
-      - name: Harden runner
-        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
 
@@ -195,23 +249,36 @@ jobs:
       - name: Resolve the ref under test
         id: ref
         run: |
-          REF='${{ github.event.inputs.unsloth_ref }}'
+          REF='${{ inputs.unsloth_ref }}'
           if [ -z "$REF" ]; then
             REF='${{ github.event.pull_request.head.sha || github.sha }}'
           fi
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "testing unslothai/unsloth@$REF"
 
+      # The reference is captured at ONE step count and is only comparable to
+      # a run of that same count -- the payload refuses the comparison
+      # otherwise rather than quietly reporting a pass. So the run that
+      # RECAPTURES a reference after a config change has to be dispatched
+      # with skip_reference_band, and it is the only run that should be.
+      # See tests/kaggle/t4_smoke/references/README.md.
       - name: Build the kernel notebook
+        env:
+          SKIP_BAND: ${{ inputs.skip_reference_band }}
         run: |
+          REFERENCE='t4_qwen2.5-0.5b.json'
+          if [ "$SKIP_BAND" = "true" ]; then
+            REFERENCE=''
+            echo "::warning title=Reference band check disabled::this run was dispatched with skip_reference_band, so its metrics are compared against nothing. Only a reference-recapture run should look like this."
+          fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
             --out kernel.ipynb \
-            --count '${{ github.event.inputs.payloads || 2 }}' \
+            --count '${{ inputs.payloads || 2 }}' \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref main \
-            --reference t4_qwen2.5-0.5b.json \
-            --smoke-args "--max-steps ${{ github.event.inputs.max_steps || 10 }}" \
+            --reference "$REFERENCE" \
+            --smoke-args "--max-steps ${{ inputs.max_steps || 3 }}" \
             --per-run-timeout 2100
 
       # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
@@ -227,7 +294,7 @@ jobs:
             --notebook kernel.ipynb \
             --user danielhanchen \
             --outdir kaggle_evidence \
-            --expect '${{ github.event.inputs.payloads || 2 }}' \
+            --expect '${{ inputs.payloads || 2 }}' \
             --kernel-timeout-sec 2700 \
             --max-wait 3600 \
             --poll-every 60
@@ -236,12 +303,16 @@ jobs:
       # wrong, and the executed notebooks are kilobytes.
       - name: Upload evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: kaggle-t4-evidence-${{ github.run_id }}
+          name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
             kernel.ipynb
+          # 14 rather than the repo's usual 7. This job runs on a minority of
+          # commits, so two consecutive samples of it can be a fortnight
+          # apart, and comparing them is the main reason to keep the evidence
+          # at all. It is also where a reference is recaptured from.
           retention-days: 14
           if-no-files-found: warn
 
@@ -250,4 +321,4 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ github.event.inputs.payloads || 2 }}'
+            --expect '${{ inputs.payloads || 2 }}'

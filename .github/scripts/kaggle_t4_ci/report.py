@@ -63,6 +63,25 @@ def render(report: dict) -> list[str]:
             f"- trl `{env.get('trl', '?')}` - unsloth `{env.get('unsloth', '?')}`")
         lines.append("")
 
+    config = report.get("config", {})
+    if config:
+        # max_steps is on the face of the summary because it is what decides
+        # whether the committed reference applies to this run at all.
+        lines.append(
+            f"Config: max_steps `{config.get('max_steps')}` - lr "
+            f"`{config.get('learning_rate')}` - batch "
+            f"`{config.get('batch_size')}` - init_loss_scale "
+            f"`{config.get('init_loss_scale')}`")
+        scales = [r.get("loss_scale") for r in report.get("runs", [])
+                  if r.get("loss_scale")]
+        if scales and not all(s.get("applied") for s in scales):
+            lines.append(
+                f"fp16 loss-scale pin did NOT apply: "
+                f"`{scales[0].get('reason', 'unknown')}`. The run used the "
+                f"framework default, so its first steps were spent on scaler "
+                f"overflows.")
+        lines.append("")
+
     lines += ["| step | loss | grad_norm |", "| --- | --- | --- |"]
     for entry in report.get("metrics", []):
         lines.append(f"| {entry.get('step')} | {_fmt_metric(entry.get('loss'))} "
@@ -91,11 +110,18 @@ def render(report: dict) -> list[str]:
     if ref:
         status = ref.get("status")
         if status == "ok":
-            lines.append(f"Reference band: within tolerance "
-                         f"(worst relative deviation {ref.get('worst_rel')}).")
+            lines.append(
+                f"Reference band: within tolerance (worst relative deviation "
+                f"{ref.get('worst_rel')}), against a reference captured at "
+                f"max_steps={ref.get('reference_max_steps')}.")
         elif status == "absent":
             lines.append("Reference band: no committed reference for this "
                          "configuration, so nothing was compared.")
+        elif ref.get("note"):
+            # A refusal, not a deviation. Say what was refused and why, in
+            # the summary itself: the deviations list is empty for these and
+            # printing it alone would read like a clean result.
+            lines.append(f"Reference band: **{status}** - {ref['note']}")
         else:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
         lines.append("")

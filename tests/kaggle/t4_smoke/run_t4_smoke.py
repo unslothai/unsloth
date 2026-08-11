@@ -36,6 +36,15 @@ What it asserts, in descending order of confidence
    is wide enough not to fire on that and narrow enough to catch a real
    change in the optimisation.
 
+   A reference is only comparable to a run of the SAME LENGTH. The step
+   count is part of what the trace encodes -- step 4 of a 10-step run and
+   step 4 of a 3-step run are the same iterate only by coincidence, and the
+   fp16 scaler's skip pattern lives at the front of the run where a short
+   run spends all of its steps. So the reference records the ``max_steps``
+   it was captured at, and comparing against a reference captured at a
+   different count is a hard failure, never a quiet pass. See
+   ``check_reference``.
+
 Determinism caveats, stated rather than assumed
 -----------------------------------------------
 ``torch.use_deterministic_algorithms(True, warn_only=True)``: warn_only
@@ -136,6 +145,63 @@ def _make_trainer_class(sft_trainer_cls, sampler):
             return sampler
 
     return _FixedOrderSFTTrainer
+
+
+def pin_initial_loss_scale(trainer, value: float) -> dict:
+    """Lower the fp16 gradient scaler's starting scale before training.
+
+    Why this exists, in one measurement. The T4 has no bf16, so the run is
+    fp16 with a dynamic ``GradScaler``. That scaler starts at 65536, halves
+    on every overflow, and SKIPS the optimizer step it overflowed on. On
+    this model the first three steps overflow every time: the committed
+    reference has ``grad_norm: NaN`` at steps 1, 2 and 3 and a finite one
+    from step 4, which is 65536 -> 8192 in three halvings. A run of three
+    steps therefore applies ZERO optimizer updates and asserts nothing about
+    training at all.
+
+    Starting the scaler low enough not to overflow is what buys a short run
+    its updates back. It changes the numeric path (a different scale is a
+    different rounding of the same gradients), so any reference captured
+    before this was introduced does not apply -- which the step-count guard
+    in ``check_reference`` already refuses to ignore.
+
+    Never fatal. ``trainer.accelerator.scaler`` is the one place transformers
+    keeps it, but it is not a public API, so a version that moved it must
+    degrade to "the run is as it was" rather than losing the session. What
+    happened is recorded in the report either way, so a reference is never
+    captured without it being visible whether the pin took.
+    """
+    state: dict = {"requested": value}
+    if not value:
+        state["applied"] = False
+        state["reason"] = "not requested"
+        return state
+    scaler = getattr(getattr(trainer, "accelerator", None), "scaler", None)
+    if scaler is None:
+        state["applied"] = False
+        state["reason"] = "trainer.accelerator.scaler is absent"
+        return state
+    if not getattr(scaler, "is_enabled", lambda: True)():
+        state["applied"] = False
+        state["reason"] = "the scaler is disabled (no fp16 autocast)"
+        return state
+    if not hasattr(scaler, "_init_scale"):
+        state["applied"] = False
+        state["reason"] = f"{type(scaler).__name__} has no _init_scale"
+        return state
+    state["before"] = float(scaler.get_scale())
+    # _init_scale rather than a fresh GradScaler: the object may be a
+    # subclass (ShardedGradScaler and friends) and replacing it would drop
+    # that. Safe here because training has not started, so the lazy _scale
+    # tensor does not exist yet and get_scale() still reads _init_scale --
+    # which is also how the assertion below can confirm the pin took.
+    scaler._init_scale = float(value)
+    state["after"] = float(scaler.get_scale())
+    state["applied"] = state["after"] == float(value)
+    if not state["applied"]:
+        state["reason"] = ("the scaler did not take the new scale; it had "
+                           "already been initialised")
+    return state
 
 
 def train_once(args, run_index: int) -> dict:
@@ -240,6 +306,9 @@ def train_once(args, run_index: int) -> dict:
         callbacks=[stats],
     )
 
+    loss_scale = pin_initial_loss_scale(trainer, args.init_loss_scale)
+    _log(f"fp16 loss scale: {json.dumps(loss_scale)}")
+
     t0 = time.time()
     trainer.train()
     train_seconds = time.time() - t0
@@ -295,6 +364,7 @@ def train_once(args, run_index: int) -> dict:
         "prompt": prompt,
         "adapter_files": saved_files,
         "determinism": det_state,
+        "loss_scale": loss_scale,
         "timing_seconds": {
             "load": round(load_seconds, 1),
             "train": round(train_seconds, 1),
@@ -350,16 +420,70 @@ def environment_fingerprint() -> dict:
     return info
 
 
+def reference_step_count(ref: dict):
+    """The ``max_steps`` a reference file says it was captured at.
+
+    ``None`` means the file does not say. That is not the same as "it
+    matches": a trace with no declared length cannot be shown to describe
+    the same run as the one in hand, and the caller treats it as such.
+    """
+    config = ref.get("config")
+    if not isinstance(config, dict):
+        return None
+    value = config.get("max_steps")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def check_reference(metrics: list[dict], reference_path: Path,
-                    rel_tol: float, abs_floor: float) -> dict:
-    """Compare against a committed reference. Never an equality check."""
+                    rel_tol: float, abs_floor: float, *,
+                    max_steps: int) -> dict:
+    """Compare against a committed reference. Never an equality check.
+
+    ``max_steps`` is the step count of the run being judged, and it is
+    mandatory. A reference is a trace of one specific run, and a run of a
+    different length is a different run: the fp16 scaler burns its first
+    few steps on overflows, the learning-rate schedule is constant only
+    because the run is short, and step N of a 3-step run is simply not the
+    step N the 10-step trace recorded. Comparing across counts would be
+    arithmetic that succeeds and means nothing, so the mismatch is reported
+    as its own status and the numbers are never touched. ``reference_failures``
+    turns it into a failure; nothing here can turn it into a pass.
+    """
     if not reference_path.exists():
         return {"status": "absent", "path": str(reference_path)}
     ref = json.loads(reference_path.read_text(encoding="utf-8"))
     ref_metrics = ref.get("metrics", [])
     verdict: dict = {"status": "ok", "path": str(reference_path),
                      "reference_env": ref.get("environment", {}),
+                     "observed_max_steps": max_steps,
+                     "reference_max_steps": reference_step_count(ref),
                      "deviations": [], "worst_rel": {}}
+
+    # The step-count gate comes FIRST and returns, so no partially
+    # reassuring "worst relative deviation" is ever computed from two runs
+    # that are not the same run.
+    if verdict["reference_max_steps"] is None:
+        verdict["status"] = "reference_step_count_unknown"
+        verdict["note"] = (
+            f"{reference_path.name} does not record the max_steps it was "
+            "captured at (no config.max_steps), so it cannot be shown to "
+            f"describe a {max_steps}-step run. Recapture it with the recipe "
+            "in references/README.md.")
+        return verdict
+    if verdict["reference_max_steps"] != max_steps:
+        verdict["status"] = "step_count_mismatch"
+        verdict["note"] = (
+            f"{reference_path.name} was captured at max_steps="
+            f"{verdict['reference_max_steps']} and this run is "
+            f"{max_steps} steps. Those are different runs and their "
+            "per-step traces are not comparable. Regenerate the reference "
+            "at the new step count (references/README.md) rather than "
+            "widening the band.")
+        return verdict
+
     if len(ref_metrics) != len(metrics):
         verdict["status"] = "length_mismatch"
         return verdict
@@ -421,8 +545,49 @@ def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
         return [f"metrics outside +/-{rel_tol:.0%} of the reference: "
                 f"{verdict['deviations']}"]
     if verdict["status"] == "length_mismatch":
-        return ["reference has a different number of steps"]
+        return ["reference has a different number of logged steps: "
+                "nothing was compared"]
+    # Refusals. Loud, and a failure: a reference that cannot be compared is
+    # worth strictly less than no reference at all, because it looks like
+    # cover and is not. Never demote either of these to a warning.
+    if verdict["status"] in ("step_count_mismatch",
+                             "reference_step_count_unknown"):
+        return ["refusing to band-check against a reference that is not for "
+                "this run: " + verdict.get("note", verdict["status"])]
     return []
+
+
+def optimisation_failures(metrics: list[dict]) -> list[str]:
+    """Did this run optimise anything at all? Cheap checks, loud answers.
+
+    The last of the three is the one a short run needs. Under fp16 the
+    gradient scaler logs ``grad_norm: NaN`` on a step it skipped, and a run
+    whose every step was skipped applied no optimizer update whatsoever: the
+    weights at the end are the weights at the start. Everything downstream
+    still "works" -- the loss is finite, the adapter saves, generation
+    produces text -- so without naming it, that run reports as a training
+    test having done no training. It is the exact failure mode a step count
+    trimmed too far produces, so it is checked rather than assumed.
+    """
+    failures: list[str] = []
+    losses = [m["loss"] for m in metrics]
+    if any(l != l or l in (float("inf"), float("-inf")) for l in losses):
+        failures.append(f"non-finite loss: {losses}")
+    if len(losses) > 1 and not losses[-1] < losses[0]:
+        failures.append(f"loss did not decrease over the run: {losses}")
+    # Only decidable where grad_norm was logged at all. A trainer version
+    # that stops logging it says nothing about whether steps were applied,
+    # and inferring "all skipped" from its silence would be a failure
+    # invented by this check rather than found by it.
+    reported = [m["grad_norm"] for m in metrics if m.get("grad_norm") is not None]
+    applied = [g for g in reported if float(g) == float(g)]
+    if reported and not applied:
+        failures.append(
+            f"the fp16 gradient scaler skipped every one of the "
+            f"{len(metrics)} steps (grad_norm is NaN throughout), so no "
+            f"optimizer update was applied and this run measured nothing "
+            f"about training. Raise --max-steps or lower --init-loss-scale.")
+    return failures
 
 
 def main() -> int:
@@ -431,15 +596,36 @@ def main() -> int:
     ap.add_argument("--dataset",
                     default=str(_HERE / "canary_dataset.jsonl"))
     ap.add_argument("--outdir", required=True)
-    # 10, not 3. Measured: under fp16 the gradient scaler starts at a high
-    # loss scale and skips every step whose gradients overflow, and on this
-    # model the first two steps overflow every time. A 3-step run therefore
-    # applies roughly one real optimizer update, the loss barely moves, and
-    # the canary never forms -- a 3-step run emitted
-    # '#1\ndef my_function():...'. At 10 steps the loss falls 10.32 -> 0.14
-    # and the canary is emitted exactly. Ten steps of a 0.5B model on one T4
-    # costs seconds, so the extra steps are free in quota terms.
-    ap.add_argument("--max-steps", type=int, default=10)
+    # 3 steps, and the whole reason --init-loss-scale exists.
+    #
+    # Measured, twice. Under fp16 the dynamic gradient scaler starts at
+    # 65536, halves on every overflow and skips the step it overflowed on.
+    # On this model the first three steps overflow every time: the committed
+    # 10-step reference has grad_norm NaN at steps 1, 2 and 3. So a 3-step
+    # run of the ORIGINAL configuration applies zero optimizer updates, the
+    # loss does not move, and the canary never forms -- an early 3-step
+    # attempt emitted '#1\ndef my_function():...'.
+    #
+    # Pinning the scaler's starting scale below the overflow point (see
+    # pin_initial_loss_scale) gives those three steps back as real updates.
+    # That is what makes 3 steps a training run rather than three forward
+    # passes, and optimisation_failures() asserts it happened rather than
+    # trusting it. The 10-step trajectory is still the honest yardstick for
+    # what 3 updates can buy: it reached loss 1.75 after three applied
+    # updates and 0.18 after four, so the canary has less margin at 3 steps
+    # than it had at 10. If a T4 run reports the canary missing while the
+    # scaler shows updates being applied, that is the signal to raise this
+    # back up rather than to relax the canary.
+    ap.add_argument("--max-steps", type=int, default=3)
+    # Below the 8192 the 10-step reference reached after three halvings, so
+    # no step is spent discovering the scale. 2048 rather than 8192 for a
+    # margin of two more halvings; fp16 gradients at this loss scale are
+    # nowhere near underflow. 0 disables the pin and restores the stock
+    # dynamic behaviour.
+    ap.add_argument("--init-loss-scale", type=float, default=2048.0,
+                    help="fp16 GradScaler starting scale; 0 leaves the "
+                         "framework default (65536, which costs a short run "
+                         "its first few steps to overflows)")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=1)
     ap.add_argument("--max-seq-length", type=int, default=512)
@@ -509,6 +695,7 @@ def main() -> int:
         for flag, value in (
                 ("--model", args.model), ("--dataset", args.dataset),
                 ("--max-steps", args.max_steps),
+                ("--init-loss-scale", args.init_loss_scale),
                 ("--batch-size", args.batch_size),
                 ("--grad-accum", args.grad_accum),
                 ("--max-seq-length", args.max_seq_length),
@@ -542,10 +729,13 @@ def main() -> int:
     report: dict = {
         "label": args.label,
         "model": args.model,
+        # max_steps leads, and travels into any reference captured from this
+        # report: check_reference refuses to compare a run against a trace
+        # captured at a different count.
         "config": {k: getattr(args, k) for k in
-                   ("max_steps", "batch_size", "grad_accum", "max_seq_length",
-                    "learning_rate", "lora_r", "lora_alpha", "optim",
-                    "gradient_checkpointing", "repeat")},
+                   ("max_steps", "init_loss_scale", "batch_size", "grad_accum",
+                    "max_seq_length", "learning_rate", "lora_r", "lora_alpha",
+                    "optim", "gradient_checkpointing", "repeat")},
         "environment": env,
         "runs": runs,
         "metrics": runs[0]["metrics"],
@@ -577,17 +767,14 @@ def main() -> int:
             else:
                 _log("WARNING (not enforced): " + msg)
 
-    # 3. sanity: finite, and the optimisation moved
-    losses = [m["loss"] for m in runs[0]["metrics"]]
-    if any(l != l or l in (float("inf"), float("-inf")) for l in losses):
-        failures.append(f"non-finite loss: {losses}")
-    if len(losses) > 1 and not losses[-1] < losses[0]:
-        failures.append(f"loss did not decrease over the run: {losses}")
+    # 3. sanity: finite, the optimisation moved, and it moved at all
+    failures += optimisation_failures(runs[0]["metrics"])
 
     # 4. band check against the committed reference
     if args.reference:
         ref = check_reference(runs[0]["metrics"], Path(args.reference),
-                              args.rel_tol, args.abs_floor)
+                              args.rel_tol, args.abs_floor,
+                              max_steps=args.max_steps)
         report["reference_check"] = ref
         failures += reference_failures(ref, args.rel_tol)
 
