@@ -2419,10 +2419,12 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     * ``_unsloth_grpo_hidden_states_forward_wrapped``, set by
       ``_install_grpo_hidden_states_forward_wrapper`` in ``unsloth/models/rl.py``
       for models the compiler did not rewrite. That wrapper degrades to real
-      logits when the model cannot produce hidden states, and records the
-      degradation as ``_unsloth_grpo_hidden_states_warning_issued`` before it
-      returns, so reading the pair after a forward describes the call that just
-      finished.
+      logits when the model cannot produce hidden states, and records whether
+      it did so in ``_unsloth_grpo_hidden_states_degraded`` before it returns,
+      so reading the pair after a forward describes the call that just
+      finished. Degradation is per call, not per model: a forward that splats
+      ``**kwargs`` into a sub-module only some inputs reach can reject the
+      request on one batch and honour it on the next.
 
     The width comparison stays as the fallback, for an ``unsloth_zoo`` old enough
     that it never writes the marker. It is decisive on its own whenever
@@ -2473,7 +2475,17 @@ def _unsloth_grpo_hidden_states_signal(model):
         getattr(candidate, "_unsloth_grpo_hidden_states_forward_wrapped", False)
         for candidate in candidates
     ):
-        # the wrapper honours the flag unless it recorded that it could not
+        # the wrapper honours the flag unless it recorded that this call could not
+        if any(
+            hasattr(candidate, "_unsloth_grpo_hidden_states_degraded")
+            for candidate in candidates
+        ):
+            return not any(
+                getattr(candidate, "_unsloth_grpo_hidden_states_degraded", False)
+                for candidate in candidates
+            )
+        # an `unsloth/models/rl.py` predating the per-call attribute only ever set
+        # the warn-once flag; it is the best signal such a wrapper offers
         return not any(
             getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
             for candidate in candidates
@@ -2485,6 +2497,15 @@ _GRPO_HIDDEN_STATES_WIDTH_DISPATCH = re.compile(
     r"^(?P<indent>[ \t]*)if[ \t]+"
     r"(?P<tensor>[_A-Za-z][_A-Za-z0-9]*)\.shape\[-1\][ \t]*"
     r"(?P<operator>==|!=)[ \t]*lm_head\.shape\[1\][ \t]*:$",
+    flags = re.MULTILINE,
+)
+
+# Deliberately loose: any branch header that decides something off an ``lm_head``
+# dimension. Used only to count how many decisions the strict pattern above was
+# supposed to rewrite, so that a zoo which respells *some* of them is rejected
+# rather than half-patched.
+_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE = re.compile(
+    r"^[ \t]*(?:el)?if[ \t]+[^\n]*\blm_head\.shape\[[^\]\n]+\][^\n]*:[ \t]*$",
     flags = re.MULTILINE,
 )
 
@@ -2501,8 +2522,16 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
     The expression is intentionally limited to a named tensor's last dimension
     against the lm_head input dimension. If zoo changes that contract entirely,
     fail at trainer generation instead of silently restoring the wrong dispatch.
+
+    Partial matches have to fail too. A zoo that respells only some of its
+    dispatches would still give this one match, which is enough to satisfy a
+    "did anything match?" check while the respelled sites keep deciding on width
+    alone -- silently wrong gradients again for a square ``lm_head``. So count
+    the branch headers that decide off an ``lm_head`` dimension before and after
+    substituting, and require that none survive.
     """
     source = function if isinstance(function, str) else inspect.getsource(function)
+    candidates = len(_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE.findall(source))
     replacements = 0
 
     def replace_width_dispatch(match):
@@ -2521,6 +2550,15 @@ def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
         raise RuntimeError(
             "Unsloth: could not find the GRPO gradient hidden-state dispatches in "
             "this unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    unpatched = _GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE.findall(source)
+    if len(unpatched) != 0:
+        raise RuntimeError(
+            f"Unsloth: patched only {replacements} of {candidates} GRPO gradient "
+            "hidden-state dispatches in this unsloth_zoo version; "
+            f"{len(unpatched)} still decide on width alone "
+            f"({', '.join(line.strip() for line in unpatched)}). "
+            "Please upgrade unsloth_zoo."
         )
     return source
 

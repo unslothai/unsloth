@@ -27,6 +27,7 @@ PATCH_HELPER = "_patch_grpo_accumulated_loss_hidden_states_dispatch"
 DISPATCH_HELPER = "_unsloth_grpo_returns_hidden_states"
 SIGNAL_HELPER = "_unsloth_grpo_hidden_states_signal"
 PATTERN_NAME = "_GRPO_HIDDEN_STATES_WIDTH_DISPATCH"
+CANDIDATE_PATTERN_NAME = "_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE"
 MARKER = "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__"
 WRAPPED = "_unsloth_grpo_hidden_states_forward_wrapped"
 DEGRADED = "_unsloth_grpo_hidden_states_warning_issued"
@@ -38,7 +39,9 @@ def _load_helpers():
     body = []
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == PATTERN_NAME for target in node.targets
+            isinstance(target, ast.Name)
+            and target.id in {PATTERN_NAME, CANDIDATE_PATTERN_NAME}
+            for target in node.targets
         ):
             body.append(node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in {
@@ -57,7 +60,13 @@ def _load_helpers():
     names |= {
         node.name for node in body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    expected = {PATTERN_NAME, PATCH_HELPER, DISPATCH_HELPER, SIGNAL_HELPER}
+    expected = {
+        PATTERN_NAME,
+        CANDIDATE_PATTERN_NAME,
+        PATCH_HELPER,
+        DISPATCH_HELPER,
+        SIGNAL_HELPER,
+    }
     assert names == expected, (names, expected)
     namespace = {"inspect": inspect, "re": re}
     exec(compile(ast.Module(body = body, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
@@ -178,6 +187,46 @@ def test_source_patch_fails_loudly_if_zoo_removes_the_width_dispatch_contract():
     source = "def grpo_accumulated_loss():\n    return None\n"
     with pytest.raises(RuntimeError, match = "could not find the GRPO gradient"):
         patch_gradient_source(source)
+
+
+def test_source_patch_rejects_a_partially_patched_zoo():
+    """One surviving match must not license the others to stay width-only.
+
+    A zoo that respells some of its dispatches still leaves at least one the
+    strict pattern recognises, which is enough to make `replacements == 0`
+    false. The respelled sites would then keep deciding on width alone, back to
+    silently wrong gradients for a square lm_head.
+    """
+    source = _FOUR_SITE_SOURCE.replace(
+        "    if _pack_h.shape[-1] == lm_head.shape[1]:",
+        "    if _pack_h.shape[-1] == lm_head.shape[-1]:",
+    ).replace(
+        "    if _pack_rh.shape[-1] != lm_head.shape[1]:",
+        "    if lm_head.shape[-1] != _pack_rh.shape[-1]:",
+    )
+    assert source != _FOUR_SITE_SOURCE
+    with pytest.raises(RuntimeError, match = r"patched only \d+ of \d+"):
+        patch_gradient_source(source)
+
+
+def test_source_patch_still_accepts_the_installed_zoo():
+    """The stricter guard must not reject the zoo actually installed here."""
+    zoo = pytest.importorskip("importlib.util")
+    spec = zoo.find_spec("unsloth_zoo")
+    if spec is None or spec.origin is None:
+        pytest.skip("unsloth_zoo is not installed")
+    zoo_source = (Path(spec.origin).parent / "rl_replacements.py").read_text(encoding = "utf-8")
+    lines = zoo_source.splitlines()
+    functions = [
+        node
+        for node in ast.walk(ast.parse(zoo_source))
+        if isinstance(node, ast.FunctionDef) and node.name == "grpo_accumulated_loss"
+    ]
+    if len(functions) != 1:
+        pytest.skip("this unsloth_zoo has no single grpo_accumulated_loss")
+    body = "\n".join(lines[functions[0].lineno - 1: functions[0].end_lineno])
+    patched = patch_gradient_source(body)
+    assert DISPATCH_HELPER in patched
 
 
 def test_generated_trainer_embeds_the_patched_gradient_function():
