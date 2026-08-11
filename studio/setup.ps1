@@ -1182,10 +1182,16 @@ function Test-VenvTorchIsXpu {
 # the same reason: the host most likely to fail inside `import torch` is an AMD box whose HIP
 # runtime faulted, where the DLL load raises OSError (or hangs) while version.py on disk still
 # names a perfectly good wheel. Answering that question by launching the interpreter that just
-# died is how a working environment got deleted. Both spellings are accepted because the wheel
-# label depends on the index: download.pytorch.org publishes "2.8.0+rocm6.4" while the AMD
-# Windows wheels publish "2.9.0+gfx1151". The dist-info name is NOT usable -- pip normalises the
-# local label out of it.
+# died is how a working environment got deleted.
+#
+# The label is always "+rocm", never "+gfx", on every index that actually publishes wheels:
+# repo.amd.com/rocm/whl/<arch>/torch/ (the Windows wheels, arch in the URL only) ships
+# torch-2.11.0+rocm7.13.0-cp312-cp312-win_amd64.whl, and download.pytorch.org/whl/rocm6.4 ships
+# the two-component 2.8.0+rocm6.4 (Linux only). The arch is NOT in the version -- the same
+# 2.9.1+rocm7.13.0 filename is a different binary under gfx1151, gfx110X-all and gfx120X-all.
+# "gfx" is accepted anyway, cheaply, so a future per-arch local label cannot make this read a
+# ROCm venv as unknown and delete it. The dist-info name is NOT usable either -- pip normalises
+# the local label out of it.
 function Test-VenvTorchIsRocm {
     param([string]$VenvPath)
     if (-not $VenvPath) { return $false }
@@ -3838,6 +3844,10 @@ $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true
 # force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
 # Set-StrictMode from making the read fatal.
 $installedTorchTag = $null
+# Hoisted for the same reason, and it now carries more weight than it used to: four install arms
+# read it to decide --force-reinstall, and it is the flag the installer-managed repair below
+# raises. Assigned only inside the block, which a fresh install never enters.
+$script:PinChangedForceReinstall = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -4007,8 +4017,12 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         # based on it. Print what python actually said -- the last stderr line is the exception
         # -- so a WinError 126 reads as a driver problem instead of a broken install.
         if ($_verProbe -and -not $_verProbe.Ok -and $_verProbe.Error) {
-            $_probeErrLine = @($_verProbe.Error -split "`r?`n" |
-                Where-Object { $_.Trim() } | Select-Object -Last 1)[0]
+            # No @(...)[0] around this: the guard above passes on a whitespace-only stderr,
+            # Where-Object then drops every line, and indexing [0] into the empty array that
+            # leaves is fatal under a caller's Set-StrictMode. -Last 1 already yields either
+            # one string or nothing, which is exactly what the test below wants.
+            $_probeErrLine = $_verProbe.Error -split "`r?`n" |
+                Where-Object { $_.Trim() } | Select-Object -Last 1
             if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
         }
     }
@@ -4071,6 +4085,24 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
             $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
             if ($_venvPyVer) { substep $_venvPyVer }
         } catch {}
+    } else {
+        # Stop here, because nothing downstream would. The activation below is a dot-source,
+        # and a MISSING script is a NON-terminating error at the "Continue" the pip section
+        # runs at -- so setup would print one red line and carry straight on, resolving every
+        # `python` and `uv pip` that follows against whatever interpreter is on PATH and
+        # installing the whole stack outside the environment it was asked to build. It can
+        # then exit 0 over a venv that never gained a single package.
+        #
+        # An interpreter-less venv is incomplete, not out of date, so none of the decisions
+        # above apply to it: the in-place torch repair has no interpreter to repair through,
+        # and the rebuild path deletes the directory only to hit "Virtual environment not
+        # found" a few lines up. Say what is actually wrong and fail. Unlike the abort this
+        # replaced upstream, re-creating the environment genuinely changes this state --
+        # install.ps1 still holds the rollback copy of the previous one.
+        Write-StudioLine "[ERROR] $VenvDir has no interpreter at Scripts\python.exe." -ForegroundColor Red
+        Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+        Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+        Exit-SetupFailure "No interpreter at $_venvPyExe"
     }
 }
 

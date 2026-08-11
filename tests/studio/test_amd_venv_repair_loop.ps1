@@ -4,19 +4,34 @@
 # A single-AMD-GPU host must not install itself into a loop (#8335).
 #
 # Two defects met on that host. WMI found exactly one Radeon, the if-expression holding it
-# unrolled to a scalar, and a scalar's .Count is $null under Windows PowerShell 5.1, so setup
+# unrolled to a scalar, that scalar's .Count read $null under Windows PowerShell 5.1, so setup
 # reported "gpu none" and judged the installed ROCm venv stale against a required "cpu". The
 # stale branch under install.ps1 then aborted with "re-run install.ps1", install.ps1's failure
 # path restored the previous environment, and the next run reached the same verdict. Nothing
 # about that pair converges, which is why the same abort has been reported from four unrelated
 # triggers (#5942, #7275, #8335, and a driver crash on Discord).
 #
-# Read this before adding a case: PowerShell 7 returns .Count = 1 for a scalar, so the pwsh that
-# runs this file CANNOT reproduce the 5.1 half of #8335. What it can do is prove the unroll
-# itself still happens here, and assert the @() wrap that fixes it as a source shape. The 5.1
-# leg lives in CI. No check below claims otherwise.
+# Read this before adding a case, because the obvious repro does not work. It is NOT true that
+# "a scalar's .Count is $null on 5.1" -- a String or an Int32 answers 1 there, exactly as on 7,
+# and anyone checking the claim that way concludes there is no bug. $null comes back only for
+# objects whose PSObject carries no Count of its own: [pscustomobject], which Microsoft
+# documents, and Microsoft.Management.Infrastructure.CimInstance, which it does not. The WMI
+# fallback assigns the second kind. Measured on windows-latest, PowerShell 5.1.26100.33158
+# (Desktop) against a real Get-CimInstance result, with pwsh 7.6.4 on the same runner:
+#
+#   value                       5.1 .Count   7 .Count
+#   'a'                         1            1
+#   [pscustomobject]@{...}      $null        1
+#   CimInstance (one instance)  $null        1
+#   @(if (...) { ... })         1            1
+#
+# So this file adapts to the host instead of claiming one answer. Under 5.1 it reproduces #8335
+# for real, on any Windows machine, with no AMD GPU required. Under pwsh 7 -- including the pwsh
+# on Linux that most contributors run -- the unroll still happens but the consequence does not,
+# so those cases assert the source shape and say so. Every check states which it is.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_amd_venv_repair_loop.ps1
+#  or: powershell -NoProfile -File tests\studio\test_amd_venv_repair_loop.ps1   (5.1, Windows)
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", ".."))).Path
@@ -53,20 +68,64 @@ function Write-StudioStdoutMirror { param([string]$Line) }
 
 # ---------------------------------------------------------------------------------------------
 Write-Host ""
-Write-Host "=== the unroll this pwsh CAN see ==="
-# The bug is the unroll, and it happens on every PowerShell. What differs is only the
-# consequence: 5.1 answers $null to a scalar's .Count and 7 answers 1, so the "-gt 0" test that
-# follows is false there and true here. Hence the source assertion further down.
+Write-Host "=== the unroll, and what this host does with it ==="
+$psMajor = $PSVersionTable.PSVersion.Major
+$is51 = ($psMajor -lt 6)
+Write-Host "  host: PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+
+# The unroll itself is not version-specific and happens everywhere, so it is asserted flat.
 $oneGpu = @("AMD Radeon PRO W7900")
 $unwrapped = if ($oneGpu.Count -gt 0) { $oneGpu } else { @() }
 $wrapped = @(if ($oneGpu.Count -gt 0) { $oneGpu } else { @() })
-Check "an if-expression unrolls a one-element array here too" (-not ($unwrapped -is [array]))
-Check "the @() wrap keeps it an array"                        ($wrapped -is [array])
-Check "the wrapped value still counts one GPU"                ($wrapped.Count -eq 1)
-# Stated as a check so it cannot quietly stop being true, and so nobody reads the file as a 5.1
-# repro: on 5.1 this same expression answers $null.
-Check "this pwsh answers 1, not `$null, to a scalar .Count"   ($unwrapped.Count -eq 1)
-Check "so the harness is PowerShell 7, not 5.1"               ($PSVersionTable.PSVersion.Major -ge 6)
+Check "an if-expression unrolls a one-element array" (-not ($unwrapped -is [array]))
+Check "the @() wrap keeps it an array"               ($wrapped -is [array])
+Check "the wrapped value still counts one GPU"       ($wrapped.Count -eq 1)
+
+# The consequence IS version-specific, and only for some types. Pinning the string case stops
+# the file from being read as "5.1 returns $null for scalars", which is what makes this defect
+# so easy to dismiss: it does not.
+Check "a String scalar answers 1 on every PowerShell" ((("x")).Count -eq 1)
+Check "so does the unrolled string array"             ($unwrapped.Count -eq 1)
+
+# The type that actually bites. [pscustomobject] is the portable stand-in for CimInstance --
+# same split, and available on the Linux pwsh where most of this suite runs.
+$_countless = ([pscustomobject]@{ Name = "AMD Radeon PRO W7900" }).Count
+if ($is51) {
+    Check "5.1: a Count-less scalar answers `$null"   ($null -eq $_countless)
+} else {
+    Check "7: a Count-less scalar answers 1"          ($_countless -eq 1)
+}
+
+# ---------------------------------------------------------------------------------------------
+Write-Host ""
+Write-Host "=== #8335 itself, against a real CIM instance ==="
+# Windows only, because Get-CimInstance is. Win32_OperatingSystem always returns exactly one
+# instance, so it reproduces "the machine has exactly one AMD GPU" on any Windows host without
+# an AMD GPU -- which is the whole reason this defect never showed up in CI. On 5.1 this is a
+# real repro of #8335 and a real regression test for the @() wrap. $IsWindows does not exist on
+# 5.1, where the answer is Windows by construction.
+if ($is51 -or $IsWindows) {
+    $_cim = @(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
+    Check "exactly one CIM instance to work with" ($_cim.Count -eq 1)
+    if ($_cim.Count -eq 1) {
+        # Byte-for-byte the shape of the WMI fallback, old form and new.
+        $_old = if ($_cim.Count -gt 0) { $_cim } else { @() }
+        $_new = @(if ($_cim.Count -gt 0) { $_cim } else { @() })
+        Check "the unwrapped form is a bare CimInstance" (
+            $_old -is [Microsoft.Management.Infrastructure.CimInstance])
+        Check "the @() wrapped form stays an array"      ($_new -is [array])
+        # `if ($wmiGpus.Count -gt 0)` is the line that gates $script:ROCmGpuLabels. This is the
+        # bug and the fix, stated as the guard actually reads.
+        Check "the @() wrap makes the GPU-label branch fire" ($_new.Count -gt 0)
+        if ($is51) {
+            Check "5.1: the OLD form loses the only adapter (#8335)" (-not ($_old.Count -gt 0))
+        } else {
+            Check "7: the OLD form survives, so 7 cannot see #8335"  ($_old.Count -gt 0)
+        }
+    }
+} else {
+    Write-Host "  SKIP  not Windows, Get-CimInstance unavailable (source shapes below still run)"
+}
 
 # ---------------------------------------------------------------------------------------------
 Write-Host ""
@@ -113,15 +172,30 @@ Test-VenvTorchIsRocm -VenvPath '$VenvPath'
 $XPU  = "__version__ = '2.9.1+xpu'`ndebug = False"
 $CU   = "__version__ = '2.9.1+cu128'`ncuda: Optional[str] = '12.8'"
 $BARE = "__version__ = '2.9.1'"
-# download.pytorch.org labels the wheel +rocmX.Y; the AMD Windows wheels label it +gfxNNNN. Both
-# are ROCm builds and the reporter of #8335 was running the second kind.
+# Read off the indexes rather than assumed. repo.amd.com/rocm/whl/<arch>/torch/ -- the only place
+# Windows ROCm wheels exist -- publishes a THREE-component label and puts the arch in the URL, not
+# the version: torch-2.11.0+rocm7.13.0-cp312-cp312-win_amd64.whl, which is what the #8335 reporter
+# ended up on. download.pytorch.org/whl/rocm6.4 publishes the two-component 2.8.0+rocm6.4, Linux
+# only. So "+rocm" is the label that matters; the "+gfx" arm is defensive, and asserted here so
+# that stays deliberate rather than becoming an unexamined claim about what AMD ships.
 Check "rocm6.4 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.8.0+rocm6.4'")
 Check "rocm7.0 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+rocm7.0'")
+# The label the #8335 reporter actually ended up with once the WMI fix was applied, quoted from
+# the issue. Three-part, so it is also the case a two-part `+rocm\d+\.\d+$` anchor would miss.
+Check "rocm7.13.0 wheel (#8335)" (Invoke-IsRocm "C:\v" "__version__ = '2.11.0+rocm7.13.0'")
 Check "gfx1151 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+gfx1151'")
 Check "gfx110X-all wheel"    (Invoke-IsRocm "C:\v" "__version__ = '2.7.1+gfx110X.all'")
+# A dev/nightly release segment sits before the local label, so it must not shift the match.
+Check "nightly rocm wheel"   (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+rocm7.2'")
+Check "nightly cuda wheel"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+cu130'"))
+# A source build carries a git hash where the flavour would be, and is not a ROCm wheel.
+Check "source build"         (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
 Check "cuda wheel"           (-not (Invoke-IsRocm "C:\v" $CU))
 Check "xpu wheel"            (-not (Invoke-IsRocm "C:\v" $XPU))
 Check "untagged wheel"       (-not (Invoke-IsRocm "C:\v" $BARE))
+Check "cpu wheel"            (-not (Invoke-IsRocm "C:\v" "__version__ = '2.10.0+cpu'"))
+# git_version is a real line in torch/version.py and can name a branch. Only __version__ decides.
+Check "gfx in git_version"   (-not (Invoke-IsRocm "C:\v" ($CU + "`ngit_version = 'rocm-branch-gfx1100'")))
 # version.py on a CUDA build carries `hip: Optional[str] = None`, and the ROCm builds carry a
 # `gfx` line of their own. Only the local label on __version__ decides, or a CUDA venv would be
 # kept as ROCm and never repaired.
@@ -262,6 +336,88 @@ Check "the custom-home guard still gates the wipe" ($_repair -match '\$StudioHom
 # from a missing wheel, and the user is about to be told what happened to their environment.
 Check "the swallowed probe error is surfaced" ($_repair -match '\$_verProbe\.Error')
 Check "the probe handle is declared up front" ($setupText -match '(?m)^\s*\$_verProbe = \$null')
+# Read by four install arms to decide --force-reinstall, and raised by the repair above, but
+# assigned only inside the venv-exists block -- so on a fresh install every one of those reads is
+# of a variable that was never created. Harmless bare (falsy, which is the wanted answer), fatal
+# under a caller's Set-StrictMode. Same treatment as $installedTorchTag right above it.
+Check "the force-reinstall flag is declared outside the venv block" (
+    $setupText -match '(?m)^\$script:PinChangedForceReinstall = \$false$')
+
+Write-Host "the surfaced probe error survives a stderr that is only whitespace"
+# The guard is `-and $_verProbe.Error`, and a stderr of blank lines passes it. Where-Object then
+# drops every one of them. Indexing [0] into what that leaves is fatal under a caller's
+# Set-StrictMode -- and studio/setup.bat launches setup WITHOUT -NoProfile, so a profile can set
+# one. Driven for real rather than asserted as a shape, with the replaced form as a control.
+$_strictNewOk = $true
+try {
+    & {
+        Set-StrictMode -Version Latest
+        $probe = [pscustomobject]@{ Ok = $false; Output = ""; Error = "   `r`n`r`n  " }
+        if ($probe -and -not $probe.Ok -and $probe.Error) {
+            $line = $probe.Error -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1
+            if ($line) { $null = $line.Trim() }
+        }
+    }
+} catch { $script:_strictNewOk = $false; Write-Host "    threw: $($_.Exception.Message)" }
+Check "the shipped form does not throw under strict mode" $_strictNewOk
+
+$_strictOldThrew = $false
+try {
+    & {
+        Set-StrictMode -Version Latest
+        $probe = [pscustomobject]@{ Error = "   `r`n`r`n  " }
+        $null = @($probe.Error -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)[0]
+    }
+} catch { $script:_strictOldThrew = $true }
+# Without this the check above would pass on any rewrite, including one that never had the bug.
+Check "the @(...)[0] form it replaced really did throw" $_strictOldThrew
+Check "setup.ps1 no longer indexes that pipeline" (
+    -not ($setupText -match 'Select-Object -Last 1\)\[0\]'))
+# A real one-line stderr must still be picked up, or the whole point of keeping it is lost.
+$_realErr = "Traceback (most recent call last):`r`nOSError: [WinError 126] The specified module could not be found"
+$_realLine = $_realErr -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -Last 1
+Check "a real stderr still yields its last line" ($_realLine -match 'WinError 126')
+
+Write-Host ""
+Write-Host "=== an interpreter-less venv is not repaired in place, it is refused ==="
+# The one state the in-place repair made WORSE than the abort it replaced. A venv directory
+# with no Scripts\python.exe is incomplete, not stale: there is no interpreter to force-reinstall
+# torch through. The abort used to catch it by accident, because it caught every stale verdict.
+#
+# Without a guard it now reaches the activation, and that is a dot-source of a path that does
+# not exist -- which is NOT a terminating error at the "Continue" the pip section runs at. So
+# setup prints one red line and keeps going, and every `python` / `uv pip` after it resolves
+# against whatever interpreter is on PATH. The whole stack lands outside the venv and the run
+# can still exit 0. Prove the hazard first, so the guard below is not asserted on faith.
+$_dotSourceKeptGoing = $false
+& {
+    $ErrorActionPreference = "Continue"
+    . (Join-Path $root "no-such-Activate-XYZ.ps1")
+    $script:_dotSourceKeptGoing = $true
+} 2>$null
+Check "dot-sourcing a missing script does not stop the script" $_dotSourceKeptGoing
+
+# Bounded to the reuse branch: the "not found" branch above it has an Exit-SetupFailure of its
+# own, and matching the whole region would pass on that one. Both ends sit immediately after a
+# non-newline token, so a CRLF checkout fails the match instead of yielding an empty region.
+$_reusePat = '(?s)(substep "reusing existing virtual environment at \$VenvDir"\n.*?Exit-SetupFailure "No interpreter at [^\n]*\n)'
+$_reuse = if ($setupText -match $_reusePat) { $Matches[1] } else { "" }
+Check "the reuse branch was found"         ($_reuse -ne "")
+Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_reusePat))
+Check "it refuses a venv with no interpreter" ($_reuse -match '(?s)\} else \{.*?Exit-SetupFailure "No interpreter at')
+# It must fail rather than fall through, and it must do so BEFORE the dot-source, or the
+# hazard proven above is still live.
+Check "the refusal precedes the activation" (
+    $setupText.IndexOf('Exit-SetupFailure "No interpreter at') -lt
+    $setupText.IndexOf('$ActivateScript = Join-Path $VenvDir'))
+# Not a wipe: install.ps1 is holding the rollback copy and this venv may be the only place the
+# previous one's contents still are.
+Check "it does not delete the venv"        (-not ($_reuse -match 'Remove-Item'))
+# The message has to say incomplete, not stale, or it reads as the loop-causing advice again.
+Check "it says incomplete, not out of date" ($_reuse -match 'incomplete rather than out of date')
+# A healthy venv must be untouched by all of this.
+Check "a venv with an interpreter still just prints its version" (
+    $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?--version')
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
