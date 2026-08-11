@@ -531,14 +531,46 @@ def test_built_kernel_pins_one_gpu_per_payload_and_isolates_installs(tmp_path):
     assert 'env["UV_SYSTEM_PYTHON"] = "0"' in source
 
 
-def _build(tmp_path, *extra) -> dict:
+def _build(tmp_path, *extra, payload_dir: Path = SMOKE_DIR) -> dict:
     out = tmp_path / "kernel.ipynb"
     subprocess.run(
         [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(SMOKE_DIR), "--out", str(out), "--count", "2",
+         "--payload-dir", str(payload_dir), "--out", str(out), "--count", "2",
          *extra],
         check=True, capture_output=True)
     return json.loads(out.read_text())
+
+
+# The argument list .github/workflows/kaggle-t4-notebook-ci.yml actually
+# passes. Tested verbatim rather than approximated: the SyntaxError that cost
+# a Kaggle session lived only on the --reference branch, which is the branch
+# the workflow always takes and the one no local build had ever exercised.
+WORKFLOW_ARGS = ("--unsloth-ref", "main", "--zoo-ref", "main",
+                 "--reference", "t4_qwen2.5-0.5b.json",
+                 "--smoke-args", "--max-steps 10",
+                 "--per-run-timeout", "2100")
+
+
+def _payload_dir_with_a_reference(tmp_path) -> Path:
+    """A copy of the payload directory that HAS a committed reference.
+
+    Once a green T4 run supplies one, the reference file is inlined into the
+    payload notebook as a fourth carried file, under a key with a directory
+    separator in it. That is a different build path from the one that runs
+    while the directory is empty, and it must be covered before the file
+    lands rather than after.
+    """
+    import shutil
+
+    dest = tmp_path / "payload_dir"
+    shutil.copytree(SMOKE_DIR, dest,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (dest / "references").mkdir(exist_ok=True)
+    (dest / "references" / "t4_qwen2.5-0.5b.json").write_text(json.dumps({
+        "metrics": [{"step": 1, "loss": 10.3, "grad_norm": float("nan")},
+                    {"step": 2, "loss": 0.14, "grad_norm": 13.8}],
+        "environment": {"gpu_name": "Tesla T4"}}, indent=2))
+    return dest
 
 
 def _payload_notebooks(driver: dict) -> dict:
@@ -553,8 +585,37 @@ def _payload_notebooks(driver: dict) -> dict:
             for name, data in json.loads(blob).items()}
 
 
-@pytest.mark.parametrize("reference", ["", "t4_qwen2.5-0.5b.json"])
-def test_generated_cells_compile(tmp_path, reference):
+def _every_generated_cell(driver: dict):
+    """(notebook name, cell index, source) for the driver and both payloads.
+
+    The payloads are the point. They are not files on disk anywhere; they
+    exist only gzipped and base64'd inside the driver's first cell, so
+    nothing that inspects the built kernel as a notebook can see them, and
+    that is precisely where both generated-code defects have landed so far.
+    """
+    for name, nb in {"driver": driver, **_payload_notebooks(driver)}.items():
+        for index, cell in enumerate(nb["cells"]):
+            yield name, index, "".join(cell["source"])
+
+
+def _build_all_paths(tmp_path):
+    """Every code path build_kernel.py has, keyed by name."""
+    return {
+        # No band check at all.
+        "no-reference": _build(tmp_path / "a"),
+        # What the workflow passes today: --reference named, but the file is
+        # not in the repo yet, so it is requested and not carried.
+        "workflow-reference-absent": _build(tmp_path / "b", *WORKFLOW_ARGS),
+        # What the workflow passes once a green T4 run supplies the file: the
+        # reference is carried inline as a fourth file, under a key with a
+        # directory separator in it.
+        "workflow-reference-present": _build(
+            tmp_path / "c", *WORKFLOW_ARGS,
+            payload_dir=_payload_dir_with_a_reference(tmp_path)),
+    }
+
+
+def test_generated_cells_compile(tmp_path):
     """Every generated cell must parse as Python, on every code path.
 
     This is not hypothetical. The reference argument was generated as a
@@ -562,16 +623,101 @@ def test_generated_cells_compile(tmp_path, reference):
     Python list literal, so the payload's run cell was a SyntaxError. It was
     on the path the workflow always takes, and it cost a real Kaggle session
     to find, because nothing between writing the cell and executing it on a
-    T4 ever tried to parse it. Both parameters are covered because the bug
-    lived only in the branch that was never built locally.
+    T4 ever tried to parse it. The bug lived only in the branch that was
+    never built locally, which is why all three branches are built here and
+    why the workflow's own argument list is used verbatim.
     """
-    extra = ["--reference", reference] if reference else []
-    driver = _build(tmp_path, *extra)
-    notebooks = {"driver": driver, **_payload_notebooks(driver)}
-    for name, nb in notebooks.items():
-        for index, cell in enumerate(nb["cells"]):
-            source = "".join(cell["source"])
-            compile(source, f"{name}#cell{index}", "exec")
+    seen = 0
+    for path, driver in _build_all_paths(tmp_path).items():
+        for name, index, source in _every_generated_cell(driver):
+            compile(source, f"{path}/{name}#cell{index}", "exec")
+            seen += 1
+    # 3 paths x (3 driver cells + 2 payloads x 4 cells). Asserted so a
+    # refactor that stops reaching the payloads cannot leave this test
+    # passing while compiling nothing that matters.
+    assert seen == 33, seen
+
+
+def _undefined_names(source: str, already_bound: set[str]) -> tuple[set, set]:
+    """Names a cell reads without binding, and the names it binds.
+
+    Deliberately scope-blind: every binding anywhere in the cell counts as
+    available everywhere in it. That direction of inaccuracy yields false
+    negatives, never false positives, which is the only tolerable direction
+    for a check that gates a launch.
+    """
+    import ast
+    import builtins
+
+    tree = ast.parse(source)
+    bound = set(already_bound) | set(dir(builtins))
+    read: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del))
+             else read).add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+    return read - bound, bound
+
+
+def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
+    """Parsing is necessary and not sufficient.
+
+    A template hole that substitutes to a bare identifier parses perfectly
+    and dies at run time with a NameError, which on Kaggle costs the same
+    session a SyntaxError does. Cells are checked in execution order with
+    the bindings of the cells before them carried forward, because that is
+    how a notebook actually runs.
+    """
+    for path, driver in _build_all_paths(tmp_path).items():
+        for nb_name, nb in {"driver": driver,
+                            **_payload_notebooks(driver)}.items():
+            carried: set[str] = set()
+            for index, cell in enumerate(nb["cells"]):
+                missing, bound = _undefined_names("".join(cell["source"]),
+                                                  carried)
+                assert not missing, (
+                    f"{path}/{nb_name} cell {index} reads undefined "
+                    f"{sorted(missing)}")
+                carried = bound
+
+
+def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
+        tmp_path):
+    """Decode the carried blobs the way the kernel will, and compare.
+
+    The payload sources reach the T4 only as gzip+base64 inside a generated
+    cell. If that encoding ever drifted, the kernel would run something
+    other than what is committed, and every assertion downstream would be
+    about the wrong file.
+    """
+    import base64
+    import gzip
+    import re
+
+    payload_dir = _payload_dir_with_a_reference(tmp_path)
+    driver = _build(tmp_path / "c", *WORKFLOW_ARGS, payload_dir=payload_dir)
+    payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
+    materialise = "".join(payload["cells"][2]["source"])
+    blob = re.search(r"^FILES = (\{.*?\})$", materialise, re.M | re.S).group(1)
+    files = json.loads(blob)
+    assert set(files) == {"run_t4_smoke.py", "determinism.py",
+                          "canary_dataset.jsonl",
+                          "references/t4_qwen2.5-0.5b.json"}, sorted(files)
+    for name, data in files.items():
+        assert gzip.decompress(base64.b64decode(data)) == \
+            (payload_dir / name).read_bytes(), name
 
 
 def test_the_reference_path_the_payload_builds_is_the_one_that_is_shipped(
