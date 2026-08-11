@@ -229,8 +229,12 @@ def client(monkeypatch, tmp_path):
         offset = 0,
         *,
         valid = None,
+        archived = False,
     ):
-        ordered = sorted(store.values(), key = lambda r: r.get("created_at", 0.0), reverse = True)
+        # Model the real shelf split and pinned-first order, not just the signature: a double that
+        # ignored them would pass while the route paged the wrong set.
+        ordered = [r for r in store.values() if bool(r.get("archived")) == archived]
+        ordered.sort(key = lambda r: (bool(r.get("pinned")), r.get("created_at", 0.0)), reverse = True)
         if valid is not None:
             ordered = [r for r in ordered if valid(r)]
         return ordered[offset:] if limit is None else ordered[offset : offset + limit]

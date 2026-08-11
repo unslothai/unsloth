@@ -102,7 +102,7 @@ import {
   toolPaneScope,
   toolThreadScope,
 } from "../tool-output-scope";
-import type { ModelType } from "../types";
+import type { ModelType, ThreadRecord } from "../types";
 import { isMultimodalResponse } from "../types/api";
 import type {
   CpuFallbackReason,
@@ -115,6 +115,7 @@ import type {
 import type { ChatModelSummary } from "../types/runtime";
 import {
   getStoredChatThread,
+  getStoredChatThreadReadResult,
   getStoredChatProject,
   listStoredChatThreads,
   listStoredChatMessages,
@@ -126,6 +127,7 @@ import {
   recordLastLocalModelLoad,
   type LastLocalModelKind,
 } from "../utils/last-local-model-load";
+import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
   extractDeltaText,
@@ -144,6 +146,7 @@ import {
   CONTINUE_INSTRUCTION,
   type IncompleteReason,
   joinContinuation,
+  readIncompleteInfo,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
@@ -181,6 +184,8 @@ import { cancelResearchRun, createResearchRun } from "./research-api";
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
+
+type ThreadRecordReader = () => Promise<ThreadRecord | undefined>;
 
 function resolveAutoInject(mode: RagAutoInject, checkpoint: string): boolean {
   if (mode === "on") return true;
@@ -829,6 +834,7 @@ function isAnthropicRefusalMessage(message: RunMessage): boolean {
 type SerializedMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: OpenAIMessageContent | null;
+  reasoning_content?: string;
   tool_calls?: Array<{
     id: string;
     type: "function";
@@ -1176,6 +1182,7 @@ function attachAssistantThoughtSignature(
 
 function serializeAssistantReplayMessages(
   message: RunMessage,
+  includeReasoningContent = false,
 ): SerializedMessage[] {
   if (isAnthropicRefusalMessage(message)) {
     // Prune refused assistant turn from outbound history; the
@@ -1186,6 +1193,7 @@ function serializeAssistantReplayMessages(
   const imageParts = collectImageParts(message);
   const messages: SerializedMessage[] = [];
   const pendingTextParts: string[] = [];
+  const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let imagePartsPending = imageParts.length > 0;
@@ -1197,8 +1205,16 @@ function serializeAssistantReplayMessages(
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
+    const reasoningContent = pendingReasoningParts.join("\n");
+    const reasoningOnlyTurnIsComplete =
+      message.status?.type !== "incomplete" &&
+      readIncompleteInfo((message as { metadata?: unknown }).metadata) === null;
+    const hasReasoningContent =
+      includeReasoningContent &&
+      reasoningContent.length > 0 &&
+      (hasContent || hasToolCalls || reasoningOnlyTurnIsComplete);
 
-    if (!force && !hasContent && !hasToolCalls) {
+    if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
       return;
     }
 
@@ -1217,6 +1233,9 @@ function serializeAssistantReplayMessages(
         assistantMessage.content = null;
       }
     }
+    if (hasReasoningContent) {
+      assistantMessage.reasoning_content = reasoningContent;
+    }
 
     messages.push(assistantMessage);
     if (pendingToolResults.length > 0) {
@@ -1224,12 +1243,21 @@ function serializeAssistantReplayMessages(
     }
 
     pendingTextParts.length = 0;
+    pendingReasoningParts.length = 0;
     pendingToolCalls = [];
     pendingToolResults = [];
     imagePartsPending = false;
   };
 
   for (const part of message.content ?? []) {
+    if (part.type === "reasoning") {
+      if (pendingToolCalls.length > 0) {
+        flushAssistantAndToolResults();
+      }
+      pendingReasoningParts.push(part.text);
+      continue;
+    }
+
     if (part.type === "text") {
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
@@ -1272,7 +1300,10 @@ function serializeAssistantReplayMessages(
   return messages;
 }
 
-function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
+function toOpenAIMessages(
+  message: RunMessage,
+  includeReasoningContent = false,
+): SerializedMessage[] {
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -1282,7 +1313,7 @@ function toOpenAIMessages(message: RunMessage): SerializedMessage[] {
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message);
+    return serializeAssistantReplayMessages(message, includeReasoningContent);
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1444,7 +1475,7 @@ export async function buildOutboundMessagesForTokenCount(
   }
 
   const outboundMessages = survivingMessages
-    .flatMap(toOpenAIMessages)
+    .flatMap((message) => toOpenAIMessages(message, true))
     .filter((message): message is NonNullable<typeof message> =>
       Boolean(message),
     );
@@ -1611,6 +1642,7 @@ export async function buildLocalTokenCountExtras(
 async function resolveUseAdapter(
   threadId: string | undefined,
   options: OpenAIStreamAdapterOptions = {},
+  readThreadRecord?: ThreadRecordReader,
 ): Promise<boolean | undefined> {
   if (options.modelType === "model1" || options.modelType === "model2") {
     return undefined;
@@ -1625,7 +1657,7 @@ async function resolveUseAdapter(
     return undefined;
   }
   try {
-    const thread = await getStoredChatThread(threadId);
+    const thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
     if (!thread?.pairId) {
       return undefined;
     }
@@ -1642,8 +1674,9 @@ async function resolveUseAdapter(
 
 async function resolveProjectInstructions(
   threadId: string | undefined,
+  readThreadRecord?: ThreadRecordReader,
 ): Promise<string> {
-  const projectId = await resolveProjectId(threadId);
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
   if (!projectId) {
     return "";
   }
@@ -1659,6 +1692,7 @@ async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
+  readThreadRecord?: ThreadRecordReader,
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -1667,7 +1701,10 @@ async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
+  const projectInstructions = await resolveProjectInstructions(
+    threadId,
+    readThreadRecord,
+  );
   return [
     projectInstructions
       ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
@@ -1680,9 +1717,12 @@ async function resolveChatInstructions(
 
 async function resolveProjectId(
   threadId: string | undefined,
+  readThreadRecord?: ThreadRecordReader,
 ): Promise<string | null> {
   if (threadId) {
-    const thread = await getStoredChatThread(threadId).catch(() => null);
+    const thread = await (
+      readThreadRecord?.() ?? getStoredChatThread(threadId)
+    ).catch(() => null);
     return thread?.projectId ?? null;
   }
   const projectId = useChatRuntimeStore.getState().activeProjectId;
@@ -1694,8 +1734,9 @@ async function resolveProjectId(
 
 async function resolveSandboxSessionId(
   threadId: string | undefined,
+  readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
-  const projectId = await resolveProjectId(threadId);
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
   return projectId ? `project-${projectId}` : threadId;
 }
 
@@ -3359,6 +3400,15 @@ export function createOpenAIStreamAdapter(
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
         (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const sharedThreadRecordRead = resolvedThreadId
+        ? createRetryableSharedRead(
+            () => getStoredChatThreadReadResult(resolvedThreadId),
+            (result) => result.cacheable,
+          )
+        : undefined;
+      const readThreadRecord = sharedThreadRecordRead
+        ? async () => (await sharedThreadRecordRead()).thread
+        : undefined;
       const releaseCurrentPreStreamRun = () =>
         releasePreStreamRunForThreadIds([
           unstable_threadId,
@@ -3542,7 +3592,10 @@ export function createOpenAIStreamAdapter(
             runtime.reasoningEffortLevels,
           );
         }
-        const researchProjectId = await resolveProjectId(resolvedThreadId);
+        const researchProjectId = await resolveProjectId(
+          resolvedThreadId,
+          readThreadRecord,
+        );
         const projectRagEnabled = researchProjectId
           ? await projectHasSources(researchProjectId)
           : false;
@@ -3550,6 +3603,7 @@ export function createOpenAIStreamAdapter(
           resolvedThreadId,
           params.systemPrompt,
           params.systemVariables,
+          readThreadRecord,
         );
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
@@ -3699,10 +3753,6 @@ export function createOpenAIStreamAdapter(
         }
         return;
       }
-      const sandboxSessionId = await resolveSandboxSessionId(resolvedThreadId);
-      const toolConfirmationScopeId = resolvedThreadId
-        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
-        : sandboxSessionId || "_default";
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns, panes and conversations, so scope by pane
       // AND thread. unstable_threadId alone, no activeThreadId fallback: the reader has only
@@ -3834,6 +3884,13 @@ export function createOpenAIStreamAdapter(
         : liveRuntime;
       const { params } = runtime;
       await persistResolvedQueuedModel(params.checkpoint);
+      const sandboxSessionId = await resolveSandboxSessionId(
+        resolvedThreadId,
+        readThreadRecord,
+      );
+      const toolConfirmationScopeId = resolvedThreadId
+        ? `${sandboxSessionId || "_default"}:${resolvedThreadId}`
+        : sandboxSessionId || "_default";
       const {
         supportsTools,
         toolsEnabled,
@@ -3855,7 +3912,10 @@ export function createOpenAIStreamAdapter(
       // Project sources auto-scope: a chat inside a project retrieves from the
       // project's indexed sources even when the Docs pill is off. The probe is
       // cached, so this is one round trip per project every ~30s at most.
-      const ragProjectId = await resolveProjectId(resolvedThreadId);
+      const ragProjectId = await resolveProjectId(
+        resolvedThreadId,
+        readThreadRecord,
+      );
       const projectRagEnabled = ragProjectId
         ? await projectHasSources(ragProjectId)
         : false;
@@ -3880,9 +3940,10 @@ export function createOpenAIStreamAdapter(
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
-      const externalApiKey = externalProvider
-        ? getExternalProviderApiKey(externalProvider.id).trim()
-        : "";
+      const externalApiKey =
+        externalProvider && !externalProvider.hasApiKey
+          ? getExternalProviderApiKey(externalProvider.id).trim()
+          : "";
 
       if (isExternalRequest && !externalProvider) {
         toast.error("Connection not found.", {
@@ -3903,6 +3964,7 @@ export function createOpenAIStreamAdapter(
       if (
         isExternalRequest &&
         !externalApiKey &&
+        !externalProvider?.hasApiKey &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -3991,7 +4053,9 @@ export function createOpenAIStreamAdapter(
       // follow-ups; the backend Gemini translator rebuilds the
       // functionCall / functionResponse parts (with thoughtSignature).
       const outboundMessages = survivingMessages
-        .flatMap(toOpenAIMessages)
+        .flatMap((message) =>
+          toOpenAIMessages(message, !isExternalRequest),
+        )
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -4052,6 +4116,7 @@ export function createOpenAIStreamAdapter(
         resolvedThreadId,
         params.systemPrompt,
         params.systemVariables,
+        readThreadRecord,
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -4223,7 +4288,11 @@ export function createOpenAIStreamAdapter(
         }
         runtime.clearPendingAudio();
       }
-      const useAdapter = await resolveUseAdapter(resolvedThreadId, options);
+      const useAdapter = await resolveUseAdapter(
+        resolvedThreadId,
+        options,
+        readThreadRecord,
+      );
 
       const threadKey = resolvedThreadId || "__default";
       // A first turn files its handles under "__default"; autosave then assigns a real id and
@@ -4725,6 +4794,8 @@ export function createOpenAIStreamAdapter(
             let anthropicCodeExecContainerId: string | null = null;
             if (codeExecEnabledForThisTurn && resolvedThreadId) {
               try {
+                // Container selection can change while this run waits for model loading,
+                // so read it at payload construction instead of reusing run-start metadata.
                 const thread = await getStoredChatThread(resolvedThreadId);
                 openaiCodeExecContainerId =
                   thread?.openaiCodeExecContainerId ?? null;
@@ -4741,6 +4812,8 @@ export function createOpenAIStreamAdapter(
               if (externalProvider.providerType === "openai") {
                 try {
                   const list = await listOpenAIContainers({
+                    providerId: externalProvider.id,
+
                     apiKey: externalApiKey,
                     baseUrl: externalProvider.baseUrl || null,
                   });
@@ -4805,6 +4878,8 @@ export function createOpenAIStreamAdapter(
                 try {
                   const created = await createOpenAIContainer(
                     {
+                      providerId: externalProvider.id,
+
                       apiKey: externalApiKey,
                       baseUrl: externalProvider.baseUrl || null,
                     },

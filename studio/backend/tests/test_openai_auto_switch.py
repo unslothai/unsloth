@@ -11,6 +11,8 @@ import asyncio
 import json
 import os
 import threading
+import time
+import types
 
 import pytest
 from fastapi import HTTPException
@@ -37,6 +39,7 @@ class _FakeBackend:
     effective_parallel_slots = 1
     _slot_save_binary = None
     _gguf_path = None
+    _loaded_by_user_action = False
 
     def __init__(
         self,
@@ -183,6 +186,151 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert req.model_path == "unsloth/B-GGUF"
     assert req.gguf_variant == "Q4_K_M"
     assert backend.model_identifier == "unsloth/B-GGUF"
+
+
+def test_resident_model_skips_the_filesystem_resolver(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-Glimmer-30B-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    warmed = []
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+
+    def _unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("the resident model must not touch the filesystem index")
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _unexpected_resolve)
+    _run_hook("unsloth/Muse-Glimmer-30B-GGUF")
+    assert rec.calls == []
+    assert warmed == [1]
+
+
+def test_auto_switch_reads_an_additions_only_snapshot_without_rebuilding_it(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    calls = []
+    warmed = []
+
+    entry = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"unsloth/b-gguf": entry}))
+    resolver.invalidate_index(additions_only = True)
+    assert resolver._scan[0] < 0.0  # additions-only: the time of the invalidation
+    assert resolver.index_is_built() is False
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+
+    assert calls == []
+    assert warmed == [1]
+    assert len(rec.calls) == 1
+
+
+def test_non_additive_invalidation_keeps_unservable_check_cold(monkeypatch):
+    from types import SimpleNamespace
+
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", real_resolve)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None),
+    )
+
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    resolver._scan = (time.monotonic(), {"unsloth/a-gguf": old})
+    resolver.invalidate_index()
+    assert resolver.index_is_built() is False
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook("unsloth/B-GGUF")
+
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_expired_positive_hit_refreshes_before_switching(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    removed = resolver._LocalGgufEntry(
+        "unsloth/B-GGUF", "/removed-root/unsloth/B-GGUF", ("Q4_K_M",)
+    )
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/b-gguf": removed}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(resolver, "_build_index", lambda: scans.append(1) or {})
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [("unsloth/B-GGUF", {}), ("unsloth/B-GGUF", {"allow_scan": False})]
+    assert scans == [1]
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_a_stale_miss_refreshes_before_the_resident_model_can_answer(monkeypatch):
+    real_resolve = resolver.resolve_local_gguf
+    backend = _FakeBackend("unsloth/A-GGUF", "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    old = resolver._LocalGgufEntry("unsloth/A-GGUF", "/models/unsloth/A-GGUF", ("Q4_K_M",))
+    added = resolver._LocalGgufEntry("unsloth/B-GGUF", "/models/unsloth/B-GGUF", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (1.0, {"unsloth/a-gguf": old}))
+    scans = []
+    calls = []
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: scans.append(1) or {"unsloth/a-gguf": old, "unsloth/b-gguf": added},
+    )
+
+    def _resolve(name, **kwargs):
+        calls.append((name, kwargs))
+        return real_resolve(name, **kwargs)
+
+    monkeypatch.setattr(resolver, "resolve_local_gguf", _resolve)
+
+    async def _accept_loaded_target(*_args, **_kwargs):
+        assert backend.model_identifier == "/models/unsloth/B-GGUF"
+        assert backend._openai_advertised_id == "unsloth/B-GGUF"
+
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _accept_loaded_target)
+
+    _run_hook("unsloth/B-GGUF")
+
+    assert calls == [("unsloth/B-GGUF", {})]
+    assert scans == [1]
+    assert len(rec.calls) == 1
 
 
 def test_concurrent_same_target_loads_once(monkeypatch):
@@ -627,7 +775,7 @@ def test_disabling_idle_unload_purges_saved_kv(monkeypatch, tmp_path):
         "slots": [{"id": 0, "filename": saved.name}],
     }
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (False, 300, True, False, False)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
 
@@ -652,7 +800,7 @@ def test_residency_does_not_purge_saved_kv(monkeypatch, tmp_path):
     }
     kw._kv_resume = manifest
     monkeypatch.setattr(
-        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False)
+        settings_route, "set_openai_auto_switch", lambda *a: (True, 300, True, False, False)
     )
     monkeypatch.setattr(settings_route, "get_auto_unload_idle_seconds", lambda: 0)
     monkeypatch.setattr(settings_route, "idle_unload_is_configured", lambda: True)
@@ -1614,6 +1762,32 @@ def test_already_serving_by_path_records_advertised_alias(monkeypatch):
     _run_hook("org/Repo-GGUF:Q4_K_M")
     assert rec.calls == []  # already serving -> no reload
     assert backend._openai_advertised_id == "org/Repo-GGUF"  # alias now recorded
+
+
+def test_already_serving_requested_by_path_records_advertised_alias(monkeypatch):
+    # The resident short circuit matches on model_identifier, which is the load path
+    # for a manual local load. Answering from it skips the alias recording above, so a
+    # loose .gguf whose scanner alias is not its filename would be advertised, and
+    # reported in every response, as the filename instead.
+    path = "/models/lmstudio/TheBloke/weights-file-01.gguf"
+    backend = _FakeBackend(path)  # loaded by path, no advertised id
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = (path, None, "Qwen3-4B-Instruct-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook(path)
+    assert rec.calls == []  # already serving -> no reload
+    assert backend._openai_advertised_id == "Qwen3-4B-Instruct-GGUF"
+    assert inference_route._llama_public_model_id(backend) == "Qwen3-4B-Instruct-GGUF"
+    # Recorded, so the path now short circuits without the resolver.
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda _m, **_kw: pytest.fail("resolver re-entered")
+    )
+    _run_hook(path)
 
 
 def test_streaming_responses_uses_advertised_id_helper():
@@ -4594,6 +4768,33 @@ def _chat_error(payload):
     return exc.value.status_code, exc.value.detail
 
 
+def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
+    # #8376: image request with a mistyped GGUF id must 404, not 400 on the loaded model.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend("unsloth/text-only-GGUF", "UD-Q4_K_XL")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(
+        "utils.openai_auto_switch_settings.get_openai_auto_download_enabled", lambda: False
+    )
+    monkeypatch.setattr(
+        resolver,
+        "describe_local_miss",
+        lambda _m: (resolver.MISS_MODEL_NOT_FOUND, ()),
+    )
+    payload = _chat_request(
+        model = "unsloth/typo-vision-GGUF",
+        image_base64 = "aGVsbG8=",
+    )
+    request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))
+    assert exc.value.status_code == 404
+    assert exc.value.detail["error"]["code"] == "model_not_found"
+    assert rec.calls == []
+
+
 def test_chat_names_undownloaded_model_404s_with_available_ids(monkeypatch):
     # The reported bug: the model is not here, so the switch did nothing and /inference/load
     # cannot fix it. Name it and list what can serve.
@@ -5217,11 +5418,11 @@ def test_keep_kv_only_update_leaves_env_idle_ttl_active(monkeypatch):
     monkeypatch.setenv(settings.MODEL_IDLE_TTL_ENV_VAR, "600")
 
     assert settings_route.OpenAIAutoSwitchPayload(enabled = False).auto_unload_idle_seconds is None
-    enabled, idle, keep_kv, auto_dl = settings.set_openai_auto_switch(False, None, False)
+    enabled, idle, keep_kv, auto_dl, api_only = settings.set_openai_auto_switch(False, None, False)
     assert settings.AUTO_UNLOAD_IDLE_SETTING_KEY not in store  # idle untouched
     assert settings.OPENAI_AUTO_DOWNLOAD_SETTING_KEY not in store  # nor auto-download
     assert settings.get_auto_unload_idle_seconds() == 600  # env TTL still active
-    assert (enabled, idle, keep_kv, auto_dl) == (False, 600, False, False)
+    assert (enabled, idle, keep_kv, auto_dl, api_only) == (False, 600, False, False, False)
 
 
 def test_load_impl_notes_loaded_with_backend_off_loop():
@@ -6271,7 +6472,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         def set_job(self, key, state):
             self.state = state
 
-    resolver._scan = (1234.0, {"already-here": "entry"})
+    resolver._scan = (time.monotonic(), {"already-here": "entry"})
     assert (
         download_lifecycle.finalize_worker_exit(
             _Registry(),
@@ -6287,7 +6488,7 @@ def test_any_finished_download_drops_the_resolver_cache(monkeypatch):
         == "complete"
     )
     stamp, entries = resolver._scan
-    assert stamp == 0.0, "a finished download left the scan looking fresh"
+    assert stamp < 0.0 and resolver._snapshot_is_trusted(stamp, time.monotonic())
     # Evidence for models already indexed has to survive, or a bare request for one
     # of them during the rebuild is answered by whatever is resident.
     assert entries == {"already-here": "entry"}
@@ -6297,8 +6498,6 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
     # The request path reads this cache without scanning, so emptying it leaves no
     # evidence until the rebuild lands. Only a completed download invalidates, and
     # that only adds, so the entries stay true.
-    import time
-
     entry = resolver._LocalGgufEntry("org/old", "/srv/models/org--old", ("Q4_K_M",))
     monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
     resolver.invalidate_index()
@@ -6308,6 +6507,147 @@ def test_invalidating_keeps_the_entries_it_already_had(monkeypatch):
         "Q4_K_M",
         "org/old",
     )
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_trusted_cache_rechecks_snapshot_after_freshness(monkeypatch):
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    snapshot = (time.monotonic(), {"org/old": entry})
+    monkeypatch.setattr(resolver, "_scan", snapshot)
+    invalidated = False
+
+    def _invalidate_while_deciding_trust():
+        nonlocal invalidated
+        if not invalidated:
+            invalidated = True
+            resolver.invalidate_index()
+        return snapshot[0]
+
+    monkeypatch.setattr(resolver.time, "monotonic", _invalidate_while_deciding_trust)
+
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+
+def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
+    from types import SimpleNamespace
+
+    import routes.models as model_routes
+
+    event_loop_thread = threading.get_ident()
+    calls = []
+
+    def _add(path):
+        calls.append(("add", threading.get_ident()))
+        return {"id": 7, "path": path, "created_at": "fake"}, True
+
+    def _remove(folder_id):
+        calls.append((f"remove:{folder_id}", threading.get_ident()))
+        return True
+
+    def _invalidate():
+        calls.append(("invalidate", threading.get_ident()))
+
+    monkeypatch.setattr("storage.studio_db.add_scan_folder_with_status", _add)
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(resolver, "invalidate_index", _invalidate)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+
+    async def _run():
+        folder = await model_routes.add_scan_folder_endpoint(
+            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+        )
+        removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
+        return folder, removed
+
+    folder, removed = asyncio.run(_run())
+
+    assert folder["path"] == "/models/custom"
+    assert removed == {"ok": True}
+    assert [name for name, _ in calls] == ["add", "invalidate", "remove:7", "invalidate"]
+    assert all(thread_id != event_loop_thread for _, thread_id in calls)
+
+
+def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    entry = resolver._LocalGgufEntry("org/old", "/custom/org--old", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/old": entry}))
+    removed = []
+    warmed = []
+
+    def _remove(folder_id):
+        removed.append(folder_id)
+        return True
+
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", _remove)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", _remove)
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    asyncio.run(model_routes.remove_scan_folder_endpoint(7, current_subject = "tester"))
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+
+    resolver._scan = (time.monotonic(), {"org/old": entry})
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is not None
+    assert local_inventory.remove_scan_folder_response(8) == {"ok": True}
+    assert resolver.resolve_trusted_cached_local_gguf("org/old") is None
+    assert removed == [7, 8]
+    assert warmed == [1, 1]
+
+
+def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.storage import scan_folders
+    from storage import studio_db
+
+    class _Connection:
+        def __init__(self, rowcount):
+            self.rowcount = rowcount
+            self.committed = False
+            self.closed = False
+
+        def execute(self, _sql, _params):
+            return SimpleNamespace(rowcount = self.rowcount)
+
+        def commit(self):
+            self.committed = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
+    for storage in (studio_db, scan_folders):
+        for rowcount, expected in ((1, True), (0, False)):
+            connection = _Connection(rowcount)
+            monkeypatch.setattr(storage, "get_connection", lambda connection = connection: connection)
+
+            assert storage.remove_scan_folder(7) is expected
+            assert connection.committed
+            assert connection.closed
+
+
+def test_noop_scan_folder_removals_do_not_invalidate_the_index(monkeypatch):
+    import routes.models as model_routes
+    from hub.services.models import local_inventory
+
+    invalidated = []
+    warmed = []
+    monkeypatch.setattr(resolver, "invalidate_index", lambda: invalidated.append(1))
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: warmed.append(1))
+    monkeypatch.setattr("storage.studio_db.remove_scan_folder", lambda _folder_id: False)
+    monkeypatch.setattr(local_inventory, "remove_scan_folder", lambda _folder_id: False)
+
+    assert asyncio.run(model_routes.remove_scan_folder_endpoint(404, current_subject = "tester")) == {
+        "ok": True
+    }
+    assert local_inventory.remove_scan_folder_response(404) == {"ok": True}
+    assert invalidated == []
+    assert warmed == []
 
 
 def test_a_bare_local_id_takes_the_quant_a_plain_load_would(monkeypatch, tmp_path):
@@ -6936,3 +7276,278 @@ def test_mlx_kv_bits_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_bits"] == 4
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
+
+
+def _idle_backend(kw, monkeypatch, *, user_loaded):
+    """A loaded, long-idle GGUF backend wired into the idle loop."""
+    import time
+
+    kw._inflight = 0
+    kw._pending = 0
+    kw._last_active = time.monotonic() - 3600
+    kw._last_unloaded_model = None
+    kw._kv_resume = None
+    backend = _FakeBackend("unsloth/Idle-GGUF", hf_variant = "Q4_K_M")
+    backend._loaded_by_user_action = user_loaded
+
+    def _unload():
+        backend.is_loaded = False
+
+    backend.unload_model = _unload
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: False)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    return backend
+
+
+def test_api_only_setting_roundtrip_and_default(monkeypatch):
+    import storage.studio_db as db
+
+    store = {}
+    monkeypatch.setattr(db, "upsert_app_settings", lambda m: store.update(m))
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+
+    # Off on an install that never stored it, so existing setups are unchanged.
+    assert settings.get_auto_unload_api_only() is False
+    assert settings.AUTO_UNLOAD_API_ONLY_SETTING_KEY not in store
+    assert settings.set_openai_auto_switch(True, 60, None, None, True)[4] is True
+    assert settings.get_auto_unload_api_only() is True
+    # None leaves the stored value untouched (older clients can't reset it).
+    assert settings.set_openai_auto_switch(True, 60, None, None, None)[4] is True
+    with pytest.raises(ValueError, match = "true or false"):
+        settings.set_openai_auto_switch(True, 60, None, None, "garbage")
+
+
+def test_idle_unload_still_frees_a_user_loaded_model_by_default(monkeypatch):
+    # Backwards compatibility: with the toggle off, provenance changes nothing.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: False)
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_api_only_spares_a_user_loaded_model_but_not_an_api_one(monkeypatch):
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+
+    pinned = _idle_backend(kw, monkeypatch, user_loaded = True)
+    _drive_idle_loop(kw)
+    assert pinned.is_loaded is True
+    assert kw.get_last_unloaded_model() is None  # nothing stashed either
+
+    api_loaded = _idle_backend(kw, monkeypatch, user_loaded = False)
+    _drive_idle_loop(kw)
+    assert api_loaded.is_loaded is False
+
+
+def test_an_idle_restored_model_is_api_provenance(monkeypatch):
+    # The restore runs through the auto-switch path, so the model it brings back
+    # is unloadable again on the next idle rather than pinned forever.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: True)
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    backend.is_loaded = False
+    backend.model_identifier = None
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("unsloth/B-GGUF")
+    assert rec.calls and backend._loaded_by_user_action is False
+
+    backend.unload_model = lambda: setattr(backend, "is_loaded", False)
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is False
+
+
+def test_unload_clears_the_user_load_flag():
+    # Otherwise the next API load inherits the pin and never frees its VRAM.
+    import inspect
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    assert backend._loaded_by_user_action is False  # off until a UI load says otherwise
+    backend._loaded_by_user_action = True
+    backend.unload_model()
+    assert backend._loaded_by_user_action is False
+    # Not cleared on a bare process kill: a respawn or MTP-free reload replays
+    # the same load and must keep the provenance it had.
+    assert "_loaded_by_user_action" not in inspect.getsource(LlamaCppBackend._kill_process)
+
+
+def test_the_load_route_pins_and_other_load_surfaces_do_not(monkeypatch):
+    import inspect
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    backend._loaded_by_user_action = False
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _already_loaded(*_a, **_kw):
+        return None  # the dedupe path returns without touching the backend
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _already_loaded)
+    request = LoadRequest(model_path = "unsloth/A-GGUF")
+
+    # An explicit UI load pins, including when it deduped onto the resident model.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester", user_initiated = True))
+    assert backend._loaded_by_user_action is True
+
+    # Preview shares this helper and must not pin, so it keeps the default.
+    asyncio.run(inference_route.load_model_gated(request, object(), "tester"))
+    assert backend._loaded_by_user_action is False
+    import routes.preview as preview_route
+
+    assert "user_initiated" not in inspect.getsource(preview_route._serve_chat)
+
+
+def test_api_only_turned_on_mid_save_still_spares_the_model(monkeypatch, tmp_path):
+    # A KV save can take seconds; the loop re-reads the TTL and keep-KV after it
+    # for exactly that reason, so provenance has to be re-read there too.
+    from core.inference import llama_keepwarm as kw
+
+    on = {"now": False}
+    monkeypatch.setattr(settings, "get_auto_unload_api_only", lambda: on["now"])
+    backend = _idle_backend(kw, monkeypatch, user_loaded = True)
+    monkeypatch.setattr(settings, "get_auto_unload_keep_kv", lambda: True)
+
+    manifest = {"dir": str(tmp_path), "slots": [{"id": 0, "filename": "f.bin", "n_saved": 1}]}
+    deleted = []
+    monkeypatch.setattr(kw, "_delete_resume_files", lambda m: deleted.append(m))
+
+    def _save(should_abort = None):
+        on["now"] = True  # the user flips the toggle while the save runs
+        return manifest
+
+    backend.save_slots_for_resume = _save
+
+    _drive_idle_loop(kw)
+    assert backend.is_loaded is True
+    assert deleted == [manifest]  # nothing was unloaded, so nothing may be stashed
+    assert kw._kv_resume is None
+
+
+def _age_resolver_clock(monkeypatch, seconds):
+    """Advance the resolver's monotonic clock by *seconds*.
+
+    Ageing a snapshot by rewriting its stamp assumes the host has been up longer
+    than the age; a fresh CI runner has not, and the subtraction flips the sign.
+    """
+    base = time.monotonic()
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: base + seconds))
+
+
+def test_additions_only_trust_expires_if_the_rebuild_never_lands(monkeypatch):
+    # A background rebuild that keeps failing must not leave the retained entries
+    # trusted forever: a model deleted on disk would still trigger a switch.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    resolver.invalidate_index(additions_only = True)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+    _age_resolver_clock(monkeypatch, 600.0)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is None
+
+
+def test_additions_only_trust_outlasts_a_scan_slower_than_the_ttl(monkeypatch):
+    # The window tracks the rebuild's own cost, so the install this fix targets (a
+    # multi-second multi-root scan) is not pushed back onto the request path.
+    entry = resolver._LocalGgufEntry("org/a", "/srv/models/org--a", ("Q4_K_M",))
+    monkeypatch.setattr(resolver, "_scan", (time.monotonic(), {"org/a": entry}))
+    monkeypatch.setattr(resolver, "_last_scan_s", 16.0)
+    resolver.invalidate_index(additions_only = True)
+    _age_resolver_clock(monkeypatch, resolver._CACHE_TTL_S * 4)
+    assert resolver.resolve_trusted_cached_local_gguf("org/a") is not None
+
+
+def test_a_dead_warm_worker_releases_the_slot(monkeypatch):
+    # BaseException out of the scan used to leave _warming set, killing background
+    # warming for the life of the process and putting scans back on requests.
+    monkeypatch.setattr(resolver, "_scan", (0.0, {}))
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+
+    def _die():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(resolver, "_build_index", _die)
+    resolver.warm_index_soon()
+    for _ in range(100):
+        if not resolver._warming:
+            break
+        time.sleep(0.05)
+    assert resolver._warming is False
+    assert resolver._warm_pending is False
+
+
+def test_an_invalidated_index_rebuilds_on_a_host_that_just_booted(monkeypatch):
+    # monotonic() counts from boot, so on a host whose uptime is still under the
+    # TTL an invalidated stamp used to read as recent and serve what was revoked.
+    # Patch the module's reference, not the real time module: a stray warm thread
+    # shares that one, and a frozen global clock hangs its duty-cycle arithmetic.
+    monkeypatch.setattr(resolver, "time", types.SimpleNamespace(monotonic = lambda: 1.0))
+    for kwargs in ({}, {"additions_only": True}):
+        monkeypatch.setattr(resolver, "_scan", (1.0, {"org/a": "entry"}))
+        resolver.invalidate_index(**kwargs)
+        built = []
+        monkeypatch.setattr(resolver, "_build_index", lambda: (built.append(1), {})[1])
+        resolver._index()
+        assert built == [1], kwargs
+
+
+# The resident short circuit is the one path that answers without consulting the
+# index, so it must never say yes where the pre-existing resident check says no.
+# Anything it accepts, main would have accepted too: a miss only costs the scan.
+_IDENTITIES = [
+    "unsloth/Muse-GGUF",
+    "/srv/models/unsloth--Muse-GGUF",
+    "/srv/models/Muse.gguf",
+    None,
+]
+_REQUESTS = [
+    "unsloth/Muse-GGUF",
+    "unsloth/muse-gguf",
+    "unsloth/Muse-GGUF:Q4_K_M",
+    "unsloth/Muse-GGUF:Q8_0",
+    "unsloth/Muse-GGUF:latest",
+    "unsloth/Other-GGUF",
+    "/srv/models/Muse.gguf",
+    "/srv/models/MUSE.gguf",
+    "muse.gguf",
+    "../../etc/passwd",
+    "unsloth/",
+    ":Q4_K_M",
+    "unsloth/Muse GGUF",
+]
+
+
+@pytest.mark.parametrize("identity", _IDENTITIES)
+@pytest.mark.parametrize("requested", _REQUESTS)
+@pytest.mark.parametrize("quant", [None, "Q4_K_M"])
+def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
+    monkeypatch, identity, requested, quant
+):
+    backend = _FakeBackend(identity, hf_variant = quant) if identity else _FakeBackend(None)
+    backend.is_loaded = identity is not None
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    fast = inference_route._loaded_identity_satisfies(requested)
+    assert not (
+        fast and not inference_route._loaded_satisfies(requested)
+    ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
+
+
+def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
+    backend = _FakeBackend("unsloth/Muse-GGUF", hf_variant = "Q4_K_M")
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q8_0") is False
+    assert inference_route._loaded_identity_satisfies("unsloth/Muse-GGUF:Q4_K_M") is True

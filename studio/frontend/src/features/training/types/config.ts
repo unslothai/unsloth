@@ -116,6 +116,7 @@ export interface TrainingConfigState {
   isVisionModel: boolean;
   isEmbeddingModel: boolean;
   isAudioModel: boolean;
+  audioCapabilityUnknown: boolean;
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;

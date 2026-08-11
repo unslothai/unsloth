@@ -43,7 +43,7 @@ const REASONING_NAME_RE = new RegExp(
   "i",
 );
 const AUDIO_NAME_RE = new RegExp(
-  `${SEP}(?:whisper|tts|parakeet|parler|musicgen|bark|orpheus|csm|voice|speech|audio)${END}`,
+  `${SEP}(?:whisper|asr|tts|parakeet|parler|musicgen|bark|orpheus|csm|voice|speech|audio)${END}`,
   "i",
 );
 

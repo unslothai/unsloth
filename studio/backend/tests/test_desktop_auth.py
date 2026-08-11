@@ -26,6 +26,8 @@ def isolated_auth_db(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     monkeypatch.setattr(storage, "_api_key_pbkdf2_salt_cache", None)
+
+    monkeypatch.setattr(storage, "_credential_encryption_key_cache", None)
     yield
 
 
@@ -574,6 +576,12 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
         else web_bearer(client)
     )
 
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    credential_key = storage.get_or_create_credential_encryption_key()
+    nonce = os.urandom(12)
+    encrypted = AESGCM(credential_key).encrypt(nonce, b"hf-survives-password-change", b"test")
+
     response = client.post(
         "/api/auth/change-password",
         headers = {"Authorization": f"Bearer {bearer}"},
@@ -583,6 +591,10 @@ def test_change_password_revokes_the_desktop_secret_only_for_browsers(desktop):
     assert response.status_code == 200
     assert is_desktop_token(response.json()["access_token"]) is desktop
     assert (storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME) is desktop
+
+    storage._credential_encryption_key_cache = None
+    reloaded_key = storage.get_or_create_credential_encryption_key()
+    assert AESGCM(reloaded_key).decrypt(nonce, encrypted, b"test") == b"hf-survives-password-change"
 
 
 def test_local_recipe_token_authenticates_as_admin_for_desktop_user(loaded_local_model):
@@ -682,10 +694,26 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from typer.testing import CliRunner
     from unsloth_cli.commands import studio as studio_cli
 
+    from auth import storage as auth_storage
+    from storage import credential_secrets
+
     auth_dir = tmp_path / "auth"
+    studio_db = tmp_path / "studio.db"
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    monkeypatch.setattr(auth_storage, "DB_PATH", auth_dir / "auth.db")
+    monkeypatch.setattr(auth_storage, "_credential_encryption_key_cache", None)
+    monkeypatch.setattr(credential_secrets, "studio_db_path", lambda: studio_db)
+    monkeypatch.setattr(credential_secrets, "ensure_dir", lambda _path: None)
+    monkeypatch.setattr(
+        credential_secrets,
+        "get_or_create_credential_encryption_key",
+        auth_storage.get_or_create_credential_encryption_key,
+    )
+    credential_secrets._schema_ready = False
+
     secret = studio_cli._create_desktop_secret_in_cli()
     studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    credential_secrets.save_hf_token("hf_survives_reset")
     (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
@@ -705,9 +733,20 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
                 studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
             ),
         ).fetchone()[0]
+
+        credential_key = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            ("credential_encryption_key_v1",),
+        ).fetchone()
     finally:
         conn.close()
     assert surviving == 0
+
+    assert credential_key is not None
+    auth_storage._credential_encryption_key_cache = None
+    assert credential_secrets.get_hf_token() == "hf_survives_reset"
+    credential_secrets._schema_ready = False
+    auth_storage._credential_encryption_key_cache = None
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):

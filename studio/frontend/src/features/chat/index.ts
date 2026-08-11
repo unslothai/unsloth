@@ -16,14 +16,15 @@ export {
   listChatAttachments,
   listGgufVariants,
   listLocalModels,
+  listLoras,
   listModels,
   listRecommendedFolders,
   listScanFolders,
   loadModel,
+  unloadModel,
   notifyChatHistoryUpdated,
   removeScanFolder,
   revealCachedModel,
-  unloadModel,
   type BrowseFoldersResponse,
   type CachedGgufRepo,
   type CachedModelRepo,
@@ -156,6 +157,12 @@ export {
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
+export {
+  reasoningAutoOpensWhileStreaming,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+} from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";
 export {
@@ -223,10 +230,12 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,
+  type SttEngine,
 } from "./adapters/studio-model-dictation-adapter";
 export {
   StudioSpeechSynthesisAdapter,

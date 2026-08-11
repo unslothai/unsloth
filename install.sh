@@ -2507,17 +2507,32 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
+# Apple Silicon venv. The arch-explicit arm64 CPython stops uv reusing a cached
+# x86_64 (Rosetta) build: torch ships no macOS x86_64 wheels since 2.2.2, so an
+# x86_64 venv cannot resolve torch. The arm64 guard below backstops older venvs.
+#
+# only-managed stops uv walking PATH and *executing* every interpreter it finds to
+# read its version. Without CLT, /usr/bin/python3 is Apple's xcode_select shim, so
+# that probe pops the "command line developer tools" dialog for tools this install
+# never needs. Spelled --python-preference, not the --managed-python alias: same
+# effect, accepted since uv 0.4.30 rather than 0.8.16.
+#
+# It also drops uv's system-interpreter fallback, so a host that is offline or has
+# UV_PYTHON_DOWNLOADS=never is left with nothing to resolve. Retry unflagged for
+# them: the dialog is worth removing, a failed install is not.
+_uv_venv_arm64() {  # label
+    run_install_cmd "$1" uv venv "$VENV_DIR" \
+        --python-preference only-managed \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none" \
+    || run_install_cmd "$1 (system Python)" uv venv "$VENV_DIR" \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+}
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
-        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
-        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
-        # wheels since 2.2.2, so an x86_64 venv makes the torch install
-        # unresolvable. The arm64 guard below is kept as a backstop for
-        # migrated / pre-existing venvs.
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "create venv"
     else
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
@@ -2573,8 +2588,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
         _discard_venv_for_recreate "$VENV_DIR"
-        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv (arm64)"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2589,8 +2603,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  Recreating venv with Python 3.12..."
         _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2896,6 +2909,114 @@ _cap_cuda_family_for_pre_turing() {
     printf '%s\n' "$1"
 }
 
+# ── ROCm version sources ──
+# One helper per source, each printing at most one "rocmX.Y" line, and each
+# returning 0 unconditionally: install.sh runs under set -e, so a real AMD GPU
+# with no ROCm userspace at all has to reach the actionable warning at the end of
+# the ROCm branch rather than have a failing source kill the installer.
+_rocm_tag_from_amd_smi() {
+    command -v amd-smi >/dev/null 2>&1 || return 0
+    # Cut at the field separator and require digits: the line is pipe-delimited
+    # ("... | ROCm version: N/A | amdgpu version: 6.10.10 | ..."), so stripping every
+    # non-digit fabricated rocm6.10 out of the amdgpu driver version. Position used to
+    # hide that; under highest-wins a fabricated reading outvotes a real 6.1.
+    amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
+        'NF>1{v=$2; sub(/[ \t|].*$/, "", v); if (v ~ /^[0-9]+\.[0-9]+/) {split(v,a,"."); print "rocm"a[1]"."a[2]} exit}' || return 0
+}
+
+_rocm_tag_from_version_file() {
+    [ -r /opt/rocm/.info/version ] || return 0
+    awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version || return 0
+}
+
+_rocm_tag_from_hipconfig() {
+    command -v hipconfig >/dev/null 2>&1 || return 0
+    hipconfig --version 2>/dev/null \
+        | awk 'NR==1 && /^[0-9]/{split($1,a,"."); if(a[1]+0>0){print "rocm"a[1]"."a[2]}}' || return 0
+}
+
+_rocm_tag_from_dpkg() {
+    command -v dpkg-query >/dev/null 2>&1 || return 0
+    # Require the status word "installed". dpkg-query -W lists every package in the
+    # status database except purged ones, so a rocm-core taken out with `apt remove`
+    # stays queryable in state "deinstall ok config-files" still reporting the version
+    # it had, and under highest-wins that dead entry outranks every live source (ran
+    # 7.0, downgraded to 6.1, never purged -> rocm7.0 off a tree that is gone).
+    # ${Status} over ${db:Status-Status}: documented showformat field with no dpkg
+    # version floor, and dpkg renders an unrecognised field as empty rather than
+    # failing, so a dpkg lacking it goes silent instead of over-reporting.
+    _rt_ver=$(dpkg-query -W -f='${Status} ${Version}\n' rocm-core 2>/dev/null \
+        | awk '$3 == "installed" && $4 != "" { print $4; exit }') || return 0
+    [ -n "$_rt_ver" ] || return 0
+    printf '%s\n' "$_rt_ver" | sed 's/^[0-9]*://' \
+        | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
+}
+
+_rocm_tag_from_rpm() {
+    command -v rpm >/dev/null 2>&1 || return 0
+    # Bounded, alone among the five, because this is the one source highest-wins
+    # newly made unconditional that can block forever: it used to be LAST in a
+    # first-answer-wins `||` chain, so /opt/rocm/.info/version answered at position
+    # two and rpm was never invoked on a normal RHEL/SLES install. `rpm -q` is not a
+    # lock-free read -- a leftover /var/lib/rpm/__db.00* from a killed rpm/yum wedges
+    # plain queries in futex on the BerkeleyDB backend (rpm < 4.16, i.e. RHEL 8 /
+    # SLES 15; rhbz#485780, rhbz#73097), and rpm 6.0.x deadlocks `rpm --query`
+    # against a running dnf (rhbz#2463435). A version probe must not hang the
+    # installer, and a timed-out probe is just a source that declined to answer.
+    # _run_bounded no-ops where `timeout` is absent, so this adds no dependency.
+    _rt_ver=$(_run_bounded rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null) || return 0
+    [ -n "$_rt_ver" ] || return 0
+    printf '%s\n' "$_rt_ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}' || return 0
+}
+
+# Highest "rocmX.Y" line on stdin (major >= 1), or nothing when no line is usable.
+_highest_rocm_tag() {
+    awk '
+        /^rocm[0-9]+\.[0-9]+$/ {
+            split(substr($0, 5), a, ".")
+            maj = a[1] + 0; min = a[2] + 0
+            if (maj < 1) next
+            if (!seen || maj > best_maj || (maj == best_maj && min > best_min)) {
+                best_maj = maj; best_min = min; seen = 1
+            }
+        }
+        END { if (seen) printf "rocm%d.%d\n", best_maj, best_min }
+    '
+}
+
+# Consult EVERY source and take the highest, not the first that answers. Distros
+# with split ROCm packaging ship one component well behind the runtime the GPU
+# actually uses: Debian 13 (and Linux Mint on top of it) packages hipconfig at
+# 5.7.x next to a 6.1.x rocminfo/HSA, so first-answer resolution reported rocm5.7
+# on a working gfx1100 and the 6.0+ gate below sent it to CPU-only wheels (issue
+# #8402). A source reading lower than another on the same host is stale packaging,
+# not a downgrade. The symmetric risk, overshoot, is bounded: PyTorch's ROCm wheels
+# vendor their own userspace and need only an amdgpu/KFD driver AMD documents as
+# compatible +/- 2 releases, the normalisation below can only emit a leaf PyTorch
+# publishes, the one source that can report a tree that is not installed is
+# filtered above, and any disagreement is named on stderr for the install log.
+_detect_rocm_version_tag() {
+    _rt_readings=$({
+        _rocm_tag_from_amd_smi
+        _rocm_tag_from_version_file
+        _rocm_tag_from_hipconfig
+        _rocm_tag_from_dpkg
+        _rocm_tag_from_rpm
+    } 2>/dev/null) || _rt_readings=""
+    _rt_best=$(printf '%s\n' "$_rt_readings" | _highest_rocm_tag) || _rt_best=""
+    if [ -n "$_rt_best" ]; then
+        # Same shape gate as _highest_rocm_tag: a reading that was never a candidate
+        # must not be named as a dissenting opinion.
+        _rt_seen=$(printf '%s\n' "$_rt_readings" \
+            | grep '^rocm[1-9][0-9]*\.[0-9][0-9]*$' | sort -u | tr '\n' ' ') || _rt_seen=""
+        case "$_rt_seen" in
+            ""|"$_rt_best ") : ;;  # one reading, or every source agreeing
+            *) echo "[WARN] ROCm version sources disagree (${_rt_seen% }) -- using the highest, $_rt_best." >&2 ;;
+        esac
+    fi
+    printf '%s\n' "$_rt_best"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2974,26 +3095,14 @@ get_torch_index_url() {
         fi
         # AMD GPU confirmed -- detect ROCm version
         _rocm_tag=""
-        _rocm_tag=$({ command -v amd-smi >/dev/null 2>&1 && \
-            amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
-                'NF>1{gsub(/[^0-9.]/, "", $2); split($2,a,"."); print "rocm"a[1]"."a[2]; ok=1; exit} END{exit !ok}'; } || \
-            { [ -r /opt/rocm/.info/version ] && \
-                awk -F. '{print "rocm"$1"."$2; exit}' /opt/rocm/.info/version; } || \
-            { command -v hipconfig >/dev/null 2>&1 && \
-                hipconfig --version 2>/dev/null | awk 'NR==1 && /^[0-9]/{split($1,a,"."); if(a[1]+0>0){print "rocm"a[1]"."a[2]; found=1}} END{exit !found}'; } || \
-            { command -v dpkg-query >/dev/null 2>&1 && \
-                ver="$(dpkg-query -W -f='${Version}\n' rocm-core 2>/dev/null)" && \
-                [ -n "$ver" ] && \
-                printf '%s\n' "$ver" | sed 's/^[0-9]*://' | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; } || \
-            { command -v rpm >/dev/null 2>&1 && \
-                ver="$(rpm -q --qf '%{VERSION}\n' rocm-core 2>/dev/null)" && \
-                [ -n "$ver" ] && \
-                printf '%s\n' "$ver" | awk -F'[.-]' '{print "rocm"$1"."$2; exit}'; }) 2>/dev/null || _rocm_tag=""
-        # ^ || guard: when EVERY version source is missing (e.g. rocminfo present
-        # but rocm-core not installed, so dpkg-query/rpm exit 1), the whole ||
-        # chain fails and set -e would kill the installer BEFORE the actionable
-        # no-version WARN below -- exactly the fresh-install case it exists for.
-        # Validate _rocm_tag: must match "rocmX.Y" with major >= 1
+        _rocm_tag=$(_detect_rocm_version_tag) || _rocm_tag=""
+        # ^ || guard: belt and braces on the set -e contract the helpers hold, so a
+        # fresh AMD host with no version source at all still reaches the actionable
+        # no-version WARN below. stderr is deliberately not redirected: each source
+        # already silences its own noise, leaving only the sources-disagree
+        # breadcrumb, which belongs in the install log.
+        # Shape gate on "rocmX.Y" with major >= 1: _highest_rocm_tag enforces it too,
+        # kept so a future source cannot leak garbage into the cases below.
         case "$_rocm_tag" in
             rocm[1-9]*.[0-9]*) : ;;  # valid (major >= 1)
             *) _rocm_tag="" ;;        # reject malformed (empty, garbled, or major=0)
@@ -3003,7 +3112,11 @@ get_torch_index_url() {
             case "$_rocm_tag" in
                 rocm[1-5].*)
                     echo "[WARN] ROCm $_rocm_tag detected but PyTorch ROCm wheels require ROCm 6.0+ -- falling back to CPU-only PyTorch" >&2
+                    echo "[WARN] $_rocm_tag is the HIGHEST version any of amd-smi, /opt/rocm/.info/version, hipconfig or rocm-core reported." >&2
                     echo "[WARN] Upgrade ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/index.html" >&2
+                    echo "[WARN] If this host really runs ROCm 6.0+ and only its packaging says otherwise, pin the wheels and re-run:" >&2
+                    echo "[WARN]   UNSLOTH_TORCH_INDEX_FAMILY=rocm6.4   (a PyTorch wheel leaf: rocm6.0-6.4, rocm7.0-7.2)" >&2
+                    echo "[WARN]   UNSLOTH_TORCH_INDEX_URL=<full index URL>   (takes precedence, used verbatim)" >&2
                     echo "$_base/cpu"; return ;;
             esac
             # Supported tags; 6.5+ clips to rocm6.4, 7.3+ caps to rocm7.2.
@@ -4176,7 +4289,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.11" "unsloth-zoo>=2026.8.9"
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -4191,7 +4304,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.11" "unsloth-zoo>=2026.8.9"
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4425,7 +4538,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.11" "unsloth-zoo>=2026.8.9"
+            "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4444,7 +4557,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.11" "unsloth-zoo>=2026.8.9"
+            --upgrade-package unsloth "unsloth>=2026.8.12" "unsloth-zoo>=2026.8.9"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4473,7 +4586,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.9" "unsloth>=2026.8.11" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.9" "unsloth>=2026.8.12" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."

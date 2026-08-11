@@ -1055,7 +1055,8 @@ def _llama_slot_readout(
         context_length = 4096,
         model_identifier = "some/tts-GGUF",
         _is_audio = is_audio,
-        _audio_type = "codec",
+        # A real GGUF TTS codec: /audio/generate rejects anything llama.cpp cannot decode.
+        _audio_type = "snac",
         _auth_headers = None,
     )
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)

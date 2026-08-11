@@ -1514,6 +1514,16 @@ function Ensure-VCRedist {
         } catch { $_prevProtocol = $null }
         try {
             Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
+            # HTTPS secures the transfer, not the payload, and this runs with the setup
+            # process's privileges. The evergreen URL rules out a SHA-256 pin (the bytes
+            # change with every VS servicing update), so check the publisher. Status alone
+            # is not enough: any trusted CA's code-signing cert passes it.
+            $sig = Get-AuthenticodeSignature -LiteralPath $dst
+            if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+                $null -eq $sig.SignerCertificate -or
+                $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Microsoft Corporation"?(,|$)') {
+                throw "the downloaded VC++ runtime is not validly signed by Microsoft (signature status: $($sig.Status))"
+            }
             $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru
             # 3010 = success, reboot required; usable either way.
             if ($p.ExitCode -notin @(0, 3010)) {
@@ -3035,6 +3045,24 @@ function Get-NodeDecision {
     return "bundled"
 }
 
+
+function Test-PackagedFrontend {
+    param([string]$LocalInstall, [string]$IndexPath, [string]$ProjectFilePath)
+    # install.ps1 and `unsloth studio update` explicitly pass 0 for PyPI
+    # installs. Wheel extraction mtimes do not preserve build ordering, so use
+    # the release-built dist whenever its entry point is present.
+    #
+    # $ProjectFilePath is the pyproject.toml beside studio/. The mode records
+    # where the Python package came from, not which tree this script runs out
+    # of, and an editable overlay separates the two: it leaves the mode at 0
+    # while $ScriptDir is a checkout, whose dist is a stale build artifact
+    # rather than a release one. A wheel ships no top-level files, so that file
+    # existing means source tree -- keep the mtime rebuild there.
+    if ($LocalInstall -ne "0") { return $false }
+    if ($ProjectFilePath -and (Test-Path -LiteralPath $ProjectFilePath -PathType Leaf)) { return $false }
+    return (Test-Path -LiteralPath $IndexPath -PathType Leaf)
+}
+
 $SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
 $NodeOverride = $null
 $NodeParent = $null
@@ -3276,15 +3304,21 @@ Write-StudioLine ""
 #  PHASE 2: Frontend build (skip if pip-installed -- already bundled)
 # ==========================================================================
 $DistDir = Join-Path $FrontendDir "dist"
-# Skip build if dist/ exists and no tracked input is newer than dist/.
-# Checks src/, public/, package.json, config files -- not just src/.
+$PackagedFrontend = Test-PackagedFrontend `
+    -LocalInstall "$($env:STUDIO_LOCAL_INSTALL)" `
+    -IndexPath (Join-Path $DistDir "index.html") `
+    -ProjectFilePath (Join-Path $PackageDir "pyproject.toml")
+# Wheel extraction mtimes are not a source-freshness signal. Standard PyPI
+# installs use the release-built dist; local/source installs retain mtime checks.
+# Tauri is checked first so the reported reason matches setup.sh on a desktop
+# update, where both this and the packaged branch would otherwise apply.
 $NeedFrontendBuild = $true
-if ($IsPipInstall) {
-    $NeedFrontendBuild = $false
-    step "frontend" "bundled (pip install)"
-} elseif ($SkipFrontend) {
+if ($SkipFrontend) {
     $NeedFrontendBuild = $false
     step "frontend" "bundled (Tauri)"
+} elseif ($IsPipInstall -or $PackagedFrontend) {
+    $NeedFrontendBuild = $false
+    step "frontend" "bundled (pip install)"
 } elseif (Test-Path $DistDir) {
     $DistTime = (Get-Item $DistDir).LastWriteTime
     $NewerFile = $null
@@ -4628,7 +4662,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 # triton-windows and torch's XPU triton BOTH own the top-level `triton` package (80 to 160 shared
 # paths, __init__.py and _C/libtriton.pyd among them), so a cu*-to-xpu pin repair leaves the CUDA
 # build shadowing the XPU one. AFTER the stack, since unsloth declares triton-windows a win32
-# core dep and base.txt reinstalls anything removed earlier. Uninstall always paired with a
+# core dependency install reinstalls anything removed earlier. Uninstall always paired with a
 # reinstall: removing one drops the shared paths the other overwrote. The spec is read from the
 # installed torch (renamed pytorch-triton-xpu -> triton-xpu in torch 2.10).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
