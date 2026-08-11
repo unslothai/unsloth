@@ -390,6 +390,18 @@ def llama_runtime_pairs(
     return commit is not None and commit == _llama_ggml_commit(required_tag)
 
 
+def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
+    """Whether a paired Windows llama runtime carries a GPU ggml backend module.
+    Only the cpu-only bundle links ggml against libomp, and bundle_profile cannot
+    tell them apart: it is absent on both the published rocm artifacts and every
+    upstream-sourced install, so the files on disk decide."""
+    for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
+        glob = per_os.get("windows")
+        if backend != "cpu" and glob and any(llama_bin_dir.glob(glob)):
+            return True
+    return False
+
+
 def slim_pairing_for_artifact(
     artifact: dict[str, Any], host: HostInfo, backend: str
 ) -> tuple[Path, str] | None:
@@ -401,7 +413,7 @@ def slim_pairing_for_artifact(
     if runtime is None:
         log(f"slim_selection: {asset} skipped: no managed llama.cpp prebuilt install")
         return None
-    llama_bin_dir, llama_tag, llama_profile = runtime
+    llama_bin_dir, llama_tag, _profile = runtime
     requires_tag = artifact.get("requires_llama_tag")
     if not llama_runtime_pairs(
         llama_tag,
@@ -419,11 +431,11 @@ def slim_pairing_for_artifact(
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
     required_sonames = [str(name) for name in sonames]
-    if host.is_windows and "cpu" not in llama_profile.lower():
+    if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
         # The shared Windows manifest lists libomp because the cpu llama bundle
         # links ggml against it; the rocm/cuda/vulkan bundles neither ship nor
         # import it, so requiring it there only ever mis-rejects a valid pairing.
-        # A cpu bundle keeps the gate, since its ggml really does need the DLL.
+        # A cpu-only bundle keeps the gate, since its ggml really needs the DLL.
         # link_ggml_runtime still wires it whenever the bundle ships it.
         required_sonames = [
             name

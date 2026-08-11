@@ -699,25 +699,25 @@ def test_slim_selected_for_cpu_backend_on_windows(tmp_path, monkeypatch):
 
 WIN_LIBOMP_SONAMES = ["ggml.dll", "ggml-base.dll", "libomp140.x86_64.dll"]
 
-# bundle_profile as published: the ROCm windows artifacts carry none at all.
 WIN_GPU_BUNDLES = [
-    ("rocm", "ggml-hip.dll", "", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
-    ("cuda", "ggml-cuda.dll", "cuda12-portable", {"has_usable_nvidia": True}),
-    ("vulkan", "ggml-vulkan.dll", "windows-vulkan-x64", {}),
+    ("rocm", "ggml-hip.dll", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
+    ("cuda", "ggml-cuda.dll", {"has_usable_nvidia": True}),
+    ("vulkan", "ggml-vulkan.dll", {}),
 ]
 
 
-@pytest.mark.parametrize("backend, module, profile, host_kwargs", WIN_GPU_BUNDLES)
+@pytest.mark.parametrize("backend, module, host_kwargs", WIN_GPU_BUNDLES)
 def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
-    tmp_path, monkeypatch, backend, module, profile, host_kwargs
+    tmp_path, monkeypatch, backend, module, host_kwargs
 ):
     # The shared Windows manifest lists the OpenMP runtime only the cpu llama
     # bundle ships; the GPU bundles omit it and never import it, so they pair.
+    # The empty bundle_profile is what the published rocm artifacts carry.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
     for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll", module):
         (bin_dir / name).write_bytes(b"ggml")
-    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile))
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
     manifest = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)
 
     artifact, chosen, used_fallback = M.select_artifact_with_fallback(
@@ -728,13 +728,15 @@ def test_windows_gpu_slim_does_not_require_cpu_only_libomp(
     assert chosen == backend and used_fallback is False
 
 
-@pytest.mark.parametrize("profile", ["windows-cpu-x64", "windows-cpu-arm64"])
+# "" is the upstream-sourced install: install_llama_prebuilt builds those
+# AssetChoices without a bundle_profile, so a real cpu bundle reports no profile.
+@pytest.mark.parametrize("profile", ["windows-cpu-x64", ""])
 def test_windows_cpu_bundle_still_requires_manifest_libomp(tmp_path, monkeypatch, profile):
     # A cpu bundle's ggml really does import libomp, so a runtime that lost the
     # DLL must fail the pairing rather than install a whisper that cannot load.
     bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
     bin_dir.mkdir(parents = True)
-    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu.dll"):
+    for name in ("ggml.dll", "ggml-base.dll", "ggml-cpu-haswell.dll"):
         (bin_dir / name).write_bytes(b"ggml")
     monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, profile))
     artifact = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)["artifacts"][0]
@@ -772,7 +774,9 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
     # ggml backend module, so their presence must not stand in for it.
     for name in ("amdhip64_7.dll", "hipblas.dll", "libhipblaslt.dll"):
         (bin_dir / name).write_bytes(b"runtime")
-    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    monkeypatch.setattr(
+        M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, "")
+    )
     artifact = _windows_slim_manifest(
         requires_ggml_sonames = [
             "ggml.dll",
