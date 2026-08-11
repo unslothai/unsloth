@@ -4,7 +4,7 @@
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { isWithinMathBlock } from "remend";
 
-const AMBIGUOUS_BOLD_ASTERISK_ITEM_RE = /^[ \t]*\* {1,4}\*{2,}[ \t]*$/;
+const AMBIGUOUS_BOLD_ASTERISK_ITEM_RE = /^[ \t]*\*[ \t]+\*{2,}[ \t]*$/;
 const BLOCKQUOTE_PREFIX_RE = /^(?:[ \t]*>[ \t]?)+/;
 
 type MarkdownNode = {
@@ -37,6 +37,36 @@ function isTrailingThematicBreak(text: string, markerIndex: number): boolean {
   return false;
 }
 
+function becomesTrailingParagraphListItem(
+  text: string,
+  markerIndex: number,
+): boolean {
+  const completedText = `${text}x`;
+  const pending: MarkdownNode[] = [fromMarkdown(completedText) as MarkdownNode];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (!node) {
+      continue;
+    }
+    if (
+      node.type === "listItem" &&
+      node.position?.start.offset === markerIndex &&
+      node.position.end.offset === completedText.length &&
+      node.children?.some(
+        (child) =>
+          child.type === "paragraph" &&
+          child.position?.end.offset === completedText.length,
+      )
+    ) {
+      return true;
+    }
+    if (node.children) {
+      pending.push(...node.children);
+    }
+  }
+  return false;
+}
+
 export function stabilizeStreamingMarkdown(
   text: string,
   isStreaming: boolean,
@@ -58,7 +88,8 @@ export function stabilizeStreamingMarkdown(
     lineStart + blockquotePrefix.length + content.indexOf("*");
   if (
     isWithinMathBlock(text, markerIndex) ||
-    !isTrailingThematicBreak(text, markerIndex)
+    !isTrailingThematicBreak(text, markerIndex) ||
+    !becomesTrailingParagraphListItem(text, markerIndex)
   ) {
     return text;
   }

@@ -42,6 +42,29 @@ test("buffers triple-emphasis list prefixes", () => {
   assert.ok(!render(stabilized).includes(HORIZONTAL_RULE));
 });
 
+test("buffers tab-separated list prefixes", () => {
+  for (const separator of ["\t", " \t", "  \t", "\t ", " \t "]) {
+    const markdown = `*${separator}**`;
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), "");
+
+    const completed = `*${separator}**Heading**`;
+    const stabilized = stabilizeStreamingMarkdown(completed, true);
+    const html = render(stabilized);
+    assert.equal(stabilized, completed);
+    assert.ok(html.includes(UNORDERED_LIST));
+    assert.ok(html.includes(STRONG));
+    assert.ok(!html.includes(HORIZONTAL_RULE));
+  }
+});
+
+test("keeps tab-indented code prefixes unchanged", () => {
+  for (const markdown of ["*\t\t**", "*   \t**", "*\t  **"]) {
+    assert.ok(render(markdown).includes(HORIZONTAL_RULE));
+    assert.equal(stabilizeStreamingMarkdown(markdown, true), markdown);
+  }
+});
+
 test("reveals the list as soon as bold content arrives", () => {
   const markdown = "* **Heading";
   const stabilized = stabilizeStreamingMarkdown(markdown, true);
