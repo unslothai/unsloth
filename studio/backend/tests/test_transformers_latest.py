@@ -1097,3 +1097,82 @@ def test_failed_staging_install_removes_staging_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(tv, "_ensure_venv_dir", _fake_ensure)
     assert ensure_latest_transformers_venv("5.13.0") is False
     assert not Path(str(venv_dir) + ".staging").exists()
+
+
+def _hardware_module(device):
+    """Stand in for utils.hardware, whose import needs real hardware."""
+    import enum
+
+    module = _types.ModuleType("utils.hardware")
+
+    class DeviceType(str, enum.Enum):
+        CUDA = "cuda"
+        XPU = "xpu"
+        MLX = "mlx"
+        CPU = "cpu"
+
+    module.DeviceType = DeviceType
+    module.get_device = lambda: DeviceType(device)
+    return module
+
+
+@pytest.fixture(autouse = True)
+def _transformers_backend_host(monkeypatch):
+    """Pin a transformers-loading device so these tests do not depend on the
+    host: on MLX the upgrade check short-circuits by design."""
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+
+
+@pytest.mark.parametrize("device", ["cuda", "cpu", "xpu"])
+def test_transformers_backends_still_get_the_upgrade_offer(device, monkeypatch):
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module(device))
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "brandnew_arch"})
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+    offered = tl.check_upgrade_for_model("org/brandnew")
+
+    assert offered is not None and offered["model_type"] == "brandnew_arch"
+
+
+def test_mlx_host_is_never_offered_a_transformers_upgrade(monkeypatch):
+    """MLX picks its backend from hardware and never falls back to transformers,
+    so no install can make an architecture loadable there. Same inputs as the
+    transformers-backend test above, which does get an offer."""
+    monkeypatch.setattr(tl, "_disabled", lambda: False)
+    monkeypatch.setattr(tl, "_env_offline", lambda: False)
+    monkeypatch.setattr(tl, "_config_model_types", lambda tier: {"llama"})
+    monkeypatch.setattr(tl, "_hardcoded_model_types", lambda: frozenset())
+    monkeypatch.setattr(tl, "_load_config_json", lambda *a, **k: {"model_type": "muse_glimmer"})
+    monkeypatch.setattr(
+        tl,
+        "latest_transformers_supports",
+        lambda _t: {"pypi_version": "5.15.0", "supported_in_pypi": True, "supported_in_main": True},
+    )
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("cuda"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is not None
+
+    monkeypatch.setitem(sys.modules, "utils.hardware", _hardware_module("mlx"))
+    assert tl.check_upgrade_for_model("mlx-community/Muse-Glimmer-30B-4bit") is None
+
+
+def test_upgrade_offer_survives_a_broken_hardware_import(monkeypatch):
+    """Detection is best effort: failing it must not silence a real offer."""
+    broken = _types.ModuleType("utils.hardware")
+
+    def _raise():
+        raise RuntimeError("no hardware")
+
+    broken.get_device = _raise
+    broken.DeviceType = object()
+    monkeypatch.setitem(sys.modules, "utils.hardware", broken)
+
+    assert tl._architecture_cannot_come_from_transformers() is False

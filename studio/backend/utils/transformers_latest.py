@@ -283,6 +283,21 @@ def clear_caches() -> None:
     end_sidecar_swap()
 
 
+def _architecture_cannot_come_from_transformers() -> bool:
+    """Whether this host builds model architectures somewhere other than transformers.
+
+    The inference backend is chosen by hardware, and the MLX branch has no
+    transformers path to fall back to, so on MLX mlx-lm and mlx-vlm decide what
+    loads. Upgrading transformers cannot make an architecture loadable there, so
+    offering the install costs minutes and changes nothing.
+    """
+    try:
+        from utils.hardware import DeviceType, get_device
+        return get_device() == DeviceType.MLX
+    except Exception:
+        return False
+
+
 def latest_transformers_supports(model_type: str) -> dict | None:
     """Whether the newest transformers (PyPI release and/or GitHub main) ships *model_type*.
 
@@ -328,6 +343,8 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
     """
     try:
         if _disabled() or _env_offline():
+            return None
+        if _architecture_cannot_come_from_transformers():
             return None
         cfg = _load_config_json(model_name, hf_token)
         if not isinstance(cfg, dict):
