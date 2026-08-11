@@ -940,6 +940,21 @@ def _clear_device_cache(device: Optional[str]) -> None:
         pass
 
 
+def _reported_device(device: Optional[str]) -> Optional[str]:
+    """Device name for status. Torch calls the HIP device "cuda", which is right for the
+    API and wrong on screen: an AMD card reported as cuda reads like a bug."""
+    if device != "cuda":
+        return device
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None):
+            return "rocm"
+    except Exception:  # noqa: BLE001 - a label must never fail a status call
+        pass
+    return device
+
+
 def _pick_device():
     """Return (device, torch_dtype) for the Whisper model.
 
@@ -1071,7 +1086,9 @@ class WhisperSttSidecar:
 
     @property
     def device(self) -> Optional[str]:
-        return self._device
+        # Reported, so name the backend a user recognises. Torch's ROCm build keeps the
+        # "cuda" device name for HIP, which made an AMD box report "Transformers - cuda".
+        return _reported_device(self._device)
 
     def is_loading(self) -> bool:
         with self._load_state_lock:

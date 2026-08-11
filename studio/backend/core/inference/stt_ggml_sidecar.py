@@ -264,11 +264,47 @@ def slim_runtime_intact(binary: str) -> bool:
     return intact
 
 
+# A runtime that starts, answers GET /, and then dies on the first actual inference.
+# Reported on Windows with ROCm on gfx1200, where rocBLAS is missing its TensileLibrary:
+# the marker and the linked libraries are all present, so slim_runtime_intact() is happy
+# and is_available() said yes, which meant _resolve_serving_stt_engine never fell back and
+# every recording 501'd while the UI showed the model as loaded. Only inference can prove
+# this, so it is recorded when inference fails and cleared when one succeeds. Process
+# lifetime by design: a reinstall restarts Studio.
+_runtime_inference_failure: Optional[str] = None
+_runtime_failure_lock = threading.Lock()
+
+
+def note_runtime_inference_failure(reason: str) -> None:
+    global _runtime_inference_failure
+    with _runtime_failure_lock:
+        if _runtime_inference_failure is None:
+            logger.warning(
+                "whisper.cpp runtime failed to serve a transcription (%s); "
+                "treating the engine as unavailable and using Transformers instead",
+                reason,
+            )
+        _runtime_inference_failure = reason
+
+
+def clear_runtime_inference_failure() -> None:
+    global _runtime_inference_failure
+    with _runtime_failure_lock:
+        _runtime_inference_failure = None
+
+
+def runtime_inference_failure() -> Optional[str]:
+    with _runtime_failure_lock:
+        return _runtime_inference_failure
+
+
 def is_available() -> bool:
     binary = find_whisper_server_binary()
     if binary is None:
         return False
     if not slim_runtime_intact(binary):
+        return False
+    if runtime_inference_failure() is not None:
         return False
     try:
         import av  # noqa: F401
@@ -1123,8 +1159,13 @@ class GgmlSttSidecar:
         except (SttAudioDecodeError, SttEngineUnavailableError):
             raise
         except Exception as exc:
+            # A cancel closes this socket deliberately, so it is not evidence of a broken
+            # runtime and must not disable the engine.
+            if cancel_event is None or not cancel_event.is_set():
+                note_runtime_inference_failure(f"{type(exc).__name__}: {exc}")
             raise SttEngineUnavailableError(
-                "The local transcription runtime did not answer the request."
+                "The local transcription runtime did not answer the request. "
+                "Transcription will use the Transformers engine from now on."
             ) from exc
         finally:
             cancel_done.set()
@@ -1132,6 +1173,8 @@ class GgmlSttSidecar:
         text = payload.get("text")
         if not isinstance(text, str):
             raise SttAudioDecodeError("Could not decode the audio.")
+        # It served a transcription, so whatever failed earlier was transient.
+        clear_runtime_inference_failure()
         # whisper.cpp joins segments with newlines; dictation wants one line.
         return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
 

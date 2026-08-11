@@ -2170,7 +2170,7 @@ async def get_model_config(
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
             audio_type, audio_type_definitive = detect_audio_type_checked(
-                inspection_target,
+                _audio_probe_target(inspection_target),
                 hf_token = hf_token,
                 local_files_only = prefer_local_cache,
             )
@@ -2538,6 +2538,28 @@ async def discard_remote_code_download(
     except Exception as e:
         logger.warning("Could not discard remote-code download for %s: %s", model_name, e)
         return {"deleted": False, "reason": "error"}
+
+
+def _audio_probe_target(inspection_target: str) -> str:
+    """Repo to ask about audio capability, resolving a registry alias first.
+
+    A curated entry like "Spark-TTS-0.5B/LLM" names a load subdirectory, not a repo, so
+    the probe fetched a repo that does not exist, got a 404 on every path, and read that
+    as "definitely not an audio model" rather than "not a repo id". Spark-TTS then looked
+    like a text model, and picking it with an audio dataset hit the modality gate. Same
+    resolution routes/training.py already uses for the trainer's own preflight.
+    """
+    if is_local_path(inspection_target):
+        return inspection_target
+    try:
+        from utils.security import load_scan_target
+
+        repo_id, _load_subdirs = load_scan_target(
+            canonical_model_repo_id(inspection_target), ()
+        )
+        return repo_id or inspection_target
+    except Exception:  # noqa: BLE001 - a probe target must never fail the handler
+        return inspection_target
 
 
 def _audio_type_of_checkpoint(
