@@ -76,8 +76,15 @@ def _run_install(
     env = None,
     reprobe_devices = None,
     kfd_targets = (),
+    env_probe = None,
 ):
     """Drive _ensure_rocm_torch() over the reporter's host and return the pip calls.
+
+    ``env_probe``, when a dict is passed, records os.environ at the moment torch is
+    installed under the key "HSA_OVERRIDE_GFX_VERSION". That instant is the one
+    that matters: patch.dict restores the environment on exit, so an assertion made
+    after the call cannot see a pop, and the env the install ends with is the env
+    every process this shell later launches inherits.
 
     ``reprobe_devices`` is what rocminfo reports once HSA_OVERRIDE_GFX_VERSION is
     stripped from its environment; None means the re-probe cannot disprove the
@@ -110,9 +117,14 @@ def _run_install(
     if _env.get("UNSLOTH_ROCM_GFX_ARCH"):
         inferred = _env["UNSLOTH_ROCM_GFX_ARCH"]
 
+    def _record_env(*a, **kw):
+        if env_probe is not None and "HSA_OVERRIDE_GFX_VERSION" not in env_probe:
+            env_probe["HSA_OVERRIDE_GFX_VERSION"] = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+        return True
+
     with (
         patch.object(stack_mod, "IS_WINDOWS", False),
-        patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
+        patch.object(stack_mod, "pip_install_try", side_effect = _record_env) as pip_try,
         patch.object(stack_mod, "pip_install") as pip,
         patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
         patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
@@ -910,3 +922,76 @@ class TestCallSiteParity:
             # fires: 11.0.0 on a gfx1151 chassis is the reported case and MUST
             # correct on some shapes, on both paths.
             assert corrections, f"no shape corrected across {shapes} shapes"
+
+
+# ── Clearing the confirmed spoof from the launched runtime ───────────────────
+
+
+class TestConfirmedSpoofIsClearedBeforeLaunch:
+    """Routing the wheels is only half of #7331. ROCr rebuilds the agent from
+    HSA_OVERRIDE_GFX_VERSION in every later process (libhsakmt's topology.c writes
+    props->EngineId straight from the variable), and AMD's per-gfx index ships code
+    objects for one arch only, so a runtime still reporting gfx1100 is handed a
+    gfx1151 wheel with no code for the device it sees and fails at the first
+    allocation exactly as it did before the install."""
+
+    def test_reroute_clears_the_variable_it_disproved(self):
+        probe = {}
+        calls = _run_install(kfd_targets = ["gfx1151"], env_probe = probe)
+        assert "repo.amd.com/rocm/whl/gfx1151/" in calls, calls
+        assert probe["HSA_OVERRIDE_GFX_VERSION"] is None, probe
+
+    def test_declined_spoof_keeps_the_users_override(self):
+        """A real gfx1100 dGPU in a Ryzen AI Max chassis keeps generic wheels, and
+        on those the override is the user's own business. Nothing was disproved,
+        so nothing is taken away."""
+        probe = {}
+        calls = _run_install(
+            kfd_targets = ["gfx1100"],
+            reprobe_devices = ["gfx1100"],
+            rocm_version = (7, 1),
+            env_probe = probe,
+        )
+        assert "repo.amd.com" not in calls, calls
+        assert probe["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0", probe
+
+    def test_unspoofed_strix_reroute_leaves_the_environment_alone(self):
+        """A gfx1151 host that reports itself honestly reroutes for the ordinary
+        reason. There is no confirmed spoof, so the clear must not fire -- the
+        variable, if set at all, was never shown to be lying."""
+        probe = {}
+        calls = _run_install(
+            gfx_devices = ("gfx1151",),
+            env = {"HSA_OVERRIDE_GFX_VERSION": "11.5.1"},
+            env_probe = probe,
+        )
+        assert "repo.amd.com/rocm/whl/gfx1151/" in calls, calls
+        assert probe["HSA_OVERRIDE_GFX_VERSION"] == "11.5.1", probe
+
+    def test_install_sh_clears_it_on_the_same_branch(self):
+        """The shell path is the one that matters for the reported flow: install.sh
+        execs Studio from this very shell, and install_python_stack.py runs as a
+        grandchild, so a pop there cannot reach the launch."""
+        source = _INSTALL_SH.read_text(encoding = "utf-8")
+        start = source.find('if [ -n "$_strix_gfx" ] && _rocm_leaf_below')
+        assert start != -1, "install.sh's Strix reroute branch moved"
+        block = source[start : source.find("\n        fi\n", start)]
+        assert "unset HSA_OVERRIDE_GFX_VERSION" in block, (
+            "the Strix reroute must clear a corroborated spoof before this shell "
+            "execs Studio, or the new wheels meet a runtime still claiming gfx1100"
+        )
+        assert '[ -n "$_spoof_physical" ]' in block, (
+            "the clear must be guarded by the corroborated-spoof verdict, never "
+            "applied to a host whose override was not disproved"
+        )
+        # Exactly one clear of the caller's own environment. The only other unset
+        # in the file scopes three variables inside the re-probe's subshell, which
+        # cannot outlive it. Every other branch keeps the override: on generic
+        # wheels, which carry no kernels for the physical arch, it is what makes
+        # the GPU usable at all.
+        _lasting = [
+            ln.strip()
+            for ln in source.splitlines()
+            if ln.strip().startswith("unset HSA_OVERRIDE_GFX_VERSION")
+        ]
+        assert _lasting == ["unset HSA_OVERRIDE_GFX_VERSION"], _lasting

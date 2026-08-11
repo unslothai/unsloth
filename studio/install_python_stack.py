@@ -1734,6 +1734,33 @@ def _hsa_spoofed_physical_gfx(
     return _confirm(list(dict.fromkeys(reprobed)), "rocminfo with HSA_OVERRIDE_GFX_VERSION unset")
 
 
+def _clear_confirmed_hsa_spoof(physical_gfx: str) -> None:
+    """Drop a CONFIRMED HSA_OVERRIDE_GFX_VERSION spoof from this process's env.
+
+    Routing the wheels is only half of #7331. ROCr reads the variable afresh in
+    every LATER process -- libhsakmt writes props->EngineId straight from it while
+    building the agent, so the agent's ISA name becomes the spoofed arch -- and
+    AMD's per-gfx index ships code objects for the physical arch and nothing else.
+    Leave the variable in place and the freshly installed wheel is handed a device
+    whose reported name matches none of its code, so the first allocation fails
+    exactly as before and the install looks like it did nothing.
+
+    Only ever called after corroboration and only on the branch that installs
+    native wheels for ``physical_gfx``, so the variable is provably lying about
+    this host's only GPU and nothing on this path still needs it. A shell profile
+    that exports it will set it again in the next login shell, which no installer
+    can undo from here, so name the variable and say to remove it.
+    """
+    if os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None) is None:
+        return
+    _safe_print(
+        f"   Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install: the\n"
+        f"   {physical_gfx} wheels carry {physical_gfx} kernels, so the runtime has to\n"
+        f"   report the real arch. Remove the export from your shell profile\n"
+        f"   (~/.bashrc, ~/.profile) as well, or the next terminal restores it.\n"
+    )
+
+
 def _first_set_visible_mask() -> "str | None":
     """Name of the visible-device variable in force, first-set-wins, or None."""
     for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
@@ -3057,6 +3084,13 @@ def _ensure_rocm_torch() -> None:
                     f"   with AMD's gfx1150/gfx1151 fixes (more reliable than the generic\n"
                     f"   pytorch.org rocm7.2 index on ROCm 7.3+ hosts).\n"
                 )
+                # Only on this branch: the wheels being installed carry
+                # _selected_gfx kernels, so the runtime must stop reporting the
+                # spoofed arch or they have no code for the device (#7331). Never
+                # on the paths that keep generic wheels, where the override is
+                # the user's only source of usable kernels.
+                if _physical_gfx is not None:
+                    _clear_confirmed_hsa_spoof(_selected_gfx)
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
                 _safe_print(

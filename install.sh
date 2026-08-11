@@ -4037,6 +4037,7 @@ case "$_torch_index_leaf" in
         # and the Strix case below never matches (unslothai#7331). Correct the
         # reading back to the physical arch first, and only in the narrow shape
         # that cannot be a real mixed host -- see _hsa_spoofed_physical_gfx.
+        _spoof_physical=""
         if [ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ] && [ -n "$_gfx_all" ]; then
             _spoof_inferred=$(_infer_linux_amd_gfx_arch 2>/dev/null || true)
             _spoof_physical=$(_hsa_spoofed_physical_gfx "$_spoof_inferred" "$_gfx_all")
@@ -4100,6 +4101,22 @@ case "$_torch_index_leaf" in
             TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
             _amd_gpu_radeon=false
+            # Routing the wheels is only half of unslothai#7331. ROCr rebuilds the
+            # agent from HSA_OVERRIDE_GFX_VERSION in every LATER process, and this
+            # shell execs Studio itself further down, so leaving the variable set
+            # hands the freshly installed per-gfx wheels a device whose reported
+            # ISA matches none of their code and the first allocation fails exactly
+            # as before. Only on this branch, where the spoof was corroborated and
+            # native $_strix_gfx wheels are going in; the paths that keep generic
+            # wheels still need the override as their only source of kernels.
+            # Mirrors _clear_confirmed_hsa_spoof in studio/install_python_stack.py.
+            if [ -n "$_spoof_physical" ]; then
+                unset HSA_OVERRIDE_GFX_VERSION
+                echo "  [WARN] Clearing HSA_OVERRIDE_GFX_VERSION for the rest of this install:" >&2
+                echo "  [WARN] the $_strix_gfx wheels carry $_strix_gfx kernels, so the runtime has" >&2
+                echo "  [WARN] to report the real arch. Remove the export from your shell profile" >&2
+                echo "  [WARN] (~/.bashrc, ~/.profile) as well, or the next terminal restores it." >&2
+            fi
         fi
         # ── MI50 / Radeon VII (gfx906, Vega 20): legacy community-supported path ──
         # Newer rocm wheel families bundle ROCm libraries whose Tensile kernels
