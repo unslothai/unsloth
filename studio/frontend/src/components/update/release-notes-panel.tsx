@@ -147,7 +147,7 @@ export function ReleaseNotesPanel({
               ) : null}
             </section>
           ) : (
-            <ReleaseNotesSummary preview={preview} version={version} />
+            <ReleaseNotesSummary preview={preview} />
           )
         ) : (
           <NotesStatus
@@ -168,10 +168,8 @@ export function ReleaseNotesPanel({
 /** Collapsed view: the first few bullets, one line each where possible. */
 function ReleaseNotesSummary({
   preview,
-  version,
 }: {
   preview: ReturnType<typeof releaseNotesPreview> | null;
-  version: string;
 }): ReactElement | null {
   if (preview === null || preview.items.length === 0) {
     return null;
@@ -184,7 +182,8 @@ function ReleaseNotesSummary({
       // taller than its slot, and unscrolled it paints over the buttons.
       // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
       tabIndex={0}
-      aria-label={`Release notes summary for version ${version}`}
+      // Unversioned: the notes are the release's, not the offered version's.
+      aria-label="Release notes summary"
       className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
