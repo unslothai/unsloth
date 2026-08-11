@@ -9,6 +9,7 @@ selectively between model loads, preserving model-agnostic components (Trainers)
 that spawned subprocesses need.
 """
 
+import contextlib
 import os
 import shutil
 import structlog
@@ -199,6 +200,159 @@ def register_compiled_cache_on_path() -> None:
             pypath_entries.insert(0, resolved)
 
     os.environ["PYTHONPATH"] = os.pathsep.join(pypath_entries)
+
+
+def _coordination_paths() -> List[str]:
+    """The cache directories that identify this install to another backend.
+
+    Deliberately not `get_existing_cache_dirs()`: two backends have to agree on
+    this before either of them has decided anything, and existence flips under
+    them the moment one starts compiling. The launch-directory candidate is left
+    out for the same reason -- two backends of one install started from
+    different shells would key off different sets and never find each other.
+    """
+    paths = [str(p) for p in _CACHE_DIRS]
+    configured = (os.environ.get("UNSLOTH_COMPILE_LOCATION") or "").strip()
+    if configured:
+        paths.append(str(Path(configured).expanduser()))
+    normalized = set()
+    for path in paths:
+        try:
+            normalized.add(os.path.normcase(os.path.realpath(path)))
+        except OSError:
+            normalized.add(os.path.normcase(path))
+    return sorted(normalized)
+
+
+def cache_coordination_dir() -> Path:
+    """Where backends that clear the same compiled cache find each other.
+
+    Keyed on the cache paths, not on the studio home: UNSLOTH_COMPILE_LOCATION is
+    set independently of UNSLOTH_STUDIO_HOME, so two studio homes can point at one
+    cache directory, and a home-scoped probe would have each of them conclude it
+    is alone and wipe the modules the other is importing.
+
+    Under the temp directory because nothing in here has to survive a reboot --
+    every record is checked against a live PID before it counts -- and because
+    the install tree and the cache directory itself are both things we may not be
+    able to write to (read-only install) or are about to delete (the cache).
+    """
+    import hashlib
+    import tempfile
+
+    key = hashlib.sha256("\n".join(_coordination_paths()).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"unsloth-studio-cache-{key}"
+
+
+# Held: we may probe and clear. Busy: someone else is in that critical section.
+# Unavailable: no lock could be taken at all (unwritable temp dir, a filesystem
+# without flock), which must not mean "never clear the cache again", so the
+# caller falls back to the unserialized probe it did before this lock existed.
+LOCK_HELD = "held"
+LOCK_BUSY = "busy"
+LOCK_UNAVAILABLE = "unavailable"
+
+# Long enough to outlast a real clear (an rmtree of a few dozen files), short
+# enough that a wedged holder cannot stall lifespan startup behind it.
+_LOCK_TIMEOUT = 10.0
+
+
+@contextlib.contextmanager
+def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
+    """Serialize a sibling probe plus cache clear against a sibling's publication.
+
+    Without it the probe is a check-then-act race with a real window: A probes and
+    finds nobody, B publishes its startup marker and begins compiling, A then
+    clears and deletes the modules B just wrote. Holding this across both halves
+    (the probe plus clear here, the marker write in run.py) closes it.
+
+    Never raises at the caller and never waits indefinitely: startup runs through
+    here, so a lock that cannot be taken has to degrade rather than block.
+    """
+    try:
+        lock_dir = cache_coordination_dir()
+        lock_dir.mkdir(parents = True, exist_ok = True)
+        fd = os.open(str(lock_dir / "cache.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Could not open the compiled-cache lock ({exc})")
+        yield LOCK_UNAVAILABLE
+        return
+
+    import time
+
+    state = LOCK_BUSY
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                state = LOCK_HELD
+                break
+            except OSError:
+                # Held by another backend. Retry until the budget runs out; a
+                # clear is short, so a timeout here means the holder is wedged.
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+            except Exception as exc:  # noqa: BLE001
+                # A filesystem with no locking at all (NotImplementedError on
+                # some network mounts). Uncoordinated is still better than a
+                # cache that can never be cleared on that machine.
+                logger.debug(f"Compiled-cache locking unavailable ({exc})")
+                state = LOCK_UNAVAILABLE
+                break
+        yield state
+    finally:
+        try:
+            if state == LOCK_HELD:
+                if os.name == "nt":
+                    import msvcrt
+                    with contextlib.suppress(Exception):
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    with contextlib.suppress(Exception):
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def clear_compiled_cache_unless_shared(sibling_probe = None) -> None:
+    """Clear the compiled cache, unless another backend of this install is live.
+
+    The cache sits in the install tree, not the studio home, so two of our own
+    backends share it and the wipe would delete modules the other one is still
+    importing -- including the Unsloth*Trainer.py that the in-process clears
+    preserve for spawn workers. run_server supplies the probe; without it (tests,
+    an embedded app) the old unconditional clear stands.
+
+    The probe and the clear run under `compiled_cache_lock` so a sibling cannot
+    publish itself in between and lose the modules it has already compiled.
+    """
+    if not callable(sibling_probe):
+        clear_unsloth_compiled_cache()
+        return
+    with compiled_cache_lock() as lock_state:
+        if lock_state == LOCK_BUSY:
+            # Somebody is inside the critical section, so there is a sibling by
+            # definition; that is already the answer, no probe needed.
+            logger.info(
+                "Keeping the compiled cache: another backend of this install holds the cache lock"
+            )
+            return
+        sibling = sibling_probe()
+        if sibling is None:
+            clear_unsloth_compiled_cache()
+            return
+    logger.info(
+        f"Keeping the compiled cache: another backend of this install is live (PID {sibling})"
+    )
 
 
 def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) -> None:

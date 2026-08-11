@@ -8,6 +8,7 @@ Imports run.py directly, so run under the Unsloth venv.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -20,10 +21,12 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import run  # noqa: E402
+from utils import cache_cleanup  # noqa: E402
 
 # Captured before the autouse fixture stubs them, for the tests that exercise them.
 _REAL_IS_STUDIO_BACKEND = run._pid_is_studio_backend
 _REAL_PID_ALIVE = run._pid_alive
+_REAL_COORDINATION_DIR = cache_cleanup.cache_coordination_dir
 
 
 @pytest.fixture(autouse = True)
@@ -33,6 +36,11 @@ def isolated_root(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_OWN_PID_FILE", None)
     monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
+    # The cross-home coordination directory is a real path under the system temp
+    # dir, so without this the marker tests would see (and leave) markers from
+    # every other Studio on this machine.
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: tmp_path / "shared")
+    monkeypatch.setattr(run, "_OWN_STARTUP_MARKERS", [])
     yield
 
 
@@ -635,7 +643,7 @@ def test_the_startup_marker_is_written_and_removed(tmp_path):
     run._remove_startup_marker()
 
     assert not marker.exists()
-    assert run._OWN_STARTUP_MARKER is None
+    assert run._OWN_STARTUP_MARKERS == []
 
 
 def test_our_own_startup_marker_is_not_a_sibling(tmp_path):
@@ -652,3 +660,192 @@ def test_a_startup_marker_is_invisible_to_the_pid_file_glob(tmp_path):
     (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
 
     assert list(tmp_path.glob(run.PID_FILE_GLOB)) == []
+
+
+def test_stopping_an_embedded_server_removes_the_startup_marker(tmp_path):
+    # run_server returns while uvicorn runs on a daemon thread, so a notebook can
+    # stop the server without the process exiting and atexit never firing. A
+    # marker left behind answers every later probe as a live sibling, and no
+    # backend of this install would clear the compiled cache again.
+    run.write_startup_marker()
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    assert marker.is_file()
+
+    run._remove_pid_file()
+
+    assert not marker.exists()
+    assert not (tmp_path / "shared" / marker.name).exists()
+
+
+def test_a_bare_legacy_record_cannot_resurrect_a_reused_pid(tmp_path, monkeypatch):
+    # studio.pid holds a PID and no start time, and an untimed record is trusted
+    # unconditionally. A timestamped record for that same PID that fails the
+    # check is proof the server is gone, so the bare one must not override it.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    (tmp_path / "studio-8888-8550.pid").write_text("8550\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() is None
+
+
+def test_a_timed_record_for_another_pid_leaves_the_legacy_one_alone(tmp_path, monkeypatch):
+    # Corroboration is per PID: a dead record for a different server says nothing
+    # about the pre-upgrade one, which is recorded in studio.pid and nowhere else.
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 999.0)
+    (tmp_path / "studio-8888-8551.pid").write_text("8551\n111.5\n127.0.0.1", encoding = "utf-8")
+    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
+
+    assert run.live_sibling_backend() == 8550
+
+
+def test_the_startup_marker_is_written_where_cache_siblings_can_see_it(tmp_path):
+    # UNSLOTH_COMPILE_LOCATION is set independently of UNSLOTH_STUDIO_HOME, so a
+    # marker in the studio home alone cannot be seen by a backend of another home
+    # that clears the same cache.
+    run.write_startup_marker()
+
+    name = f"studio-starting-{os.getpid()}.marker"
+    assert (tmp_path / name).is_file()
+    assert (tmp_path / "shared" / name).is_file()
+
+
+def test_a_sibling_in_another_studio_home_is_found_through_the_shared_cache_dir(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run.live_sibling_backend() == 8550
+
+
+def test_the_coordination_directory_follows_the_cache_path_not_the_studio_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "cache"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_a"))
+    first = _REAL_COORDINATION_DIR()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_b"))
+    assert _REAL_COORDINATION_DIR() == first
+
+    # A different cache is a different set of backends to coordinate with.
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "other_cache"))
+    assert _REAL_COORDINATION_DIR() != first
+
+
+def test_the_cache_lock_is_exclusive(tmp_path):
+    # Two backends racing is the whole point, so the second one must be told the
+    # section is taken rather than be let into it.
+    with cache_cleanup.compiled_cache_lock() as first:
+        assert first == cache_cleanup.LOCK_HELD
+        with cache_cleanup.compiled_cache_lock(timeout = 0.05) as second:
+            assert second == cache_cleanup.LOCK_BUSY
+
+    with cache_cleanup.compiled_cache_lock() as again:
+        assert again == cache_cleanup.LOCK_HELD
+
+
+def test_the_probe_and_the_clear_happen_inside_one_lock(tmp_path, monkeypatch):
+    # The race Codex flagged: our probe finds nobody, a sibling publishes and
+    # starts compiling, and then our rmtree deletes what it just wrote.
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        events.append("lock")
+        try:
+            yield cache_cleanup.LOCK_HELD
+        finally:
+            events.append("unlock")
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: events.append("probe"))
+
+    assert events == ["lock", "probe", "clear", "unlock"]
+
+
+def test_a_busy_cache_lock_keeps_the_cache_without_probing(tmp_path, monkeypatch):
+    # Whoever holds it is a sibling by definition, so the answer is already known.
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        yield cache_cleanup.LOCK_BUSY
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: events.append("probe"))
+
+    assert events == []
+
+
+def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
+    # An unwritable temp dir or a filesystem without flock must not mean the
+    # cache is never cleared again on that machine; fall back to the plain probe.
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding = "utf-8")
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    with cache_cleanup.compiled_cache_lock() as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]
+
+
+def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
+
+    assert events == []
+
+
+def test_no_sibling_probe_clears_unconditionally(tmp_path, monkeypatch):
+    # An embedded app or a test never sets the probe, and the old behaviour stands.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    cache_cleanup.clear_compiled_cache_unless_shared(None)
+
+    assert events == ["clear"]
+
+
+def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypatch):
+    # Publication has to be inside the same section as a sibling's probe and
+    # clear, or the marker lands in the gap between them and is clear-and-lost.
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    events = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        events.append(("lock", marker.exists()))
+        try:
+            yield cache_cleanup.LOCK_HELD
+        finally:
+            events.append(("unlock", marker.exists()))
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert events == [("lock", False), ("unlock", True)]

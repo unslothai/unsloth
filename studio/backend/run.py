@@ -831,7 +831,7 @@ PID_FILE_GLOB = "studio-*.pid"
 # server with a port in the name, and a process that has not bound yet is not
 # one. Only the sibling probe reads these.
 STARTUP_MARKER_GLOB = "studio-starting-*.marker"
-_OWN_STARTUP_MARKER: "Path | None" = None
+_OWN_STARTUP_MARKERS: "list[Path]" = []
 
 
 def _pid_file_for_port(port: int) -> Path:
@@ -981,6 +981,30 @@ def _legacy_studio_on_port(port: int) -> "int | None":
     return pid
 
 
+def _startup_marker_dirs() -> "list[Path]":
+    """Where a startup marker is written, and looked for.
+
+    Two places, because the studio home is the wrong key for this question. What
+    the marker protects is the compiled cache, and `clear_unsloth_compiled_cache`
+    also clears whatever UNSLOTH_COMPILE_LOCATION names, which is set
+    independently of UNSLOTH_STUDIO_HOME. Two studio homes can therefore point at
+    one cache directory, and a home-scoped marker leaves each of them believing
+    it is alone. `cache_coordination_dir` is keyed on the cache paths themselves,
+    so both of them land in the same directory.
+    """
+    dirs = [_studio_root()]
+    try:
+        from utils.cache_cleanup import cache_coordination_dir
+        shared = cache_coordination_dir()
+    except Exception:
+        # An import or path failure here only costs cross-home discovery; the
+        # home-scoped marker, which is the common case, still gets written.
+        return dirs
+    if shared not in dirs:
+        dirs.append(shared)
+    return dirs
+
+
 def write_startup_marker() -> None:
     """Record that this process is coming up, before uvicorn starts.
 
@@ -990,21 +1014,36 @@ def write_startup_marker() -> None:
     exact race this is meant to prevent, so a sibling has to be discoverable
     from the moment it could do any clearing.
 
+    Published under the same lock the clear takes, so the marker cannot appear in
+    the gap between a sibling's probe and its rmtree; that ordering is the whole
+    point of the marker.
+
     Best effort, like the records themselves: a studio home we cannot write to
     is not a reason to refuse to start.
     """
-    global _OWN_STARTUP_MARKER
     me = os.getpid()
-    path = _studio_root() / f"studio-starting-{me}.marker"
     created = _process_create_time(me)
+    body = f"{me}\n{created if created is not None else ''}\n"
     try:
-        _studio_root().mkdir(parents = True, exist_ok = True)
-        # Same layout as a per-port record, so _read_pid_record parses both. An
-        # unknown start time is a blank line, which it reads back as None.
-        path.write_text(f"{me}\n{created if created is not None else ''}\n", encoding = "utf-8")
-    except OSError:
+        from utils.cache_cleanup import compiled_cache_lock
+    except Exception:
+        import contextlib
+        # No lock available means an unserialized publish, which is what this
+        # did before the lock existed. Startup still has to happen.
+        compiled_cache_lock = contextlib.nullcontext
+    with compiled_cache_lock():
+        for directory in _startup_marker_dirs():
+            path = directory / f"studio-starting-{me}.marker"
+            try:
+                directory.mkdir(parents = True, exist_ok = True)
+                # Same layout as a per-port record, so _read_pid_record parses
+                # both. An unknown start time is a blank line, read back as None.
+                path.write_text(body, encoding = "utf-8")
+            except OSError:
+                continue
+            _OWN_STARTUP_MARKERS.append(path)
+    if not _OWN_STARTUP_MARKERS:
         return
-    _OWN_STARTUP_MARKER = path
     import atexit
 
     # Registered here rather than beside the pid-file hook: startup can fail
@@ -1013,21 +1052,22 @@ def write_startup_marker() -> None:
 
 
 def _remove_startup_marker() -> None:
-    global _OWN_STARTUP_MARKER
-    if _OWN_STARTUP_MARKER is None:
-        return
-    try:
-        _OWN_STARTUP_MARKER.unlink(missing_ok = True)
-    except OSError:
-        pass
-    _OWN_STARTUP_MARKER = None
+    while _OWN_STARTUP_MARKERS:
+        path = _OWN_STARTUP_MARKERS.pop()
+        try:
+            path.unlink(missing_ok = True)
+        except OSError:
+            pass
 
 
 def _startup_marker_records() -> "list[tuple[int, float | None, str | None] | None]":
-    try:
-        return [_read_pid_record(p) for p in _studio_root().glob(STARTUP_MARKER_GLOB)]
-    except OSError:
-        return []
+    records: "list[tuple[int, float | None, str | None] | None]" = []
+    for directory in _startup_marker_dirs():
+        try:
+            records.extend(_read_pid_record(p) for p in directory.glob(STARTUP_MARKER_GLOB))
+        except OSError:
+            continue
+    return records
 
 
 def _legacy_record() -> "tuple[int, float | None, str | None] | None":
@@ -1054,13 +1094,20 @@ def live_sibling_backend() -> "int | None":
     explicit pid check keeps it correct for the marker, which is.
     """
     me = os.getpid()
-    for record in _startup_marker_records() + _per_port_records() + [_legacy_record()]:
+    timed = [r for r in _startup_marker_records() + _per_port_records() if r is not None]
+    for record in timed + [_legacy_record()]:
         if record is None:
             continue
         pid, created, _address = record
         if pid == me or not _pid_alive(pid):
             continue
-        if _pid_is_studio_backend(pid, [created]):
+        # Corroborate against every other record for this PID, the way
+        # _legacy_studio_on_port does. studio.pid holds a bare PID with no start
+        # time, and an untimed record is trusted unconditionally, so on its own
+        # it would resurrect a server that died and had its PID reused -- and
+        # keep the compiled cache forever on the strength of it. A timestamped
+        # record for the same PID that fails the check is the proof it is gone.
+        if _pid_is_studio_backend(pid, [created] + [r[1] for r in timed if r[0] == pid]):
             return pid
     return None
 
@@ -1195,11 +1242,19 @@ def _legacy_heir() -> "int | None":
 
 
 def _remove_pid_file():
-    """Remove the PID files that belong to this process.
+    """Remove the records that belong to this process.
 
     _PID_FILE is checked even when the per-port record was never written, since
     _write_pid_file writes the two independently.
+
+    The startup marker goes here too, not only from the atexit hook: run_server
+    returns while uvicorn runs on a daemon thread, so an embedded host (a
+    notebook) can stop the server and keep the process alive. The marker left
+    behind would then answer every later probe as a live sibling and no backend
+    of this install would ever clear the compiled cache again. atexit stays as
+    the fallback for a startup that fails before any record is written.
     """
+    _remove_startup_marker()
     # Nothing here may raise: _graceful_shutdown calls this at the end, and an
     # unreadable or undeletable record must not abandon the rest of the exit
     # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
