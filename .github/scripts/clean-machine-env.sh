@@ -50,9 +50,12 @@ mkdir -p "$BIN"
 printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run twice.\nset -uo pipefail\n' > "$RESTORE"
 chmod +x "$RESTORE"
 
-# The toolchain we care about: a consumer install must need none of it. uv's optional
-# install_name_tool self-ID patch is observed separately and narrowly allow-listed.
-TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc install_name_tool"
+# The toolchain we care about: a consumer install must need none of it.
+# cctools binaries are included because their /usr/bin shims can trigger the same
+# developer-tools dialog. uv's exact optional install_name_tool self-ID patch is
+# observed separately and narrowly allow-listed by clean-machine-assert.sh.
+TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc
+install_name_tool lipo otool objdump vtool strip nm"
 
 note() { echo "[clean-machine] $*"; }
 
