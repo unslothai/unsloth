@@ -112,10 +112,17 @@ jobs:
           INPUT_STUDIO_VERSION: ${{ inputs.studio_version }}
         run: |
           python3 <<'PY'
+          import json
           import os
           import pathlib
           import re
           import sys
+          import urllib.request
+
+          # What a running desktop build reads to decide whether to update.
+          MANIFEST_URL = (
+              'https://github.com/unslothai/unsloth/releases/latest/download/latest.json'
+          )
 
           studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
           if not studio_version:
@@ -146,6 +153,29 @@ jobs:
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
           desktop_release_tag = studio_version
+
+          # Both updater paths compare SemVer, so a tag whose numbers go backwards
+          # strands every client already on the published one. v0.1.60-beta after
+          # v0.1.527-beta did exactly that: 60 < 527, so no update was offered.
+          def release_triple(version):
+              match = semver_tag.fullmatch(f'v{version.strip().removeprefix("v")}')
+              return tuple(int(part) for part in match.groups()) if match else None
+
+          try:
+              with urllib.request.urlopen(MANIFEST_URL, timeout = 30) as response:
+                  published = json.loads(response.read()).get('version', '')
+          except (OSError, ValueError) as error:
+              # Warn rather than fail: an unreachable manifest is not a bad tag,
+              # and the first desktop release has no published version at all.
+              print(f'::warning::could not read the published desktop version: {error}')
+              published = ''
+
+          published_triple = release_triple(published)
+          if published_triple and published_triple >= release_triple(app_version):
+              sys.exit(
+                  f'studio_version {studio_version} is not newer than the published '
+                  f'v{published}, so clients on it would never be offered this release'
+              )
 
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               print(f'studio_version={studio_version}', file=output)
