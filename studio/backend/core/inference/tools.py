@@ -3902,14 +3902,33 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # the source. Repeat the pass until nothing new is learned (the sets only
     # grow, so this terminates; the cap is belt and braces).
     _alias_sets = (
-        open_aliases, attr_open_aliases, builtins_aliases, dynamic_aliases,
-        code_exec_aliases, path_ctor_aliases, pathjoin_aliases, writer_aliases,
-        os_aliases, load_module_aliases, yaml_module_aliases, yaml_func_aliases,
-        load_func_aliases, load_class_aliases, attr_load_aliases,
-        attr_load_module_aliases, safe_loader_aliases, safe_func_aliases,
-        attr_safe_func_aliases, packed_callable_names, getattr_aliases,
-        partial_aliases, archive_ctor_aliases, operator_aliases,
-        methodcaller_aliases, basicconfig_aliases, fileinput_aliases,
+        open_aliases,
+        attr_open_aliases,
+        builtins_aliases,
+        dynamic_aliases,
+        code_exec_aliases,
+        path_ctor_aliases,
+        pathjoin_aliases,
+        writer_aliases,
+        os_aliases,
+        load_module_aliases,
+        yaml_module_aliases,
+        yaml_func_aliases,
+        load_func_aliases,
+        load_class_aliases,
+        attr_load_aliases,
+        attr_load_module_aliases,
+        safe_loader_aliases,
+        safe_func_aliases,
+        attr_safe_func_aliases,
+        packed_callable_names,
+        getattr_aliases,
+        partial_aliases,
+        archive_ctor_aliases,
+        operator_aliases,
+        methodcaller_aliases,
+        basicconfig_aliases,
+        fileinput_aliases,
         invoker_aliases,
     )
     for _alias_pass in range(4):
@@ -4098,8 +4117,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 ):
                     code_exec_aliases.update(targets)  # e = builtins.eval
                 elif (
-                    isinstance(value, ast.Attribute) and
-                    value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
+                    isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
                 ):
                     writer_aliases.update(targets)  # s = np.save
                 elif isinstance(value, ast.Attribute) and value.attr == "open":
@@ -4208,18 +4226,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                 elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
                                     writer_aliases.add(tid)  # s, _ = (save, 1)
                                 elif (
-                                    isinstance(val_el, ast.Name) and
-                                    val_el.id in archive_ctor_aliases
+                                    isinstance(val_el, ast.Name)
+                                    and val_el.id in archive_ctor_aliases
                                 ):
                                     archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
                                 elif (
-                                    isinstance(val_el, ast.Name) and
-                                    val_el.id in load_func_aliases
+                                    isinstance(val_el, ast.Name) and val_el.id in load_func_aliases
                                 ):
                                     load_func_aliases.add(tid)  # ld, _ = (unsafe_load, 1)
                                 elif (
-                                    isinstance(val_el, ast.Name) and
-                                    val_el.id in load_class_aliases
+                                    isinstance(val_el, ast.Name) and val_el.id in load_class_aliases
                                 ):
                                     load_class_aliases.add(tid)  # L, _ = (UnsafeLoader, 1)
                                 elif _is_loader_attr(val_el):
@@ -4227,9 +4243,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                                         load_func_aliases.add(tid)  # ld, _ = (yaml.load, 1)
                                     else:
                                         load_class_aliases.add(tid)  # L, _ = (yaml.Loader, 1)
-                                elif (
-                                    isinstance(val_el, ast.Constant) and
-                                    isinstance(val_el.value, str)
+                                elif isinstance(val_el, ast.Constant) and isinstance(
+                                    val_el.value, str
                                 ):
                                     literal_str_vars[tid] = (
                                         "\x02" if tid in multi_assigned_names else val_el.value
