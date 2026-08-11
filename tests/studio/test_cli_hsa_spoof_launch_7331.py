@@ -67,7 +67,7 @@ def _make_venv(
     _torch.mkdir()
     (_torch / "METADATA").write_text(
         "Metadata-Version: 2.1\nName: torch\nVersion: 2.11.0\nRequires-Dist: filelock\n"
-        + ('Requires-Dist: rocm[libraries]==7.13.0\n' if torch_needs_rocm else ""),
+        + ("Requires-Dist: rocm[libraries]==7.13.0\n" if torch_needs_rocm else ""),
         encoding = "utf-8",
     )
     for _orphan in orphans:
