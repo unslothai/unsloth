@@ -324,9 +324,7 @@ def test_raw_dataset_cache_has_data_rejects_a_payload_file_with_no_rows(monkeypa
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
-def test_raw_dataset_cache_has_data_walks_a_redirect_instead_of_trusting_it(
-    monkeypatch, tmp_path
-):
+def test_raw_dataset_cache_has_data_walks_a_redirect_instead_of_trusting_it(monkeypatch, tmp_path):
     """A migrated cache keeps its data behind a directory link, so pruning one hid the dataset.
     Taking the link itself as proof is the opposite error: a stale redirect to an empty or
     metadata-only target supplies no rows either. The target is walked, not assumed."""
