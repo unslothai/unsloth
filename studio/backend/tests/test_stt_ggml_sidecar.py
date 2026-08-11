@@ -465,9 +465,7 @@ def test_transcribe_rejects_unknown_language(monkeypatch):
     # The real list comes from Transformers, and without it the helper returns None and
     # the check is skipped, so the request fell through to the download guard instead and
     # the assertion below silently stopped testing anything.
-    monkeypatch.setattr(
-        ggml_module, "_known_whisper_languages", lambda: frozenset({"en", "fr"})
-    )
+    monkeypatch.setattr(ggml_module, "_known_whisper_languages", lambda: frozenset({"en", "fr"}))
     sidecar = GgmlSttSidecar()
     with pytest.raises(SttLanguageError):
         sidecar.transcribe(b"RIFF", model = "small", language = "xx-QQ")
