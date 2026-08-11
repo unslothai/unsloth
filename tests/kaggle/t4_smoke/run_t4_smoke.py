@@ -366,10 +366,40 @@ def check_reference(metrics: list[dict], reference_path: Path,
     for field in ("loss", "grad_norm"):
         worst = 0.0
         for cur, old in zip(metrics, ref_metrics):
-            if field not in cur or field not in old:
+            has_cur, has_old = field in cur, field in old
+            if not has_cur and not has_old:
                 continue
-            base = max(abs(float(old[field])), abs_floor)
-            rel = abs(float(cur[field]) - float(old[field])) / base
+            if has_cur != has_old:
+                # Present on one side and not the other is a change in the
+                # SHAPE of what the trainer logged, not a numeric drift, and
+                # no tolerance covers it.
+                verdict["deviations"].append({
+                    "step": (cur if has_cur else old).get("step"),
+                    "field": field, "reference": old.get(field, None),
+                    "observed": cur.get(field, None), "relative": None,
+                    "note": "field present on only one side"})
+                continue
+            new, ref_val = float(cur[field]), float(old[field])
+            # NaN, explicitly, and this is the whole reason the arithmetic is
+            # not left to take care of itself. Under fp16 the gradient scaler
+            # logs a NaN grad_norm on every step it skips, so the committed
+            # reference genuinely contains NaNs. Left to the subtraction,
+            # abs(x - NaN) is NaN, NaN > rel_tol is False, and the step
+            # passes whatever it holds -- including the case that matters
+            # most, a step that used to overflow and no longer does. Compare
+            # NaN to NaN as equal, and NaN against a number as a deviation.
+            cur_nan, ref_nan = new != new, ref_val != ref_val
+            if cur_nan or ref_nan:
+                if cur_nan != ref_nan:
+                    verdict["deviations"].append({
+                        "step": cur.get("step"), "field": field,
+                        "reference": old[field], "observed": cur[field],
+                        "relative": None,
+                        "note": "the fp16 scaler skip pattern moved: NaN on "
+                                "one side only"})
+                continue
+            base = max(abs(ref_val), abs_floor)
+            rel = abs(new - ref_val) / base
             worst = max(worst, rel)
             if rel > rel_tol:
                 verdict["deviations"].append({
@@ -380,6 +410,19 @@ def check_reference(metrics: list[dict], reference_path: Path,
     if verdict["deviations"]:
         verdict["status"] = "out_of_band"
     return verdict
+
+
+def reference_failures(verdict: dict, rel_tol: float) -> list[str]:
+    """Turn a reference verdict into failure strings. Separate so the path
+    from "out of band" to "the job goes red" can be tested without a GPU:
+    a band check that has never been observed to fail is not yet a check.
+    """
+    if verdict["status"] == "out_of_band":
+        return [f"metrics outside +/-{rel_tol:.0%} of the reference: "
+                f"{verdict['deviations']}"]
+    if verdict["status"] == "length_mismatch":
+        return ["reference has a different number of steps"]
+    return []
 
 
 def main() -> int:
@@ -546,12 +589,7 @@ def main() -> int:
         ref = check_reference(runs[0]["metrics"], Path(args.reference),
                               args.rel_tol, args.abs_floor)
         report["reference_check"] = ref
-        if ref["status"] == "out_of_band":
-            failures.append(
-                f"metrics outside +/-{args.rel_tol:.0%} of the reference: "
-                f"{ref['deviations']}")
-        elif ref["status"] == "length_mismatch":
-            failures.append("reference has a different number of steps")
+        failures += reference_failures(ref, args.rel_tol)
 
     report["failures"] = failures
     report["passed"] = not failures
