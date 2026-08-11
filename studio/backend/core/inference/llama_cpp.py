@@ -11237,9 +11237,9 @@ class LlamaCppBackend:
                         if _ctx_wo > 0:
                             _shared = _kv_bytes(_ctx_wo) + _probe_cc(_ctx_wo)
                             _foot_wo = (_base_wo + _shared) / (1024 * 1024)
-                            _foot_w = (
-                                _probe_base(True) + _shared + _mtp_bytes(_ctx_wo)
-                            ) / (1024 * 1024)
+                            _foot_w = (_probe_base(True) + _shared + _mtp_bytes(_ctx_wo)) / (
+                                1024 * 1024
+                            )
                             if _foot_wo <= _budget_wo and _foot_w > _probe_budget(True):
                                 _spec_dropped_no_vram = True
                                 _mtp_will_engage = False
