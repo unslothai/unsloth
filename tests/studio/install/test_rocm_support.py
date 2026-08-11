@@ -116,7 +116,11 @@ printf "$_out"
 """
 
 
-def _write_dpkg_query_stub(path: str, version: str, status: str = "installed") -> None:
+def _write_dpkg_query_stub(
+    path: str,
+    version: str,
+    status: str = "installed",
+) -> None:
     with open(path, "w", encoding = "utf-8") as f:
         f.write(_DPKG_QUERY_STUB.replace("__STATUS__", status).replace("__VERSION__", version))
     os.chmod(path, 0o755)
@@ -2207,9 +2211,7 @@ class TestInstallShStructure:
                     os.chmod(p, 0o755)
                 script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
                 env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
-                r = subprocess.run(
-                    [shell, "-c", script], env = env, capture_output = True, text = True
-                )
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
                 assert r.returncode == 0, r.stderr
                 assert r.stdout.strip() == expected, (
                     f"dpkg rocm-core 7.0 in state {status!r} next to a 6.1 version file "
