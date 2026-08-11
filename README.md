@@ -128,7 +128,7 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 
 The desktop app is the easiest way to use Unsloth and needs no setup, so start here.
 
-Download for Windows, macOS or Linux at [unsloth.ai/download](https://unsloth.ai/download).
+**[Download for Windows, macOS or Linux](https://unsloth.ai/download)**
 
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
