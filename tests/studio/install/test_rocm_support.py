@@ -4509,7 +4509,15 @@ class TestProgressStepCountMatchesTotal:
     base_total. Regression for a repair step added without incrementing base_total,
     which pushed _STEP past _TOTAL (Codex P2)."""
 
-    def _run_stack(self, tmp_path, *, is_windows, is_macos, is_mac_arm, skip_base = True):
+    def _run_stack(
+        self,
+        tmp_path,
+        *,
+        is_windows,
+        is_macos,
+        is_mac_arm,
+        skip_base = True,
+    ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
         unstructured_plugin.mkdir()
@@ -4563,8 +4571,11 @@ class TestProgressStepCountMatchesTotal:
         SKIP_STUDIO_BASE=1-only cases never reached, so its slot went uncounted.
         """
         step, total = self._run_stack(
-            tmp_path, is_windows = is_windows, is_macos = is_macos,
-            is_mac_arm = is_mac_arm, skip_base = skip_base,
+            tmp_path,
+            is_windows = is_windows,
+            is_macos = is_macos,
+            is_mac_arm = is_mac_arm,
+            skip_base = skip_base,
         )
         assert step == total, f"progress {step} != total {total}"
 
