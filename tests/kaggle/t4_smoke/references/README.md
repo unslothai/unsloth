@@ -86,20 +86,22 @@ the committed file is in on every run rather than trusting this paragraph.
 scaler reports NaN on any step whose gradients overflowed and then skips
 that step. They are compared as NaN-equals-NaN.
 
-## Current state: STALE, and failing loudly on purpose
+## Current state: CURRENT
 
-`t4_qwen2.5-0.5b.json` was captured at **`max_steps=10`** and the workflow
-now runs **3** steps with the fp16 loss scale pinned. The two are not
-comparable, so every run band-checked against it fails with
-`step_count_mismatch` until it is recaptured. That is the designed
-behaviour, not a bug to route around: the file is kept, rather than deleted,
-precisely so the mismatch is stated out loud. Deleting it would make the
-band check report `absent`, which is not a failure, and the loss of coverage
-would be invisible.
+`t4_qwen2.5-0.5b.json` was captured at **`max_steps=10`**, which is what the
+workflow runs, so it applies as committed and no recapture is pending.
 
-One Kaggle run fixes it. See "Recapturing after a configuration change".
+Shortening the run was considered and rejected on this file's own evidence.
+The scaler skips steps 1, 2 and 3, so a 3-step run applies zero optimizer
+updates: the loss stays around 10, the canary never forms, and the band
+would compare three points of a curve that never moved. Nor would it save
+meaningful quota, since a launch costs about 0.08h and that is dominated by
+pip install rather than by training. `--init-loss-scale` exists for anyone
+who does want a shorter run; it changes the numeric path, so it requires a
+reference recaptured with it, which `check_reference` enforces rather than
+trusts. See "Recapturing after a configuration change".
 
-What the stale file still documents, from kernel
+What this file documents, from kernel
 `danielhanchen/unsloth-t4-ci-e3c6661f`, the first green run this workflow
 has had. What that run measured, on real `Tesla T4` / `sm_75` / 14.6 GB
 hardware:

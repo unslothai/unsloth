@@ -616,13 +616,16 @@ def main() -> int:
     # than it had at 10. If a T4 run reports the canary missing while the
     # scaler shows updates being applied, that is the signal to raise this
     # back up rather than to relax the canary.
-    ap.add_argument("--max-steps", type=int, default=3)
-    # Below the 8192 the 10-step reference reached after three halvings, so
-    # no step is spent discovering the scale. 2048 rather than 8192 for a
-    # margin of two more halvings; fp16 gradients at this loss scale are
-    # nowhere near underflow. 0 disables the pin and restores the stock
-    # dynamic behaviour.
-    ap.add_argument("--init-loss-scale", type=float, default=2048.0,
+    ap.add_argument("--max-steps", type=int, default=10)
+    # Off by default. The pin exists for short runs: the scaler overflows the
+    # first three steps, so anything under about five applies no optimizer
+    # updates at all. At the default of 10 the run reaches step 4 on its own
+    # and learns the canary, and leaving the scaler alone is what keeps the
+    # committed reference applicable, since a different starting scale is a
+    # different rounding of the same gradients. Set it (e.g. 2048, below the
+    # 8192 the reference reaches after three halvings) only alongside a
+    # shorter --max-steps and a reference recaptured with both.
+    ap.add_argument("--init-loss-scale", type=float, default=0.0,
                     help="fp16 GradScaler starting scale; 0 leaves the "
                          "framework default (65536, which costs a short run "
                          "its first few steps to overflows)")

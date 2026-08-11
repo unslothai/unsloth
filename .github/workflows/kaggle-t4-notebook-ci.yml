@@ -17,13 +17,20 @@
 # file's docstring for what each assertion is worth.
 #
 # The band check compares against a reference captured at ONE step count and
-# refuses, as a failure, to compare against one captured at another. The
-# committed reference is a 10-step trace and max_steps is now 3, so it is
-# STALE and every band check fails until it is recaptured -- one dispatch
-# with skip_reference_band, per
-# tests/kaggle/t4_smoke/references/README.md. That refusal is deliberate:
-# the alternative is a green check comparing a run against a curve it has
-# nothing to do with.
+# refuses, as a failure, to compare against one captured at another. That
+# refusal is deliberate: the alternative is a green check comparing a run
+# against a curve it has nothing to do with. The committed reference is a
+# 10-step trace and max_steps is 10, so it applies as committed.
+#
+# 10 steps is not arbitrary, and shortening it is not free. The T4 has no
+# bf16, so this runs fp16 with a dynamic GradScaler that starts at 65536,
+# halves on each overflow, and skips the step it overflowed on. The
+# reference records grad_norm NaN at steps 1, 2 and 3 and a finite value
+# from step 4: a run of three steps applies ZERO optimizer updates, never
+# learns the canary, and asserts nothing about training. Nor would it save
+# meaningful quota, since a launch costs about 0.08h and that is dominated
+# by pip install, not by training. Anything under about five steps needs
+# --init-loss-scale AND a reference recaptured with it.
 #
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
@@ -127,7 +134,7 @@ on:
       max_steps:
         description: 'Training steps per payload'
         type: string
-        default: '3'
+        default: '10'
       skip_reference_band:
         description: 'Do not band-check against the committed reference. Set this for the ONE run that recaptures the reference after a config change'
         type: boolean
@@ -278,7 +285,7 @@ jobs:
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref main \
             --reference "$REFERENCE" \
-            --smoke-args "--max-steps ${{ inputs.max_steps || 3 }}" \
+            --smoke-args "--max-steps ${{ inputs.max_steps || 10 }}" \
             --per-run-timeout 2100
 
       # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
