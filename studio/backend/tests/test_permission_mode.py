@@ -1877,6 +1877,19 @@ def test_high_risk_dispatcher_non_terminal():
             "reg['yaml_' + 'constructors']['!e'] = cb\nyaml.safe_load(s)",
             True,
         ),  # the registry reached at runtime
+        (
+            "import yaml\nvars(yaml.SafeLoader)['yaml_constructors']['!e'] = cb\n"
+            "yaml.safe_load(s)",
+            True,
+        ),  # vars() is the same namespace
+        ("import yaml\nyaml.SafeLoader.construct_scalar = cb\nyaml.safe_load(s)", True),
+        ("cfg.model.name = 'x'\nprint(cfg.model.name)", False),  # ordinary attribute writes
+        (
+            "from yaml import load, Loader\nclass H:\n    SafeLoader = Loader\nyaml = H\n"
+            "load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),  # a seeded name taken over by assignment
+        ("import yaml\nyaml.SafeLoader.add_constructor('!e', cb)\nrun(yaml.safe_load)", True),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

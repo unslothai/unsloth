@@ -3719,7 +3719,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     def _is_safe_loader(node) -> bool:
         # The Loader= value is statically one of the loaders that cannot build
         # arbitrary callables. Anything else (absent, dynamic, rebound) is not.
-        if registers_constructor:
+        if registers_constructor or patches_loader:
             return False
         if isinstance(node, ast.Attribute):
             # setattr can point yaml.SafeLoader at anything without ever being an
@@ -3807,11 +3807,25 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 or arg.id in load_class_aliases
                 # the module itself: def run(mod): mod.unsafe_load(s); run(yaml)
                 or arg.id in load_module_aliases
+                or (
+                    (registers_constructor or uses_setattr or patches_loader)
+                    and (arg.id in safe_func_aliases or arg.id in safe_loader_aliases)
+                )
             )
         if isinstance(arg, ast.Attribute):
             # A loader is receiver-matched (yaml.load, torch.load) so a helper
             # handed the harmless json.load is unaffected.
             if _is_loader_attr(arg):
+                return True
+            # Once a constructor is registered the safe reader is a way in too.
+            if (
+                (registers_constructor or uses_setattr or patches_loader)
+                and (
+                    arg.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+                    or arg.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                )
+                and _is_load_module(arg.value)
+            ):
                 return True
             return (
                 arg.attr == "open"
@@ -3831,6 +3845,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Attribute names assigned anywhere, so a rebound loader class
     # (yaml.SafeLoader = yaml.Loader) cannot buy the safe-loader exemption below.
     assigned_attr_names: "set[str]" = set()
+    # Set when a safe loader class has one of its own methods replaced.
+    patches_loader = False
     for node in ast.walk(tree):
         binding_targets = []
         if isinstance(node, ast.Assign):
@@ -3843,6 +3859,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
                 elif isinstance(sub, ast.Attribute):
                     assigned_attr_names.add(sub.attr)
+                    # yaml.SafeLoader.construct_scalar = cb patches the loader
+                    # itself, which is a registration by another name.
+                    _recv = sub.value
+                    while isinstance(_recv, ast.Attribute):
+                        if _recv.attr in _AUTO_SAFE_PY_LOAD_CLASSES:
+                            patches_loader = True
+                        _recv = _recv.value
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     # A registered constructor is a callback the YAML tags choose, so a loader
     # that has one is no longer the stock safe loader and loses the exemption.
@@ -3860,9 +3883,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         "YAMLObject",
         "yaml_loader",
         "from_yaml",
-        # SafeLoader.__dict__["yaml_constructors"] is the same registration with
-        # the name spelled at runtime.
+        # SafeLoader.__dict__["yaml_constructors"] and vars(SafeLoader) are the
+        # same registration with the name spelled at runtime.
         "__dict__",
+        "vars",
     }
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
@@ -3913,7 +3937,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     rebindable_names.add(sub.id)
     # A seeded module name the snippet itself binds (class yaml: ...) is not the
     # package we assumed, so it stops being a trusted receiver.
-    for _shadowed in _AUTO_UNSAFE_PY_LOAD_MODULES & rebindable_names:
+    for _shadowed in _AUTO_UNSAFE_PY_LOAD_MODULES & (rebindable_names | set(assign_counts)):
         load_module_aliases.discard(_shadowed)
         yaml_module_aliases.discard(_shadowed)
     # Alias discovery is order-sensitive: f = g is only recognized once g is
@@ -4502,7 +4526,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # load functions honour Loader=, so a class alias never does.
                     if func.id in load_class_aliases:
                         return True
-                    if (registers_constructor or uses_setattr) and (
+                    if (registers_constructor or uses_setattr or patches_loader) and (
                         func.id in safe_func_aliases or func.id in safe_loader_aliases
                     ):
                         return True
@@ -4569,7 +4593,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # yaml.safe_load is a safe read until a constructor has been
                     # registered, which puts a callback behind the payload's tags.
                     if (
-                        (registers_constructor or uses_setattr)
+                        (registers_constructor or uses_setattr or patches_loader)
                         and (
                             func.attr in _AUTO_SAFE_PY_LOAD_FUNCS
                             or func.attr in _AUTO_SAFE_PY_LOAD_CLASSES
@@ -4579,7 +4603,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # A safe-load helper captured on an attribute, once tainted.
                     if (
-                        registers_constructor or uses_setattr
+                        registers_constructor or uses_setattr or patches_loader
                     ) and func.attr in attr_safe_func_aliases:
                         return True
                     # A code-executing loader (torch.load, joblib.load,
