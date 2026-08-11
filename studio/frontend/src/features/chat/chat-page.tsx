@@ -63,6 +63,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
+import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
   NativeAttachmentTargetContext,
@@ -3074,29 +3075,7 @@ export function ChatPage({
     enabled: active,
   });
   const localModels = useMemo<LoraModelOption[]>(
-    () =>
-      localModelInventory.localModels.rows
-        .filter(
-          (model) =>
-            model.source === "lmstudio" ||
-            model.source === "models_dir" ||
-            model.source === "custom",
-        )
-        .map((model) => ({
-          id: model.id,
-          name:
-            model.source === "lmstudio" && model.model_id
-              ? model.model_id
-              : model.display_name,
-          baseModel:
-            model.source === "lmstudio"
-              ? "LM Studio"
-              : model.source === "custom"
-                ? "Custom Folders"
-                : "Local models",
-          updatedAt: model.updated_at ?? undefined,
-          source: "local" as const,
-        })),
+    () => chatLocalModelOptions(localModelInventory.localModels.rows),
     [localModelInventory.localModels.rows],
   );
 

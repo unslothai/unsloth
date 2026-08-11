@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   inventoryRefreshDecision,
+  isEmptyRevalidation,
   isInventoryStampFresh,
 } from "../src/features/hub/inventory/inventory-freshness.ts";
 
@@ -145,4 +146,25 @@ test("isInventoryStampFresh rejects a null, an expired and a future stamp", () =
   assert.equal(isInventoryStampFresh(NOW + 1, NOW, 30_000), false);
   assert.equal(isInventoryStampFresh(NOW - 29_999, NOW, 30_000), true);
   assert.equal(isInventoryStampFresh(NOW, NOW, 30_000), true);
+});
+
+test("only a forced scan confirming an empty inventory stamps revalidation", () => {
+  const empty = { key: KEY, ready: true, error: null, rowCount: 0 };
+  assert.equal(isEmptyRevalidation(true, empty, KEY), true);
+
+  // A manual refresh of a POPULATED inventory that happens to come back empty is the first
+  // scan to see the empty state, not its confirmation. Stamping it settles the picker on
+  // "no models" after one scan.
+  assert.equal(
+    isEmptyRevalidation(true, { ...empty, rowCount: 4 }, KEY),
+    false,
+  );
+  // Not forced, a different key, unready, or previously failed: none of those confirm.
+  assert.equal(isEmptyRevalidation(false, empty, KEY), false);
+  assert.equal(isEmptyRevalidation(true, { ...empty, key: "other" }, KEY), false);
+  assert.equal(isEmptyRevalidation(true, { ...empty, ready: false }, KEY), false);
+  assert.equal(
+    isEmptyRevalidation(true, { ...empty, error: "scan failed" }, KEY),
+    false,
+  );
 });

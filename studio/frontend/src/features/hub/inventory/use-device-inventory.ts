@@ -20,7 +20,10 @@ import { useInventoryVersion } from "../stores/inventory-events";
 import { useCallback, useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { inventoryRefreshDecision } from "./inventory-freshness";
+import {
+  inventoryRefreshDecision,
+  isEmptyRevalidation,
+} from "./inventory-freshness";
 
 export type DeviceInventorySource =
   | "cachedGguf"
@@ -251,7 +254,16 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
           error: null,
           key,
           refreshedAt,
-          revalidatedAt: options.force
+          revalidatedAt: isEmptyRevalidation(
+            Boolean(options.force),
+            {
+              key: current.key,
+              ready: current.ready,
+              error: current.error,
+              rowCount: current.rows.length,
+            },
+            key,
+          )
             ? refreshedAt
             : current.key === key
               ? current.revalidatedAt

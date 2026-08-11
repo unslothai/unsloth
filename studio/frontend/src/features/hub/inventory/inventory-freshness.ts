@@ -26,6 +26,32 @@ export function isInventoryStampFresh(
   return age >= 0 && age < Math.max(0, maxAgeMs);
 }
 
+/** Whether a completed forced scan CONFIRMS a previously observed empty inventory.
+ *
+ * Only such a scan may stamp `revalidatedAt`. Stamping every force instead means a manual
+ * refresh of a populated inventory that happens to come back empty records itself as its
+ * own confirmation, so `useHubInventory` settles the picker on "no models" after ONE scan
+ * and the intended second look never happens.
+ */
+export function isEmptyRevalidation(
+  force: boolean,
+  previous: {
+    key: string | null;
+    ready: boolean;
+    error: string | null;
+    rowCount: number;
+  },
+  requestKey: string,
+): boolean {
+  return (
+    force &&
+    previous.key === requestKey &&
+    previous.ready &&
+    previous.error === null &&
+    previous.rowCount === 0
+  );
+}
+
 export function inventoryRefreshDecision(
   source: {
     ready: boolean;
