@@ -27,6 +27,7 @@ from playwright_image_model_footprint import (
     CHECKPOINT_BYTES,
     COMPANION_BYTES,
     FILENAME,
+    KLEIN_ROW,
     REPO_ID,
     REQUIRED_BYTES,
     _api_payload,
@@ -89,7 +90,7 @@ def _open_quant(page, *, navigate: bool) -> None:
     trigger = page.get_by_role("button", name = "Select image model")
     trigger.wait_for(state = "visible", timeout = 30_000)
     trigger.click()
-    page.get_by_text("FLUX.2-klein-4B-GGUF", exact = True).click()
+    page.get_by_text(KLEIN_ROW).first.click()
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
         gguf.click()

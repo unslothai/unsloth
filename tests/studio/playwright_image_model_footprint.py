@@ -9,6 +9,7 @@ live Hugging Face metadata.
 """
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +25,11 @@ COMPANION_BYTES = 8_200_000_000
 REQUIRED_BYTES = CHECKPOINT_BYTES + COMPANION_BYTES
 REPO_ID = "unsloth/FLUX.2-klein-4B-GGUF"
 FILENAME = "FLUX.2-klein-4B-Q4_K_M.gguf"
+# The row is labelled by the catalogue's displayName ("FLUX.2 klein 4B"), not by the
+# artifact repo id. Matching the id exactly waited 30 s for text the picker never
+# renders. This test is about the footprint the row reports, not about its wording,
+# so accept either spelling and let a genuinely missing row still fail.
+KLEIN_ROW = re.compile(r"FLUX\.2[\s\-]klein[\s\-]4B")
 
 
 def _json(route: Route, payload: object) -> None:
@@ -186,7 +192,7 @@ def _open_klein_quant(page) -> None:
         print(page.locator("body").inner_text()[:4_000])
         raise
     trigger.click()
-    klein = page.get_by_text("FLUX.2-klein-4B-GGUF", exact = True)
+    klein = page.get_by_text(KLEIN_ROW).first
     try:
         klein.wait_for(state = "visible", timeout = 30_000)
     except Exception:
