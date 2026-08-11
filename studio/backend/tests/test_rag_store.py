@@ -310,11 +310,16 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
     """
     _link_folder(rag_conn, "f1", "kb_a")
     store.create_document(
-        rag_conn, scope = "kb_a", filename = "secret.md", sha256 = "h1",
-        document_id = "orphan", linked_folder_id = "f1",
+        rag_conn,
+        scope = "kb_a",
+        filename = "secret.md",
+        sha256 = "h1",
+        document_id = "orphan",
+        linked_folder_id = "f1",
     )
-    store.add_chunks(rag_conn, "kb_a", "orphan", [_chunk("alpha bravo secret")],
-                     [embed("alpha bravo")])
+    store.add_chunks(
+        rag_conn, "kb_a", "orphan", [_chunk("alpha bravo secret")], [embed("alpha bravo")]
+    )
     assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
 
     rag_conn.execute("DELETE FROM linked_folders WHERE id='f1'")
