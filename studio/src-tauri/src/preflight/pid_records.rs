@@ -145,10 +145,41 @@ fn legacy_record_pid(root: &Path, probe: &Probe) -> Option<u32> {
         .parse::<u32>()
         .ok()
         .filter(|pid| *pid > 1)?;
+    // A current build writes a per-port record too, so if this pid has one it
+    // has already been considered under the port it actually serves, and the
+    // portless record must not be read as claiming this one. Without that, the
+    // app's own backend on an ignored port answers for every other candidate
+    // port and the mutation never reaches the step that stops it.
+    // `_legacy_studio_on_port` skips the same case on the Python side.
+    if has_a_per_port_record(root, pid) {
+        return None;
+    }
     match classify(pid, None, probe) {
         Recorded::OurBackend | Recorded::MaybeOurs => Some(pid),
         Recorded::Foreign | Recorded::Opaque | Recorded::Stale => None,
     }
+}
+
+/// Whether `pid` is named by a per-port record, on any port.
+///
+/// Either answer settles the legacy record: a record that still stands has
+/// already been judged under the port it names, and one that no longer stands
+/// says the pid was reused, which the untimed legacy record cannot see.
+fn has_a_per_port_record(root: &Path, pid: u32) -> bool {
+    let suffix = format!("-{pid}.pid");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.starts_with("studio-") && name.ends_with(&suffix) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Line two of a record, written by the server as `psutil` epoch seconds. A
@@ -362,6 +393,39 @@ mod tests {
             live_backend_pid_in(&home.path(), 8888, &probe(&shared)),
             Some(RECORDED)
         );
+    }
+
+    /// The app's own backend on an ignored port writes both records. The
+    /// portless one must not then answer for every other candidate port, or a
+    /// mutation never reaches the step that stops that backend.
+    #[test]
+    fn a_legacy_record_for_a_pid_that_serves_a_known_port_is_ignored() {
+        let home = Home::new();
+        home.record("studio.pid", &RECORDED.to_string());
+        home.record("studio-9001-4242.pid", "");
+
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &probe(&ours)), None);
+        // ...while the port it does serve still blocks.
+        assert_eq!(
+            live_backend_pid_in(&home.path(), 9001, &probe(&ours)),
+            Some(RECORDED)
+        );
+    }
+
+    /// A per-port record that no longer stands settles the legacy one too: it
+    /// says the pid was reused, which an untimed record cannot see for itself.
+    #[test]
+    fn a_contradicted_per_port_record_silences_the_legacy_one() {
+        let home = Home::new();
+        home.record("studio.pid", &RECORDED.to_string());
+        home.record("studio-9001-4242.pid", "4242\n1000.0\n");
+        let reused = Probe {
+            is_live: &|_| true,
+            origin: &ours,
+            started_at: &|_| Some(9999.0),
+        };
+
+        assert_eq!(live_backend_pid_in(&home.path(), 8888, &reused), None);
     }
 
     #[test]
