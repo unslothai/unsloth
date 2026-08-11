@@ -1399,8 +1399,8 @@
       "file": "setuptools/wheel.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L35: NAMESPACE_PACKAGE_INIT = \"__import__('pkg_resources').declare_namespace(__name__)\\n\"\nExec: L191:         def eval(req, **env): | L212:                     (req for req in reqs if for_extra(req) and eval(req, extra=extra)),",
-      "evidence_hash": "9c22b176a4660dcc5d3d16a78b1994e600707a6ee78eb413757e677dc3d903ce"
+      "evidence": "Obfusc: L35: NAMESPACE_PACKAGE_INIT = \"__import__('pkg_resources').declare_namespace(__name__)\\n\"\nExec: L212:                     (req for req in reqs if for_extra(req) and eval(req, extra=extra)),",
+      "evidence_hash": "803eee82ec61485233d60ed6980bbdee8518702cc7c389023af52c899fd953fe"
     },
     {
       "package": "six",
