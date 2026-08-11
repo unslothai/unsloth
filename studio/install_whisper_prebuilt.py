@@ -161,8 +161,7 @@ SLIM_BACKEND_MODULE_GLOBS = {
     "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
     "metal": {"macos": "libggml-metal*.dylib"},
     # Windows rocm must name the ggml module: the bundles also ship amdhip64,
-    # hipblas and libhipblaslt, so a looser *hip*.dll would pass on a runtime
-    # that has no ROCm ggml backend at all.
+    # hipblas and libhipblaslt, which a looser *hip*.dll would accept.
     "rocm": {"linux": "libggml-hip.so*", "windows": "ggml-hip*.dll"},
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
@@ -392,8 +391,8 @@ def llama_runtime_pairs(
 
 def _ships_windows_gpu_ggml_module(llama_bin_dir: Path) -> bool:
     """Whether a paired Windows llama runtime carries a GPU ggml backend module.
-    Only the cpu-only bundle links ggml against libomp, and bundle_profile cannot
-    tell them apart: it is absent on both the published rocm artifacts and every
+    Only the cpu bundle links ggml against libomp, and bundle_profile cannot tell
+    the two apart: it is absent on both the published rocm artifacts and every
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
         glob = per_os.get("windows")
@@ -432,11 +431,9 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # The shared Windows manifest lists libomp because the cpu llama bundle
-        # links ggml against it; the rocm/cuda/vulkan bundles neither ship nor
-        # import it, so requiring it there only ever mis-rejects a valid pairing.
-        # A cpu-only bundle keeps the gate, since its ggml really needs the DLL.
-        # link_ggml_runtime still wires it whenever the bundle ships it.
+        # The shared Windows manifest lists libomp only because the cpu bundle's
+        # ggml links against it; a GPU bundle neither ships nor imports it, so
+        # requiring it there only mis-rejects. link_ggml_runtime still wires it.
         required_sonames = [
             name
             for name in required_sonames
