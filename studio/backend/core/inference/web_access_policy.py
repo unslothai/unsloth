@@ -92,11 +92,10 @@ def normalize_website_policy(value: Any) -> dict[str, list[str]]:
             raise ValueError(f"{key} must be a list")
         if len(raw_domains) > _MAX_DOMAINS_PER_LIST:
             raise ValueError(f"{key} supports at most {_MAX_DOMAINS_PER_LIST} domains")
-        # Exact ``str`` only: anything else can be unhashable, and its error message
-        # carries the original repr, so non-str entries stay on the uncached path. An
-        # over-long entry stays off it too: nameprep deletes characters such as U+00AD, so
-        # an arbitrarily long raw string can still normalise to a valid domain, and caching
-        # would then pin a caller-sized string in memory. Both paths normalise identically.
+        # Exact ``str`` only: anything else can be unhashable and its error message carries
+        # the original repr. Over-long entries stay off the cached path too -- nameprep
+        # deletes characters such as U+00AD, so an arbitrarily long raw string can still
+        # normalise, and caching would pin a caller-sized string. Both paths agree.
         if all(
             type(raw_domain) is str and len(raw_domain) <= _MAX_CACHEABLE_DOMAIN_LEN
             for raw_domain in raw_domains

@@ -3420,9 +3420,8 @@ async def upload_diffusion_dataset(
         # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires; the upload is all-or-nothing.
         names: list[str] = []
         # Indexes over `names` so the three batch-local duplicate checks below are hash
-        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap).
-        # They keep first / insertion order, so each error message still names the same
-        # earlier filename the linear scans picked.
+        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap). First
+        # / insertion order is kept, so each error still names the filename the scans picked.
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}

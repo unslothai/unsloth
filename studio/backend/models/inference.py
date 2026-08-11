@@ -1486,13 +1486,12 @@ class ChatCompletionRequest(BaseModel):
         unconsumed tool_call; synth a random id only if none exists. A user
         turn breaks the lookup.
         """
-        # Both passes below were a backwards rescan per tool result, O(n^2) for one
-        # assistant with n calls. Each is now a single forward pass with an index, the
-        # same search because the backward walk never left the current user-delimited
-        # segment: a "user" message ends it.
+        # Both passes below were a backwards rescan per tool result, O(n^2) for one assistant
+        # with n calls. Each is now one forward pass with an index -- the same search, since
+        # the backward walk never left the current user-delimited segment.
         messages = self.messages
-        # The first pass only feeds the second, so with every tool_call_id present there
-        # is nothing to do, which is the common case for well-behaved clients.
+        # The first pass only feeds the second, so with every tool_call_id present there is
+        # nothing to do (the common case).
         for msg in messages:
             if msg.role == "tool" and not msg.tool_call_id:
                 break
@@ -1526,11 +1525,11 @@ class ChatCompletionRequest(BaseModel):
                 if claimed is not None:
                     consumed.add(claimed)
 
-        # Assistants in this segment with an unclaimed call, oldest first, so the nearest
-        # is on top. A drained assistant never refills, so popping it is permanent and the
-        # walk past it happens once overall rather than once per tool result. Each frame
-        # keeps its remaining call indexes in order plus the same indexes bucketed by
-        # function name; one consumed out of turn is dropped when it reaches a queue front.
+        # Assistants in this segment with an unclaimed call, oldest first, so the nearest is
+        # on top. A drained assistant never refills, so popping it is permanent and the walk
+        # past it happens once overall, not once per tool result. Each frame keeps its calls
+        # in order plus the same indexes bucketed by function name; one consumed out of turn
+        # is dropped when it reaches a queue front.
         stack: list = []
         for asst_idx, msg in enumerate(messages):
             role = msg.role
