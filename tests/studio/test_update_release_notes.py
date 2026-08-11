@@ -1160,9 +1160,7 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR_TAURI in tauri, (
-        "the floor is fixed, so it is wrong at other type sizes"
-    )
+    assert _SCALED_FLOOR_TAURI in tauri, "the floor is fixed, so it is wrong at other type sizes"
 
 
 def test_the_stack_geometry_is_checked_numerically():
