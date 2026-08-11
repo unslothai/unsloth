@@ -34,7 +34,11 @@ from hub.utils import download_registry, state_dir
 class _Proc:
     pid = 4242
 
-    def __init__(self, rc, stderr = b""):
+    def __init__(
+        self,
+        rc,
+        stderr = b"",
+    ):
         self.rc = rc
         self.stderr = io.BytesIO(stderr)
         self.waited = False
