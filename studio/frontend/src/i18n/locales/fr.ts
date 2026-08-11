@@ -86,6 +86,7 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      audio: "Audio",
       trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
       videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
@@ -1012,6 +1013,10 @@ export const fr = {
       archivedChats: "Discussions archivées",
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",
+      archivedImages: "Images archivées",
+      archivedImagesDescription: "Consultez et gérez les images que vous avez archivées.",
+      archivedVideos: "Vidéos archivées",
+      archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",

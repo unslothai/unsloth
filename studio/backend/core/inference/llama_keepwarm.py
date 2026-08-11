@@ -65,6 +65,7 @@ _INFERENCE_SUFFIXES = (
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
+    "/audio/speech",  # /v1/audio/speech (+ /api/inference/audio/speech); same TTS core as /audio/generate
     # Image generation holds a multi-GB pipeline for the whole request; tracking it lets other_inference_request_count() see
     # an in-flight generation so an API-key training start is refused (409). endswith avoids matching *-progress / */cancel.
     "/images/generate",  # /api/inference/images/generate

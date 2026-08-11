@@ -728,7 +728,7 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
             return False
 
         def build_request(self, method, url, **kwargs):
-            return (method, url)
+            return {"method": method, "url": url, **kwargs}
 
         async def post(self, url, **kwargs):
             sent.append(url)
@@ -795,6 +795,17 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             report_progress = False,
         )
     )
+
+
+def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
+    # Gathered page text lands in these prompts, and --enable-tools would otherwise
+    # override the request and expand an omitted enabled_tools to every built-in.
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
+    assert len(sent) == 1
+    assert sent[0]["json"]["tool_choice"] == "none"
+    assert sent[0]["json"]["enabled_tools"] == []
 
 
 def _capture_backoff(monkeypatch) -> list:

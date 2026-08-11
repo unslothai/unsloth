@@ -2479,8 +2479,9 @@ def _build_arg_parser():
     parser.add_argument(
         "--disable-dns-pinning",
         action = "store_true",
-        help = "Allow hostname-based web fetches for enterprise proxies. WARNING: weakens "
-        "DNS-rebinding protection; hostname and redirect validation remain enabled.",
+        help = "Send the hostname (not the validated IP) in web fetches that go through an "
+        "explicitly configured HTTP(S)_PROXY, so the proxy can apply hostname policy and "
+        "TLS interception. Direct fetches stay pinned to the validated IP.",
     )
     parser.add_argument(
         "--parallel",
