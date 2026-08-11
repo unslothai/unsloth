@@ -154,8 +154,8 @@ def test_local_prequant_path_ready(tmp_path, monkeypatch):
 # ── usable_prequant_source ───────────────────────────────────────────────────────
 @pytest.fixture
 def restricted_load_available(monkeypatch):
-    """usable_prequant_source asks whether this install could open a checkpoint, which depends on
-    the host's torchao. The resolution tests below are not about that, so pin it on."""
+    """Whether this install could open a checkpoint depends on the host's torchao. The resolution
+    tests below are not about that, so pin it on."""
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None: True)
 
 
@@ -329,8 +329,7 @@ def _stub_torch_accelerate(
     load_raises = False,
 ):
     torch = types.ModuleType("torch")
-    # The registration is version-gated (the (object, name) form is 2.6+), so the stub has to
-    # carry a version or every load here silently declines.
+    # Registration is version-gated (2.6+), so the stub needs a version or every load declines.
     torch.__version__ = "2.9.1+cu128"
     seen = {"weights_only": None, "safe_globals": None}
 
@@ -349,8 +348,7 @@ def _stub_torch_accelerate(
         seen["safe_globals"] = list(entries)
 
     torch.load = _load
-    # The load runs ``weights_only`` against a registered allowlist; a stub that omitted the
-    # namespace would let a regression back to an unrestricted load pass every test here.
+    # A stub without this namespace would let a regression to an unrestricted load pass silently.
     torch.serialization = types.SimpleNamespace(add_safe_globals = _add_safe_globals)
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "torch.serialization", torch.serialization)
@@ -575,9 +573,9 @@ def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
 def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
     """A pre-quant checkpoint is a pickle, so the load has to be ``weights_only``.
 
-    It is reached WITHOUT anyone asking for it -- auto resolves an unset precision to a hosted
-    checkpoint -- and the artifact is a mutable remote file, so "the repo is first-party" is not
-    a reason to run whatever bytes arrive. Everything the format needs is allowlisted instead."""
+    It is a mutable remote file reached WITHOUT anyone asking for it (auto resolves an unset
+    precision to a hosted checkpoint), so "the repo is first-party" is not a reason to run
+    whatever bytes arrive. Everything the format needs is allowlisted instead."""
     seen = _stub_torch_accelerate(monkeypatch, _good_ckpt())
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_resolve_checkpoint_path", lambda *a, **k: "/cache/x.pt")
@@ -598,10 +596,10 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     """The exact set read out of the pickles Studio actually resolves.
 
     Surveyed with ``pickletools`` (no unpickling) over every hosted prequant repo the family
-    tables name -- image and video, fp8 and int8, rotated and not -- so a checkpoint that names
-    anything beyond this is not one of ours. Torch's own default set covers the storages, dtypes,
-    ``_rebuild_*`` helpers, ``OrderedDict``, ``torch.device`` and ``_get_layout``; what is left is
-    torchao's subclasses plus ``TorchVersion``, which torch does not allow by default."""
+    tables name -- image and video, fp8 and int8, rotated and not -- so a checkpoint naming
+    anything beyond this is not one of ours. Torch's defaults cover the storages, dtypes,
+    ``_rebuild_*``, ``OrderedDict``, ``torch.device`` and ``_get_layout``; what is left is
+    torchao's subclasses plus ``TorchVersion``."""
     listed = {f"{module}.{name}" for module, name in pq._PREQUANT_SAFE_GLOBALS}
     required = {
         # every TQ_SCHEME the builder can bake, not just the two the hosted repos ship
@@ -647,8 +645,7 @@ def test_a_malicious_checkpoint_is_refused_before_it_executes():
         marker = os.path.join(tmp, "executed")
 
         class _Payload:
-            # Creating a directory rather than running a command: an observable side effect that
-            # proves execution, with nothing to clean up outside the temp dir if it ever fires.
+            # mkdir rather than a command: observable proof of execution, confined to the temp dir.
             def __reduce__(self):
                 return (os.mkdir, (marker,))
 
@@ -665,11 +662,9 @@ def test_a_malicious_checkpoint_is_refused_before_it_executes():
 def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monkeypatch):
     """The probe is the WIDER reach of the two, so it gets its own test.
 
-    ``local_prequant_scheme`` runs during download PLANNING, not only during a load:
-    ``usable_prequant_source`` asks it for any allowlisted override that exists, and the plan
-    route reaches that for a request that never loads anything and may go on to reject the file
-    for its scheme. An unreadable checkpoint is "unknown", which is what the caller already
-    handles, and nothing in it runs."""
+    ``local_prequant_scheme`` runs during download PLANNING, not only during a load, so it is
+    reached for a request that never loads anything. An unreadable checkpoint is "unknown", which
+    the caller already handles, and nothing in it runs."""
     import os
 
     torch = pytest.importorskip("torch")
@@ -689,8 +684,7 @@ def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monke
 
     assert pq.local_prequant_scheme(str(ckpt)) is None
     assert not marker.exists()
-    # And the planning entry point that calls it declines the override, as it does for every
-    # checkpoint whose scheme it cannot read.
+    # And the planning entry point declines the override, as for any unreadable scheme.
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
     assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
     assert not marker.exists()
@@ -703,12 +697,10 @@ class _UnknownConstructor:
 def test_the_probe_and_the_loader_agree_on_what_is_readable(tmp_path, monkeypatch):
     """One mechanism on both sites, so the two cannot drift apart.
 
-    ``usable_prequant_source`` treats a checkpoint whose scheme it cannot read as not usable
-    "since the loader would reject it too". That sentence is only true while the probe and the
-    load answer the same question: a probe that read MORE than the loader accepts would let
-    planning skip the dense shards for a checkpoint the load then drops, which is the GGUF
-    silent-downgrade the scheme check exists to prevent. Sharing the allowlist makes the two
-    agree by construction."""
+    ``usable_prequant_source`` treats an unreadable scheme as not usable "since the loader would
+    reject it too", which only holds while both answer the same question: a probe reading MORE
+    than the loader accepts would let planning skip the dense shards for a checkpoint the load
+    then drops -- the GGUF silent downgrade the scheme check exists to prevent."""
     import os
 
     torch = pytest.importorskip("torch")
@@ -759,9 +751,9 @@ def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(m
 
 def test_an_old_torch_registers_nothing_at_all(monkeypatch):
     """2.4/2.5 take the (object, name) pairs without looking at them and only fail later, in
-    ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry. That list is
-    process-wide, so a tuple left in it breaks every OTHER weights_only load in Studio too.
-    Hence: decide by version first, register nothing below 2.6."""
+    ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry of a PROCESS-WIDE
+    list -- so a tuple left there breaks every OTHER weights_only load in Studio too. Hence:
+    decide by version first, register nothing below 2.6."""
     torch = types.ModuleType("torch")
     torch.serialization = types.SimpleNamespace(
         add_safe_globals = lambda entries: pytest.fail("nothing may be registered below 2.6")
@@ -778,11 +770,10 @@ def test_an_old_torch_registers_nothing_at_all(monkeypatch):
 
 
 def test_a_stubbed_torchao_cannot_open_a_checkpoint(monkeypatch):
-    """Windows ROCm runs on the torchao IMPORT STUB, which fabricates a class for every name
-    asked of it. The allowlist would happily register those fakes and answer yes for an install
-    that cannot rebuild a single quantized tensor, and the H3 auto fallback treats ROCm as
-    eligible, so the plan would drop the dense denoiser shards for a checkpoint nothing can
-    open."""
+    """Windows ROCm runs on the torchao IMPORT STUB, which fabricates a class for every name asked
+    of it. The allowlist would register those fakes and answer yes for an install that cannot
+    rebuild a single quantized tensor, and the H3 auto fallback treats ROCm as eligible, so the
+    plan would drop the dense denoiser shards for a checkpoint nothing can open."""
     import core._torchao_stub as stub
 
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
@@ -799,10 +790,10 @@ def test_a_stubbed_torchao_cannot_open_a_checkpoint(monkeypatch):
 def test_a_torchao_that_resolves_nothing_reports_no_support(monkeypatch):
     """Registering successfully is not the same as being able to open a checkpoint.
 
-    A missing or badly skewed torchao leaves the allowlist with nothing to register but the torch
-    entries, and ``add_safe_globals`` is perfectly happy with that -- while the load then refuses
-    the first torchao global the file names, after planning has already dropped the dense shards
-    for it. So the answer requires the two entries every artifact needs whatever its scheme."""
+    A missing or skewed torchao leaves nothing to register but the torch entries, which
+    ``add_safe_globals`` accepts happily -- while the load then refuses the first torchao global
+    the file names, after planning already dropped the dense shards for it. So the answer requires
+    the two entries every artifact needs whatever its scheme."""
     registered = []
     torch = types.ModuleType("torch")
     torch.__version__ = "2.9.1"
@@ -842,9 +833,9 @@ def test_support_is_answered_per_scheme(monkeypatch):
     """The schemes do not share constructors, and torchao does not retire them together.
 
     AffineQuantizedTensor and its layout carry every int8 checkpoint and are already deprecated
-    upstream (pytorch/ao#2752), so a release that drops them while keeping Float8Tensor leaves
-    fp8 loadable and int8 not. One answer for both would let planning drop the dense shards for
-    an int8 pick this install cannot open."""
+    upstream (pytorch/ao#2752), so a release that drops them while keeping Float8Tensor leaves fp8
+    loadable and int8 not. One answer for both would drop the dense shards for an int8 pick this
+    install cannot open."""
     torch = types.ModuleType("torch")
     torch.__version__ = "2.9.1"
     torch.serialization = types.SimpleNamespace(add_safe_globals = lambda entries: None)
@@ -877,10 +868,9 @@ def test_the_required_sets_are_a_subset_of_the_allowlist():
 def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monkeypatch, tmp_path):
     """Planning has to ask the loader's question BEFORE it sizes the load.
 
-    A plan that keeps a hosted pre-quant source, drops the dense shards for it and evicts the
-    resident pipeline has nothing left when the loader then refuses every checkpoint: the dense
-    build it now needs was never budgeted or staged. So the capability answer belongs in source
-    selection, not only at the load."""
+    A plan that keeps a hosted pre-quant source, drops the dense shards and evicts the resident
+    pipeline has nothing left when the loader then refuses every checkpoint: the dense build it
+    now needs was never budgeted or staged."""
     import os
 
     fam = _fam(prequant_repos = (("int8", "org/hosted-int8"),))
@@ -899,10 +889,9 @@ def test_the_allowlist_is_registered_once_and_never_withdrawn(monkeypatch):
     """The registration must OUTLIVE the load that installed it.
 
     ``safe_globals`` as a context manager adds on entry and removes on exit, against a
-    process-wide table that is not refcounted. Two overlapping reads (a download-plan probe
-    beside a load: both arrive on the route's thread pool) then let whichever finishes first
-    strip the allowlist out from under the other's ``torch.load``, failing a good checkpoint and
-    dropping that load to dense. Registering once and never removing has no such window."""
+    process-wide table that is not refcounted. Two overlapping reads (a download-plan probe beside
+    a load, both on the route's thread pool) then let whichever finishes first strip the allowlist
+    out from under the other's ``torch.load``, dropping a good checkpoint to dense."""
     torch = pytest.importorskip("torch")
     if not hasattr(torch.serialization, "add_safe_globals"):
         pytest.skip("torch without add_safe_globals")

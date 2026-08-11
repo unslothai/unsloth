@@ -22,12 +22,10 @@ from core.inference.video import VideoBackend
 
 @pytest.fixture(autouse = True)
 def _assume_the_restricted_load_is_available(monkeypatch):
-    """These are policy/planning tests, not a check on whether this host's torchao imports.
+    """Policy/planning tests, not a check on whether this host's torchao imports.
 
-    ``restricted_prequant_load_supported`` asks whether a pre-quant checkpoint could be
-    deserialized here, and answers no on a machine with no (or a skewed) torchao -- which would
-    turn every hosted-prequant decision below into "keep the dense weights" for a reason these
-    tests are not about. The capability itself is covered in test_diffusion_prequant.py."""
+    Without this, a machine with no (or a skewed) torchao turns every hosted-prequant decision
+    below into "keep the dense weights". The capability is covered in test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
     monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
 
@@ -100,8 +98,8 @@ def test_minimax_h3_declares_hosted_denoiser_checkpoints():
     assert set(video_family_prequant_schemes(fam)) == {"int8", "fp8"}
     for scheme in ("int8", "fp8"):
         repo = video_family_prequant_repo(fam, scheme)
-        # Curated hosted artifacts only: a third-party repo here would be served as this
-        # family's own weights, for a load that may never have asked for a scheme at all.
+        # Curated hosted artifacts only: a third-party repo here would be served as this family's
+        # own weights, for a load that may never have asked for a scheme at all.
         assert repo and repo.startswith("unsloth/")
 
 
