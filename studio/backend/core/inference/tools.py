@@ -3820,10 +3820,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             # Once a constructor is registered the safe reader is a way in too.
             if (
                 (registers_constructor or uses_setattr or patches_loader)
-                and (
-                    arg.attr in _AUTO_SAFE_PY_LOAD_FUNCS
-                    or arg.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                )
+                and (arg.attr in _AUTO_SAFE_PY_LOAD_FUNCS or arg.attr in _AUTO_SAFE_PY_LOAD_CLASSES)
                 and _is_load_module(arg.value)
             ):
                 return True
