@@ -831,6 +831,41 @@
       "REPROMPT_MAX_CHARS": {
         "kind": "assign"
       },
+      "StreamingMarkupStripper": {
+        "bases": [],
+        "decorators": [],
+        "kind": "class",
+        "methods": {
+          "__init__": {
+            "decorators": [],
+            "signature": "self, enabled_tool_names: Optional[set]=None"
+          },
+          "_full_strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_is_extension": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "_reset": {
+            "decorators": [],
+            "signature": "self"
+          },
+          "_think_block": {
+            "decorators": [],
+            "signature": "self, text: str, first: int"
+          },
+          "_unchanged": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
+          "strip": {
+            "decorators": [],
+            "signature": "self, text: str"
+          }
+        }
+      },
       "TOOL_ERROR_NUDGE": {
         "kind": "assign"
       },
@@ -880,6 +915,9 @@
         "kind": "assign"
       },
       "_EMBEDDED_MARKER_RE": {
+        "kind": "assign"
+      },
+      "_EXTENSION_SAMPLE": {
         "kind": "assign"
       },
       "_FUNC_CLOSE_TAG_RE": {
@@ -1008,6 +1046,12 @@
       "_REPEAT_TRAIL_PUNCT": {
         "kind": "assign"
       },
+      "_SENTINEL_MAX_LEN": {
+        "kind": "assign"
+      },
+      "_STRIP_SENTINELS": {
+        "kind": "assign"
+      },
       "_TC_END_TAG_RE": {
         "kind": "assign"
       },
@@ -1064,6 +1108,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str"
+      },
+      "_first_sentinel": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int"
       },
       "_gemma_balanced_brace_end": {
         "decorators": [],
@@ -1204,6 +1253,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str, *, id_offset: int, allow_incomplete: bool=True"
+      },
+      "_safe_cut": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, first: int"
       },
       "_signal_inside_leading_wrapperless_gemma": {
         "decorators": [],

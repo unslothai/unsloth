@@ -83,7 +83,7 @@ from core.inference.tool_call_parser import (
     _strip_glm_calls,
     _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
-    strip_segment as _parser_strip_segment,
+    StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
@@ -15263,22 +15263,17 @@ class LlamaCppBackend:
                 text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
+        # The scan order used to be inlined here, one copy of four. It now lives in the
+        # parser's ``strip_segment``; the stripper wraps it so the accumulated response is
+        # not re-scanned end to end on every content token (that was quadratic in the
+        # response length). Think blocks are preserved verbatim inside it: a rehearsed call
+        # in one must not be deleted.
+        _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
-
-            def _seg(segment: str, is_last: bool) -> str:
-                # The scan order used to be inlined here, one copy of four. It lives in the
-                # parser's ``strip_segment`` now, so this path, the safetensors loop and
-                # ``strip_tool_markup`` cannot drift apart. Streaming has no separate final
-                # pass, so the last segment always takes the end-of-turn arms (a bare
-                # ``foo[ARGS]`` before <think> is prose).
-                return _parser_strip_segment(
-                    segment, seg_final = is_last, enabled_tool_names = _enabled_names_gate
-                )
-
-            # Preserve think blocks verbatim (a rehearsed call inside one must not be deleted).
-            return strip_outside_think(text, _seg)
+            return _streaming_stripper.strip(text)
 
         def _build_metadata_event(usage, timings, finish_reason):
             """Final usage+timings metadata event for the given pass, merging its

@@ -721,6 +721,255 @@ def strip_tool_markup(
     return result.strip() if final else result
 
 
+# Every strip arm above is anchored on one of these literals, so text containing none of
+# them is returned unchanged. ``StreamingMarkupStripper`` uses that to skip the whole scan,
+# and ``test_refactor_guard.py`` proves the claim by asserting the identity over a fuzz
+# corpus and by checking the prefix-split property. An arm added without its literal here
+# would break that test, not production.
+_STRIP_SENTINELS = (
+    "<tool_call",  # Qwen/Hermes open + GLM, and the <tool_call|> Gemma closer
+    "<|tool_call",  # Gemma open, Kimi <|tool_call_begin|> / <|tool_calls_section_begin|>
+    "<function",  # Qwen3.5 <function=name> and <function name="...">
+    "[TOOL_CALLS]",  # Mistral array + name forms
+    "[ARGS]",  # reasoning-model rehearsal
+    "<|python_tag|>",  # Llama-3 built-in tools
+    "<|content_invoke_tool_json|>",  # TML Inkling
+    "<｜",  # DeepSeek's full-width pipe opens every one of its markers
+    "<think",  # reasoning segmentation
+    "</think",
+    "[THINK",
+    "[/THINK",
+    "call:",  # markerless Gemma
+)
+_SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
+# Bytes sampled from each end when checking that a buffer continues the previous one.
+_EXTENSION_SAMPLE = 64
+
+
+def _first_sentinel(text: str, start: int) -> int:
+    """Lowest index >= ``start`` at which any strip sentinel occurs, or -1."""
+    best = -1
+    for sentinel in _STRIP_SENTINELS:
+        found = text.find(sentinel, start)
+        if found >= 0 and (best < 0 or found < best):
+            best = found
+    return best
+
+
+def _safe_cut(text: str, first: int) -> int:
+    """Largest index <= ``first`` that no strip decision can depend on text before.
+
+    Every arm anchors on a sentinel, so a match cannot begin before the first sentinel --
+    with two exceptions, both of which reach backwards:
+
+    * the rehearsal form is ``NAME[ARGS]{...}``, whose match starts at the name, before
+      its ``[ARGS]`` sentinel. A name contains no whitespace, so backing up to the start
+      of the preceding run covers it. (``[TOOL_CALLS] NAME[ARGS]`` needs no wider window:
+      ``[TOOL_CALLS]`` is itself a sentinel, so it would be the first one found.)
+    * the ``[TOOL_CALLS]`` and ``[ARGS]`` arms are gated on markdown code spans, and an
+      opening fence can sit arbitrarily far back. If any backtick or tilde precedes the
+      cut, no cut is safe.
+
+    The result is then snapped back to a line start. The code-fence pattern is anchored
+    with ``^``, so cutting mid-line can turn a fence that was mid-line into one that opens
+    a block -- which flips the in-code gate and changes the output. Snapping to a newline
+    keeps ``^`` meaning the same thing on the slice as on the whole buffer.
+    """
+    if first <= 0:
+        return 0
+    cut = first
+    if text.startswith("[ARGS]", first):
+        while cut > 0 and not text[cut - 1].isspace():
+            cut -= 1
+    cut = text.rfind("\n", 0, cut) + 1
+    if "`" in text[:cut] or "~" in text[:cut]:
+        return 0
+    return cut
+
+
+class StreamingMarkupStripper:
+    """Strip tool markup from an append-only buffer without rescanning it every token.
+
+    The streaming display path used to call the full strip on the entire accumulated
+    response once per content token, which is a linear scan with ~10 regex passes per
+    token and therefore quadratic in the response length. Two properties make that
+    avoidable, both asserted by ``test_refactor_guard.py``:
+
+    * text containing no sentinel from ``_STRIP_SENTINELS`` is returned unchanged, so a
+      prose-only response does no regex work at all; and
+    * no arm can match before the first sentinel, so
+      ``strip(text) == text[:first] + strip(text[first:])``.
+
+    The scan for that first sentinel resumes where the previous call stopped (overlapping
+    by ``_SENTINEL_MAX_LEN - 1`` so a sentinel split across two appends is still seen),
+    which makes the pre-markup phase amortized constant per token rather than linear.
+
+    The instance assumes append-only growth and re-derives its state if the caller ever
+    passes text that is not an extension of the previous call, so a rewind is safe.
+    """
+
+    __slots__ = (
+        "_enabled_tool_names",
+        "_scanned_upto",
+        "_first",
+        "_floor",
+        "_floor_out",
+        "_floor_identity",
+        "_degenerate",
+        "_last_in",
+        "_last_out",
+    )
+
+    def __init__(self, enabled_tool_names: Optional[set] = None):
+        self._enabled_tool_names = enabled_tool_names
+        self._reset()
+
+    def _reset(self):
+        self._scanned_upto = 0
+        self._first = -1
+        # Settled prefix: text below ``_floor`` is final, and ``_floor_out`` is its output.
+        self._floor = 0
+        self._floor_out = ""
+        # True while nothing has actually been removed yet, which lets the sentinel-free
+        # path hand back the caller's own string instead of rebuilding it every token.
+        self._floor_identity = True
+        # Set when markup sits at the very start of the unsettled text and is not a
+        # reasoning block. Nothing can then ever be settled or sliced off, so the
+        # bookkeeping is pure overhead on top of a strip that has to run in full anyway;
+        # this flag skips straight to it, keeping the worst case no slower than before.
+        self._degenerate = False
+        self._last_in = None
+        self._last_out = None
+
+    def _think_block(self, text: str, first: int) -> str:
+        """Classify the reasoning block opening at absolute offset ``first``.
+
+        Returns ``"settled"`` when a complete, unambiguous block was folded into the
+        settled prefix, ``"open"`` when a clean block is still streaming (its content is
+        preserved verbatim, so the whole buffer is currently unchanged), or ``""`` when
+        the shape is anything else and the full strip has to run.
+
+        ``strip_outside_think`` already processes each segment in isolation, so a segment
+        boundary is a point nothing downstream can reach back across -- unlike a cut inside
+        a segment, which is why this needs neither the line-start snap nor the backtick
+        check that ``_safe_cut`` does.
+
+        Deliberately conservative: it only fires on a block whose opener is the first
+        sentinel in the remaining text and whose body carries no other markup. A
+        ``</think>`` sitting inside a call's arguments is that call's data, not a closer,
+        and this refuses to guess about it.
+        """
+        for opener, closer in (("<think>", "</think>"), ("[THINK]", "[/THINK]")):
+            if text.startswith(opener, first):
+                break
+        else:
+            return ""
+        end = text.find(closer, first + len(opener))
+        if end < 0:
+            # Still streaming. An unclosed block runs to EOF and is preserved verbatim, and
+            # the text before it is markup-free by construction, so the buffer is untouched
+            # -- as long as nothing else in it needs stripping.
+            body_start = first + len(opener)
+            return "open" if _first_sentinel(text, body_start) < 0 else ""
+        end += len(closer)
+        body = text[self._floor : end]
+        if _first_sentinel(body.replace(opener, "").replace(closer, ""), 0) >= 0:
+            return ""
+        settled = self._full_strip(body)
+        self._floor_out += settled
+        self._floor_identity = self._floor_identity and settled == body
+        self._floor = end
+        self._first = -1
+        self._scanned_upto = end
+        return "settled"
+
+    def _full_strip(self, text: str) -> str:
+        def _seg(segment: str, is_last: bool) -> str:
+            # Streaming has no separate ``final`` pass: the last segment always gets the
+            # end-of-turn arms so partial markup never renders. This mirrors the closure
+            # llama_cpp.py used to carry.
+            return strip_segment(
+                segment,
+                seg_final = is_last,
+                enabled_tool_names = self._enabled_tool_names,
+            )
+
+        return _tool_healing.strip_outside_think(text, _seg)
+
+    def _is_extension(self, text: str) -> bool:
+        """Cheap check that ``text`` continues the previous call's buffer.
+
+        A full ``startswith`` would be linear in the buffer and so reintroduce the
+        quadratic cost this class exists to remove. Callers stream append-only, so this
+        only has to catch a caller that clearly is not: a shorter buffer, or one whose
+        head or previous tail no longer matches. Sampling both ends is O(1).
+        """
+        previous = self._last_in
+        if previous is None:
+            return True
+        end = len(previous)
+        if len(text) < end:
+            return False
+        sample = _EXTENSION_SAMPLE
+        return text[:sample] == previous[:sample] and text[end - sample : end] == previous[-sample:]
+
+    def strip(self, text: str) -> str:
+        previous = self._last_in
+        if text is previous or (previous is not None and len(text) == len(previous) and text == previous):
+            return self._last_out
+        if not self._is_extension(text):
+            # Not an extension of what we saw: the cached prefix no longer applies.
+            self._reset()
+
+        if self._degenerate:
+            out = self._floor_out + self._full_strip(text[self._floor :])
+            self._last_in = text
+            self._last_out = out
+            return out
+
+        # Offsets stay absolute through the scan so the buffer is never sliced just to
+        # look for a sentinel; a slice would be linear per token and put back the cost
+        # this class removes. Loop so several reasoning blocks settle in one call.
+        while True:
+            if self._first < 0:
+                # Resume where the last scan stopped, overlapping just enough that a
+                # sentinel straddling two appends is still found. This is what keeps the
+                # pre-markup phase from rescanning the whole buffer per token.
+                resume = self._scanned_upto - _SENTINEL_MAX_LEN + 1
+                found = _first_sentinel(text, resume if resume > self._floor else self._floor)
+                if found < 0:
+                    self._scanned_upto = len(text)
+                    return self._unchanged(text)
+                self._first = found - self._floor
+            state = self._think_block(text, self._floor + self._first)
+            if state == "open":
+                return self._unchanged(text)
+            if state != "settled":
+                break
+
+        tail = text[self._floor :]
+        # Markup at offset 0 of the unsettled text: the cut is 0 now and stays 0 as the
+        # buffer grows, and no reasoning block can settle, so skip the bookkeeping from
+        # here on.
+        self._degenerate = self._first == 0
+        # Recomputed per call rather than cached: the sentinel may have been found before
+        # the run preceding it finished streaming, so re-deriving keeps the cut exact.
+        cut = _safe_cut(tail, self._first)
+        stripped = tail[:cut] + self._full_strip(tail[cut:]) if cut else self._full_strip(tail)
+        out = self._floor_out + stripped if self._floor else stripped
+        self._last_in = text
+        self._last_out = out
+        return out
+
+    def _unchanged(self, text: str) -> str:
+        """Result when nothing after the settled prefix needs stripping."""
+        self._last_in = text
+        # With nothing removed so far the answer is the caller's own string, so hand it
+        # straight back rather than rebuilding it a token at a time.
+        self._last_out = text if self._floor_identity else self._floor_out + text[self._floor :]
+        return self._last_out
+
+
 def has_tool_signal(text: str) -> bool:
     return any(s in text for s in TOOL_XML_SIGNALS)
 
