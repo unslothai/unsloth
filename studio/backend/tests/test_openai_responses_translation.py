@@ -917,7 +917,7 @@ def test_error_sse_line_carries_no_json_blob(monkeypatch):
         '{"error": {"message": "Rate limit reached.", "code": "rate_limit_exceeded"}}',
         "openai",
     )
-    error = json.loads(line[len("data:"):].strip())["error"]
+    error = json.loads(line[len("data:") :].strip())["error"]
     assert error["message"] == "Rate limit reached. (rate_limit_exceeded)"
     assert "{" not in error["message"]
     assert error["code"] == "429"
