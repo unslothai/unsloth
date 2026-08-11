@@ -207,9 +207,7 @@ def pin_initial_loss_scale(trainer, value: float) -> dict:
     state["after"] = float(scaler.get_scale())
     state["applied"] = state["after"] == float(value)
     if not state["applied"]:
-        state["reason"] = (
-            "the scaler did not take the new scale; it had already been initialised"
-        )
+        state["reason"] = "the scaler did not take the new scale; it had already been initialised"
     return state
 
 

@@ -151,9 +151,7 @@ def render(report: dict) -> list[str]:
     repro = report.get("reproducibility")
     if repro:
         if repro.get("identical"):
-            lines.append(
-                "Reproducibility: two fresh processes agreed **bitwise** on every step."
-            )
+            lines.append("Reproducibility: two fresh processes agreed **bitwise** on every step.")
         else:
             lines.append(
                 f"Reproducibility: **DIFFERED** from step "
