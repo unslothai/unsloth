@@ -705,16 +705,16 @@ def test_evidence_extraction_does_not_rescan_every_alias_per_line():
             start = time.monotonic()
             findings = sp.check_py_file(src, "pkg/_loader.py", "pkg")
             out.append(time.monotonic() - start)
-        assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)], (
-            "the aliased call must still be flagged"
-        )
+        assert [
+            f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)
+        ], "the aliased call must still be flagged"
         return min(out)
 
     small = best_of(hostile(2_000))
     large = best_of(hostile(4_000))
-    assert large < 3.0 * small, (
-        f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
-    )
+    assert (
+        large < 3.0 * small
+    ), f"alias pre-filtering grows faster than the input: {small:.2f}s -> {large:.2f}s"
 
 
 def test_alias_matching_stays_linear_on_hostile_source():

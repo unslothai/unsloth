@@ -818,7 +818,13 @@ class _Aliases:
         "loaders",
     )
 
-    def __init__(self, modules: set, funcs: set, cancel: dict, loader_funcs: "set | None" = None):
+    def __init__(
+        self,
+        modules: set,
+        funcs: set,
+        cancel: dict,
+        loader_funcs: "set | None" = None,
+    ):
         self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
         self.live_funcs = frozenset(funcs)
         self.cancel = cancel
