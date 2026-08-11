@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import http.server
 import io
 import json
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from fastapi import HTTPException
 
 import core.inference.stt_ggml_sidecar as ggml_module
 from core.inference.stt_ggml_sidecar import (
@@ -809,19 +811,9 @@ def test_download_status_idle_shape():
     assert set(status) >= {"downloading", "model", "error"}
 
 
-import asyncio
-
-from fastapi import HTTPException
-
-
 # Follow-ups from review of the GGUF dictation path: curated GGUF repos stay out
 # of the chat pickers, the status accessors never block behind a transcription, and a
 # "gguf" unload on a host without whisper-server targets the fallback that served it.
-
-_BACKEND_ROOT = Path(__file__).resolve().parents[1]
-if str(_BACKEND_ROOT) not in sys.path:
-    sys.path.insert(0, str(_BACKEND_ROOT))
-
 
 # 1. Hidden-model GGUF companions ------------------------------------------------
 def test_curated_gguf_dictation_repos_are_hidden():
