@@ -156,11 +156,10 @@ jobs:
           desktop_release_tag = studio_version
 
           # Both updater paths compare SemVer, so a tag whose numbers go backwards
-          # strands every client already on the published one. v0.1.60-beta after
-          # v0.1.527-beta did exactly that: 60 < 527, so no update was offered.
+          # strands its own clients: 60 < 527, so v0.1.60-beta offered no one.
           def semver_key(version):
-              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc are
-              # both newer than v0.1.528-beta, and the updater knows that.
+              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc
+              # both beat v0.1.528-beta, and the updater knows it.
               version = version.strip().removeprefix('v')
               match = semver_tag.fullmatch(f'v{version}')
               if not match:
@@ -169,8 +168,7 @@ jobs:
               pre = version.partition('-')[2]
               if not pre:
                   return release, (1,)  # a release outranks its own prereleases
-              # Numeric identifiers rank below alphanumeric ones and compare as
-              # numbers; a shorter run of identifiers ranks below a longer one.
+              # SemVer: numeric identifiers sort below alphanumeric, as numbers.
               return release, (0, *(
                   (0, int(part), '') if part.isdigit() else (1, 0, part)
                   for part in pre.split('.')
@@ -187,10 +185,8 @@ jobs:
                   return json.loads(response.read())
 
           def published_desktop_version():
-              # Not /releases/latest/download/latest.json: an ordinary llama.cpp
-              # prebuilt can be the latest release and carries no manifest, which
-              # would 404 and skip this check. Take the newest release that is a
-              # Studio tag and actually ships one, as the backend does.
+              # Not /releases/latest: an llama.cpp prebuilt can hold that slot
+              # and ships no manifest, so the read would 404 and skip this check.
               studio = [
                   release for release in fetch(RELEASES_API_URL)
                   if not release['draft'] and semver_tag.fullmatch(release['tag_name'])
@@ -205,8 +201,7 @@ jobs:
           try:
               published = published_desktop_version()
           except (OSError, ValueError, KeyError) as error:
-              # Warn rather than fail: an unreachable manifest is not a bad tag,
-              # and the first desktop release has no published version at all.
+              # An unreachable manifest is not a bad tag, and the first has none.
               print(f'::warning::could not read the published desktop version: {error}')
               published = ''
 

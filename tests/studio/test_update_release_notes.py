@@ -2126,10 +2126,9 @@ def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
 
 
 def test_a_platform_heading_opens_an_install_block_on_its_own(notes_module):
-    """`v0.1.0-beta` and `v0.1.41-beta` head their install commands with a bare
-    platform heading and no "Updating" above it, so requiring one left the
-    commands in the popup. They are the only two of the 24 published bodies this
-    changes, and every platform heading in that corpus heads an install block."""
+    """`v0.1.0-beta` and `v0.1.41-beta` head their commands with a bare platform
+    heading, so requiring an "Updating" above it left them in the popup. All
+    seven platform headings in the 24 published bodies head an install block."""
     body = (
         "Intro.\n\n"
         "#### macOS, Linux, WSL:\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"

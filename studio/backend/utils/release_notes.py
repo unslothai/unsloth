@@ -314,8 +314,7 @@ def strip_release_body(text: str) -> str:
             drop_level = None
             drop_upgrade = False
 
-        # A bare platform heading opens an install block on its own: the early
-        # releases head one with "MacOS, Linux, WSL:" and no "Updating" above it.
+        # A bare "MacOS, Linux, WSL:" heading opens a block with no "Updating".
         upgrade = _is_upgrade(title) or _is_platform(title)
         if upgrade or _is_generated(title):
             drop_level = event.level
