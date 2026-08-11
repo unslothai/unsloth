@@ -1136,7 +1136,9 @@ def _live_sibling(records: "list", me: int, timed: "list") -> "int | None":
         # process that is gone, not about this one. Letting it veto would clear
         # the compiled cache under a serving legacy backend.
         corroborating = [
-            other[1] for other, other_written in timed if other[0] == pid and other_written >= written_at
+            other[1]
+            for other, other_written in timed
+            if other[0] == pid and other_written >= written_at
         ]
         if _pid_is_studio_backend(pid, [created] + corroborating):
             return pid
