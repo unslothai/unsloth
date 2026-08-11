@@ -135,18 +135,24 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  * Asked against the inset in force, never a fixed one: lifting over one box
  * moves the stack up into the next, and a box that had room at the corner may
  * have none there.
+ *
+ * A box that may be covered is asked against the floor, not the natural height.
+ * It has already said the stack outranks it, so a band holding every card is
+ * enough and the room they would prefer is not worth leaving the corner for.
+ * Two downloads make the rail taller than the welcome composer's band, and
+ * lifting for that put the panel mid-window with the corner under it empty.
  */
 function reachesStack(
   frame: MonitorFrame,
   viewportHeight: number,
   bottomInset: number,
   neededRoom: number,
+  floorRoom: number = neededRoom,
 ): boolean {
+  const wanted = frame.coverable ? floorRoom : neededRoom;
   // At least a pixel: a needed room of 0 lets the capped branch hand back a
   // max-height of 0, which browsers honour, leaving the stack invisible.
-  return (
-    roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, neededRoom)
-  );
+  return roomBelow(frame, viewportHeight, bottomInset) < Math.max(1, wanted);
 }
 
 /** The inset that clears this box's top edge, whether or not it fits there. */
@@ -198,6 +204,7 @@ export function stackBottomInset(
   viewportWidth: number,
   viewportHeight: number,
   neededRoom: number = ASSUMED_STACK_HEIGHT,
+  floorRoom: number = neededRoom,
 ): number {
   if (!frame) return STACK_INSET;
   // Only dodge a box that is in the stack's column and crowds its corner; one
@@ -205,7 +212,7 @@ export function stackBottomInset(
   // corner free.
   const inTheWay =
     inStackColumn(frame, viewportWidth) &&
-    reachesStack(frame, viewportHeight, STACK_INSET, neededRoom);
+    reachesStack(frame, viewportHeight, STACK_INSET, neededRoom, floorRoom);
   return inTheWay ? dodgeInset(frame, viewportHeight) : STACK_INSET;
 }
 
@@ -230,10 +237,11 @@ export function stackMaxHeight(
   viewportHeight: number,
   bottomInset: number,
   neededRoom: number = ASSUMED_STACK_HEIGHT,
+  floorRoom: number = neededRoom,
 ): number {
   const ownMargin = viewportHeight - bottomInset - STACK_INSET;
   if (!frame || !inStackColumn(frame, viewportWidth)) return ownMargin;
-  if (reachesStack(frame, viewportHeight, bottomInset, neededRoom)) {
+  if (reachesStack(frame, viewportHeight, bottomInset, neededRoom, floorRoom)) {
     // Lifted over: bottomInset already cleared it.
     if (liftFits(frame, viewportHeight)) return ownMargin;
     // Seated inside it instead. Stop below its header, or the Close button goes
@@ -274,7 +282,13 @@ export function stackGeometry(
   persistentTail = 0,
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
-  const placed = place(list, viewportWidth, viewportHeight, neededRoom);
+  const placed = place(
+    list,
+    viewportWidth,
+    viewportHeight,
+    neededRoom,
+    floorRoom,
+  );
   if (placed.maxHeight >= floorRoom || !list.some((f) => f.coverable)) {
     return placed;
   }
@@ -295,6 +309,7 @@ export function stackGeometry(
     viewportWidth,
     viewportHeight,
     neededRoom,
+    floorRoom,
   );
   // Where the run the reader cannot dismiss would actually land, measured from
   // the placement being considered rather than from the corner. Dropping the
@@ -321,6 +336,7 @@ function place(
   viewportWidth: number,
   viewportHeight: number,
   neededRoom: number,
+  floorRoom: number = neededRoom,
 ): StackGeometry {
   if (list.length === 0) {
     const bottom = stackBottomInset(
@@ -348,7 +364,7 @@ function place(
   for (let pass = 0; pass <= column.length; pass += 1) {
     let next = bottom;
     for (const frame of column) {
-      if (reachesStack(frame, viewportHeight, bottom, neededRoom)) {
+      if (reachesStack(frame, viewportHeight, bottom, neededRoom, floorRoom)) {
         next = Math.max(next, dodgeInset(frame, viewportHeight));
       }
     }
@@ -359,7 +375,14 @@ function place(
     bottom,
     maxHeight: Math.min(
       ...list.map((f) =>
-        stackMaxHeight(f, viewportWidth, viewportHeight, bottom, neededRoom),
+        stackMaxHeight(
+          f,
+          viewportWidth,
+          viewportHeight,
+          bottom,
+          neededRoom,
+          floorRoom,
+        ),
       ),
     ),
   };
