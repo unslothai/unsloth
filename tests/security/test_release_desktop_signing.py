@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Windows signing toolchain check has to fail closed.
+"""The Windows signing toolchain has to be verified, and has to fail closed.
 
-An unsigned or half-signed installer is the failure this workflow exists to
-prevent, so the step that proves `trusted-signing-cli` works must not be able to
-report success when it does not. The check previously ended both of its branches
-in `|| Write-Output "..."`, which exits 0, so a missing or broken binary passed
-and only surfaced later inside the Tauri bundling step.
+An unsigned, half-signed or attacker-signed installer is the failure this
+workflow exists to prevent. `trusted-signing-cli` runs with the Azure Trusted
+Signing and Tauri signing secrets in the environment, so two things have to
+hold: the binary is the one we pinned, and a check that cannot prove that
+cannot report success.
+
+Both have been regressions here. The install step once restored the executable
+from an actions/cache and skipped the build on a hit, leaving a spoofable
+`--version` as the only gate on a binary that signs releases. The verify step
+once ended both of its branches in `|| Write-Output "..."`, which exits 0, so a
+missing or broken binary passed and only surfaced later inside Tauri bundling.
 """
 
 from pathlib import Path
@@ -19,19 +25,58 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
 
-def _verify_step():
+def _build_steps():
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    return next(
-        step
-        for step in workflow["jobs"]["build"]["steps"]
-        if step.get("name") == "Verify trusted-signing-cli"
-    )
+    return workflow["jobs"]["build"]["steps"]
+
+
+def _step(name: str):
+    return next(step for step in _build_steps() if step.get("name") == name)
+
+
+def _verify_step():
+    return _step("Verify trusted-signing-cli")
+
+
+def test_the_signing_cli_is_pinned_by_url_and_digest():
+    step = _step("Install trusted-signing-cli")
+    assert "/releases/download/0.10.0/trusted-signing-cli.exe" in step["env"]["TRUSTED_SIGNING_CLI_URL"]
+    assert len(step["env"]["TRUSTED_SIGNING_CLI_SHA256"]) == 64
+
+
+def test_a_digest_mismatch_stops_the_release_before_anything_is_signed():
+    run = _step("Install trusted-signing-cli")["run"]
+    assert "Get-FileHash" in run
+    assert "if ($actual -ne $expected)" in run
+    assert "exit 1" in run
+    # A rejected download left on disk is still reachable by name from PATH.
+    assert "Remove-Item -Force $dest" in run
+
+
+def test_no_step_restores_the_signing_cli_from_a_cache():
+    # A cache is not an integrity mechanism. Restoring this binary and skipping
+    # the pinned install on a hit is what made a poisoned entry sign releases.
+    for step in _build_steps():
+        uses = step.get("uses", "")
+        if not uses.startswith("actions/cache"):
+            continue
+        assert "trusted-signing-cli" not in yaml.safe_dump(step)
+
+
+def test_the_verified_binary_is_the_one_that_signs():
+    # The signing script calls `trusted-signing-cli` by bare name, and
+    # swatinem/rust-cache restores ~/.cargo/bin, which can hold an unverified
+    # copy under the same name. PATH has to resolve to the digest-checked file.
+    run = _verify_step()["run"]
+    assert "$verified" in run
+    assert "[IO.Path]::GetFullPath($cli.Source) -ne $verified" in run
 
 
 def test_the_check_exits_non_zero_on_every_failure_path():
     run = _verify_step()["run"]
-    # Not on PATH, cannot be started, and started but exited non-zero.
-    assert run.count("exit 1") == 3
+    # Not on PATH, resolved to an unverified copy, cannot be started, and
+    # started but exited non-zero.
+    assert run.count("exit 1") == 4
 
 
 def test_a_binary_that_cannot_start_is_caught():
@@ -63,12 +108,11 @@ def test_the_native_exit_code_is_inspected():
     assert "$LASTEXITCODE" in run
 
 
-def test_the_operator_is_told_how_to_recover_from_a_bad_cache():
-    # The binary is restored from a cache keyed on its version, so a corrupt
-    # entry survives until the key changes. Failing closed without saying that
-    # would turn a rare cache fault into an unexplained release outage.
+def test_every_failure_says_what_it_was():
+    # Failing closed without saying why turns a rare fetch fault into an
+    # unexplained release outage, and the four causes need different fixes.
     run = _verify_step()["run"]
-    assert run.count("bump the key") == 3
+    assert run.count("::error::") == 4
 
 
 def test_the_check_still_only_runs_on_windows():
