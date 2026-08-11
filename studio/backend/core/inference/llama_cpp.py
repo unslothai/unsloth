@@ -11265,9 +11265,9 @@ class LlamaCppBackend:
                             _foot_wo = (_base_wo + _shared) / (1024 * 1024)
                             if _foot_wo > _budget_wo:
                                 continue
-                            _foot_w = (
-                                _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
-                            ) / (1024 * 1024)
+                            _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
+                                1024 * 1024
+                            )
                             _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
                             if not _target_fits_somewhere:
                                 # The placement this reports on: the first subset that
