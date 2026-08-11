@@ -96,11 +96,13 @@ def _specs(entries: list[str]) -> set[tuple[str, str, str]]:
     for entry in entries:
         requirement = Requirement(entry)
         specifier = ",".join(sorted(str(s) for s in requirement.specifier))
-        out.add((
-            canonicalize_name(requirement.name),
-            specifier,
-            str(requirement.marker) if requirement.marker else "",
-        ))
+        out.add(
+            (
+                canonicalize_name(requirement.name),
+                specifier,
+                str(requirement.marker) if requirement.marker else "",
+            )
+        )
     return out
 
 
