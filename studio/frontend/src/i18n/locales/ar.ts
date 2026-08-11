@@ -83,6 +83,8 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
+      videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",
@@ -376,6 +378,9 @@ export const ar = {
         keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
         keepKvDescription:
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
+        apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
+        apiOnlyDescription:
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Studio في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -898,6 +903,9 @@ export const ar = {
         allowNetworkAccess: "السماح بوصول Canvas إلى الشبكة",
         allowNetworkAccessDescription:
           "اسمح لمعاينات Canvas بتحميل النصوص البرمجية والأنماط والخطوط والوسائط وموارد الشبكة من شبكات CDN. أبقِه معطّلاً للمعاينات دون اتصال بالكامل.",
+        blockedBanner: "تم حظر {count} مورد خارجي من {hosts}.",
+        blockedBannerPlural: "تم حظر {count} موارد خارجية من {hosts}.",
+        blockedBannerAction: "السماح لهذا الـ Canvas",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -1363,6 +1371,7 @@ export const ar = {
       history: "السجل",
     },
     loadingRuntime: "جارٍ تحميل بيئة تشغيل التدريب...",
+    checkingSupport: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
     backToHistory: "العودة إلى السجل",
     sections: {
       model: "النموذج",

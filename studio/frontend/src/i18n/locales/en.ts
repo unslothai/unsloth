@@ -78,6 +78,9 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      // Hover text while the row spins, before this machine's capability is measured.
+      trainChecking: "Checking this machine for training support...",
+      videoChecking: "Checking this machine for video support...",
       more: "More",
       // Last entry of the More flyout; opens Settings -> Appearance.
       customizeSidebar: "Customize sidebar",
@@ -369,6 +372,9 @@ export const en = {
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
           "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
+        apiOnly: "Only unload models loaded by the API",
+        apiOnlyDescription:
+          "Idle unload leaves a model you loaded from Studio in memory, and frees only the ones an API request loaded.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -891,6 +897,9 @@ export const en = {
         allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
           "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+        blockedBanner: "Blocked {count} external resource from {hosts}.",
+        blockedBannerPlural: "Blocked {count} external resources from {hosts}.",
+        blockedBannerAction: "Allow for this canvas",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -1350,6 +1359,7 @@ export const en = {
     imageTraining: "Image training",
     goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
+    checkingSupport: "Checking this machine for training support...",
     backToHistory: "Back to history",
     sections: {
       model: "Model",

@@ -134,13 +134,21 @@ export interface ValidateModelResponse {
 
 export interface GgufVariantDetail {
   filename: string;
+  /** Selection identity. Path-qualified when a repo holds several checkpoints at one quant. */
   quant: string;
+  /** What to SHOW for `quant` ("Q6_K · distilled"); absent when the key already reads as a label. */
+  display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
   /** An interrupted download: some shards are missing, so it cannot load yet. */
   partial?: boolean;
+  /** Variants sharing this key share one companion download footprint (text
+   *  encoder, VAE, tokenizer, configs). The set is not repo-wide: one repo can
+   *  hold GGUFs of different families, and FLUX.2-klein picks its text encoder
+   *  per checkpoint size. Null/absent means unknown, so the repo is one group. */
+  dependency_key?: string | null;
 }
 
 export interface GgufVariantsResponse {

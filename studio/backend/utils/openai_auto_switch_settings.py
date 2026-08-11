@@ -36,6 +36,7 @@ OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
 AUTO_UNLOAD_KEEP_KV_SETTING_KEY = "openai_api_auto_unload_keep_kv"
+AUTO_UNLOAD_API_ONLY_SETTING_KEY = "openai_api_auto_unload_api_only"
 MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 MODEL_IDLE_TTL_ENV_VAR = "UNSLOTH_MODEL_IDLE_TTL"
 
@@ -43,6 +44,7 @@ DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
 DEFAULT_AUTO_UNLOAD_KEEP_KV = True
+DEFAULT_AUTO_UNLOAD_API_ONLY = False
 MIN_AUTO_UNLOAD_IDLE_SECONDS = 60
 
 _CACHE_TTL_S = 2.0
@@ -209,12 +211,19 @@ def get_auto_unload_keep_kv() -> bool:
     return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_KEEP_KV
 
 
+def get_auto_unload_api_only() -> bool:
+    """Whether the idle unload spares models a user loaded from the UI."""
+    parsed = _coerce_bool(_cached_setting(AUTO_UNLOAD_API_ONLY_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_API_ONLY
+
+
 def set_openai_auto_switch(
     enabled: Any,
     idle_seconds: Any,
     keep_kv: Any = None,
     auto_download: Any = None,
-) -> tuple[bool, int, bool, bool]:
+    api_only: Any = None,
+) -> tuple[bool, int, bool, bool, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
     parsed_enabled = _coerce_bool(enabled)
     if parsed_enabled is None:
@@ -239,6 +248,11 @@ def set_openai_auto_switch(
         parsed_auto_download = _coerce_bool(auto_download)
         if parsed_auto_download is None:
             raise ValueError("Auto-download missing models must be true or false.")
+    parsed_api_only = None
+    if api_only is not None:
+        parsed_api_only = _coerce_bool(api_only)
+        if parsed_api_only is None:
+            raise ValueError("Auto-unload API-loaded only must be true or false.")
     from storage.studio_db import upsert_app_settings
 
     updates: dict[str, Any] = {OPENAI_AUTO_SWITCH_SETTING_KEY: parsed_enabled}
@@ -248,6 +262,8 @@ def set_openai_auto_switch(
         updates[AUTO_UNLOAD_KEEP_KV_SETTING_KEY] = parsed_keep_kv
     if parsed_auto_download is not None:
         updates[OPENAI_AUTO_DOWNLOAD_SETTING_KEY] = parsed_auto_download
+    if parsed_api_only is not None:
+        updates[AUTO_UNLOAD_API_ONLY_SETTING_KEY] = parsed_api_only
     upsert_app_settings(updates)
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     if parsed_idle is not None:
@@ -256,6 +272,8 @@ def set_openai_auto_switch(
         _invalidate(AUTO_UNLOAD_KEEP_KV_SETTING_KEY)
     if parsed_auto_download is not None:
         _invalidate(OPENAI_AUTO_DOWNLOAD_SETTING_KEY)
+    if parsed_api_only is not None:
+        _invalidate(AUTO_UNLOAD_API_ONLY_SETTING_KEY)
     return (
         parsed_enabled,
         parsed_idle if parsed_idle is not None else get_stored_auto_unload_idle_seconds(),
@@ -265,6 +283,7 @@ def set_openai_auto_switch(
             if parsed_auto_download is not None
             else get_stored_openai_auto_download_enabled()
         ),
+        parsed_api_only if parsed_api_only is not None else get_auto_unload_api_only(),
     )
 
 

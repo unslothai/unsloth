@@ -45,6 +45,12 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
+
+# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+from utils.native_tls import activate_native_tls
+
+activate_native_tls()
+
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.training_runs import build_default_output_dir_name
@@ -1535,6 +1541,113 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     return gcn_arch, is_unified
 
 
+# 16 GiB, not a percentage: on a 128 GiB Strix Halo a flat 20% withholds 25.6 GiB, while
+# 0.90 there reserves 12.8 GiB and was measured as OS-starving. The constant sits between.
+_UNIFIED_OS_RESERVE_BYTES = 16 * 1024**3
+_UNIFIED_MAX_RESERVE_FRACTION = 0.20
+_DISCRETE_MEM_FRACTION = 0.90
+_MEM_FRACTION_ENV = "UNSLOTH_ROCM_MEM_FRACTION"
+
+
+def _parse_mem_fraction_env(env_value: str | None) -> float | None:
+    """``UNSLOTH_ROCM_MEM_FRACTION`` as a float, None when unset or unusable.
+
+    Shared with the OOM guard's log line so it can say whether the override was
+    actually honoured, rather than just whether the variable was set.
+    """
+    try:
+        override = float(env_value)  # None -> TypeError, "" / "  " -> ValueError
+    except (TypeError, ValueError):
+        return None
+    # Two-sided on purpose: NaN loses every comparison, so this rejects it. A one-sided
+    # `override <= 0.0 or override > 1.0` would pass NaN to set_per_process_memory_fraction.
+    return override if 0.0 < override <= 1.0 else None
+
+
+def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
+    """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``.
+
+    c10's ``CUDACachingAllocator::setMemoryFraction`` caps at
+    ``fraction * device_prop.totalGlobalMem`` from torch 2.10, and at
+    ``fraction * hipMemGetInfo total`` through 2.9. Unparsable versions answer True,
+    so a surprise string keeps today's denominator rather than switching it.
+    """
+    release = str(torch_version or "").split("+", 1)[0].split(".")
+    try:
+        major, minor = int(release[0]), int(release[1])
+    except (IndexError, ValueError):
+        return True
+    return (major, minor) >= (2, 10)
+
+
+def _rocm_memory_fraction(
+    total_bytes: int,
+    is_unified: bool,
+    platform: str,
+    env_value: str | None = None,
+    denominator_bytes: int | None = None,
+) -> float:
+    """Pick the ``set_per_process_memory_fraction`` cap for a ROCm device.
+
+    ``total_bytes`` is the pool the reserve comes out of, always
+    ``get_device_properties().total_memory``: on a unified APU that is what the OS
+    shares, while ``hipMemGetInfo``'s total is a runtime budget spanning GTT.
+
+    ``denominator_bytes`` is what the allocator multiplies the fraction by, when that
+    is a different number (see ``_allocator_divides_by_props_total``). An absolute
+    byte reserve only lands where intended if the two agree, so passing it re-solves
+    the cap for the same allowed bytes, floored at the historical cap so a larger
+    driver total can never leave this tighter than the 0.80 it replaced.
+
+    - ``env_value`` (``UNSLOTH_ROCM_MEM_FRACTION``) wins when it parses to a
+      float in ``(0.0, 1.0]``; anything else is ignored, never fatal.
+    - Unified + win32: ``1.0``. The WDDM budget already excludes the OS share,
+      so any sub-1.0 cap double-taxes it (see the guard's own comment).
+    - Unified elsewhere: reserve ``min(_UNIFIED_MAX_RESERVE_FRACTION of total,
+      _UNIFIED_OS_RESERVE_BYTES)``, then clamp the cap to ``_DISCRETE_MEM_FRACTION``
+      so a huge pool never ends up looser than a discrete card. The percentage
+      ceiling keeps small pools at exactly the historical cap.
+    - Discrete: ``_DISCRETE_MEM_FRACTION``.
+    """
+    override = _parse_mem_fraction_env(env_value)
+    if override is not None:
+        return override
+
+    if not is_unified:
+        return _DISCRETE_MEM_FRACTION
+    if platform == "win32":
+        return 1.0
+    if total_bytes <= 0:
+        # The caller defaults a missing or None total to 0; with no pool size there is
+        # nothing to solve against, so keep the historical cap.
+        return 1.0 - _UNIFIED_MAX_RESERVE_FRACTION
+
+    # Solved in fraction space, not bytes: (total - 0.20 * total) / total rounds
+    # to 0.7999999999999999 on some pool sizes (12/24/28/48 GiB), which would
+    # break the "never tighter than the historical 0.80" guarantee by a ULP.
+    reserve_fraction = min(_UNIFIED_MAX_RESERVE_FRACTION, _UNIFIED_OS_RESERVE_BYTES / total_bytes)
+    fraction = 1.0 - reserve_fraction
+
+    if (
+        reserve_fraction < _UNIFIED_MAX_RESERVE_FRACTION
+        and denominator_bytes
+        and denominator_bytes > 0
+        and denominator_bytes != total_bytes
+    ):
+        # Re-solve for the same allowed bytes against the total the allocator scales.
+        # Floored, so a larger driver total cannot leave a host tighter than the 0.80
+        # this replaced. Byte arm only: the percentage arm is scale-free, and those
+        # small pools are the OOM-prone ones that must stay exactly as they were.
+        fraction = max(
+            fraction * total_bytes / denominator_bytes,
+            1.0 - _UNIFIED_MAX_RESERVE_FRACTION,
+        )
+
+    # Past ~160 GiB the byte reserve is under 10% of the pool, which would hand a unified
+    # host a looser cap than a discrete card and invert the ordering the guard is built on.
+    return min(fraction, _DISCRETE_MEM_FRACTION)
+
+
 def _tilelang_platform_supported() -> bool:
     """True iff a tilelang 0.1.8 wheel will load: Linux x86_64/aarch64, non-HIP torch.
 
@@ -2839,13 +2952,26 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # No catch: the helper handles detection failures and double misses, so an exception here
         # is a real masking failure that must fail the run, not silently train full sequences.
         from utils.datasets.completion_masking import apply_completion_masking
-        trainer, _masking_applied = apply_completion_masking(
+
+        trainer, masking_applied = apply_completion_masking(
             trainer,
             model_name,
             train_on_responses_only,
             notify = lambda level, message: _send("status", status_message = message),
             dataset_template = "alpaca" if dataset_final_format == "alpaca" else None,
         )
+        if not masking_applied:
+            # A miss changes the training objective for the whole run, so it belongs in the
+            # sticky warning list the eval-split fallback already uses, not a status line
+            # that scrolls past. Recovered detection failures stay status: masking applied.
+            _send(
+                "warning",
+                message = (
+                    f"'Train on completions' could not be applied for {model_name}: no "
+                    f"instruction/response markers were found. Training will run on full "
+                    f"sequences (prompts included)."
+                ),
+            )
 
     # ── 8. Setup wandb / tensorboard ──
     wandb_run = None
@@ -3223,10 +3349,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
 
     import warnings
-    from loggers.config import LogConfig
+    from loggers.config import LogConfig, keep_progress_bars_countable
 
     if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
         warnings.filterwarnings("ignore")
+
+    # This worker READS the bars: the monitor thread further down polls tqdm._instances
+    # to turn the Hub download and "Loading checkpoint shards" bars into the UI's status
+    # line, and a disabled bar is never registered there. So it redirects their output
+    # instead of disabling them, and does so before the inherited
+    # HF_HUB_DISABLE_PROGRESS_BARS reaches huggingface_hub's import-time constant.
+    keep_progress_bars_countable()
 
     LogConfig.setup_logging(
         service_name = "unsloth-studio-training-worker",
@@ -3613,8 +3746,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1g. ROCm OOM guard ──
     # On ROCm, exhausting VRAM can hang the HIP driver instead of raising.
     # set_per_process_memory_fraction caps the allocator so PyTorch raises OutOfMemoryError
-    # first. Unified-memory APUs (gfx1150/1151/1152) share GPU+system RAM, so use 0.80 vs 0.90
-    # for discrete; classify via gcnArchName, else device-name markers. Skipped if no torch.
+    # first. Unified hosts share GPU+system RAM and need OS headroom, so the cap depends on
+    # the classification and the pool size (see _rocm_memory_fraction and
+    # _rocm_classify_unified_memory). Skipped if no torch.
     if _hw.IS_ROCM:
         try:
             import torch as _torch_mem
@@ -3631,23 +3765,77 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
                 # Unified hosts on native Windows: mem_get_info's total is the WDDM budget the driver
                 # grants HIP (BIOS carve + ~half of remaining RAM). The OS share is already outside it, so
-                # the Linux 0.80 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
+                # any sub-1.0 starve-protection double-taxes (48.49 GiB budget -> 38.79 allowed) and
                 # blocks loads that fit in free memory. Current AMD Windows wheels only enforce sub-1.0
                 # fractions (gfx1151: 0.5 caps, 1.0 overcommits via WDDM), so 1.0 behaves like torch's
-                # uncapped default. On Linux the total spans nearly all RAM, so keep the 0.80 headroom.
-                if _is_unified:
-                    _mem_fraction = 1.0 if sys.platform == "win32" else 0.80
-                else:
-                    _mem_fraction = 0.90
+                # uncapped default. On Linux the total spans nearly all RAM, so keep a bounded headroom
+                # (see _rocm_memory_fraction).
+                # props.total_memory is the pool the reserve comes out of, and from torch
+                # 2.10 also what the allocator scales. Through 2.9 it scales hipMemGetInfo's
+                # total, a different number on a unified APU, so hand that to the helper on
+                # those wheels and the reserve is the same bytes either way.
+                _total_bytes = int(getattr(_props, "total_memory", 0) or 0)
+                _driver_total = 0
+                if not _allocator_divides_by_props_total(getattr(_torch_mem, "__version__", "")):
+                    try:
+                        _driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])
+                    except Exception:
+                        _driver_total = 0
+                _env_raw = os.environ.get(_MEM_FRACTION_ENV)
+                _env_fraction = _parse_mem_fraction_env(_env_raw)
+                if _env_raw and _env_fraction is None:
+                    logger.warning(
+                        "ROCm OOM guard: ignoring %s=%r (needs a float in (0.0, 1.0]); "
+                        "using the computed cap instead",
+                        _MEM_FRACTION_ENV,
+                        _env_raw,
+                    )
+                _mem_fraction = _rocm_memory_fraction(
+                    _total_bytes, _is_unified, sys.platform, _env_raw, _driver_total or None
+                )
+                # A wheel that reports no total still gets a cap; say so rather than
+                # printing "0.0 of 0.0 GiB allowed" on the one host whose props are suspect.
+                _allowed = (
+                    f"{_total_bytes * _mem_fraction / 1024**3:.1f} of "
+                    f"{_total_bytes / 1024**3:.1f} GiB allowed"
+                    if _total_bytes > 0
+                    else "device total unreported by this wheel"
+                )
                 _torch_mem.cuda.set_per_process_memory_fraction(_mem_fraction)
                 logger.info(
-                    "ROCm OOM guard: set_per_process_memory_fraction(%.2f) — "
-                    "%s memory host (%s, %s)",
+                    "ROCm OOM guard: set_per_process_memory_fraction(%.4f) — "
+                    "%s memory host (%s, %s), %s, %s",
                     _mem_fraction,
                     "unified" if _is_unified else "discrete",
                     _dev_name,
                     _gcn_arch or "unknown arch",
+                    _allowed,
+                    f"from {_MEM_FRACTION_ENV}"
+                    if _env_fraction is not None
+                    else f"computed; override with {_MEM_FRACTION_ENV}",
                 )
+                # When the totals differ the cap was solved against the driver's, so the
+                # budget printed above is not the one enforced. Give both, and the headroom
+                # that results, which the floor can leave under the intended reserve.
+                if (
+                    _is_unified
+                    and sys.platform != "win32"
+                    and _env_fraction is None
+                    and _total_bytes > 0
+                    and _driver_total > 0
+                    and abs(_driver_total - _total_bytes) > _total_bytes // 100
+                ):
+                    logger.info(
+                        "ROCm OOM guard: props.total_memory is %.1f GiB but this torch caps "
+                        "against the driver's %.1f GiB, so the fraction is solved for that "
+                        "total and %.1f GiB stays free against the intended %.1f GiB. Adjust "
+                        "with %s.",
+                        _total_bytes / 1024**3,
+                        _driver_total / 1024**3,
+                        (_total_bytes - _mem_fraction * _driver_total) / 1024**3,
+                        _UNIFIED_OS_RESERVE_BYTES / 1024**3,
+                        _MEM_FRACTION_ENV,
+                    )
                 # Unified Windows APUs: the WDDM budget is user-raisable, but nothing on the box says so
                 # -- users see "48 GB VRAM" on a 96 GB machine. Say where the limit comes from.
                 if _is_unified and sys.platform == "win32":
@@ -4332,14 +4520,46 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
 
     Status events go out only while the status is non-empty, so the empty status the
     trainer reports on every log leaves the parent's last real status standing.
+
+    The trainer shares one TrainingProgress for metrics and status, so a status-only
+    update (an evaluation line, a warning) carries the last step's numbers unchanged.
+    The parent appends every progress event to the loss / grad-norm / eval-loss
+    histories without deduplicating the step, so those replays would plot the same
+    point again. Only a changed measurement is published; the status still is.
     """
 
     sent_warnings: set[str] = set()
+    last_metrics: list = [None]
 
     def _on_progress(progress: TrainingProgress) -> None:
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
+        # The end-of-run summary carries no loss (it is the mean, not a step), but it
+        # does carry the elapsed time including the final evaluation, checkpoint save
+        # and best-model reload, and a run stopped early never reaches total_steps, so
+        # the flag the trainer sets on that record is what marks it terminal.
+        is_terminal = bool(getattr(progress, "is_run_summary", False)) or (
+            progress.total_steps > 0 and progress.step >= progress.total_steps
+        )
+        # Wall-clock fields are excluded: they move on every call, so keeping them
+        # would make each status replay look like a new measurement.
+        metrics = (
+            progress.step,
+            progress.loss,
+            progress.learning_rate,
+            progress.grad_norm,
+            progress.num_tokens,
+            progress.epoch,
+            progress.eval_loss,
+        )
+        is_repeat = metrics == last_metrics[0]
+        if (
+            (progress.step == 0 and progress.total_steps > 0)
+            or has_train_loss
+            or has_eval_loss
+            or is_terminal
+        ) and not is_repeat:
+            last_metrics[0] = metrics
             event_queue.put(
                 {
                     "type": "progress",
@@ -4398,7 +4618,29 @@ def _create_embedding_progress_callback(
         ):
             if not logs:
                 return
-            loss_value = logs.get("loss", logs.get("train_loss", None))
+            # Trainer's end-of-run summary carries train_runtime, samples and steps per
+            # second, total_flos and memory, which nothing else here publishes. It used
+            # to reach the log only through PrinterCallback's raw stdout dict.
+            from core.training.trainer import _RESERVED_LOG_KEYS, _TRAINER_SUMMARY_KEYS
+
+            if any(k in logs for k in _TRAINER_SUMMARY_KEYS):
+                logger.info(
+                    "trainer summary",
+                    **{
+                        k: v
+                        for k, v in logs.items()
+                        if isinstance(k, str) and k not in _RESERVED_LOG_KEYS
+                    },
+                )
+            # See the note in trainer.py: "train_loss" in HF's terminal summary record is
+            # the run mean, not a step loss, so it must not become the final step.
+            loss_value = logs.get("loss")
+            if loss_value is None and logs.get("train_loss") is not None:
+                print(
+                    f"Training finished: mean train_loss={logs.get('train_loss')} "
+                    f"over {state.global_step} steps",
+                    flush = True,
+                )
             current_step = state.global_step
 
             elapsed = time.time() - training_start_time
@@ -4480,6 +4722,16 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             }
         )
         return
+
+    # datasets is only in the process now, and setup_logging ran long before it, so
+    # this is the first point where its Generating/Map bars can be quieted. Without
+    # it a local JSON/CSV/Parquet or Hub load_dataset writes them into this worker's
+    # structured log.
+    try:
+        from loggers.config import quiet_third_party_progress_bars
+        quiet_third_party_progress_bars()
+    except Exception:  # noqa: BLE001 - never let log tidying stop a run
+        pass
 
     # ── Stop signal handling ──
     _should_stop = False
@@ -4774,6 +5026,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
+    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+
     training_args_kwargs = {
         "output_dir": output_dir,
         "per_device_train_batch_size": batch_size,
@@ -4788,6 +5042,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "optim": config.get("optim", "adamw_8bit"),
         "weight_decay": config.get("weight_decay", 0.001),
         "seed": config.get("random_seed", 3407),
+        # Same reason as the UnslothTrainer path: this worker has no terminal, its
+        # stdout is teed into the server log, and _create_embedding_progress_callback
+        # already publishes every number the bar carries.
+        "disable_tqdm": _hf_stdout_progress_disabled(),
     }
 
     if max_steps_val and max_steps_val > 0:
@@ -4834,6 +5092,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             args = args,
             callbacks = [progress_callback],
         )
+        # disable_tqdm only swaps ProgressCallback for PrinterCallback, which prints a
+        # raw dict per step instead; both write to the same stdout.
+        _drop_hf_stdout_callbacks(trainer)
 
         trainer.train(resume_from_checkpoint = resume_from_checkpoint)
     except Exception as e:

@@ -1723,6 +1723,18 @@ def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
     return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
 
 
+def _quant_label_for_endian(path: str) -> Optional[str]:
+    """The file's own quant label, for ``_is_big_endian_gguf_path``, or None when unreadable.
+
+    Best-effort: with no label the caller keeps its previous argument rather than dropping the
+    endian test, which would admit a genuinely big-endian build."""
+    try:
+        from hub.utils.gguf import extract_quant_token
+        return extract_quant_token(path)
+    except Exception:  # noqa: BLE001 -- an unreadable label must not sink the resolution
+        return None
+
+
 def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     """Return main GGUF files matching a requested variant.
 
@@ -1735,15 +1747,33 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         for f in files
         if f.lower().endswith(".gguf")
         and not _is_companion_gguf_path(f)
-        and not _is_big_endian_gguf_path(f, variant_key)
+        # The endian predicate reads a quant TOKEN -- it decides whether the quant came from the
+        # parent directory only -- so it gets the file's own label, never the requested key. Handed
+        # a path-qualified key it cannot find that string in either the basename or the parent and
+        # reads distilled/Q4_K_M/foo-be.gguf as big-endian, dropping the one file the key owns:
+        # the row is advertised and downloadable but never resolves for loading. Same reason
+        # gguf_plan and the auto-download map pass the label here.
+        and not _is_big_endian_gguf_path(f, _quant_label_for_endian(f) or variant_key)
     ]
     if not variant_key:
         return sorted(main_files)
 
     try:
-        from utils.models.model_config import _extract_quant_label
+        from utils.models.model_config import _extract_quant_label, _gguf_variant_key
     except Exception:
         _extract_quant_label = None
+        _gguf_variant_key = None
+
+    if _gguf_variant_key is not None:
+        try:
+            # The variant's own files first. In a repo holding several checkpoints at
+            # one quant the label alone names all of them, and handing llama-server a
+            # mixed set makes it read another checkpoint's weights as a shard.
+            owned = sorted(f for f in main_files if _gguf_variant_key(f).lower() == variant_key)
+            if owned:
+                return owned
+        except Exception as e:
+            logger.warning("Failed to derive GGUF variant keys: %s", e)
 
     if _extract_quant_label is not None:
         try:
@@ -2776,25 +2806,6 @@ def _emitted_n_batch(n_batch: Optional[int], n_parallel: int) -> Optional[int]:
     return max(int(n_batch), max(2, int(n_parallel or 1)))
 
 
-def _repatch_parallel_slots(argv: list[str], n_parallel: int, n_batch: Optional[int]) -> bool:
-    """Point ``--parallel`` at ``n_parallel``, re-raising ``--batch-size`` to match.
-
-    The batch flag is emitted from the slot count as it stood then, so a later
-    restore that hands slots back would leave the batch under the new floor and
-    abort the very fallback the restore exists to make work. Returns whether
-    ``--parallel`` was found (callers rebind their own n_parallel on that).
-    """
-    try:
-        _at = argv.index("--parallel")
-    except ValueError:
-        return False
-    argv[_at + 1] = str(n_parallel)
-    _batch = _emitted_n_batch(n_batch, n_parallel)
-    if _batch is not None and "--batch-size" in argv:
-        argv[argv.index("--batch-size") + 1] = str(_batch)
-    return True
-
-
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -3323,6 +3334,11 @@ class LlamaCppBackend:
         # spawned, so a save landing in that window still has a launch to
         # compare against.
         self._memory_launch_pending: bool = False
+        # True when the resident model came from an explicit UI load rather than
+        # the OpenAI API, so the idle unload can be scoped to API-loaded models.
+        # Not on GgufLoadIntent: that is compared for equality to detect
+        # duplicate loads, and a provenance field there would force a reload.
+        self._loaded_by_user_action: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
@@ -6456,11 +6472,12 @@ class LlamaCppBackend:
         flash_attn: bool = True,
         split_extra_bytes: int = 0,
         ubatch_for_slots: Optional[Callable[[int], Optional[int]]] = None,
+        mtp_bytes_for_slots: Optional[Callable[[int, Optional[int]], int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count in [1, n_parallel) whose fully-on-GPU footprint fits,
         so Unsloth keeps the model on GPU (-ngl -1) instead of --fit on, which offloads layers
         to host and collapses decode ~3x (oobabooga #6718). ``base_footprint_bytes`` is the
-        slot-independent footprint (weights + soft overhead + MTP + context-linear compute,
+        slot-independent footprint (weights + soft overhead + context-linear compute,
         minus the folded compute buffer); each candidate re-adds the slot-sized compute buffer
         and KV, then re-selects GPUs like the explicit-context path -- ``split_extra_bytes``
         included, so a multi-GPU candidate is re-checked at the split rate. Returns
@@ -6470,7 +6487,14 @@ class LlamaCppBackend:
         --batch-size is raised to max(slots, 2), and llama.cpp caps the micro-batch
         against it, so a batch below the requested slot count shrinks as the candidates
         do. Holding it at the requested count made a fitting candidate look too big and
-        dropped the load to --fit offload."""
+        dropped the load to --fit offload.
+        ``mtp_bytes_for_slots(slots, ubatch)`` does the same for the MTP reserve, which is
+        NOT slot-independent: compact SWA scales its window allowance by the slot count
+        under kv_unified and adds one micro-batch, and an MLA target with recurrent (KDA)
+        layers charges per slot. It takes the candidate micro-batch as well as the slot
+        count, since a reduced candidate lowers the batch floor and so the ubatch too;
+        pricing the reserve at the requested pair over-charged every candidate, so one that
+        fits could be rejected and the load kept --fit."""
         for slots in range(n_parallel - 1, 0, -1):
             _ub = ubatch_for_slots(slots) if ubatch_for_slots else n_ubatch
             cb = self._estimate_compute_buffer_bytes(
@@ -6481,6 +6505,7 @@ class LlamaCppBackend:
             total = (
                 base_footprint_bytes
                 + cb
+                + (mtp_bytes_for_slots(slots, _ub) if mtp_bytes_for_slots else 0)
                 + self._estimate_kv_cache_bytes(
                     effective_ctx,
                     cache_type_kv,
@@ -7300,9 +7325,21 @@ class LlamaCppBackend:
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
+            # Deliberately NOT start_new_session, as with the component
+            # installer: the desktop stops this backend by signalling its
+            # process group and force-kills it after five seconds, so a session
+            # of its own would leave the shim and the visual server holding the
+            # GPU until the next launch sweeps them.
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # macOS has no parent-death signal, so the kwargs above are empty there and
+        # only this record lets the next startup reap a runner holding the GPU.
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(self._process.pid)
+        except Exception as e:
+            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -9413,33 +9450,12 @@ class LlamaCppBackend:
                     n_parallel,
                     n_parallel,
                 )
-                n_parallel = 1
+                n_parallel = 1  # allow-slot-clamp: the build cannot serve more
 
-            # MTP is documented as single-slot: the model cards ship "-np 1" and say
-            # "-np > 1 [...] not yet supported with MTP". The MTP state is per sequence,
-            # so what breaks at more slots is the draft: unequal per-slot token counts
-            # make split_equal reorder the ubatch while the nextn hidden states are
-            # still read by raw token index, so slots read each other's rows, acceptance
-            # collapses and MTP ends up slower than no speculation. Clamped beside the
-            # --kv-unified clamp so the KV fit matches.
-            # The env counts: llama.cpp appends spec types rather than replacing them
-            # (--spec-type inserts, --spec-default push_backs, enablement is a find over
-            # the vector), so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really does
-            # launch MTP and no later flag can clear it.
-            _pv_extras_clamped_slots = 0
-            if n_parallel > 1 and _extra_args_requests_mtp(
-                extra_args, env = _child_spec_env(extra_args)
-            ):
-                # Kept so the paravirtual drafter drop can hand the slots back if it
-                # strips the very spec group this clamped for.
-                _pv_extras_clamped_slots = n_parallel
-                logger.warning(
-                    "MTP speculative decoding (--spec-type draft-mtp) does not support "
-                    "%d parallel slots; using 1. Load without MTP to serve chats in "
-                    "parallel.",
-                    n_parallel,
-                )
-                n_parallel = 1
+            # MTP does not clamp the slots. #7717 did, for a draft-acceptance collapse, but on
+            # b10310 four MTP slots hit 1.97x the batch throughput of one, beating four without.
+            # llama.cpp#26031 reports concurrent MTP garbling on hybrid archs; it did not
+            # reproduce here (qwen35 and qwen35moe on CUDA, 24 staggered uneven requests).
 
             # ── Vulkan-ordinal preflight (BEFORE the Phase 1 kill) ────────
             # An explicit Vulkan pin the ggml probe never enumerated cannot be honored.
@@ -10258,8 +10274,21 @@ class LlamaCppBackend:
                                 )
                                 return v if v is not None else 0
 
-                    def _mtp_bytes(ctx: int) -> int:
-                        return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
+                    def _mtp_bytes(
+                        ctx: int,
+                        slots: Optional[int] = None,
+                        ubatch: Optional[int] = None,
+                    ) -> int:
+                        # slots/ubatch override the closure's requested pair: the reserve
+                        # scales with both for compact SWA and MLA+recurrent, so the slot
+                        # fit re-prices it per candidate.
+                        if mtp_overhead_fn is None:
+                            return 0
+                        if slots is None:
+                            return mtp_overhead_fn(ctx)
+                        return mtp_overhead_fn(
+                            ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
+                        )
 
                     def _kv_bytes(ctx: int) -> int:
                         return self._estimate_kv_cache_bytes(
@@ -10807,13 +10836,10 @@ class LlamaCppBackend:
                         and self._can_estimate_kv()
                         and effective_ctx > 0
                     ):
-                        # Slot-independent footprint (folded compute buffer swapped out so the
-                        # helper re-adds a slot-sized one per candidate).
+                        # Slot-independent footprint (folded compute buffer and the MTP
+                        # reserve swapped out so the helper re-prices both per candidate).
                         _base_footprint = (
-                            model_size_fit
-                            - _compute_buffer_pipeline
-                            + _mtp_bytes(effective_ctx)
-                            + _cc_bytes(effective_ctx)
+                            model_size_fit - _compute_buffer_pipeline + _cc_bytes(effective_ctx)
                         )
                         _gi_slots, _uf_slots, _slots = self._slots_that_fit_on_gpu(
                             n_parallel,
@@ -10831,6 +10857,7 @@ class LlamaCppBackend:
                             flash_attn = planned_flash_attn,
                             split_extra_bytes = _cc_split_extra(effective_ctx),
                             ubatch_for_slots = _ubatch_for_slots,
+                            mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(effective_ctx, s, ub),
                         )
                         if not _uf_slots:
                             logger.info(
@@ -11289,19 +11316,6 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                        # The slots were clamped for an MTP that just went away, so give
-                        # them back. Restored before the spec flags are rebuilt, so the
-                        # backstop below re-clamps if Unsloth's own resolution is MTP.
-                        if _pv_extras_clamped_slots > 1 and not _extra_args_requests_mtp(
-                            extra_args, env = _child_spec_env(extra_args)
-                        ):
-                            n_parallel = _pv_extras_clamped_slots
-                            _repatch_parallel_slots(cmd, n_parallel, n_batch)
-                            logger.info(
-                                "Restoring %d parallel slots: the drafter drop left a "
-                                "non-MTP server.",
-                                n_parallel,
-                            )
                 spec_flags = self._build_speculative_flags(
                     speculative_type = speculative_type,
                     spec_draft_n_max = spec_draft_n_max,
@@ -11380,37 +11394,6 @@ class LlamaCppBackend:
                 # Emitted after the pass-through extras too, same last-wins reason.
                 if _paravirtual_cpu_forced:
                     _pv_split_mode_pin = _paravirtual_split_mode_pin(extra_args)
-
-                # Backstop for the MTP clamp above, which only sees an explicit
-                # --spec-type in extra_args; speculative_type="auto"/"mtp" is not
-                # resolved until _build_speculative_flags runs, here. The KV fit was
-                # sized for more slots, so this over-reserves, never under-reserves.
-                # Skipped when the user's extras own --spec-type: _build_speculative_flags
-                # emits nothing then, and judging the empty flag list would fall through
-                # to LLAMA_ARG_SPEC_TYPE and clamp a launch that is not MTP at all.
-                _mtp_clamped_slots = 0
-                if (
-                    n_parallel > 1
-                    and not _extra_args_set_spec_type(extra_args)
-                    and _extra_args_requests_mtp(spec_flags, env = _child_spec_env(extra_args))
-                ):
-                    if "--parallel" in cmd:
-                        logger.warning(
-                            "%s resolved to MTP speculative decoding, which does not "
-                            "support %d parallel slots; using 1.",
-                            model_identifier,
-                            n_parallel,
-                        )
-                        # Through the same helper as the restores: the floor is meant to
-                        # be the smallest legal batch, so dropping to one slot must undo
-                        # a raise the old count forced. Leaving it launched -b 64 for a
-                        # requested -b 1 and made the recorded micro-batch, derived from
-                        # the clamped count, describe a graph 32x smaller than the child's.
-                        _repatch_parallel_slots(cmd, 1, n_batch)
-                        # _commit_effective_parallel_slots reports what launched, so
-                        # rebind rather than only patching cmd.
-                        _mtp_clamped_slots = n_parallel
-                        n_parallel = 1
 
                 # Apply custom chat template override if provided.
                 self._chat_template_override = chat_template_override
@@ -12417,26 +12400,7 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
-                        # The extras owned --spec-type, so the clamp that took the slots
-                        # was the extras one and _mtp_clamped_slots stayed 0. The strip
-                        # above makes this retry genuinely non-MTP, so hand those back
-                        # too, or --parallel 1 sticks and the requested-vs-requested
-                        # dedupe keeps every later load on the same one-slot server.
-                        # Only where no GPU had to admit them: that clamp runs before the
-                        # slot fit, so on a GPU box the count was never budgeted and the
-                        # retry would size buffers nothing approved.
-                        if not _detected_gpus:
-                            _mtp_clamped_slots = max(_mtp_clamped_slots, _pv_extras_clamped_slots)
                     fallback_cmd = cmd[:_spec_start] + ["--spec-default"] + _fb_tail
-                    # fallback_cmd inherits the MTP slot clamp, but this retry is not
-                    # MTP: hand back the slots the KV fit was sized for, or --parallel N
-                    # silently serves one chat at a time (and the requested-vs-requested
-                    # dedupe makes that stick). Later retries derive from this argv, so
-                    # rebind n_parallel now.
-                    if _mtp_clamped_slots > 1 and _repatch_parallel_slots(
-                        fallback_cmd, _mtp_clamped_slots, n_batch
-                    ):
-                        n_parallel = _mtp_clamped_slots
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
@@ -13299,6 +13263,7 @@ class LlamaCppBackend:
             self._memory_policy_active = False
             self._memory_mlock_applicable = True
             self._memory_launch_pending = False
+            self._loaded_by_user_action = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")
@@ -13367,6 +13332,47 @@ class LlamaCppBackend:
                     torch.cuda.empty_cache()
             return True
 
+    @staticmethod
+    def _leading_process_group(pid):
+        """The pid's own process group, when it leads one. None otherwise."""
+        if not pid or os.name != "posix" or not hasattr(os, "getpgid"):
+            return None
+        try:
+            pgid = os.getpgid(pid)
+        except OSError:
+            return None
+        return pgid if pgid == pid else None
+
+    @staticmethod
+    def _kill_process_group(pgid):
+        """Take down what the leader left behind, if anything is still there."""
+        if pgid is None or not hasattr(os, "killpg"):
+            return
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _collect_descendants(pid):
+        """The server's own children, for the kill below. Empty when unreadable."""
+        try:
+            from utils.process_lifetime import collect_descendants
+            return collect_descendants(pid)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _terminate_descendants(collected):
+        """The diffusion shim's visual server, and anything else it started."""
+        if not collected:
+            return
+        try:
+            from utils.process_lifetime import terminate_descendants
+            terminate_descendants(collected, timeout = 5.0)
+        except Exception as e:
+            logger.debug(f"Could not terminate server descendants: {e}")
+
     def _kill_process(self):
         """Terminate the subprocess if running."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
@@ -13386,6 +13392,13 @@ class LlamaCppBackend:
         terminable = hasattr(self._process, "terminate")
         if not terminable:
             logger.debug("no terminable llama-server process to kill; clearing state")
+        # Both read before the terminate below: getpgid stops answering once the
+        # wait reaps the leader, and the shim's children are reparented the
+        # moment it exits. This is the only stop the desktop shutdown waits for,
+        # so the visual server has to be named while that link still exists.
+        _pid = getattr(self._process, "pid", None)
+        _pgid = self._leading_process_group(_pid)
+        _descendants = self._collect_descendants(_pid)
         try:
             if terminable:
                 self._process.terminate()
@@ -13406,11 +13419,25 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
+            self._kill_process_group(_pgid)
+            self._terminate_descendants(_descendants)
             # getattr: teardown must tolerate a partially-built backend (failed
             # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
+            # Drop it from the lifetime record only once it is confirmed gone.
+            # A server that survived a failed kill has to stay recorded, or the
+            # next startup sweep cannot reap it. The record stores a start-time
+            # identity, so a recycled pid is never signalled either way.
+            _killed_pid = getattr(self._process, "pid", None)
+            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            if _killed_pid is not None and _exited:
+                try:
+                    from utils.process_lifetime import forget_pid
+                    forget_pid(_killed_pid)
+                except Exception:
+                    pass
             self._process = None
             self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
@@ -13454,6 +13481,14 @@ class LlamaCppBackend:
         since been recycled to a different process (see ``_pid_start_identity``).
         A bare ``pid`` (no identity) is still accepted on read for compatibility.
         """
+        # Track it generically too: the pidfile holds one server, while the
+        # process-lifetime record covers every child and is what the startup
+        # sweep reads where there is no parent-death signal (macOS).
+        try:
+            from utils.process_lifetime import adopt_pid
+            adopt_pid(pid)
+        except Exception as e:
+            logger.debug(f"Could not track llama-server for lifetime sweep: {e}")
         path = cls._server_pidfile_path()
         if path is None:
             return

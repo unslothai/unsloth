@@ -86,6 +86,8 @@ export const fr = {
       recipes: "Recettes",
       images: "Images",
       video: "Vidéo",
+      trainChecking: "Vérification de la prise en charge de l'entraînement sur cette machine...",
+      videoChecking: "Vérification de la prise en charge de la vidéo sur cette machine...",
       more: "Plus",
       customizeSidebar: "Personnaliser la barre latérale",
       newBadge: "Nouveau",
@@ -390,6 +392,9 @@ export const fr = {
           "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
         keepKvDescription:
           "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        apiOnly: "Décharger uniquement les modèles chargés par l'API",
+        apiOnlyDescription:
+          "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Studio et ne libère que ceux chargés par une requête API.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -928,6 +933,9 @@ export const fr = {
         allowNetworkAccess: "Autoriser l'accès réseau du canvas",
         allowNetworkAccessDescription:
           "Permettre aux aperçus Canvas de charger des scripts, des styles, des polices, des médias et d'autres ressources depuis des CDN. Laissez cette option désactivée pour des aperçus entièrement hors ligne.",
+        blockedBanner: "{count} ressource externe bloquée depuis {hosts}.",
+        blockedBannerPlural: "{count} ressources externes bloquées depuis {hosts}.",
+        blockedBannerAction: "Autoriser pour ce Canvas",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -1412,6 +1420,7 @@ export const fr = {
       history: "Historique",
     },
     loadingRuntime: "Chargement de l'environnement d'entraînement...",
+    checkingSupport: "Vérification de la prise en charge de l'entraînement sur cette machine...",
     backToHistory: "Retour à l'historique",
     sections: {
       model: "Modèle",

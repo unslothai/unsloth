@@ -85,6 +85,8 @@ export const ja = {
       recipes: "レシピ",
       images: "画像",
       video: "動画",
+      trainChecking: "このマシンのトレーニング対応を確認しています...",
+      videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",
       customizeSidebar: "サイドバーをカスタマイズ",
       newBadge: "新機能",
@@ -369,6 +371,9 @@ export const ja = {
         keepKv: "アイドル時の自動アンロードをまたいでチャットのコンテキストを保持",
         keepKvDescription:
           "アイドル時の自動アンロードの前に KV キャッシュを保存し、再開したチャットが履歴を読み直さずに済むようにします。ディスク使用量は最大 10 GB です。",
+        apiOnly: "API が読み込んだモデルのみアンロード",
+        apiOnlyDescription:
+          "アイドル時の自動アンロードでは、Studio から自分で読み込んだモデルはメモリに残し、API リクエストが読み込んだモデルだけを解放します。",
       },
       previewSharing: {
         sectionTitle: "プレビュー共有",
@@ -884,6 +889,9 @@ export const ja = {
           "Canvas モードでは完全な HTML を自動的に折りたたみます。Canvas がオフのときも、コードフェンスで囲まれた HTML ドキュメントを折りたたむには、この設定をオンにします。",
         allowNetworkAccess: "Canvas のネットワークアクセスを許可",
         allowNetworkAccessDescription: "CanvasのプレビューがCDNからスクリプト、スタイル、フォント、メディア、ネットワークリソースを読み込むことを許可します。完全にオフラインでプレビューする場合はオフのままにしてください。",
+        blockedBanner: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerPlural: "{hosts} からの外部リソース {count} 件をブロックしました。",
+        blockedBannerAction: "この Canvas で許可",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
@@ -1339,6 +1347,7 @@ export const ja = {
       history: "履歴",
     },
     loadingRuntime: "トレーニングランタイムを読み込み中...",
+    checkingSupport: "このマシンのトレーニング対応を確認しています...",
     backToHistory: "履歴に戻る",
     sections: {
       model: "モデル",

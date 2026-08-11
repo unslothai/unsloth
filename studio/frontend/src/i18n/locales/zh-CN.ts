@@ -81,6 +81,8 @@ export const zhCN = {
       recipes: "配方",
       images: "图像",
       video: "视频",
+      trainChecking: "正在检查此设备是否支持训练...",
+      videoChecking: "正在检查此设备是否支持视频生成...",
       more: "更多",
       customizeSidebar: "自定义侧边栏",
       newBadge: "新",
@@ -360,6 +362,9 @@ export const zhCN = {
         keepKv: "空闲卸载后保留聊天上下文",
         keepKvDescription:
           "在空闲卸载前保存 KV 缓存，让恢复的聊天无需重新读取历史。最多占用 10 GB 磁盘空间。",
+        apiOnly: "仅卸载由 API 加载的模型",
+        apiOnlyDescription:
+          "空闲卸载会将你在 Studio 中加载的模型保留在内存中，只释放由 API 请求加载的模型。",
       },
       previewSharing: {
         sectionTitle: "预览分享",
@@ -873,6 +878,9 @@ export const zhCN = {
         allowNetworkAccess: "允许 Canvas 访问网络",
         allowNetworkAccessDescription:
           "允许 Canvas 预览从 CDN 加载脚本、样式、字体、媒体和网络资源。若需完全离线预览请保持关闭。",
+        blockedBanner: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerPlural: "已阻止来自 {hosts} 的 {count} 个外部资源。",
+        blockedBannerAction: "允许此 Canvas",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
@@ -1317,6 +1325,7 @@ export const zhCN = {
       history: "历史",
     },
     loadingRuntime: "正在加载训练运行时...",
+    checkingSupport: "正在检查此设备是否支持训练...",
     backToHistory: "返回历史",
     sections: {
       model: "模型",

@@ -40,6 +40,7 @@ from core.inference.video_families import (
     snap_video_size,
     validate_video_request_shape,
 )
+from core.inference.video_minimax_h3 import h3_conditioning_mode
 from routes.video import router as video_router
 
 # LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
@@ -125,6 +126,63 @@ def test_wan_lattice_is_step_4_not_step_8():
     validate_video_request_shape(wan, num_frames = 85)
     with pytest.raises(ValueError):
         validate_video_request_shape(LTX2, num_frames = 85)
+
+
+def test_the_lattice_reads_frame_offset_not_a_hardcoded_one():
+    """MiniMax-H3's lattice is 17k + 5, not 17k + 1. A gate written against k*step+1
+    refuses every count H3's own duration select offers, its default of 124 included,
+    so the offset has to come from the family the way snap_num_frames reads it."""
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert (h3.frame_step, h3.frame_offset) == (17, 5)
+    # The three durations the interface offers (5s / 10s / 14.4s at 24 fps, snapped up).
+    for count in (124, 243, 345):
+        assert (count - h3.frame_offset) % h3.frame_step == 0
+        validate_video_request_shape(h3, num_frames = count)
+    # A count on the WRONG offset (17k + 1) is what the old rule would have accepted.
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 137)
+    message = str(excinfo.value)
+    assert "k * 17 + 5" in message
+    assert "124" in message and "141" in message
+
+
+def test_a_suggested_count_never_falls_outside_the_family_range():
+    """Naming a lattice point the family cannot load is the same dead end as naming one
+    past the request ceiling. H3 starts at 124, so 90 (a real 17k+5 point) is not an answer."""
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 100)
+    message = str(excinfo.value)
+    assert "90" not in message
+    assert "124" in message
+    # Above the family ceiling of 345 there is nothing to suggest, so name the range.
+    with pytest.raises(ValueError) as excinfo:
+        validate_video_request_shape(h3, num_frames = 400)
+    assert "supported counts run from 124 to 345" in str(excinfo.value)
+
+
+def test_the_frame_gate_enforces_the_range_it_names():
+    """A lattice point outside the family's trained window is refused, not snapped.
+
+    The gate already computed the floor and the ceiling to WORD its lattice error, then accepted
+    counts outside them: 5, 90 and 107 are all real 17k + 5 points below H3's floor of 124 and were
+    snapped up to 124, and 362 and 872 were snapped down to 345. On the native path that turns
+    num_frames=5 into a 25x compute surprise, silently.
+    """
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert (h3.min_num_frames, h3.max_num_frames) == (124, 345)
+    for count in (5, 90, 107, 362, 872):
+        # Each is genuinely on the lattice, so only the range check can catch it.
+        assert (count - h3.frame_offset) % h3.frame_step == 0
+        with pytest.raises(ValueError) as excinfo:
+            validate_video_request_shape(h3, num_frames = count)
+        assert "counts run from 124 to 345" in str(excinfo.value)
+    # The three counts the interface offers stay valid.
+    for count in (124, 243, 345):
+        validate_video_request_shape(h3, num_frames = count)
+    # Families that declare no window are untouched: LTX-2 keeps its whole lattice.
+    for count in (1, 9, 121, 1017):
+        validate_video_request_shape(LTX2, num_frames = count)
 
 
 def test_omitted_fields_are_always_valid():
@@ -223,6 +281,14 @@ class _ShapeFakeBackend(video_module.VideoBackend):
             "has_audio": fam.has_audio,
             "steps": int(kwargs.get("steps") or fam.default_steps),
             "guidance": fam.default_guidance,
+            # The real generate() records how the clip was conditioned and the job's persist step
+            # reads it unconditionally, so the stub has to speak the same contract or every route
+            # case here dies in persist with a KeyError instead of exercising the gate. Derived
+            # from the shared helper rather than a literal, so a new conditioning mode cannot
+            # leave this stub quietly returning a spelling the gallery no longer accepts.
+            "conditioning": h3_conditioning_mode(),
+            "flow_shift": kwargs.get("flow_shift"),
+            "audio_flow_shift": kwargs.get("audio_flow_shift"),
         }
 
 
@@ -394,3 +460,99 @@ def test_a_family_swap_cannot_slip_between_the_check_and_the_job(backend):
     with pytest.raises(ValueError):
         backend.begin_generate(prompt = "a cat", width = 704, height = 1216)
     assert not backend._generate_job_active, "a refused shape must not reserve the job slot"
+
+
+# ── the half-specified canvas, with and without a keyframe ────────────────────
+
+
+def _tiny_png_b64() -> str:
+    """A 2x1 PNG, enough for the keyframe branch of the request model."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 1), (255, 0, 0)).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+@pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
+def test_a_half_specified_canvas_stays_valid_without_a_keyframe(axes):
+    """The regression this pins: the paired-axes rule was written for the keyframe canvas but
+    ran as an unconditional request validator, so every existing LTX / Wan / Hunyuan /
+    prompt-only H3 client that sends one axis started getting a 422. The backend deliberately
+    resolves the missing axis from the family's default preset (validate_video_request_shape
+    documents it, and _resolve_keyframes implements it), so these calls must still be accepted.
+    """
+    from models.inference import VideoGenerateRequest
+
+    req = VideoGenerateRequest(prompt = "a cat", **axes)
+    assert (req.width, req.height) == (axes.get("width"), axes.get("height"))
+
+
+@pytest.mark.parametrize("axes", [{"width": 768}, {"height": 512}])
+def test_a_half_specified_canvas_is_refused_with_a_keyframe(axes):
+    """The rule still has to hold where it means something: with a keyframe present
+    _resolve_keyframes matches the SOURCE aspect whenever either axis is missing, so the axis
+    the caller did send would be silently discarded. Refuse rather than draw another recipe."""
+    import pydantic
+    from models.inference import VideoGenerateRequest
+
+    with pytest.raises(pydantic.ValidationError, match = "sent together"):
+        VideoGenerateRequest(prompt = "a cat", first_frame = _tiny_png_b64(), **axes)
+
+
+def test_both_axes_and_neither_stay_valid_with_a_keyframe():
+    """The two shapes the rule exists to allow: an explicit canvas, and "match source"."""
+    from models.inference import VideoGenerateRequest
+
+    frame = _tiny_png_b64()
+    assert (
+        VideoGenerateRequest(prompt = "a cat", first_frame = frame, width = 768, height = 512).width == 768
+    )
+    assert VideoGenerateRequest(prompt = "a cat", first_frame = frame).width is None
+
+
+# ── on-lattice but out of the family's range ─────────────────────────────────
+
+
+@pytest.mark.parametrize("count", [107, 362])
+def test_an_on_lattice_count_outside_the_family_range_is_refused(count):
+    """The hole this closes: the gate judged the LATTICE only, while snap_num_frames also CLAMPS
+    to min/max_num_frames. MiniMax-H3 is 17k + 5 over 124..345, so 107 and 362 both sit exactly
+    on the lattice, passed validation, and were then rendered as 124 and 345 -- the API
+    accepting one recipe and drawing another, which is the whole reason this check exists."""
+    from core.inference.video_families import (
+        VideoShapeError,
+        detect_video_family,
+        snap_num_frames,
+        validate_video_request_shape,
+    )
+
+    fam = detect_video_family("", override = "minimax-h3")
+    assert (count - fam.frame_offset) % fam.frame_step == 0, "the point of the case is on-lattice"
+    assert snap_num_frames(fam, count) != count, "and that the snap would have moved it"
+    with pytest.raises(VideoShapeError, match = "not a supported frame count"):
+        validate_video_request_shape(fam, num_frames = count)
+
+
+@pytest.mark.parametrize("count", [124, 141, 345])
+def test_in_range_lattice_counts_still_pass(count):
+    """The endpoints and one interior point stay valid, so the range check did not narrow the
+    family to less than it actually offers."""
+    from core.inference.video_families import detect_video_family, validate_video_request_shape
+
+    fam = detect_video_family("", override = "minimax-h3")
+    validate_video_request_shape(fam, num_frames = count)
+
+
+def test_a_family_without_a_declared_range_is_unaffected():
+    """Every pre-existing family declares min 1 and no max, so the added bound must be inert for
+    them: the request model's own ceiling stays the only upper limit."""
+    from core.inference.video_families import detect_video_family, validate_video_request_shape
+
+    fam = detect_video_family("", override = "ltx-2")
+    assert fam.min_num_frames == 1 and fam.max_num_frames is None
+    for k in (0, 1, 5, 20):
+        validate_video_request_shape(fam, num_frames = k * fam.frame_step + fam.frame_offset)
