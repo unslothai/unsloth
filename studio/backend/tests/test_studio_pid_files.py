@@ -843,6 +843,61 @@ def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypa
     assert events == [("lock", False), ("unlock", True)]
 
 
+def test_a_busy_lock_publishes_then_waits_for_the_clear_to_finish(tmp_path, monkeypatch):
+    # Publishing unlocked keeps this backend visible to sibling probes, but
+    # returning straight away would let the caller import and compile into a
+    # cache the holder is still deleting. The marker goes out first, then the
+    # wait, so both halves hold.
+    marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
+    timeouts = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        timeouts.append((timeout, marker.exists()))
+        # Busy the first time (the publish), free the second (the wait).
+        yield cache_cleanup.LOCK_BUSY if len(timeouts) == 1 else cache_cleanup.LOCK_HELD
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert timeouts == [
+        (30.0, False),
+        (run._CACHE_CLEAR_WAIT_SECONDS, True),
+    ], "the wait must come after the marker is on disk"
+
+
+def test_a_lock_taken_at_once_does_not_wait(tmp_path, monkeypatch):
+    # Nobody is clearing, so there is nothing to wait for.
+    calls = []
+
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        calls.append(timeout)
+        yield cache_cleanup.LOCK_HELD
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+
+    run.write_startup_marker()
+
+    assert calls == [30.0]
+
+
+def test_a_clear_that_never_finishes_still_lets_the_backend_start(tmp_path, monkeypatch):
+    # Refusing to start is worse for the user than starting on a cache that may
+    # lose files, so the wait is bounded and startup continues past it.
+    @contextlib.contextmanager
+    def _lock(timeout = None):
+        yield cache_cleanup.LOCK_BUSY
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", _lock)
+    monkeypatch.setattr(run, "_CACHE_CLEAR_WAIT_SECONDS", 0.0)
+
+    run.write_startup_marker()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+
 def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monkeypatch):
     # ENOSYS is the lock being unsupported, not a sibling holding it. Retrying it
     # to a timeout and answering busy would keep the cache forever, since busy is

@@ -1014,7 +1014,8 @@ def write_startup_marker() -> None:
     # runs out is still right, because a marker that never appears makes this
     # backend invisible, which is the failure the marker exists to prevent.
     with compiled_cache_lock(timeout = 30.0) as lock_state:
-        if lock_state == LOCK_BUSY:
+        published_unlocked = lock_state == LOCK_BUSY
+        if published_unlocked:
             logger.warning(
                 "Publishing the startup marker without the cache lock: another backend "
                 "has held it for 30s"
@@ -1034,8 +1035,40 @@ def write_startup_marker() -> None:
     import atexit
 
     # Registered here rather than beside the pid-file hook: startup can fail
-    # between these two points, and the marker has to go either way.
+    # between these two points, and the marker has to go either way. Before the
+    # wait below, so an interrupt during it still takes the marker back.
     atexit.register(_remove_startup_marker)
+    if published_unlocked:
+        _wait_out_a_running_cache_clear(compiled_cache_lock, LOCK_BUSY)
+
+
+# A clear is an rmtree of one directory. Five minutes is not how long that takes
+# even on network storage; it is how long to keep waiting before deciding that
+# refusing to start is worse for the user than starting on a cache that may lose
+# files underneath it.
+_CACHE_CLEAR_WAIT_SECONDS = 300.0
+
+
+def _wait_out_a_running_cache_clear(compiled_cache_lock, lock_busy) -> None:
+    """Block until whoever is clearing the compiled cache has finished.
+
+    The marker is already published, so this backend is visible to every sibling
+    probe from here on, which is what publishing unlocked bought. What it must
+    not do is return to a caller that immediately imports and compiles into a
+    cache another backend is still deleting: that is the cross-backend race the
+    lock exists to close. Taking the lock and dropping it again is the wait.
+
+    The lock is an OS file lock, released when its holder exits, so a crashed
+    backend cannot hold this here.
+    """
+    with compiled_cache_lock(timeout = _CACHE_CLEAR_WAIT_SECONDS) as state:
+        if state == lock_busy:
+            logger.warning(
+                "Starting while another backend is still clearing the compiled cache: "
+                "it has held the lock for %ss. Compiled modules may be removed underneath "
+                "this one and recompiled.",
+                int(30.0 + _CACHE_CLEAR_WAIT_SECONDS),
+            )
 
 
 # Enough attempts to outlast the usual Windows holder (an indexer or a scanner
