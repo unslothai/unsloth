@@ -1505,16 +1505,17 @@ function GgufVariantExpander({
         continue;
       }
       // The recommended quant is the representative of its own group when it
-      // has one; otherwise the group's first row stands.
-      if (
-        !effectiveRecommended.has(current.quant) &&
-        effectiveRecommended.has(variant.quant)
-      ) {
+      // has one; otherwise the group's first row stands. Keyed by group, not
+      // the flattened set: two families in one neutral repo can share quant
+      // names, so global membership would let the other group's pick stand in
+      // here and resolve companions against the wrong base repo.
+      const recommended = effectiveRecommendedByGroup.get(key);
+      if (current.quant !== recommended && variant.quant === recommended) {
         byKey.set(key, variant);
       }
     }
     return Array.from(byKey.values());
-  }, [displayVariants, effectiveRecommended]);
+  }, [displayVariants, effectiveRecommendedByGroup]);
   const [companionBytesByKey, setCompanionBytesByKey] = useState<
     Map<string, number>
   >(() => new Map());

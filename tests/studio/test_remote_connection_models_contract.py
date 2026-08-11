@@ -70,7 +70,11 @@ def test_connections_hydrate_on_startup():
     # nothing.
     bootstrap = BOOTSTRAP.read_text(encoding = "utf-8")
     assert "syncExternalProvidersFromBackend(providers" in bootstrap
-    assert "bootstrapPersistedCredentials()" in ROOT_ROUTE.read_text(encoding = "utf-8")
+    # The call alone is not enough: it lives inside CredentialBootstrapGate, so
+    # dropping the wrapper stops hydration while the call still exists.
+    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+    assert "bootstrapPersistedCredentials()" in root
+    assert "<CredentialBootstrapGate>" in root
     assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 
 

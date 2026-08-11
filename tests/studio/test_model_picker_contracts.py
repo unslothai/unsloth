@@ -1702,8 +1702,13 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     # than asserting on a body that no longer holds it.
     assert "hasUnknownRecord(" in fn
     # The caller still snapshots the ids BEFORE the POST and passes them in.
+    # Pin the data flow, not three strings that can each be present while the
+    # baseline handed to the probe is a fresh one taken after the POST.
     assert "new Set(galleryCache.images.map((image) => image.id))" in src
-    assert "newRecordProbeBaseline(" in src
+    baseline = src.index("const probeBaseline = newRecordProbeBaseline(")
+    assert baseline < src.index("await generateDiffusionImage(", baseline)
+    assert "settleLostGeneration(() => isMounted.current, probeBaseline)" in src
+    assert "hasUnknownRecord(\n        baseline," in fn
 
     probe = _read("lib/gallery-flags.ts")
     # An unknown row is the proof, and only an unpinned one counts.
@@ -3373,13 +3378,16 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     )
     # Representatives are derived per key, not once for the listing.
     group = src.split("const footprintVariants = useMemo(", 1)[1]
-    group = group.split("}, [displayVariants, effectiveRecommended]);", 1)[0]
+    group = group.split("}, [displayVariants, effectiveRecommendedByGroup]);", 1)[0]
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
-    # The recommended quant still wins, but only inside its own group.
-    # effectiveRecommended became a Set, so the comparison is a membership test.
-    assert "effectiveRecommended.has(variant.quant)" in group
-    assert "!effectiveRecommended.has(current.quant)" in group
+    # The recommended quant still wins, and only inside its own group. The
+    # flattened effectiveRecommended set would bless the other group's pick
+    # when two families in one repo share quant names, so pin the keyed lookup.
+    assert "effectiveRecommendedByGroup.get(key)" in group
+    assert "variant.quant === recommended" in group
+    assert "current.quant !== recommended" in group
+    assert "effectiveRecommended.has(" not in group
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
