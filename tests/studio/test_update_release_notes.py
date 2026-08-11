@@ -2125,6 +2125,21 @@ def test_a_paragraph_install_block_keeps_its_platform_headings(notes_module):
     assert stripped == "Intro.\n\n## Fixes\n\n1. a real fix"
 
 
+def test_a_platform_heading_opens_an_install_block_on_its_own(notes_module):
+    """`v0.1.0-beta` and `v0.1.41-beta` head their install commands with a bare
+    platform heading and no "Updating" above it, so requiring one left the
+    commands in the popup. They are the only two of the 24 published bodies this
+    changes, and every platform heading in that corpus heads an install block."""
+    body = (
+        "Intro.\n\n"
+        "#### macOS, Linux, WSL:\n```\ncurl -fsSL https://unsloth.ai/install.sh | sh\n```\n\n"
+        "#### Windows:\n```\nirm https://unsloth.ai/install.ps1 | iex\n```\n\n"
+        "## Fixes\n\n1. a real fix\n"
+    )
+    stripped = notes_module.strip_release_body(body)
+    assert stripped == "Intro.\n\n## Fixes\n\n1. a real fix"
+
+
 def test_only_a_paragraph_of_its_own_opens_an_install_block(notes_module):
     """The same words inside the announcement are prose, not instructions:
     `v0.1.39-beta` says "call `curl ...` to update" mid-sentence, and generated

@@ -157,9 +157,23 @@ jobs:
           # Both updater paths compare SemVer, so a tag whose numbers go backwards
           # strands every client already on the published one. v0.1.60-beta after
           # v0.1.527-beta did exactly that: 60 < 527, so no update was offered.
-          def release_triple(version):
-              match = semver_tag.fullmatch(f'v{version.strip().removeprefix("v")}')
-              return tuple(int(part) for part in match.groups()) if match else None
+          def semver_key(version):
+              # Full precedence, not just the triple: v0.1.528 and v0.1.528-rc are
+              # both newer than v0.1.528-beta, and the updater knows that.
+              version = version.strip().removeprefix('v')
+              match = semver_tag.fullmatch(f'v{version}')
+              if not match:
+                  return None
+              release = tuple(int(part) for part in match.groups())
+              pre = version.partition('-')[2]
+              if not pre:
+                  return release, (1,)  # a release outranks its own prereleases
+              # Numeric identifiers rank below alphanumeric ones and compare as
+              # numbers; a shorter run of identifiers ranks below a longer one.
+              return release, (0, *(
+                  (0, int(part), '') if part.isdigit() else (1, 0, part)
+                  for part in pre.split('.')
+              ))
 
           try:
               with urllib.request.urlopen(MANIFEST_URL, timeout = 30) as response:
@@ -170,8 +184,8 @@ jobs:
               print(f'::warning::could not read the published desktop version: {error}')
               published = ''
 
-          published_triple = release_triple(published)
-          if published_triple and published_triple >= release_triple(app_version):
+          published_key = semver_key(published)
+          if published_key and published_key >= semver_key(app_version):
               sys.exit(
                   f'studio_version {studio_version} is not newer than the published '
                   f'v{published}, so clients on it would never be offered this release'
