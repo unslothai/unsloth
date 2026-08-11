@@ -208,6 +208,7 @@ if _IS_MLX:
     # so reading it here keeps this branch torch-free while agreeing with the GPU path,
     # with `pip show unsloth`, and with what `unsloth --version` prints.
     from ._version import __version__
+
     DEVICE_TYPE = "mlx"
     _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
     _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()

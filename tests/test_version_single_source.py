@@ -79,7 +79,6 @@ def test_models_utils_still_re_exports_the_same_version():
     # Every banner, every saved config's unsloth_version, and unsloth.__version__ on the
     # GPU path come through here.
     from unsloth.models._utils import __version__ as via_utils
-
     assert via_utils == _load_version_module_standalone().__version__
 
 
