@@ -9832,11 +9832,9 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
 def _explicit_proxy_applies(url: str) -> bool:
     """Whether urllib sends *url* through an explicitly configured proxy.
 
-    Only then does the hostname have to stay in the request URL: the proxy does
-    the DNS itself and applies hostname policy / TLS interception, and this host
-    never resolves the name at connect time. Without a proxy urllib resolves it
-    again, which is exactly what DNS rebinding attacks, so the fetch stays pinned
-    to the validated IP.
+    Only then may the hostname stay in the request URL: the proxy resolves it, so
+    this host never looks it up again. Without one urllib would, which is the
+    DNS-rebinding window, so those fetches stay pinned to the validated IP.
     """
     from urllib.parse import urlparse
     from urllib.request import getproxies, proxy_bypass
@@ -9847,8 +9845,7 @@ def _explicit_proxy_applies(url: str) -> bool:
     try:
         return not proxy_bypass(parsed.hostname or "")
     except (OSError, ValueError):
-        # proxy_bypass reads system config on macOS/Windows; treat a failure as
-        # "no proxy" so the safe pinned path is what we fall back to.
+        # proxy_bypass reads system config on macOS/Windows; failure falls back to pinning.
         return False
 
 
@@ -10209,8 +10206,7 @@ def _fetch_url_raw(
                 current_url
             ):
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS
-                # interception. The proxy resolves it, so this host never repeats the
-                # lookup and there is no rebinding window to close here.
+                # interception, and they resolve it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
             else:
                 # Pin to the validated IP to prevent DNS rebinding.
