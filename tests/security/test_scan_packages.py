@@ -201,9 +201,9 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     findings = sp.scan_archive(str(bad), "broken_fixture")
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
-    assert corrupted, (
-        f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
-    )
+    assert (
+        corrupted
+    ), f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
     # Same for a corrupted tarball.
