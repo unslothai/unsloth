@@ -177,10 +177,13 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     if any(key in request for key in ("baseUrl", "endpoint", "provider", "tools", "enabledTools")):
         raise HTTPException(
             status_code = 400,
-            detail = "Durable research currently supports only the selected local Studio model",
+            detail = "Research inference routing cannot override endpoints or tool catalogs",
         )
     allowed = {
         "model",
+        "providerId",
+        "providerType",
+        "externalModel",
         "temperature",
         "topP",
         "maxTokens",
@@ -193,6 +196,23 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
             status_code = 400,
             detail = f"Unsupported inferenceRequest fields: {', '.join(sorted(unknown))}",
         )
+    provider_type = request.get("providerType")
+    provider_id = request.get("providerId")
+    external_model = request.get("externalModel")
+    external_requested = any(value is not None for value in (provider_type, provider_id, external_model))
+    if external_requested:
+        if (
+            provider_type != "openai_codex"
+            or not isinstance(provider_id, str)
+            or not provider_id.strip()
+            or not isinstance(external_model, str)
+            or not external_model.strip()
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Durable research supports only a saved ChatGPT/Codex connection",
+            )
+
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
     # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key
     # unlisted) into the durable config as the model id.
