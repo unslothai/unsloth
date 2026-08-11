@@ -3,17 +3,15 @@
 
 """The Windows signing toolchain has to be verified, and has to fail closed.
 
-An unsigned, half-signed or attacker-signed installer is the failure this
-workflow exists to prevent. `trusted-signing-cli` runs with the Azure Trusted
-Signing and Tauri signing secrets in the environment, so two things have to
-hold: the binary is the one we pinned, and a check that cannot prove that
-cannot report success.
+`trusted-signing-cli` runs with the Azure Trusted Signing and Tauri signing
+secrets in the environment, so two things must hold: the binary is the one we
+pinned, and a check that cannot prove that cannot report success.
 
-Both have been regressions here. The install step once restored the executable
-from an actions/cache and skipped the build on a hit, leaving a spoofable
-`--version` as the only gate on a binary that signs releases. The verify step
-once ended both of its branches in `|| Write-Output "..."`, which exits 0, so a
-missing or broken binary passed and only surfaced later inside Tauri bundling.
+Both have regressed before. The install step once restored the executable from
+an actions/cache and skipped the build on a hit, leaving a spoofable
+`--version` as the only gate. The verify step once ended both branches in
+`|| Write-Output "..."`, which exits 0, so a broken binary passed and surfaced
+later inside Tauri bundling.
 """
 
 from pathlib import Path
@@ -48,10 +46,9 @@ def test_the_signing_cli_is_pinned_by_url_and_digest():
 
 
 def test_both_steps_name_the_shell_they_need():
-    # Invoke-WebRequest -MaximumRetryCount / -RetryIntervalSec are PowerShell 6+
-    # only. windows-latest defaults to pwsh, so this works either way, but an
-    # inherited default is not where a release download should get its
-    # interpreter from, and every other Windows step here says pwsh outright.
+    # -MaximumRetryCount / -RetryIntervalSec are PowerShell 6+ only. Inheriting
+    # the interpreter from a runner default is not where a release download
+    # should get it, and every other Windows step here says pwsh outright.
     for name in ("Install trusted-signing-cli", "Verify trusted-signing-cli"):
         assert _step(name)["shell"] == "pwsh", name
 
@@ -66,8 +63,8 @@ def test_a_digest_mismatch_stops_the_release_before_anything_is_signed():
 
 
 def test_no_step_restores_the_signing_cli_from_a_cache():
-    # A cache is not an integrity mechanism. Restoring this binary and skipping
-    # the pinned install on a hit is what made a poisoned entry sign releases.
+    # A cache is not an integrity mechanism: restore plus skip-on-hit is what
+    # would let a poisoned entry sign releases.
     for step in _build_steps():
         uses = step.get("uses", "")
         if not uses.startswith("actions/cache"):
@@ -76,9 +73,9 @@ def test_no_step_restores_the_signing_cli_from_a_cache():
 
 
 def test_the_verified_binary_is_the_one_that_signs():
-    # The signing script calls `trusted-signing-cli` by bare name, and
-    # swatinem/rust-cache restores ~/.cargo/bin, which can hold an unverified
-    # copy under the same name. PATH has to resolve to the digest-checked file.
+    # The signing script calls the tool by bare name, and rust-cache restores
+    # ~/.cargo/bin, which can hold an unverified copy of the same name. PATH has
+    # to resolve to the digest-checked file.
     run = _verify_step()["run"]
     assert "$verified" in run
     assert "[IO.Path]::GetFullPath($cli.Source) -ne $verified" in run
@@ -92,18 +89,16 @@ def test_the_check_exits_non_zero_on_every_failure_path():
 
 
 def test_a_binary_that_cannot_start_is_caught():
-    # A truncated download gives "Exec format error", which is a terminating
-    # PowerShell error, not a native exit code. Without the catch the step dies
-    # on that line and never prints the annotation explaining why.
+    # A truncated download raises a terminating PowerShell error, not a native
+    # exit code, so without the catch the step dies before explaining why.
     run = _verify_step()["run"]
     assert "try {" in run
     assert "catch {" in run
 
 
 def test_the_launch_error_is_flattened_to_one_line():
-    # A PowerShell error spans message, offending line and caret. An annotation
-    # is truncated at the first newline, so an unflattened message would drop
-    # the recovery guidance that follows it.
+    # A PowerShell error spans message, offending line and caret; an annotation
+    # stops at the first newline, dropping the guidance that follows.
     run = _verify_step()["run"]
     assert "-replace '\\s+', ' '" in run
 
@@ -114,15 +109,15 @@ def test_failures_are_not_swallowed_by_a_fallback_message():
 
 
 def test_the_native_exit_code_is_inspected():
-    # $ErrorActionPreference does not trap a native binary exiting non-zero,
-    # so $LASTEXITCODE has to be read explicitly for the check to mean anything.
+    # $ErrorActionPreference does not trap a native non-zero exit, so
+    # $LASTEXITCODE has to be read explicitly.
     run = _verify_step()["run"]
     assert "$LASTEXITCODE" in run
 
 
 def test_every_failure_says_what_it_was():
     # Failing closed without saying why turns a rare fetch fault into an
-    # unexplained release outage, and the four causes need different fixes.
+    # unexplained outage, and the four causes need different fixes.
     run = _verify_step()["run"]
     assert run.count("::error::") == 4
 

@@ -853,29 +853,25 @@ jobs:
           rm -f certificate.p12
 
       # ── Windows: install Azure Trusted Signing CLI ──
-      # This binary runs in the steps that hold the Azure Trusted Signing and
+      # This binary runs in the steps holding the Azure Trusted Signing and
       # Tauri signing secrets, so where it comes from is a signing-key question,
-      # not a build-speed one. `cargo install` built it from source in 241s and
-      # 248s on the last two runs, and caching the built binary made that fast
-      # by making the cache the source of truth: an actions/cache hit skipped
-      # the install and the restored executable was put on PATH and run with a
-      # `--version` probe as its only check, which any binary can print.
+      # not a build-speed one. Caching the `cargo install` build (241s and 248s
+      # on the last two runs) made the cache the source of truth: a hit skipped
+      # the install, and the restored executable went on PATH gated only by a
+      # `--version` probe, which any binary can print.
       #
-      # Upstream publishes the same tool as a prebuilt release asset, so pin it
-      # instead. The URL is reproducibility, the SHA-256 is the integrity gate:
-      # a release asset can be replaced after upload, and a replaced one now
-      # fails the release rather than signing with an unknown binary. Same shape
-      # as the AppImage toolchain pinned below. Also faster than the cache it
-      # replaces, since a 7 MB download beats a restore and beats a compile.
-      # Bump the URL and the digest together when moving off 0.10.0.
+      # Upstream publishes the same tool prebuilt, so pin it instead. The URL is
+      # reproducibility, the SHA-256 is the integrity gate: a release asset can
+      # be replaced after upload, and a replaced one now fails the release
+      # rather than signing with an unknown binary. Same shape as the AppImage
+      # toolchain below, and faster than the cache it replaces. Bump the URL and
+      # the digest together when moving off 0.10.0.
       - name: Install trusted-signing-cli
         if: matrix.platform == 'windows-latest'
-        # Explicit, like every other Windows step in this file. windows-latest
-        # already defaults to pwsh, but the retry parameters below are
-        # PowerShell 6+ only: under Windows PowerShell 5.1 the download fails
-        # with "A parameter cannot be found that matches parameter name
-        # 'MaximumRetryCount'". Naming the shell keeps that dependency
-        # deliberate rather than inherited from a runner default.
+        # Explicit, like every other Windows step here. The retry parameters
+        # below are PowerShell 6+ only, so under 5.1 the download fails with "A
+        # parameter cannot be found that matches parameter name
+        # 'MaximumRetryCount'". Naming the shell keeps that deliberate.
         shell: pwsh
         env:
           TRUSTED_SIGNING_CLI_URL: "https://github.com/Levminer/artifact-signing-cli/releases/download/0.10.0/trusted-signing-cli.exe"
