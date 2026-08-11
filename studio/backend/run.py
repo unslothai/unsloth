@@ -989,19 +989,20 @@ def _startup_marker_dirs() -> "list[Path]":
     also clears whatever UNSLOTH_COMPILE_LOCATION names, which is set
     independently of UNSLOTH_STUDIO_HOME. Two studio homes can therefore point at
     one cache directory, and a home-scoped marker leaves each of them believing
-    it is alone. `cache_coordination_dir` is keyed on the cache paths themselves,
-    so both of them land in the same directory.
+    it is alone. `cache_coordination_dirs` is keyed per cache path, so any
+    install that would clear the same directory lands in the same place.
     """
     dirs = [_studio_root()]
     try:
-        from utils.cache_cleanup import cache_coordination_dir
-        shared = cache_coordination_dir()
+        from utils.cache_cleanup import cache_coordination_dirs
+        shared = cache_coordination_dirs()
     except Exception:
         # An import or path failure here only costs cross-home discovery; the
         # home-scoped marker, which is the common case, still gets written.
         return dirs
-    if shared not in dirs:
-        dirs.append(shared)
+    for directory in shared:
+        if directory not in dirs:
+            dirs.append(directory)
     return dirs
 
 
@@ -1025,14 +1026,24 @@ def write_startup_marker() -> None:
     created = _process_create_time(me)
     body = f"{me}\n{created if created is not None else ''}\n"
     try:
-        from utils.cache_cleanup import compiled_cache_lock
+        from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY
     except Exception:
         import contextlib
 
         # No lock available means an unserialized publish, which is what this
         # did before the lock existed. Startup still has to happen.
         compiled_cache_lock = contextlib.nullcontext
-    with compiled_cache_lock():
+        LOCK_BUSY = None
+    # A longer budget than a clear takes: publishing behind a holder that is
+    # mid-rmtree is the case worth waiting out. Publishing anyway if the wait
+    # runs out is still right, because a marker that never appears makes this
+    # backend invisible, which is the failure the marker exists to prevent.
+    with compiled_cache_lock(timeout = 30.0) as lock_state:
+        if lock_state == LOCK_BUSY:
+            logger.warning(
+                "Publishing the startup marker without the cache lock: another backend "
+                "has held it for 30s"
+            )
         for directory in _startup_marker_dirs():
             path = directory / f"studio-starting-{me}.marker"
             try:
@@ -2155,6 +2166,18 @@ def run_server(
     # Before the import, not just before uvicorn: this is what makes us visible
     # to a sibling's own probe, and the earlier it lands the smaller the window
     # in which two launches can each believe they are alone.
+    #
+    # The cache env has to be seeded first. main.py pins UNSLOTH_COMPILE_LOCATION
+    # at import time, which is after this point, and that variable is part of the
+    # coordination key: publishing before it is set would key the marker and the
+    # lock differently from the clear that follows, and serialize nothing.
+    try:
+        from utils.paths.storage_roots import setup_cache_env
+
+        setup_cache_env()
+    except Exception:  # noqa: BLE001
+        # main.py seeds it too, and does not depend on this having worked.
+        pass
     write_startup_marker()
 
     from main import app, setup_frontend, _desktop_owner, _IS_COLAB
@@ -2163,6 +2186,9 @@ def run_server(
     # shutdown, when a sibling may have started since. On app.state rather than
     # imported, because main.py must not import this module back.
     app.state.live_sibling_backend = live_sibling_backend
+    # Read here rather than in main.py: the decision is about whether anything
+    # cleared since THIS process started, and the marker is already written.
+    app.state.backend_started_at = _process_create_time(os.getpid())
 
     logger.info(
         "Imported FastAPI app in %.1fms",

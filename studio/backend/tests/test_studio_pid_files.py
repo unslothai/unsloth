@@ -9,7 +9,9 @@ Imports run.py directly, so run under the Unsloth venv.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
+import time
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +28,7 @@ from utils import cache_cleanup  # noqa: E402
 # Captured before the autouse fixture stubs them, for the tests that exercise them.
 _REAL_IS_STUDIO_BACKEND = run._pid_is_studio_backend
 _REAL_PID_ALIVE = run._pid_alive
-_REAL_COORDINATION_DIR = cache_cleanup.cache_coordination_dir
+_REAL_COORDINATION_DIRS = cache_cleanup.cache_coordination_dirs
 
 
 @pytest.fixture(autouse = True)
@@ -39,7 +41,7 @@ def isolated_root(tmp_path, monkeypatch):
     # The cross-home coordination directory is a real path under the system temp
     # dir, so without this the marker tests would see (and leave) markers from
     # every other Studio on this machine.
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: tmp_path / "shared")
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [tmp_path / "shared"])
     monkeypatch.setattr(run, "_OWN_STARTUP_MARKERS", [])
     yield
 
@@ -725,14 +727,31 @@ def test_the_coordination_directory_follows_the_cache_path_not_the_studio_home(
 ):
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "cache"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_a"))
-    first = _REAL_COORDINATION_DIR()
+    first = _REAL_COORDINATION_DIRS()
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home_b"))
-    assert _REAL_COORDINATION_DIR() == first
+    assert _REAL_COORDINATION_DIRS() == first
 
     # A different cache is a different set of backends to coordinate with.
     monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "other_cache"))
-    assert _REAL_COORDINATION_DIR() != first
+    assert _REAL_COORDINATION_DIRS() != first
+
+
+def test_two_installs_sharing_one_cache_overlap_even_with_different_trees(
+    tmp_path, monkeypatch
+):
+    # Keying the whole path set would give two installs different directories
+    # whenever their install-tree candidates differ, even though both delete out
+    # of the configured one. Coordination is per path, so the shared one matches.
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(tmp_path / "shared_cache"))
+    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [tmp_path / "install_a"])
+    install_a = set(_REAL_COORDINATION_DIRS())
+
+    monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [tmp_path / "install_b"])
+    install_b = set(_REAL_COORDINATION_DIRS())
+
+    assert install_a != install_b
+    assert install_a & install_b, "the shared cache must give them a common directory"
 
 
 def test_the_cache_lock_is_exclusive(tmp_path):
@@ -793,7 +812,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
     # cache is never cleared again on that machine; fall back to the plain probe.
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
-    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dirs", lambda: [blocked / "lock"])
     events = []
     monkeypatch.setattr(
         cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
@@ -849,3 +868,70 @@ def test_the_startup_marker_is_published_under_the_cache_lock(tmp_path, monkeypa
     run.write_startup_marker()
 
     assert events == [("lock", False), ("unlock", True)]
+
+
+def test_one_of_two_cold_starts_clears_the_stale_modules(tmp_path, monkeypatch):
+    # Both published a marker before either reached its clear, so each sees the
+    # other. Keeping the cache on both counts would leave modules that are stale
+    # for both of them, which is what the startup clear exists to remove.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+    started = time.time()
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550, started_at = started)
+
+    assert events == ["clear"], "the first cold start clears"
+
+    # A second one, started at the same time, now finds a clear newer than itself.
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551, started_at = started)
+
+    assert events == ["clear"], "the second one keeps what the first just cleaned"
+
+
+def test_a_sibling_that_started_before_us_keeps_the_cache(tmp_path, monkeypatch):
+    # An established backend cleared long before this process started, so there
+    # is nothing stale and its modules must survive.
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+    cache_cleanup._record_clear()
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550, started_at = time.time() - 60)
+
+    assert events == []
+
+
+def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monkeypatch):
+    # ENOSYS is the lock being unsupported, not a sibling holding it. Retrying it
+    # to a timeout and answering busy would keep the cache forever, since busy is
+    # read as proof of a sibling.
+    def unsupported(fd):
+        raise OSError(errno.ENOSYS, "flock not supported")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", unsupported)
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+
+    with cache_cleanup.compiled_cache_lock(timeout = 30.0) as state:
+        assert state == cache_cleanup.LOCK_UNAVAILABLE
+
+    cache_cleanup.clear_compiled_cache_unless_shared(lambda: None)
+
+    assert events == ["clear"]
+
+
+def test_contention_is_still_retried_to_the_timeout(tmp_path, monkeypatch):
+    def busy(fd):
+        raise OSError(errno.EWOULDBLOCK, "held")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", busy)
+
+    started = time.monotonic()
+    with cache_cleanup.compiled_cache_lock(timeout = 0.2) as state:
+        assert state == cache_cleanup.LOCK_BUSY
+    assert time.monotonic() - started >= 0.2, "contention waits out the budget"

@@ -10,6 +10,7 @@ that spawned subprocesses need.
 """
 
 import contextlib
+import errno
 import os
 import shutil
 import structlog
@@ -224,24 +225,29 @@ def _coordination_paths() -> List[str]:
     return sorted(normalized)
 
 
-def cache_coordination_dir() -> Path:
-    """Where backends that clear the same compiled cache find each other.
+def cache_coordination_dirs() -> List[Path]:
+    """One directory per cache path this install would clear.
 
-    Keyed on the cache paths, not on the studio home: UNSLOTH_COMPILE_LOCATION is
-    set independently of UNSLOTH_STUDIO_HOME, so two studio homes can point at one
-    cache directory, and a home-scoped probe would have each of them conclude it
-    is alone and wipe the modules the other is importing.
+    Per path, not one directory for the whole set: two installs sharing a
+    configured UNSLOTH_COMPILE_LOCATION still have different install-tree
+    candidates, so a key over the whole set would give them different
+    directories even though they delete out of the same one. Keyed per path,
+    any overlap is enough for them to find each other.
 
     Under the temp directory because nothing in here has to survive a reboot --
     every record is checked against a live PID before it counts -- and because
-    the install tree and the cache directory itself are both things we may not be
-    able to write to (read-only install) or are about to delete (the cache).
+    the install tree and the cache directory itself are both things we may not
+    be able to write to (read-only install) or are about to delete.
     """
     import hashlib
     import tempfile
 
-    key = hashlib.sha256("\n".join(_coordination_paths()).encode("utf-8")).hexdigest()[:16]
-    return Path(tempfile.gettempdir()) / f"unsloth-studio-cache-{key}"
+    temp = Path(tempfile.gettempdir())
+    dirs = []
+    for path in _coordination_paths():
+        key = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+        dirs.append(temp / f"unsloth-studio-cache-{key}")
+    return dirs
 
 
 # Held: we may probe and clear. Busy: someone else is in that critical section.
@@ -257,6 +263,44 @@ LOCK_UNAVAILABLE = "unavailable"
 _LOCK_TIMEOUT = 10.0
 
 
+# flock/msvcrt report contention through these; anything else (ENOSYS,
+# EOPNOTSUPP on a network mount) is the lock being unsupported, and retrying it
+# for ten seconds only to answer "busy" would pin the cache forever, since busy
+# is read as proof of a sibling.
+_CONTENTION_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, "EACCES", None),
+        getattr(errno, "EAGAIN", None),
+        getattr(errno, "EWOULDBLOCK", None),
+        getattr(errno, "EDEADLOCK", None),
+        getattr(errno, "EDEADLK", None),
+    )
+    if code is not None
+)
+
+
+def _try_lock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(fd: int) -> None:
+    with contextlib.suppress(Exception):
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
     """Serialize a sibling probe plus cache clear against a sibling's publication.
@@ -266,64 +310,100 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
     clears and deletes the modules B just wrote. Holding this across both halves
     (the probe plus clear here, the marker write in run.py) closes it.
 
+    Every coordination directory is locked, in sorted order so two backends
+    holding overlapping sets cannot deadlock against each other.
+
     Never raises at the caller and never waits indefinitely: startup runs through
     here, so a lock that cannot be taken has to degrade rather than block.
     """
-    try:
-        lock_dir = cache_coordination_dir()
-        lock_dir.mkdir(parents = True, exist_ok = True)
-        fd = os.open(str(lock_dir / "cache.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug(f"Could not open the compiled-cache lock ({exc})")
-        yield LOCK_UNAVAILABLE
-        return
-
     import time
 
-    state = LOCK_BUSY
+    paths = sorted(cache_coordination_dirs())
+    fds: "List[int]" = []
+    unsupported = 0
+    state = LOCK_HELD
     deadline = time.monotonic() + timeout
     try:
-        while True:
+        for lock_dir in paths:
             try:
-                if os.name == "nt":
-                    import msvcrt
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                state = LOCK_HELD
-                break
-            except OSError:
-                # Held by another backend. Retry until the budget runs out; a
-                # clear is short, so a timeout here means the holder is wedged.
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.05)
+                lock_dir.mkdir(parents = True, exist_ok = True)
+                fd = os.open(str(lock_dir / "cache.lock"), os.O_CREAT | os.O_RDWR, 0o600)
             except Exception as exc:  # noqa: BLE001
-                # A filesystem with no locking at all (NotImplementedError on
-                # some network mounts). Uncoordinated is still better than a
-                # cache that can never be cleared on that machine.
-                logger.debug(f"Compiled-cache locking unavailable ({exc})")
-                state = LOCK_UNAVAILABLE
+                logger.debug(f"Could not open the compiled-cache lock in {lock_dir} ({exc})")
+                unsupported += 1
+                continue
+            while True:
+                try:
+                    _try_lock(fd)
+                    fds.append(fd)
+                    break
+                except OSError as exc:
+                    if exc.errno not in _CONTENTION_ERRNOS:
+                        # Not contention: the filesystem cannot lock at all.
+                        logger.debug(f"Compiled-cache locking unavailable ({exc})")
+                        with contextlib.suppress(OSError):
+                            os.close(fd)
+                        unsupported += 1
+                        break
+                    if time.monotonic() >= deadline:
+                        with contextlib.suppress(OSError):
+                            os.close(fd)
+                        state = LOCK_BUSY
+                        break
+                    time.sleep(0.05)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(f"Compiled-cache locking unavailable ({exc})")
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                    unsupported += 1
+                    break
+            if state == LOCK_BUSY:
                 break
+        if state != LOCK_BUSY and not fds:
+            # Nothing could be locked anywhere, which must not mean "never clear
+            # the cache again" on this machine.
+            state = LOCK_UNAVAILABLE if unsupported else LOCK_HELD
         yield state
     finally:
+        for fd in fds:
+            _unlock(fd)
+
+
+def _clear_stamp_paths() -> List[Path]:
+    return [d / "cleared" for d in cache_coordination_dirs()]
+
+
+def _last_clear_time() -> float:
+    """When a backend of this install last cleared, or 0.0.
+
+    Read under the lock. Two launches that overlap after a crash both publish a
+    startup marker before either reaches its clear, so each would see the other
+    and keep a cache that is stale for both. The stamp lets exactly one of them
+    do the clear: whoever holds the lock first finds no stamp newer than its own
+    start and clears, and the other then sees a stamp newer than its start.
+    """
+    newest = 0.0
+    for path in _clear_stamp_paths():
         try:
-            if state == LOCK_HELD:
-                if os.name == "nt":
-                    import msvcrt
-                    with contextlib.suppress(Exception):
-                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    with contextlib.suppress(Exception):
-                        fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            with contextlib.suppress(OSError):
-                os.close(fd)
+            newest = max(newest, float(path.read_text(encoding = "utf-8").strip()))
+        except (OSError, ValueError):
+            continue
+    return newest
 
 
-def clear_compiled_cache_unless_shared(sibling_probe = None) -> None:
+def _record_clear() -> None:
+    import time
+
+    stamp = f"{time.time()}"
+    for path in _clear_stamp_paths():
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(stamp, encoding = "utf-8")
+        except OSError:
+            continue
+
+
+def clear_compiled_cache_unless_shared(sibling_probe = None, started_at: "float | None" = None) -> None:
     """Clear the compiled cache, unless another backend of this install is live.
 
     The cache sits in the install tree, not the studio home, so two of our own
@@ -334,6 +414,10 @@ def clear_compiled_cache_unless_shared(sibling_probe = None) -> None:
 
     The probe and the clear run under `compiled_cache_lock` so a sibling cannot
     publish itself in between and lose the modules it has already compiled.
+
+    `started_at` is this process's start time. A sibling that is itself still
+    starting is not a reason to keep a cache nobody has cleaned yet, so a clear
+    recorded before we started does not count and one recorded after does.
     """
     if not callable(sibling_probe):
         clear_unsloth_compiled_cache()
@@ -349,6 +433,17 @@ def clear_compiled_cache_unless_shared(sibling_probe = None) -> None:
         sibling = sibling_probe()
         if sibling is None:
             clear_unsloth_compiled_cache()
+            _record_clear()
+            return
+        # A sibling is up, but if nothing has cleared since we started then it
+        # is another cold start and the modules are stale for both of us.
+        if started_at is not None and _last_clear_time() <= started_at:
+            logger.info(
+                f"Clearing the compiled cache before backend {sibling} uses it: "
+                "no backend of this install has cleared it since this one started"
+            )
+            clear_unsloth_compiled_cache()
+            _record_clear()
             return
     logger.info(
         f"Keeping the compiled cache: another backend of this install is live (PID {sibling})"
