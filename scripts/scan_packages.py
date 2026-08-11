@@ -103,8 +103,12 @@ RE_BASE64 = re.compile(
     r"\bbase64\s*\.\s*(b64decode|decodebytes|b32decode|b16decode)\b|\bcodecs\s*\.\s*decode\b",
 )
 
-# exec / eval
-RE_EXEC_EVAL = re.compile(r"\b(exec|eval)\s*\(")
+# exec / eval. The BUILTINS only: `\b` matches after a dot, so the bare form also
+# caught `model.eval()`, which every torch package calls. Paired with a dynamic
+# import that promoted ordinary inference code to a HIGH "obfuscation + exec/eval",
+# and HIGH is what fails the scan. A payload calls the builtin; a method named eval
+# on some object is not one, so require no attribute access in front.
+RE_EXEC_EVAL = re.compile(r"(?<![\w.])(exec|eval)\s*\(")
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
 RE_NETWORK = re.compile(

@@ -297,6 +297,36 @@ def test_anti_analysis_no_longer_flags_cross_platform_code():
     assert anti == [], f"cross-platform code should not be anti-analysis: {anti}"
 
 
+def test_module_eval_is_not_read_as_the_exec_builtin():
+    # `\b` matches after a dot, so the old pattern read `model.eval()` as the eval
+    # builtin. Paired with a dynamic import that scored HIGH "obfuscation + exec/eval",
+    # and HIGH is what fails the scan: unsloth_zoo/device_map_planner.py tripped it on
+    # a plain inference path, which is the whole of what that file does.
+    inference = (
+        "def build(mod_path, config):\n"
+        "    module = __import__(mod_path, fromlist=['compute_module_sizes'])\n"
+        "    model = module.AutoModel.from_config(config)\n"
+        "    model.eval()\n"
+        "    return model\n"
+    )
+    findings = sp.check_py_file(inference, "pkg/device_map_planner.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"ordinary .eval() inference code must not be HIGH: {high}"
+
+
+def test_the_real_exec_builtin_is_still_flagged():
+    # The narrowing must not cost a true positive: a bare builtin call beside the
+    # same dynamic import is what the rule is for.
+    payload = (
+        "import zlib, base64\n"
+        "mod = __import__('os')\n"
+        "exec(zlib.decompress(base64.b64decode(BLOB)))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "obfuscation plus a real exec() must still be flagged"
+
+
 def test_proc_self_status_read_flags_anti_analysis():
     # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
     # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the
