@@ -63,6 +63,24 @@ function indeterminatePreparation(label: string): PreparationProgress {
 
 export type PreparationTarget = "model" | "dataset";
 
+// a repo id may only be preceded and followed by something that is not part of one, so
+// `org/foo` does not match inside `org/foo-base`. a bare `includes` routed a model status
+// to the dataset row whenever one id was a prefix of the other.
+const ID_CHAR = /[a-z0-9._/-]/;
+
+function mentionsResource(haystack: string, name?: string): boolean {
+  if (!name) return false;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(name, from);
+    if (at < 0) return false;
+    const before = at > 0 ? haystack[at - 1] : "";
+    const after = haystack[at + name.length] ?? "";
+    if (!ID_CHAR.test(before) && !ID_CHAR.test(after)) return true;
+    from = at + 1;
+  }
+}
+
 // no bare `token` stem: `tokenizing` is dataset work, `tokenizer` is part of loading the model.
 // the audio codecs are here because they are loaded only to preprocess the dataset.
 const DATASET_PREPARATION_RE =
@@ -86,8 +104,14 @@ export function classifyPreparation(
   const haystack = title.toLowerCase();
   const datasetName = resources.datasetName?.toLowerCase();
   const modelName = resources.modelName?.toLowerCase();
-  if (datasetName && haystack.includes(datasetName)) return "dataset";
-  if (modelName && haystack.includes(modelName)) return "model";
+  const datasetHit = mentionsResource(haystack, datasetName);
+  const modelHit = mentionsResource(haystack, modelName);
+  // the longer id wins when both match, because one can contain the other:
+  // `Loading org/foo-base` mentions the model AND the dataset `org/foo`.
+  if (datasetHit && (!modelHit || datasetName!.length >= modelName!.length)) {
+    return "dataset";
+  }
+  if (modelHit) return "model";
   if (MODEL_PREPARATION_RE.test(title)) return "model";
   return DATASET_PREPARATION_RE.test(title) ? "dataset" : "model";
 }

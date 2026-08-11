@@ -28,9 +28,9 @@ export type DownloadState = {
   completeOnDisk: boolean;
   // nothing left to transfer, by verification or by standing still.
   settled: boolean;
-  // bytes moved between the last two readings. Not `!settled`: an orphaned `.incomplete`
-  // blob keeps `downloaded !== completed` forever, so a row that will never settle is still
-  // not transferring anything.
+  // bytes moved between the last two readings, and the snapshot is not verified. Not
+  // `!settled`: an orphaned `.incomplete` blob keeps `downloaded !== completed` forever, so a
+  // row that will never settle is still not transferring anything.
   moving: boolean;
 };
 
@@ -68,7 +68,10 @@ export function downloadStateFromProgress(
     cachePath: reading.cache_path ?? null,
     completeOnDisk,
     settled: completeOnDisk || (nothingInFlight && unchanged),
-    moving: !unchanged,
+    // A verified snapshot is not transferring whatever the byte counts did since the last
+    // reading -- and it is the condition the poll stops on, so a `true` here would freeze
+    // and suppress this row's preparation step for the rest of the run.
+    moving: !completeOnDisk && !unchanged,
   };
 }
 

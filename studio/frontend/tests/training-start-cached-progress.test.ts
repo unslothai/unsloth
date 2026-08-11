@@ -263,3 +263,19 @@ test("a live transfer keeps reporting movement", () => {
   assert.equal(second.moving, true);
   assert.equal(second.settled, false);
 });
+
+test("a verified snapshot is never reported as moving", () => {
+  // `complete_on_disk` is what stops the poll, so a `moving: true` recorded on the same
+  // reading freezes for the rest of the run and suppresses this row's preparation step --
+  // an already-cached model would never show "Loading <repo>".
+  const verified = downloadStateFromProgress({
+    downloaded_bytes: 1.51 * GB,
+    completed_bytes: 1.51 * GB,
+    expected_bytes: 1.51 * GB,
+    progress: 1,
+    complete_on_disk: true,
+    cache_path: "/home/u/.cache/huggingface/hub/models--Qwen--Qwen3.5-0.8B-Base",
+  });
+  assert.equal(verified.settled, true);
+  assert.equal(verified.moving, false, "verified means nothing is in flight");
+});

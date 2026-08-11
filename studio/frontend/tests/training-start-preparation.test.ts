@@ -230,3 +230,21 @@ test("reloading the eval split is dataset work", () => {
   );
   assert.equal(classifyPreparation(title), "dataset");
 });
+
+test("one resource id being a prefix of the other does not steal the row", () => {
+  // `Loading org/foo-base` contains the dataset id `org/foo`, so a bare `includes` sent the
+  // model load to the dataset row and left the model row without its progress.
+  const resources = { modelName: "org/foo-base", datasetName: "org/foo" };
+  assert.equal(classifyPreparation("Loading org/foo-base", resources), "model");
+  assert.equal(classifyPreparation("Loading org/foo", resources), "dataset");
+  // And the other way round, where the dataset id is the longer one.
+  const swapped = { modelName: "org/foo", datasetName: "org/foo-sample" };
+  assert.equal(classifyPreparation("Loading org/foo-sample", swapped), "dataset");
+  assert.equal(classifyPreparation("Loading org/foo", swapped), "model");
+  // A trailing "..." or punctuation is still a boundary.
+  assert.equal(classifyPreparation("Loading org/foo-base...", resources), "model");
+  assert.equal(
+    classifyPreparation("Downloading dataset: org/foo (1,000 rows)", resources),
+    "dataset",
+  );
+});
