@@ -3019,6 +3019,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           })
         )
           break;
+        // Frozen BEFORE the POST goes out, because both halves of it have to describe the same
+        // moment. `knownIds` is from before the request, so deriving the window half in the catch
+        // mixes the two: scrolling while the request is in flight pages in historical unpinned
+        // records, and a window that was all pinned (which refuses to judge) then looks like one
+        // that can, with the newest historical row reading as proof the generation landed.
+        // Sharing the `knownIds` set is deliberate: it only ever grows, and a larger set can only
+        // make the probe more conservative.
+        const probeBaseline = newRecordProbeBaseline(
+          galleryCache.images,
+          galleryCache.hasMore,
+          knownIds,
+        );
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -3062,12 +3074,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps the response near 100s).
           // Retrying would duplicate the work, so wait the run out and read its images off the gallery.
           if (!(err instanceof GenerateResponseLostError)) throw err;
-          // The ids known before the POST went out: a record outside them proves the request reached the backend.
-          // Rebuilt per attempt so it reflects what the client could see when THIS post went out.
-          await settleLostGeneration(
-            () => isMounted.current,
-            newRecordProbeBaseline(galleryCache.images, galleryCache.hasMore, knownIds),
-          );
+          // A record outside the baseline proves the request reached the backend. Taken per
+          // attempt, so it reflects what the client could see when THIS post went out.
+          await settleLostGeneration(() => isMounted.current, probeBaseline);
           if (!isMounted.current) break;
           await loadGallery();
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in before the next run.

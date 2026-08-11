@@ -286,3 +286,18 @@ test("per item keys let a later pin be stamped first, one key per gallery does n
   assert.deepEqual(await stamped((id) => `per-item:${id}`), ["b", "a"]);
   assert.deepEqual(await stamped(() => "one-gallery"), ["a", "b"]);
 });
+
+test("a baseline frozen before the request is not softened by a page loaded during it", async () => {
+  // The regression: the ids came from before the POST but the window half was read in the catch.
+  // Scrolling while the request was in flight paged in historical unpinned rows, which turned a
+  // window that must refuse to judge into one that judged, and the newest historical row then read
+  // as proof of a generation that never reached the server.
+  const pins = [item("p0", 9, true), item("p1", 8, true)];
+  const baseline = newRecordProbeBaseline(pins, true, new Set(["p0", "p1"]));
+  // The window the user scrolled to, and the listing, both now hold that historical row.
+  const listing = [...pins, item("historical", 1)];
+  assert.equal(await hasUnknownRecord(baseline, pager(listing, 50), 50), false);
+  // Read after the scroll instead, the same moment claims proof, which is the bug.
+  const afterScroll = newRecordProbeBaseline(listing, true, new Set(["p0", "p1"]));
+  assert.equal(await hasUnknownRecord(afterScroll, pager(listing, 50), 50), true);
+});
