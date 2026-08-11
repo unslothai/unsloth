@@ -1701,6 +1701,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(
     () =>
       subscribeGalleryChanged("images", () => {
+        // Bumped FIRST: a restore changes the shelf, so a load or a page already in flight is now
+        // reading a list this resync is about to replace. Capturing without advancing left those
+        // reads passing their own stability checks and landing on top of the restored window.
+        stripEpoch.current += 1;
         // Fenced like the unpin resync: a generation or a new page landing while this GET runs
         // would otherwise be overwritten by a snapshot taken before it.
         const epoch = stripEpoch.current;
@@ -1715,7 +1719,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   // The pin state each id was last CLICKED into, so a failing request can tell whether it is still
   // the current intent. Without it, a slow first click failing after a later click succeeded would
   // roll the strip back onto the state the user has since moved off.
-  const pinIntent = useRef(new Map<string, boolean>());
+  const pinAttempt = useRef(new Map<string, number>());
+  const pinSeq = useRef(0);
 
   const handleTogglePin = useCallback(
     async (id: string, pinned: boolean) => {
@@ -1723,7 +1728,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       // The pinned order as it stands BEFORE the click, so a failed unpin can put the image back
       // where it was instead of at the front of the pins.
       const orderBefore = pinnedOrder(galleryCache.images);
-      pinIntent.current.set(id, pinned);
+      // A per-attempt token, not the target boolean. Pin, unpin, pin before the first settles
+      // stores true twice, so a boolean check lets the FIRST attempt's failure roll back the
+      // THIRD attempt's optimistic pin, and the queued pin then succeeds with the strip unpinned.
+      const attempt = (pinSeq.current += 1);
+      pinAttempt.current.set(id, attempt);
       stripEpoch.current += 1;
       const epoch = stripEpoch.current;
       // Optimistic: the reorder should land on the click, not a round trip later.
@@ -1742,8 +1751,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         toast.error(err instanceof Error ? err.message : "Failed to pin image");
         // Put the old order back rather than leave the strip lying about server state, but only
         // while this is still what the user last asked for.
-        if (pinIntent.current.get(id) === pinned) {
-          pinIntent.current.delete(id);
+        if (pinAttempt.current.get(id) === attempt) {
+          pinAttempt.current.delete(id);
           stripEpoch.current += 1;
           setImages((prev) => {
             // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
@@ -1757,8 +1766,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         }
         return;
       }
-      if (pinIntent.current.get(id) !== pinned) return; // superseded by a later click
-      pinIntent.current.delete(id);
+      if (pinAttempt.current.get(id) !== attempt) return; // superseded by a later click
+      pinAttempt.current.delete(id);
       // Pinning keeps the same set in the window (it only moves an already-loaded image to the
       // front), so only unpinning can open a gap.
       if (!pinned && loadedCount > 0) {

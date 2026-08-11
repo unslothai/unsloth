@@ -189,6 +189,19 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   useEffect(() => {
     visibleRef.current = visible;
   }, [visible]);
+  // Prune on VISIBILITY, not only after a successful fetch. Rows leaving the viewport are what
+  // makes their blobs evictable, and at the end of a shelf there is nothing left to fetch, so the
+  // budget was never re-checked and full-size PNGs stayed pinned above it until the dialog closed.
+  useEffect(() => {
+    const evicted = blobs.current.prune(visible);
+    if (evicted.length === 0) return;
+    for (const id of evicted) requested.current.delete(id);
+    setThumbs((prev) => {
+      const next = { ...prev };
+      for (const id of evicted) delete next[id];
+      return next;
+    });
+  }, [visible]);
   // Failed attempts per row. Clearing `requested` on a failure changes nothing this effect
   // watches, so a visible row would stay blank until the user happened to scroll it away and
   // back. The tick schedules the retry; the count stops a permanently broken row from looping.
