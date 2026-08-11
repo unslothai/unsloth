@@ -742,20 +742,42 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        // Not std::env::temp_dir(): on macOS that is /var/folders/..., whose
-        // real path is under /private, which this policy treats as a sensitive
-        // root on purpose. Every scratch path here would be rejected for that
-        // reason rather than the one under test. The test binary's own
-        // directory is writable, is inside the build tree, and is sensitive
-        // nowhere.
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .unwrap_or_else(std::env::temp_dir)
-            .join(format!(
-                "unsloth-native-intents-{name}-{}-{nanos}",
-                std::process::id()
-            ))
+        scratch_root().join(format!("unsloth-native-intents-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    /// A writable directory the document-folder policy does not consider
+    /// sensitive.
+    ///
+    /// std::env::temp_dir() is not one on macOS: it is /var/folders/...,
+    /// whose real path is under /private, which the policy rejects on purpose,
+    /// so every scratch path built from it fails for that reason rather than
+    /// the one under test. The build directory is the usual answer, but it is
+    /// not guaranteed either, since a checkout under /root or /usr/src puts it
+    /// inside a sensitive root as well. So the candidates are tried against
+    /// the policy itself, on the canonical path the policy would see, and the
+    /// first one it accepts wins.
+    fn scratch_root() -> PathBuf {
+        let candidates = [
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            Some(std::env::temp_dir()),
+            dirs::home_dir().map(|home| home.join("unsloth-test-scratch")),
+        ];
+        for candidate in candidates.into_iter().flatten() {
+            if std::fs::create_dir_all(&candidate).is_err() {
+                continue;
+            }
+            let Ok(canonical) = candidate.canonicalize() else {
+                continue;
+            };
+            if crate::native_path_policy::reject_sensitive_document_folder(&canonical).is_ok() {
+                return canonical;
+            }
+        }
+        // Nothing qualifies. Fall back rather than skip, so the test fails
+        // loudly here instead of quietly not running.
+        std::env::temp_dir()
     }
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
