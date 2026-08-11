@@ -269,6 +269,93 @@ def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
     assert ggml_module.slim_runtime_intact(binary) is False
 
 
+def test_slim_guard_accepts_rocm_wiring_without_a_hipblaslt_catalog(tmp_path):
+    # #8364: RX 6800 (gfx1030) on linux x64. hipBLASLt builds no kernels for
+    # that target, so the bundle ships no hipblaslt/ catalog and rocblas alone
+    # is a complete install; the old equality check read it as broken and took
+    # dictation away while inference on the same runtime kept working.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["rocblas"],
+        runtime_wiring_version = 3,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is True
+
+
+def test_slim_guard_rejects_rocm_wiring_without_rocblas(tmp_path):
+    # rocblas is load-bearing (libggml-hip.so links librocblas directly), so a
+    # marker that never wired it is stale wiring, not a target quirk.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    for case in ([], ["hipblaslt"]):
+        root = tmp_path / f"case_{len(case)}"
+        root.mkdir()
+        binary = _slim_install(
+            root,
+            linked_libraries = names,
+            backend = "rocm",
+            linked_runtime_directories = case,
+            runtime_wiring_version = 3,
+        )
+        (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+        assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_rejects_an_empty_catalog_the_marker_names(tmp_path):
+    # Membership replaced the equality check on the marker, not the on-disk
+    # "exists and holds a file" check: a wired catalog gone empty is still a
+    # broken install, not intact-then-failing at server launch.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    for empty in ("hipblaslt", "rocblas"):
+        root = tmp_path / f"empty_{empty}"
+        root.mkdir()
+        binary = _slim_install(
+            root,
+            linked_libraries = names,
+            backend = "rocm",
+            linked_runtime_directories = ["hipblaslt", "rocblas"],
+            runtime_wiring_version = 3,
+        )
+        bin_dir = Path(binary).parent
+        (bin_dir / "libggml-hip.so").write_bytes(b"ggml")
+        assert ggml_module.slim_runtime_intact(binary) is True
+        (bin_dir / empty / "kernel.dat").unlink()
+        assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_rejects_rocm_wiring_with_no_version(tmp_path):
+    # The version floor is a positive test, not a default: a marker with no
+    # runtime_wiring_version at all predates catalog wiring and must reinstall.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["rocblas"],
+        runtime_wiring_version = None,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_rejects_rocm_wiring_with_an_unknown_catalog(tmp_path):
+    # Membership is bounded by the catalogs this installer wires, so a name
+    # outside the pair fails closed even though rocblas is present.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["rocblas", "unexpected"],
+        runtime_wiring_version = 3,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is False
+
+
 def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
     # The guard pins a floor, not one version: an installer bump must not strand
     # ROCm installs as unavailable when every wired library is present.
@@ -311,6 +398,23 @@ def test_slim_guard_accepts_windows_rocm_dll_overlay(monkeypatch, tmp_path):
     for name in names:
         (Path(binary).parent / name).write_bytes(b"dll")
     assert ggml_module.slim_runtime_intact(binary) is True
+
+
+def test_slim_guard_windows_rocm_still_expects_no_catalogs(monkeypatch, tmp_path):
+    # Windows is unchanged by #8364: the overlay wires DLLs and no catalogs, so
+    # any recorded catalog is a marker this installer did not write.
+    monkeypatch.setattr(ggml_module.sys, "platform", "win32")
+    names = ["ggml.dll", "ggml-base.dll", "ggml-hip.dll", "amdhip64.dll"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["rocblas"],
+        runtime_wiring_version = 2,
+    )
+    for name in names:
+        (Path(binary).parent / name).write_bytes(b"dll")
+    assert ggml_module.slim_runtime_intact(binary) is False
 
 
 def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):

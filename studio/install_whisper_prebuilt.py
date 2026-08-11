@@ -186,7 +186,17 @@ SLIM_ROCM_LIBRARY_GLOBS = (
     "libhsa*.so*",
     "libroc*.so*",
 )
+# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper
+# bin dir so the packaged libraries find their Tensile kernels beside them.
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
+# Of those, the ones a paired runtime must actually carry. hipBLASLt builds no
+# Tensile kernels for gfx1030 / RDNA2, so llama's linux-x64-rocm-gfx103X bundle
+# ships libhipblaslt.so.1 with no hipblaslt/ catalog while every other published
+# target carries one. rocblas is load-bearing: libggml-hip links librocblas
+# directly and every published linux ROCm bundle ships rocblas/library. The
+# llama installer copies only the catalogs the archive has, so demanding both
+# here rejected a runtime llama.cpp itself runs fine on (#8364).
+SLIM_ROCM_REQUIRED_RUNTIME_DIRS = ("rocblas",)
 # 3: libomp*.so*/dylib joined the wiring, so version 2 installs are missing
 # libomp.so.5 on linux arm64 and must re-wire.
 SLIM_RUNTIME_WIRING_VERSION = 3
@@ -854,11 +864,20 @@ def link_runtime_directories(
     linked: list[str] = []
     for name in SLIM_ROCM_RUNTIME_DIRS:
         source_root = llama_bin_dir / name
-        if not source_root.is_dir():
-            raise PrebuiltFallback(f"paired ROCm runtime is missing its {name} kernel catalog")
-        files = [path for path in source_root.rglob("*") if path.is_file()]
+        required = name in SLIM_ROCM_REQUIRED_RUNTIME_DIRS
+        files = (
+            [path for path in source_root.rglob("*") if path.is_file()]
+            if source_root.is_dir()
+            else []
+        )
         if not files:
-            raise PrebuiltFallback(f"paired ROCm runtime has an empty {name} kernel catalog")
+            if not required:
+                # hipBLASLt has no kernels for this target; llama pairs without
+                # the catalog and runs, so whisper must pair the same way.
+                log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
+                continue
+            missing = "is missing its" if not source_root.is_dir() else "has an empty"
+            raise PrebuiltFallback(f"paired ROCm runtime {missing} {name} kernel catalog")
         for source in files:
             _link_or_copy(source, whisper_bin_dir / name / source.relative_to(source_root))
         linked.append(name)
@@ -987,12 +1006,16 @@ def existing_install_matches(
             )
             return False
         runtime_dirs = marker.get("linked_runtime_directories")
+        # Subset plus required, not equality: a target without hipBLASLt kernels
+        # wires rocblas alone and is complete (#8364), while an unknown name or
+        # a missing rocblas still means stale or hand-edited wiring.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
             and (
                 not isinstance(runtime_dirs, list)
-                or set(runtime_dirs) != set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(runtime_dirs) <= set(SLIM_ROCM_RUNTIME_DIRS)
+                or not set(SLIM_ROCM_REQUIRED_RUNTIME_DIRS) <= set(runtime_dirs)
             )
         ):
             log(f"existing ROCm install at {install_dir} lacks kernel catalogs; reinstalling")
