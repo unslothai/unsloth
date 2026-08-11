@@ -1171,6 +1171,11 @@
         "kind": "def",
         "signature": "text: str, pos: int"
       },
+      "_is_provisional_call": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, found: int"
+      },
       "_leading_json_value_end": {
         "decorators": [],
         "kind": "def",

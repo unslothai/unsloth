@@ -772,9 +772,19 @@ def _first_sentinel(text: str, start: int) -> int:
         found = text.find(_GEMMA_BARE_SENTINEL, at)
         if found < 0 or (0 <= best <= found):
             return best
-        if _GEMMA_BARE_TC_RE.match(text, found) or _GEMMA_BARE_TC_PREFIX_RE.search(text, found):
+        if _GEMMA_BARE_TC_RE.match(text, found) or _GEMMA_BARE_TC_PREFIX_RE.match(text, found):
             return found
         at = found + len(_GEMMA_BARE_SENTINEL)
+
+
+def _is_provisional_call(text: str, found: int) -> bool:
+    """True when ``found`` is a ``call`` that only qualifies while it ends the buffer.
+
+    ``_first_sentinel`` accepts such a hit because the next token may complete it, but
+    the acceptance has to expire: the word ``call`` at a token boundary would otherwise
+    pin the scan and put the full strip back on every later token.
+    """
+    return text.startswith(_GEMMA_BARE_SENTINEL, found) and not _GEMMA_BARE_TC_RE.match(text, found)
 
 
 def _unmatched_think_closer(text: str, start: int = 0) -> int:
@@ -1022,6 +1032,15 @@ class StreamingMarkupStripper:
                 found = _first_sentinel(text, resume if resume > self._floor else self._floor)
                 if found < 0:
                     self._scanned_upto = len(text)
+                    return self._unchanged(text)
+                if _is_provisional_call(text, found):
+                    # A ``call`` that only qualifies because the buffer ends inside it.
+                    # One more token decides it, so nothing is committed: the scan stops
+                    # here and resumes from the same place next time. Committing it would
+                    # send every later token through the whole-buffer checks below, which
+                    # is the cost this class exists to remove, and the ordinary word
+                    # ``call`` lands on a token boundary often enough to matter.
+                    self._scanned_upto = found
                     return self._unchanged(text)
                 self._first = found - self._floor
             state = self._think_block(text, self._floor + self._first)

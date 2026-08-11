@@ -343,3 +343,36 @@ def test_the_bracket_scan_size_guard_survives_a_prefix_cut():
     stripper.strip(prose)
 
     assert stripper.strip(text) == _reference_strip(text)
+
+
+def test_a_prose_call_at_a_token_boundary_stays_amortized():
+    """``call`` ending a token is only a possible marker, and only until the next one.
+
+    Committing that hit sends every later token through the whole-buffer checks, so the
+    cost depended on where the tokenizer happened to split rather than on the text. This
+    measures the same text under two chunkings; they have to stay comparable.
+    """
+    import time
+
+    def elapsed(tokens):
+        stripper = StreamingMarkupStripper(ENABLED)
+        text = ""
+        start = time.perf_counter()
+        for token in tokens:
+            text += token
+            stripper.strip(text)
+        return time.perf_counter() - start
+
+    split = elapsed(["I will call", " it now. "] * 800)
+    joined = elapsed(["I will call it now. "] * 800)
+
+    assert (
+        split < joined * 20 + 0.5
+    ), f"a token boundary after 'call' cost {split:.3f}s against {joined:.3f}s joined"
+
+
+def test_a_real_call_arriving_a_character_at_a_time_is_still_caught():
+    text = "Sure. call:search{q: 1} done"
+    stripper = StreamingMarkupStripper(ENABLED)
+    for size in range(1, len(text) + 1):
+        assert stripper.strip(text[:size]) == _reference_strip(text[:size])

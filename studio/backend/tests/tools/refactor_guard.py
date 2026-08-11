@@ -301,6 +301,7 @@ _ARG_FIXTURES = {
     # ``_safe_cut`` is asked where the first sentinel is, so hand it the real answer
     # rather than 0: at 0 it returns 0 for every input and pins nothing.
     "first": lambda text: _parser_first_sentinel(text),
+    "found": lambda text: max(_parser_first_sentinel(text), 0),
     "out": lambda text: [],
     "previous": lambda text: text,
     "markers": lambda text: _tool_healing_build_markers(text),
