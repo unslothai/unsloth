@@ -2072,6 +2072,26 @@ def save_to_gguf(
     if not is_gpt_oss:
         base_gguf = initial_files[0]
 
+        # The 16-bit safetensors merge that this conversion read from is not
+        # read again: llama-quantize takes the GGUF, and the GGUF is already
+        # written and moved. On a disk that has to hold all three at once --
+        # merge, base GGUF, quantized output -- those bytes are what runs it
+        # out, and they are reproducible from the model still in memory.
+        #
+        # Nemotron-3-Nano-30B-A3B measured this on a 132GB disk: a 63GB merge,
+        # a 60GB BF16 GGUF, and a Q4_K_M needing ~18GB is 141GB. llama-quantize
+        # died at tensor 88 of 401 with `basic_ios::clear: iostream error`,
+        # which is its own `fout.exceptions(failbit)` -- documented upstream as
+        # "fail fast on write errors" -- firing on a write with nowhere to go.
+        #
+        # Only when the room is not there, so a user who wants the merge kept
+        # keeps it on every machine where the export would have worked anyway.
+        _free_merge_if_disk_is_tight(
+            model_directory, gguf_directory, initial_files,
+            n_quants = len([m for m in dict.fromkeys(quantization_method)
+                            if m != first_conversion]),
+        )
+
         # Deduplicate while keeping order; methods equal to the base conversion already
         # exist on disk and need no quantize pass.
         methods_to_quantize = [
@@ -2122,6 +2142,28 @@ def save_to_gguf(
                         "`model.{save_pretrained/push_to_hub}_gguf will use too much disk space.\n"
                         "You can try saving it to the `/tmp` directory for larger disk space.\n"
                         "I suggest you to save the 16bit model first, then use manual llama.cpp conversion.\n"
+                        f"Error: {e}"
+                    ) from e
+                elif _gguf_failure_looks_like_disk(e, gguf_directory):
+                    # Kaggle is not the only place a disk fills. Nemotron-3-Nano
+                    # -30B-A3B ran out on a 132GB Colab G4 disk and was told to
+                    # `git clone llama.cpp && make clean && make all -j` -- a
+                    # long rebuild that fixes nothing, for a build that was
+                    # fine. The advice below is only correct when the quantizer
+                    # is the problem, so say what actually happened instead.
+                    try:
+                        _free_gb = shutil.disk_usage(gguf_directory).free / 1024**3
+                        _where = f" ({_free_gb:.1f}GB free at {gguf_directory})"
+                    except OSError:
+                        _where = ""
+                    raise RuntimeError(
+                        f"Unsloth: Quantization failed for {output_location}\n"
+                        f"This looks like the disk running out, not a problem "
+                        f"with llama.cpp{_where}.\n"
+                        "The GGUF export needs room for the 16-bit merge, the "
+                        "base GGUF and the quantized output at the same time.\n"
+                        "Free some space, or save to a larger filesystem, then "
+                        "run the quantization again.\n"
                         f"Error: {e}"
                     ) from e
                 else:
@@ -3399,6 +3441,65 @@ def _gguf_failure_looks_like_disk(exc, save_directory = None):
             # Never let the diagnostic be the thing that raises.
             continue
     return False
+
+
+def _free_merge_if_disk_is_tight(
+    model_directory, gguf_directory, initial_files, n_quants = 1,
+):
+    """Reclaim the intermediate 16-bit merge when the quants will not fit.
+
+    Returns the bytes freed, 0 if nothing was touched. Never raises: this runs
+    to make an export succeed, and it must not be the thing that fails it.
+
+    Only the weight files go. config.json and the tokenizer are small, and
+    later steps (the Modelfile, a push) may still want them, so deleting the
+    directory outright would trade one failure for another.
+    """
+    if n_quants < 1 or not model_directory or not os.path.isdir(model_directory):
+        return 0
+    try:
+        base_bytes = sum(os.path.getsize(f) for f in initial_files
+                         if os.path.isfile(f))
+    except OSError:
+        return 0
+    if base_bytes <= 0:
+        return 0
+
+    # A quantized output is never larger than the source it quantizes, so the
+    # base size is an upper bound per pass. Passes may run concurrently, hence
+    # the multiple. Overestimating costs a deletion that was not strictly
+    # required; underestimating costs the export.
+    needed = base_bytes * n_quants + _DISK_HEADROOM_BYTES
+    try:
+        free = shutil.disk_usage(gguf_directory or model_directory).free
+    except OSError:
+        return 0
+    if free >= needed:
+        return 0
+
+    weights = []
+    for name in os.listdir(model_directory):
+        if name.endswith((".safetensors", ".bin", ".pth", ".pt")):
+            path = os.path.join(model_directory, name)
+            if os.path.isfile(path):
+                weights.append(path)
+    freed = 0
+    for path in weights:
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+            freed += size
+        except OSError:
+            continue
+    if freed:
+        print(
+            f"Unsloth: Freed {freed / 1024**3:.1f}GB of intermediate 16-bit "
+            f"weights from {model_directory} so the quantization has room "
+            f"({free / 1024**3:.1f}GB free, about "
+            f"{needed / 1024**3:.1f}GB needed). The GGUF files are already "
+            f"written and do not need them."
+        )
+    return freed
 
 
 def unsloth_push_to_hub_gguf(
