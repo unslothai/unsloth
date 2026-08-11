@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import threading
 import time
 import sys
 from pathlib import Path
@@ -904,6 +905,41 @@ def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(bail))
 
     with pytest.raises(SystemExit):
+        run.run_server()
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+
+
+def test_an_interrupt_leaves_the_marker_to_a_live_server_thread(tmp_path, monkeypatch):
+    # The KeyboardInterrupt path asks uvicorn to stop and re-raises without
+    # joining, so the thread may still be finishing lifespan startup or
+    # shutdown. Taking the marker back there makes a backend that is still up
+    # invisible to a sibling, which would clear the compiled cache under it.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    stop = threading.Event()
+    serving = threading.Thread(target = stop.wait, daemon = True)
+    serving.start()
+    monkeypatch.setattr(run, "_server_thread", serving)
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run, "run_server", run._drops_its_marker_on_failure(interrupt))
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run.run_server()
+
+        assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != [], "the sibling can no longer see it"
+        assert run._OWN_STARTUP_MARKERS != []
+    finally:
+        stop.set()
+        serving.join(timeout = 5)
+
+    # Once that thread is gone, the same failure does take the marker back:
+    # nothing else is going to.
+    with pytest.raises(KeyboardInterrupt):
         run.run_server()
 
     assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []

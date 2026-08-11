@@ -2092,7 +2092,16 @@ def _drops_its_marker_on_failure(start):
         try:
             return start(*args, **kwargs)
         except BaseException:
-            _remove_startup_marker()
+            # Only when no server thread is left running. A KeyboardInterrupt
+            # during the readiness wait asks uvicorn to stop and re-raises
+            # without joining, so the thread may still be finishing lifespan
+            # startup or shutdown. Taking the marker back there makes a backend
+            # that is still up invisible to a sibling, which would then clear
+            # the compiled cache under it. That thread's own finally removes
+            # the marker at the point it has genuinely stopped serving.
+            thread = _server_thread
+            if thread is None or not thread.is_alive():
+                _remove_startup_marker()
             raise
 
     return started
