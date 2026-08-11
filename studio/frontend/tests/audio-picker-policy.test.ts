@@ -274,12 +274,24 @@ test("community ASR only offers checkpoints the Transformers Whisper sidecar can
     }),
     false,
   );
+  // Llasa was in this list and should not have been. It speaks XCodec2, which
+  // AudioCodecManager cannot decode and _AUDIO_TOKEN_PATTERNS cannot even recognise, so
+  // probing a running Studio reports unsloth/Llasa-1B as is_audio=false. Admitting the row
+  // produced a model that loaded and then failed at generation.
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: false,
+      id: "HKUSTAudio/Llasa-1B",
+    }),
+    false,
+  );
   for (const id of [
     "canopylabs/orpheus-3b-0.1-ft",
     "sesame/csm-1b",
     "SparkAudio/Spark-TTS-0.5B",
     "OuteAI/Llama-OuteTTS-1.0-1B",
-    "HKUSTAudio/Llasa-1B",
   ]) {
     assert.equal(
       communityAudioRowIsRunnable({

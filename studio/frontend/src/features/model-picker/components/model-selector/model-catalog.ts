@@ -496,22 +496,11 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       bf16Pipeline("unsloth/Llama-OuteTTS-1.0-1B", 4, { label: "Safetensors" }),
     ],
   },
-  {
-    canonicalId: "unsloth/Llasa-1B",
-    displayName: "Llasa 1B",
-    description: "Text-to-speech",
-    scope: "audio",
-    task: "tts",
-    artifacts: [bf16Pipeline("unsloth/Llasa-1B", 4, { label: "Safetensors" })],
-  },
-  {
-    canonicalId: "unsloth/Llasa-3B",
-    displayName: "Llasa 3B",
-    description: "Text-to-speech",
-    scope: "audio",
-    task: "tts",
-    artifacts: [bf16Pipeline("unsloth/Llasa-3B", 8, { label: "Safetensors" })],
-  },
+  // Llasa is deliberately absent. It speaks XCodec2 (65,536 <|s_N|> tokens), which is
+  // neither in _AUDIO_TOKEN_PATTERNS nor in AudioCodecManager, so a curated row here
+  // loaded and then failed at generation with "not a supported TTS model". Studio can
+  // still TRAIN Llasa (unsloth_Llasa-3B.yaml); this catalog only feeds the Generate
+  // picker. Re-add both rows together with an xcodec2 decoder.
   {
     canonicalId: "unslothai/Qwen3-ASR-0.6B-GGUF",
     displayName: "Qwen3-ASR 0.6B",

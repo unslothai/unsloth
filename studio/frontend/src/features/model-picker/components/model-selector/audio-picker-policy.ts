@@ -54,10 +54,11 @@ export function communityAudioRowIsRunnable({
   // The main-slot TTS backend decodes only the four codec families below.
   // Hub's text-to-speech tag also covers Bark, VITS, SpeechT5, and many other
   // architectures that can load as language models but cannot emit a WAV here.
+  // Llasa is NOT here despite being a well-known TTS family: it speaks XCodec2, which
+  // AudioCodecManager cannot decode, so admitting it produced a row that loaded and then
+  // failed at generation. The list and the comment above must stay in step.
   const family = evidence.find((value) =>
-    /(?:^|[-_./])(orpheus|csm|spark-?tts|outetts|oute-?tts|llasa)(?:$|[-_./])/.test(
-      value,
-    ),
+    /(?:^|[-_./])(orpheus|csm|spark-?tts|outetts|oute-?tts)(?:$|[-_./])/.test(value),
   );
   if (!family) return false;
   // llama.cpp intentionally has no CSM decoder; CSM is Transformers-only.
