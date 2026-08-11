@@ -86,8 +86,8 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The healer owns think-block splitting; the bracket-tag and rehearsal arms it used to
-# lend this module now run inside the parser's ``strip_segment``.
+# The bracket-tag and rehearsal arms this module used to borrow now run inside the
+# parser's ``strip_segment``; only think-block splitting is still the healer's.
 from core.tool_healing import strip_outside_think
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
@@ -135,12 +135,10 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
-# Deliberately NOT ``slots=True``. It was measured (no benefit: the intent is built a
-# handful of times per load, not in any hot loop) and then tried, and it breaks callers
-# that reflect over the instance: ``slots=True`` removes ``__dict__``, so ``vars(intent)``
-# raises TypeError. That is not hypothetical -- it took out every GGUF load through
-# ``routes/inference.py`` and the MTP crash-recovery path in ``test_tensor_parallel.py``.
-# Reflection over this dataclass is part of how it is used; keep the ``__dict__``.
+# Deliberately NOT ``slots=True``: no benefit (built a few times per load, never in a hot
+# loop) and it drops ``__dict__``, so ``vars(intent)`` raises TypeError. That broke every
+# GGUF load via ``routes/inference.py`` and the MTP recovery path in
+# ``test_tensor_parallel.py``. Reflection over this dataclass is part of how it is used.
 @dataclass(frozen = True)
 class GgufLoadIntent:
     """Immutable caller intent replayed by retries and recovery."""
@@ -3034,8 +3032,8 @@ def _llama_lib_dir(binary: str) -> Path:
 
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
-# Names the staged CPU-only runtime must not carry over. Constant, so it is compiled once
-# here rather than rebuilt inside _cpu_isolated_binary.
+# Backend names the staged CPU-only runtime must not carry over. Module level so it is
+# compiled once, not on every _cpu_isolated_binary call.
 _GGML_GPU_BACKEND_RE = re.compile(
     r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
 )
@@ -15257,11 +15255,10 @@ class LlamaCppBackend:
                 return text
 
             def _seg(segment: str, is_last: bool) -> str:
-                # The scan order used to be inlined here, one copy of four. It lives in the
-                # parser's ``strip_segment`` now, so this path, the safetensors loop and
-                # ``strip_tool_markup`` cannot drift apart. Streaming has no separate final
-                # pass, so the last segment always takes the end-of-turn arms (a bare
-                # ``foo[ARGS]`` before <think> is prose).
+                # Scan order lives in the parser's ``strip_segment`` so this path, the
+                # safetensors loop and ``strip_tool_markup`` cannot drift apart. Streaming
+                # has no separate final pass, so the last segment always takes the
+                # end-of-turn arms (a bare ``foo[ARGS]`` before <think> is prose).
                 return _parser_strip_segment(
                     segment, seg_final = is_last, enabled_tool_names = _enabled_names_gate
                 )

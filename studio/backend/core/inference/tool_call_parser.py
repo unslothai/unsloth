@@ -362,10 +362,9 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
-# Shared with the healer rather than copied, but keeping this module's depth rule: only
-# ``[``/``]`` count here. Letting a stray ``}`` decrement the depth would end the span at
-# that brace and leave the rest of a malformed call, closing bracket included, on screen.
-# The healer counts braces too, which is what its Gemma array normalizer needs.
+# Shared with the healer, but keeping this module's depth rule: brackets only. A stray
+# ``}`` must not end the span early and leave the rest of a malformed call on screen.
+# (The healer counts braces too, which its Gemma array normalizer needs.)
 def _balanced_bracket_end(src: str, start: int) -> "int | None":
     return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
 
@@ -662,25 +661,24 @@ def strip_segment(
     trailing partial rehearsal) that must not run mid-segment.
     """
     seg = _strip_mistral_closed_calls(segment)
-    # Bare reasoning-rehearsal ``name[ARGS]{json}`` and the Mistral name form promote through
-    # the shared balanced scan, so strip them the same way (any nesting depth removed whole).
-    # The rehearsal arm is name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
+    # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form go through the shared
+    # balanced scan (any nesting depth removed whole). Name-gated: an inactive
+    # ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
-        # Markerless Gemma ``call:NAME{...}`` (name-gated, mirrors the parse gate); end-of-turn only.
+        # Markerless Gemma ``call:NAME{...}``, name-gated like the parse gate.
         seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
-    # Scan-strip the function-XML form (parser-accurate: a literal ``<function=...>`` in a
-    # value is data, not a call); the regex arms below cover the other formats.
+    # Scan, not regex, so a literal ``<function=...>`` inside a value stays data.
     seg = _strip_function_xml_calls(seg, final = seg_final)
-    # GLM 4.x: scan to the call's real </tool_call> so a literal one inside a value is data,
-    # not a leak. Qwen <tool_call>{json} is left to the regex arms.
+    # GLM 4.x: scan to the call's real </tool_call>, so a literal one inside a value is
+    # data. Qwen <tool_call>{json} is left to the regex arms.
     seg = _strip_glm_calls(seg, final = seg_final)
     pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
     for pat in pats:
         seg = pat.sub("", seg)
     if seg_final:
-        # Drop a trailing partial bare rehearsal (``name[ARGS]`` with a truncated or absent
-        # body) the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
+        # Trailing partial rehearsal (``name[ARGS]`` with a truncated or absent body) that
+        # the balanced scan cannot close; gated so prose ``foo[ARGS] ...`` survives.
         seg = _tool_healing.apply_tool_strip_patterns(
             seg,
             [_tool_healing._REHEARSAL_TAIL_STRIP_RE],
@@ -1914,9 +1912,8 @@ def _parse_gemma_tool_calls(
     return out
 
 
-# Shared with the healer rather than copied. The healer's version additionally
-# understands Gemma ``<|"|>`` quoting behind a keyword-only flag this module never sets,
-# so positional calls behave identically.
+# Shared with the healer. Its Gemma ``<|"|>`` quoting sits behind a keyword-only flag this
+# module never sets, so positional calls behave identically.
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 

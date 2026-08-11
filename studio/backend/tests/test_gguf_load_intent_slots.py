@@ -38,8 +38,7 @@ from core.inference.llama_cpp import (  # noqa: E402
 
 @pytest.fixture
 def intent():
-    # Lists on the way in: __post_init__ must freeze them into tuples so the intent stays
-    # hashable and comparable across a retry.
+    # Lists in: __post_init__ freezes them to tuples so the intent stays hashable.
     return GgufLoadIntent(
         model_identifier = "unsloth/gemma-4-E2B-it-GGUF",
         gpu_ids = [0, 1],

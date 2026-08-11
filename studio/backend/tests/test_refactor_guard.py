@@ -32,8 +32,7 @@ def corpus():
 
 def test_ast_inventory_matches_the_baseline():
     """A dropped or re-signatured top-level name is an import break for some caller."""
-    # Through the same helper ``verify`` uses, so CI and the CLI agree: strict for the
-    # two modules this branch owns, additive-tolerant for the busy ones it only borrows.
+    # Same helper ``verify`` uses, so CI and the CLI agree.
     problems = refactor_guard._ast_problems()
 
     assert not problems, "\n".join(problems[:40])
@@ -66,8 +65,8 @@ def test_no_new_non_idempotent_strip(corpus):
     The strippers that already fail are recorded in the baseline, one entry per boolean
     variant; the check is that the set does not grow.
     """
-    # Keyed by boolean variant too: ``final = True`` failing already is not a licence
-    # for the ``final = False`` streaming path to start failing.
+    # Keyed by variant: ``final = True`` already failing is no licence for the
+    # ``final = False`` streaming path to start.
     baseline = {
         (entry["module"], entry["function"], entry.get("variant", ""))
         for entry in refactor_guard._read("idempotence_baseline.json")
@@ -143,9 +142,8 @@ def test_no_guarded_function_is_driven_by_a_sentinel():
     Every guarded function has to be actually called, or its golden digest pins nothing
     and an arbitrary rewrite of it passes.
     """
-    # The whole corpus, not a slice: several of these functions are constant over any
-    # small prefix of it and only become interesting once the rarer serializations
-    # appear, so a slice reports coverage gaps that are not there.
+    # The whole corpus, not a slice: several functions are constant over any small prefix
+    # and only vary once the rarer serializations appear, so a slice reports false gaps.
     corpus = refactor_guard.build_corpus()
     undrivable = sorted(
         name

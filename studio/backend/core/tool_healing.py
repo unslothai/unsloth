@@ -750,8 +750,8 @@ def _build_markers(content: str):
             if _inside_open_parameter(content, m.start()):
                 continue
             brace_end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = gemma)
-            # The marker tuple keeps the ``-1`` sentinel: ``marker_coverage`` is part of
-            # this module's cross-module contract and its consumers test ``brace_end < 0``.
+            # Keep the ``-1`` sentinel here: ``marker_coverage`` is a cross-module
+            # contract and its consumers test ``brace_end < 0``.
             markers.append((m.start(), -1 if brace_end is None else brace_end, kind, m))
     markers.sort(key = lambda c: c[0])
     return markers
