@@ -1021,10 +1021,13 @@ function Get-RocmPinStaleTags {
 # or a hanging Intel driver init would block a bare `& python -c ...` forever. ProcessStartInfo,
 # not &, so stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
 # cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
-# reads as .Ok = $false. Mirrors install.ps1's copy.
+# reads as .Ok = $false, and .Error carries WHICH failure: stderr used to be drained and thrown
+# away, so "the HIP DLLs will not load", "torch is not installed" and "the import never came back"
+# all reached the caller as one silent False -- and one such caller deletes the environment over
+# that answer. Mirrors install.ps1's copy.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
-    $result = [pscustomobject]@{ Ok = $false; Output = "" }
+    $result = [pscustomobject]@{ Ok = $false; Output = ""; Error = "" }
     if (-not $PythonExe -or -not $Code) { return $result }
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1039,13 +1042,21 @@ function Invoke-BoundedPythonProbe {
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
             try { $proc.Kill() } catch {}
+            # Synthesised, not read back: waiting on the reader tasks of a wedged child would
+            # reintroduce the hang this helper exists to bound.
+            $result.Error = "python did not answer within $TimeoutSec seconds"
             return $result
         }
         $result.Output = $outTask.GetAwaiter().GetResult()
-        [void]$errTask.GetAwaiter().GetResult()
+        # Kept, not discarded: the only place a failed probe's OSError / WinError text exists, and
+        # the caller decides what to do with the venv based on it.
+        $result.Error = $errTask.GetAwaiter().GetResult()
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
-    } catch { return $result }
+    } catch {
+        $result.Error = $_.Exception.Message
+        return $result
+    }
 }
 
 # True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the three
@@ -1171,6 +1182,27 @@ function Test-VenvTorchIsXpu {
         $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
         return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+xpu")
+    } catch { return $false }
+}
+
+# Is this venv's torch a ROCm wheel? The AMD counterpart of the check above, for the same reason:
+# on an AMD box whose HIP runtime faulted the DLL load raises OSError (or hangs) while version.py
+# on disk still names a perfectly good wheel, so answering by launching the interpreter that just
+# died is how a working environment got deleted. Read off disk, never imported.
+#
+# The label is always "+rocm", never "+gfx", on every index that publishes wheels:
+# repo.amd.com/rocm/whl/<arch>/torch/ (the Windows wheels, arch in the URL only) ships
+# torch-2.11.0+rocm7.13.0-cp312-cp312-win_amd64.whl, and download.pytorch.org/whl/rocm6.4 ships
+# the two-component 2.8.0+rocm6.4 (Linux only). "gfx" is accepted anyway, cheaply, so a future
+# per-arch local label cannot make this read a ROCm venv as unknown and delete it. The dist-info
+# name is NOT usable either -- pip normalises the local label out of it.
+function Test-VenvTorchIsRocm {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+(rocm|gfx)")
     } catch { return $false }
 }
 
@@ -2356,7 +2388,13 @@ if (-not $HasNvidiaSmi) {
             # inference forwards nothing: code 45 ("not connected") is routine on a muxless
             # laptop with a parked dGPU, and with no healthy peer there is nothing to
             # depose. Mirrors the same fallback in install_python_stack.py's WMI path.
-            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
+            # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way
+            # out of an if-expression, and a scalar's .Count is $null under Windows PowerShell
+            # 5.1, so the single Radeon in the machine read as no AMD GPU at all -- no
+            # $script:ROCmGpuLabels, no inferred gfx arch, "gpu none" in the report, and an
+            # installed +rocm venv judged stale against a required "cpu" (#8335). Same idiom as
+            # the Intel scan below and in install.ps1.
+            $wmiGpus = @(if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
                 $ROCmGpuLabel = $script:ROCmGpuLabels[0]
@@ -2495,6 +2533,10 @@ $script:IsIntelXpu = $false
 # $script:IsIntelXpu on purpose: it steers the INSTALL, not the hardware report, which must stay
 # honest about the NVIDIA GPU that is also in the machine.
 $script:PreservedXpuVenv = $false
+# Flavour tag ("rocm" / "cu128" / "xpu") of a GPU wheel the stale check below kept. Declared here,
+# like the flag above it, because the index selection reads it on every run while a fresh install
+# never reaches the assignment -- so under a caller's Set-StrictMode the read would be fatal.
+$script:PreservedInstallerTorchTag = $null
 $IntelGpuLabel = $null
 if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
     try {
@@ -3816,13 +3858,29 @@ Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+# The torch family install.ps1 settled on, in the vocabulary the probe below produces (cu<digits>
+# / rocm / xpu / cpu). $null means it did not say: an installer predating the variable (setup.ps1
+# ships in the pip package, install.ps1 is fetched from unsloth.ai, so the two can be different
+# ages), --no-torch, or a custom index whose leaf names no flavor. Absent is unknown rather than a
+# mismatch, which keeps an older cached installer on its pre-variable behaviour. IsNullOrWhiteSpace
+# rather than a presence test: 7.5+ keeps an empty assignment as a present blank value, 5.1 and
+# 7.0-7.4 remove the variable.
+$InstallerTorchTag = if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_INSTALLER_TORCH_TAG)) { $null }
+                     else { $env:UNSLOTH_INSTALLER_TORCH_TAG.Trim().ToLowerInvariant() }
 # Only the stale-venv block below assigns this, but the XPU install reads it to decide whether to
 # force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
 # Set-StrictMode from making the read fatal.
 $installedTorchTag = $null
+# Hoisted for the same reason: four install arms read it to decide --force-reinstall and the
+# installer-managed repair below raises it, yet only the block a fresh install never enters
+# assigns it.
+$script:PinChangedForceReinstall = $false
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
+    # Declared before the branch that assigns it: the failure message below reads its .Error, and
+    # a venv with no python.exe never runs the probe at all.
+    $_verProbe = $null
     $shouldRebuild = $false
     # Set when a stale venv under a pin is repaired in place (force-reinstall) not wiped.
     $script:PinChangedForceReinstall = $false
@@ -3858,6 +3916,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             $installedTorchTag = "xpu"
             substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
             substep "If training fails, update the Intel GPU compute driver." "Yellow"
+        } elseif (Test-VenvTorchIsRocm -VenvPath $VenvDir) {
+            # Same rescue on the AMD side, and the one that has cost users whole installs: a
+            # faulted Adrenalin or HIP runtime makes `import torch` raise at the DLL load or never
+            # return, so a fine ROCm environment read as "torch could not be imported" and was
+            # thrown away, which does not fix a driver. version.py on disk still names the wheel,
+            # so trust it and point at the driver instead (#8335, #7275).
+            $installedTorchTag = "rocm"
+            substep "PyTorch did not respond but this venv holds a ROCm build -- keeping it." "Yellow"
+            substep "If training fails, reboot and update the AMD Adrenalin / HIP SDK driver." "Yellow"
         } else {
             $shouldRebuild = $true
         }
@@ -3955,7 +4022,7 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     # A +xpu venv is never wiped by a DIRECT update: on a hybrid NVIDIA+Arc box the promotion
     # above is gated on -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the
     # working Arc venv stale and deletes it -- then exits, because only install.ps1 creates venvs.
-    # Under install.ps1 ($InstallerManagedSetup) the rollback copy exists, so leave that alone.
+    # Under install.ps1 the in-place repair below covers every flavour, so this escape stays out.
     if ($shouldRebuild -and -not $InstallerManagedSetup -and $installedTorchTag -eq "xpu") {
         substep "Keeping the installed Intel XPU environment (this host expects $expectedTorchTag)." "Yellow"
         substep "Re-run install.ps1 to replace it -- that path rebuilds with a rollback copy." "Yellow"
@@ -3967,14 +4034,88 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedXpuVenv = $true
     }
 
+    # A GPU wheel install.ps1 SELECTED is never force-reinstalled onto a different family on the
+    # strength of a rescan. Only a wheel matching the family install.ps1 reported in
+    # $env:UNSLOTH_INSTALLER_TORCH_TAG counts as its answer, because "there is a GPU wheel in the
+    # venv" does not by itself mean this run put it there: the migrated-venv arm (install.ps1's
+    # `if ($_Migrated)`) installs unsloth alone and never touches torch, and install.ps1's flavor
+    # repair no-ops whenever its expected tag is 'cpu' or unrecognised. So an ordinary upgrade off
+    # the legacy ~/.unsloth/studio/.venv layout can hand setup a +cu118 wheel from a previous
+    # install on different hardware; preserving THAT would leave the environment permanently wrong
+    # and, on a mapped AMD host, the kept cu* tag also blocks the ROCm reroute below (it needs
+    # $CuTag -eq "cpu"). Those repair in place, as they did before this guard existed.
+    #
+    # $InstallerTorchTag $null means the installer did not say (an older cached install.ps1, or
+    # --no-torch), and unknown falls back to preserving, the behaviour that shipped before the
+    # variable existed. Otherwise the disagreement is between setup's second probe and the first,
+    # not with the hardware -- a Get-CimInstance that threw, an nvidia-smi that did not answer, the
+    # single-Radeon unroll of #8335 -- and setup has no better claim than the installer that just
+    # ran: the in-place repair below would --force-reinstall the other family over a working GPU
+    # environment and exit 0, at which point install.ps1 discards the rollback copy and the damage
+    # is permanent. A loud failure traded for a silently wrong install is worse than the loop this
+    # block exists to end.
+    #
+    # Covers cpu rescans (+rocm -> cpu) and family-to-family ones (+rocm -> cu128, +cu128 -> rocm,
+    # +xpu -> cu128) alike. Nothing legitimate is suppressed: a venv whose torch does not import at
+    # all leaves $installedTorchTag $null and still repairs, a CPU wheel that has to become a GPU
+    # one still repairs, cu* -> cu* already repaired in place above, and an explicit index pin
+    # escaped before that. A genuine GPU swap is install.ps1's job, done before calling here.
+    #
+    # $expectedTorchTag is read in the MESSAGE, never in the condition: it is assigned only inside
+    # the `if (-not $shouldRebuild)` block above, so on a venv whose torch would not import it was
+    # never created and reading it under a caller's Set-StrictMode is fatal. The body is reached
+    # only once $installedTorchTag has answered, which is only true on the path that assigned it.
+    if ($shouldRebuild -and $InstallerManagedSetup -and
+        $installedTorchTag -and $installedTorchTag -ne "cpu" -and
+        ((-not $InstallerTorchTag) -or $installedTorchTag -eq $InstallerTorchTag)) {
+        substep "This host rescanned as $expectedTorchTag but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
+        substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto another PyTorch build on purpose." "DarkGray"
+        $shouldRebuild = $false
+        # Keeping the wheel is only half the job: the index selection below re-runs the same
+        # rescan, and two of its arms force-reinstall torch regardless of
+        # $script:PinChangedForceReinstall (the AMD arm always, the XPU arm whenever the installed
+        # tag is not xpu), undoing this guard from a thousand lines further down.
+        $script:PreservedInstallerTorchTag = $installedTorchTag
+        # Same reason as the direct-update escape above, and it needs its own flag: stay on the
+        # xpu index, or triton-windows lands over torch's XPU triton with nothing to swap it back.
+        if ($installedTorchTag -eq "xpu") { $script:PreservedXpuVenv = $true }
+    }
+
+    $reason = $null
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
-        if ($InstallerManagedSetup) {
-            substep "Stale venv detected ($reason)." "Yellow"
-            Write-StudioLine "   [ERROR] The existing Unsloth environment needs repair." -ForegroundColor Red
-            Write-StudioLine "           Re-run install.ps1 so it can replace the environment safely with rollback." -ForegroundColor Yellow
-            Exit-SetupFailure "The existing Unsloth environment needs repair"
+        # "torch could not be imported" covers a dead GPU driver, a half-written wheel and no torch
+        # at all. Print what python actually said (the last stderr line is the exception), so a
+        # WinError 126 reads as a driver problem instead of a broken install.
+        if ($_verProbe -and -not $_verProbe.Ok -and $_verProbe.Error) {
+            # No @(...)[0] around this: the guard above passes on a whitespace-only stderr,
+            # Where-Object then drops every line, and [0] into the empty array that leaves is fatal
+            # under a caller's Set-StrictMode. -Last 1 already yields one string or nothing.
+            $_probeErrLine = $_verProbe.Error -split "`r?`n" |
+                Where-Object { $_.Trim() } | Select-Object -Last 1
+            if ($_probeErrLine) { substep "PyTorch reported: $($_probeErrLine.Trim())" "DarkGray" }
         }
+    }
+
+    # The abort that used to live here was an unrecoverable fixed point, reported from four
+    # separate triggers (#5942, #7275, #8335, plus a driver crash). It told the user to re-run
+    # install.ps1 for a safe rollback replace -- but install.ps1 IS the caller under
+    # $InstallerManagedSetup, it had already done exactly that earlier in the same run, and its
+    # failure path moves the previous environment straight back, so every attempt ended on the
+    # byte-identical state it started from and the install could never converge.
+    #
+    # Repair in place instead of wiping: the dependency pass force-reinstalls the torch trio from
+    # the resolved index over this venv, the route an index-pin change and a cu* family change
+    # already take above. Deleting is not an option here anyway -- install.ps1 invokes setup
+    # through the venv's own unsloth.exe, so python.exe is locked by the process running this.
+    if ($shouldRebuild -and $InstallerManagedSetup) {
+        substep "Environment does not match this host ($reason) -- reinstalling PyTorch in place." "Yellow"
+        substep "install.ps1 keeps a rollback copy of the previous environment until this run succeeds." "DarkGray"
+        $script:PinChangedForceReinstall = $true
+        $shouldRebuild = $false
+    }
+
+    if ($shouldRebuild) {
         substep "Stale venv detected ($reason) -- rebuilding..." "Yellow"
         # why: mirror install.ps1 env-mode guard so an update against a custom
         # UNSLOTH_STUDIO_HOME never wipes an unrelated unsloth_studio venv;
@@ -4007,11 +4148,41 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 } else {
     substep "reusing existing virtual environment at $VenvDir"
     $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $_venvActivate = Join-Path $VenvDir "Scripts\Activate.ps1"
     if (Test-Path -LiteralPath $_venvPyExe) {
+        # The interpreter is not the only file the rest of this script needs. Everything below
+        # reaches the venv through the dot-sourced Activate.ps1 and a bare `python` (Fast-Install
+        # resolves its target with (Get-Command python).Source), and install.ps1 deliberately
+        # leaves the venv's Scripts directory off PATH. So a venv that kept python.exe but lost
+        # Activate.ps1 fails the dot-source non-terminatingly at the "Continue" the pip section
+        # runs at, installs the whole stack into whatever interpreter is on PATH, and exits 0.
+        # Newly reachable now that an installer-managed stale verdict repairs instead of aborting.
+        if (-not (Test-Path -LiteralPath $_venvActivate)) {
+            Write-StudioLine "[ERROR] $VenvDir has no activation script at Scripts\Activate.ps1." -ForegroundColor Red
+            Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+            Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Exit-SetupFailure "No activation script at $_venvActivate"
+        }
         try {
             $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
             if ($_venvPyVer) { substep $_venvPyVer }
         } catch {}
+    } else {
+        # Stop here, because nothing downstream would: the activation below is a dot-source, and a
+        # MISSING script is a NON-terminating error at the "Continue" the pip section runs at, so
+        # setup would print one red line and carry on, resolving every `python` and `uv pip` that
+        # follows against whatever interpreter is on PATH, installing the whole stack outside the
+        # environment it was asked to build, and exiting 0 over a venv with not one package in it.
+        #
+        # An interpreter-less venv is incomplete, not out of date, so none of the decisions above
+        # apply: the in-place torch repair has no interpreter to repair through, and the rebuild
+        # path deletes the directory only to hit "Virtual environment not found" a few lines up.
+        # Unlike the abort this replaced upstream, re-creating the environment genuinely changes
+        # this state -- install.ps1 still holds the rollback copy of the previous one.
+        Write-StudioLine "[ERROR] $VenvDir has no interpreter at Scripts\python.exe." -ForegroundColor Red
+        Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+        Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+        Exit-SetupFailure "No interpreter at $_venvPyExe"
     }
 }
 
@@ -4022,8 +4193,61 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 $prevEAP = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
+# Existence is not activation. The two refusals above check that a file is THERE; neither can tell
+# whether dot-sourcing it took effect, and the ways it silently does not are ordinary damage on a
+# half-written venv. Activate.ps1 prepends the venv to PATH in its LAST statement, 28 lines after
+# it sets $env:VIRTUAL_ENV, so a copy truncated by an interrupted or out-of-disk `python -m venv`
+# parses, runs to its last complete statement and returns without printing anything at all, and an
+# unparseable one is a ParserError, non-terminating at the "Continue" set just above. Either way
+# the dot-source "succeeds" with the ambient interpreter still first on PATH -- the system or
+# Microsoft Store python, since install.ps1 keeps the venv's Scripts directory off PATH on purpose.
+# Fast-Install hands exactly that to `uv pip install --python`, the whole stack lands outside the
+# venv, every Exit-SetupFailure below keys off that wrong interpreter's exit code, and setup exits
+# 0 -- at which point install.ps1 commits over the rollback copy and the previous working
+# environment is gone for good.
+#
+# So assert the post-condition instead of a third pre-condition: the `python` now in effect has to
+# live under $VenvDir. $env:VIRTUAL_ENV would not do, precisely because Activate.ps1 sets it
+# before the line that matters.
+function Assert-VenvActivated {
+    param([Parameter(Mandatory = $true)][string]$VenvDir)
+
+    # Both sides normalised through Get-Item, which is what Activate.ps1 itself uses to build the
+    # PATH entry ($VenvExecDir = Get-Item -Path $VenvExecPath): agreeing on the normaliser keeps a
+    # short 8.3 path, a substituted drive, a junction or a differently cased drive letter from
+    # reading as "outside". A guard that false-positives here would break every install, so every
+    # branch that cannot PROVE the interpreter is wrong returns.
+    $venvRoot = $null
+    try { $venvRoot = (Get-Item -LiteralPath $VenvDir -Force -ErrorAction Stop).FullName.TrimEnd('\', '/') } catch { $venvRoot = $null }
+    if (-not $venvRoot) { return }
+
+    $_pyCmd = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
+    # A function or alias named python carries no Source to judge, and judging it wrong would
+    # refuse an install that works. Only an application resolved off PATH is decidable, and that
+    # is also the only shape Fast-Install's -- python hand-off can be aimed at.
+    if ($_pyCmd -and $_pyCmd.CommandType -ne 'Application') { return }
+    $_pyPath = $null
+    if ($_pyCmd -and $_pyCmd.Source) {
+        try { $_pyPath = (Get-Item -LiteralPath $_pyCmd.Source -Force -ErrorAction Stop).FullName } catch { $_pyPath = $_pyCmd.Source }
+    }
+
+    if ($_pyPath) {
+        foreach ($_sep in @('\', '/')) {
+            if ($_pyPath.StartsWith($venvRoot + $_sep, [System.StringComparison]::OrdinalIgnoreCase)) { return }
+        }
+    }
+
+    $_where = if ($_pyPath) { $_pyPath } else { "nothing on PATH" }
+    Write-StudioLine "[ERROR] Activating $VenvDir did not take effect: python resolves to $_where." -ForegroundColor Red
+    Write-StudioLine "        The activation script is present but did not put the environment on PATH," -ForegroundColor Yellow
+    Write-StudioLine "        so the environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+    Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+    Exit-SetupFailure "Activating $VenvDir did not put its interpreter on PATH (python resolves to $_where)"
+}
+
 $ActivateScript = Join-Path $VenvDir "Scripts\Activate.ps1"
 . $ActivateScript
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
@@ -4040,6 +4264,11 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }
+# Refresh-Environment rebuilt PATH from the registry, and the re-activation meant to put the venv
+# back sits inside a catch that swallows everything -- including a dot-source that died after
+# Activate.ps1's own `deactivate -nondestructive` had restored the pre-venv PATH. Re-check outside
+# the catch: this is the last statement before Fast-Install starts resolving `python`.
+Assert-VenvActivated -VenvDir $VenvDir
 
 # Helper: install a package, preferring uv with pip fallback
 function Fast-Install {
@@ -4178,11 +4407,15 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # date" path would leave the user on CPU torch with Train/Export disabled.
         # Force the dependency pass so the ROCm wheels get installed.
         if ($script:ROCmGfxArch) {
-            $_torchIsCpu = $true
-            try {
-                & python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>$null
-                if ($LASTEXITCODE -eq 0) { $_torchIsCpu = $false }
-            } catch {}
+            # Bounded, like every other torch probe here and for the reason the disk-based ROCm
+            # rescue above exists: on a faulted HIP runtime `import torch` never comes back, and
+            # the rescue now KEEPS that venv rather than deleting it, so this is the first
+            # `import torch` such a host reaches and an unbounded call would hang setup forever.
+            # A probe that does not answer keeps $_torchIsCpu true, the same safe direction as
+            # before: one dependency pass, never a silent skip.
+            $_rocmTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" `
+                -Code "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
+            $_torchIsCpu = -not $_rocmTorchProbe.Ok
             if ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
@@ -4328,6 +4561,17 @@ if ($PinnedTorchIndexUrl) {
     # NVIDIA + Arc host reaches. Ahead of the NVIDIA arm deliberately: converting halfway leaves
     # +xpu torch under triton-windows and no XPU index to swap it back. install.ps1 converts.
     $CuTag = "xpu"
+} elseif ($script:PreservedInstallerTorchTag) {
+    # The stale check kept the GPU wheel install.ps1 placed here minutes ago. That decision has to
+    # reach the install arms below or it is undone there: the AMD arm force-reinstalls
+    # unconditionally and the XPU arm whenever the installed tag is not xpu, so neither is held off
+    # by $script:PinChangedForceReinstall staying false. Selecting the family already installed
+    # keeps both out of the way -- a cu* tag skips the AMD reroute below (it needs $CuTag -eq
+    # "cpu") and the XPU arm (it needs "xpu") and lands on the CUDA arm, which forces nothing; a
+    # kept +rocm venv reads as "cpu" here and lands on the CPU arm, whose bare torch range a +rocm
+    # build already satisfies. The +xpu case is the branch above. Behind the pin check, like every
+    # other arm: an explicit pin repairs in place before the guard runs anyway.
+    $CuTag = if (Test-CudaFamilyLeaf $script:PreservedInstallerTorchTag) { $script:PreservedInstallerTorchTag } else { "cpu" }
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
 } elseif ($script:IsIntelXpu) {
