@@ -1001,6 +1001,10 @@ def _install_package_wheel_first(
         logger.info("Skipping %s installation while offline", display_name)
         return False
 
+    # Set when a wheel installed but would not import: pip/uv treat the broken distribution
+    # as satisfying the fallback spec, so it has to be replaced rather than installed over.
+    wheel_rejected = False
+
     env = probe_torch_wheel_env(timeout = 30)
     if wheel_url_builder is not None:
         wheel_url = wheel_url_builder(env)
@@ -1033,6 +1037,7 @@ def _install_package_wheel_first(
                     "%s wheel installed but is not importable; falling back to PyPI",
                     display_name,
                 )
+                wheel_rejected = True
                 break
             logger.warning(
                 "%s failed to install %s wheel:\n%s",
@@ -1078,10 +1083,15 @@ def _install_package_wheel_first(
                 "install",
                 "--python",
                 sys.executable,
-                pypi_spec,
             ]
+            if wheel_rejected:
+                pypi_cmd.append("--reinstall")
+            pypi_cmd.append(pypi_spec)
         else:
-            pypi_cmd = [sys.executable, "-m", "pip", "install", pypi_spec]
+            pypi_cmd = [sys.executable, "-m", "pip", "install"]
+            if wheel_rejected:
+                pypi_cmd.append("--force-reinstall")
+            pypi_cmd.append(pypi_spec)
     else:
         if shutil.which("uv"):
             pypi_cmd = [
@@ -1096,6 +1106,8 @@ def _install_package_wheel_first(
             # Avoid stale cache artifacts from partial HIP source builds
             if is_hip:
                 pypi_cmd.append("--no-cache")
+            if wheel_rejected:
+                pypi_cmd.append("--reinstall")
             pypi_cmd.append(pypi_spec)
         else:
             pypi_cmd = [
@@ -1106,8 +1118,10 @@ def _install_package_wheel_first(
                 "--no-build-isolation",
                 "--no-deps",
                 "--no-cache-dir",
-                pypi_spec,
             ]
+            if wheel_rejected:
+                pypi_cmd.append("--force-reinstall")
+            pypi_cmd.append(pypi_spec)
 
     # ROCm source compilation can take 10-30 min; use a generous timeout. Non-HIP installs
     # keep the pre-existing "no timeout" behaviour so unrelated slow builds (causal-conv1d
@@ -1185,6 +1199,13 @@ def _install_package_wheel_first(
                     display_name,
                     result.stdout,
                 )
+        return False
+
+    # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
+    # installing anything, so a rejected wheel would otherwise be reported as a success.
+    if not _is_importable(import_name):
+        logger.warning("%s installed from PyPI but is not importable", display_name)
+        _send_status(event_queue, f"{display_name} is installed but not usable on this GPU")
         return False
 
     if is_hip:
