@@ -60,6 +60,17 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   const isImages = kind === "images";
   const noun = isImages ? "image" : "video";
   const [rows, setRows] = useState<ArchivedRow[]>([]);
+  // `showMore` reads the row count and the drop count from refs, not state: both can change while
+  // its request is in flight, and a stale closure is exactly what makes it skip a row. The ref is
+  // written with every list change rather than during render, so it is current the moment a drop
+  // lands instead of one render later.
+  const rowsRef = useRef<ArchivedRow[]>([]);
+  const mutations = useRef(0);
+  const loadingMore = useRef(false);
+  const putRows = useCallback((next: ArchivedRow[]) => {
+    rowsRef.current = next;
+    setRows(next);
+  }, []);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
@@ -107,7 +118,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
       try {
         const page = await loadPage(0);
         if (cancelled) return;
-        setRows(page.rows);
+        putRows(page.rows);
         setHasMore(page.hasMore);
       } catch (err) {
         if (!cancelled) {
@@ -122,7 +133,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     return () => {
       cancelled = true;
     };
-  }, [loadPage, kind]);
+  }, [loadPage, kind, putRows]);
 
   // Revoke everything still cached, once, on unmount.
   useEffect(() => {
@@ -211,8 +222,11 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // Drop a row, then top the page back up if that emptied it while more remain, so the list never
   // dead-ends with rows still unreachable behind a hidden "Show more".
   const dropRow = useCallback(
-    (id: string) => {
-      setRows((prev) => prev.filter((r) => r.id !== id));
+    (id: string, backToGallery: boolean) => {
+      putRows(rowsRef.current.filter((r) => r.id !== id));
+      // Every drop shifts the rows behind it up by one, so an offset taken before this point is
+      // now short. `showMore` uses the counter to notice and re-page instead of skipping a row.
+      mutations.current += 1;
       // Release the thumbnail with the row. Its element unmounts without the observer reporting it,
       // so the id would sit in `visible` forever and permanently protect its blob from eviction,
       // walking the cache past its budget one restore at a time.
@@ -230,18 +244,20 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         delete next[id];
         return next;
       });
-      // The page that owns this gallery is mounted persistently and only loads on mount, so it has
-      // to be told the shelf changed or the strip stays stale until a reload.
-      notifyGalleryChanged(kind);
+      // The page that owns this gallery is mounted persistently and only loads on mount, so a
+      // restore has to be announced or the strip stays stale until a reload. A delete does not:
+      // the item was archived, so it was never on that strip, and refetching would only cost the
+      // user the pages they had scrolled to.
+      if (backToGallery) notifyGalleryChanged(kind);
     },
-    [kind],
+    [kind, putRows],
   );
 
   async function handleRestore(row: ArchivedRow) {
     try {
       if (isImages) await setGalleryImageFlags(row.id, { archived: false });
       else await setGalleryVideoFlags(row.id, { archived: false });
-      dropRow(row.id);
+      dropRow(row.id, true);
       toast.success(`${isImages ? "Image" : "Video"} restored`);
     } catch (err) {
       toast.error(`Failed to restore ${noun}`, {
@@ -254,7 +270,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
     try {
       if (isImages) await deleteGalleryImage(row.id);
       else await deleteGalleryVideo(row.id);
-      dropRow(row.id);
+      dropRow(row.id, false);
       toast.success(`${isImages ? "Image" : "Video"} deleted`);
     } catch (err) {
       toast.error(`Failed to delete ${noun}`, {
@@ -264,17 +280,28 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   }
 
   async function showMore() {
+    if (loadingMore.current) return;
+    loadingMore.current = true;
     try {
-      const page = await loadPage(rows.length);
-      setRows((prev) => {
-        const seen = new Set(prev.map((r) => r.id));
-        return [...prev, ...page.rows.filter((r) => !seen.has(r.id))];
-      });
-      setHasMore(page.hasMore);
+      // Offset paging over a list the user can shorten. A restore or delete landing while this
+      // request is in flight pulls every later row up by one, so the row at the old offset is
+      // never returned by any page and becomes unreachable. Retry at the corrected offset when
+      // that happens; the bound is only there so a burst of clicks cannot spin here.
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const before = mutations.current;
+        const page = await loadPage(rowsRef.current.length);
+        if (mutations.current !== before) continue;
+        const seen = new Set(rowsRef.current.map((r) => r.id));
+        putRows([...rowsRef.current, ...page.rows.filter((r) => !seen.has(r.id))]);
+        setHasMore(page.hasMore);
+        return;
+      }
     } catch (err) {
       toast.error(`Failed to load more archived ${kind}`, {
         description: err instanceof Error ? err.message : undefined,
       });
+    } finally {
+      loadingMore.current = false;
     }
   }
 

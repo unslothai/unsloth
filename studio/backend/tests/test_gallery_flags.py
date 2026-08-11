@@ -229,3 +229,19 @@ def test_an_unusable_pin_time_does_not_hide_the_archived_flag(gdir):
         encoding = "utf-8",
     )
     assert flags.is_archived(flags.read(gdir), "a") is True
+
+
+def test_a_write_repairs_a_store_with_a_malformed_entry(gdir):
+    # Merging the bad entry back would leave every later clear() refused until someone fixed the
+    # file by hand, which is the opposite of what a pin action should cost the user.
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"good": {"archived": True}, "bad": "corrupt"}}),
+        encoding = "utf-8",
+    )
+    flags.set_flags(gdir, "new", pinned = True)
+    # Trusted again, so a default clear is no longer blocked.
+    items = flags.read_trusted(gdir)
+    assert set(items) == {"good", "new"}
+    # The readable flags survived the repair.
+    assert flags.is_archived(items, "good") is True
+    assert flags.flags_for(items, "new")["pinned"] is True

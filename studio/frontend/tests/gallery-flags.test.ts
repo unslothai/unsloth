@@ -10,6 +10,7 @@ import {
   newRecordProbeBaseline,
   nextSelectedId,
   removeGalleryItem,
+  serializeById,
   sortGalleryItems,
 } from "../src/lib/gallery-flags.ts";
 
@@ -215,4 +216,52 @@ test("a judging window still proves a genuinely new record", async () => {
 test("an empty gallery still proves its first generation", async () => {
   const baseline = newRecordProbeBaseline([], false, new Set());
   assert.equal(await hasUnknownRecord(baseline, pager([item("first", 1)], 50), 50), true);
+});
+
+// --- per-item serialization ----------------------------------------------------------------------
+
+test("two tasks on the same key run in call order, never overlapping", async () => {
+  const events: string[] = [];
+  const gate = (name: string, ms: number) => async () => {
+    events.push(`${name}:start`);
+    await new Promise((r) => setTimeout(r, ms));
+    events.push(`${name}:end`);
+  };
+  // The slow one is queued first, which is exactly the case a plain `await` gets wrong: the fast
+  // second PATCH would land first and the server would keep the earlier intent.
+  const first = serializeById("img:a", gate("first", 20));
+  const second = serializeById("img:a", gate("second", 0));
+  await Promise.all([first, second]);
+  assert.deepEqual(events, ["first:start", "first:end", "second:start", "second:end"]);
+});
+
+test("different keys are not serialized against each other", async () => {
+  const events: string[] = [];
+  const slow = serializeById("img:a", async () => {
+    await new Promise((r) => setTimeout(r, 20));
+    events.push("a");
+  });
+  const fast = serializeById("img:b", async () => {
+    events.push("b");
+  });
+  await Promise.all([slow, fast]);
+  assert.deepEqual(events, ["b", "a"]);
+});
+
+test("a failure does not break the key's chain", async () => {
+  const failed = serializeById("img:c", async () => {
+    throw new Error("nope");
+  });
+  await assert.rejects(failed, /nope/);
+  assert.equal(await serializeById("img:c", async () => "ran"), "ran");
+});
+
+test("the rejection reaches the caller that queued it", async () => {
+  await serializeById("img:d", async () => "ok");
+  await assert.rejects(
+    serializeById("img:d", async () => {
+      throw new Error("second failed");
+    }),
+    /second failed/,
+  );
 });

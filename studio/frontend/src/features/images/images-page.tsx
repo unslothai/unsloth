@@ -74,6 +74,7 @@ import {
   newRecordProbeBaseline,
   nextSelectedId,
   removeGalleryItem,
+  serializeById,
   sortGalleryItems,
   subscribeGalleryChanged,
 } from "@/lib/gallery-flags";
@@ -1556,9 +1557,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     void loadGallery();
   }, [loadGallery]);
 
-  // This page stays mounted across route changes, so a restore or delete from the Settings archive
-  // would otherwise not reach the strip until a full reload.
-  useEffect(() => subscribeGalleryChanged("images", () => void loadGallery()), [loadGallery]);
 
   // Drop an image from the strip. `discardBlob` is for a real delete: the bytes are gone, so the
   // cached object URL must be revoked and any in-flight fetch told to throw its blob away. An
@@ -1626,9 +1624,26 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     [ensureSrc],
   );
 
+  // This page stays mounted across route changes, so a restore from the Settings archive would
+  // otherwise not reach the strip until a full reload. Resync the window that is actually loaded:
+  // loadGallery would cut it back to the first page and throw away everything scrolled to.
+  useEffect(
+    () =>
+      subscribeGalleryChanged("images", () => {
+        void resyncWindow(galleryCache.images.length).catch(() => void loadGallery());
+      }),
+    [loadGallery, resyncWindow],
+  );
+
+  // The pin state each id was last CLICKED into, so a failing request can tell whether it is still
+  // the current intent. Without it, a slow first click failing after a later click succeeded would
+  // roll the strip back onto the state the user has since moved off.
+  const pinIntent = useRef(new Map<string, boolean>());
+
   const handleTogglePin = useCallback(
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.images.length;
+      pinIntent.current.set(id, pinned);
       // Optimistic: the reorder should land on the click, not a round trip later.
       setImages((prev) => {
         const next = applyPin(prev, id, pinned);
@@ -1636,17 +1651,25 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         return next;
       });
       try {
-        await setGalleryImageFlags(id, { pinned });
+        // Serialized per image: two quick toggles must reach the server in click order, or it
+        // settles on the earlier one and the strip disagrees on the next load.
+        await serializeById(`image-pin:${id}`, () => setGalleryImageFlags(id, { pinned }));
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to pin image");
-        // Put the old order back rather than leave the strip lying about server state.
-        setImages((prev) => {
-          const next = applyPin(prev, id, !pinned);
-          galleryCache.images = next;
-          return next;
-        });
+        // Put the old order back rather than leave the strip lying about server state, but only
+        // while this is still what the user last asked for.
+        if (pinIntent.current.get(id) === pinned) {
+          pinIntent.current.delete(id);
+          setImages((prev) => {
+            const next = applyPin(prev, id, !pinned);
+            galleryCache.images = next;
+            return next;
+          });
+        }
         return;
       }
+      if (pinIntent.current.get(id) !== pinned) return; // superseded by a later click
+      pinIntent.current.delete(id);
       // Pinning keeps the same set in the window (it only moves an already-loaded image to the
       // front), so only unpinning can open a gap.
       if (!pinned && loadedCount > 0) {

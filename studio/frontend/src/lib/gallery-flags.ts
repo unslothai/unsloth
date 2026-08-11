@@ -144,6 +144,32 @@ export async function hasUnknownRecord<T extends FlaggableItem>(
   return false;
 }
 
+/** In-flight tail of each key's chain, dropped once that key goes idle so the map stays small. */
+const queues = new Map<string, Promise<unknown>>();
+
+/**
+ * Run `task` after every task already queued under `key`, so two fast clicks on the same item
+ * cannot have their PATCHes land out of click order and leave the server on the earlier intent.
+ * Different keys stay parallel: pinning two images should not queue behind each other.
+ *
+ * A rejected task does not break the chain; the next one still runs, and the rejection is still
+ * delivered to whoever awaited it.
+ */
+export function serializeById<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const previous = queues.get(key);
+  const run = previous ? previous.then(task, task) : task();
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  queues.set(key, settled);
+  void settled.then(() => {
+    // Only the last link clears the key; an earlier one finishing must not drop a live chain.
+    if (queues.get(key) === settled) queues.delete(key);
+  });
+  return run;
+}
+
 /** Drop an item that was archived or deleted; order among the rest is untouched. */
 export function removeGalleryItem<T extends FlaggableItem>(items: T[], id: string): T[] {
   return items.filter((i) => i.id !== id);

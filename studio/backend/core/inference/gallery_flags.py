@@ -250,10 +250,13 @@ def set_flags_locked(
     write land as one step. Separate for the same per-descriptor lock reason as ``forget_locked``."""
     import time
 
-    # An untrusted store is REPLACED rather than merged: its contents are already unusable, and
-    # refusing here would leave the user unable to pin anything until they cleaned it up by hand.
+    # A write REPAIRS the store rather than preserving what made it untrusted. Merging the bad
+    # entry straight back would leave every later clear() refused until someone fixed the file by
+    # hand, and refusing here instead would leave the user unable to pin anything at all. Dropping
+    # only the unreadable entries keeps the flags that still mean something.
     data = _load(directory)[0]
-    items = data.setdefault("items", {})
+    items = {k: v for k, v in data.get("items", {}).items() if isinstance(v, dict)}
+    data["items"] = items
     entry = dict(_entry(items, item_id))
     if pinned is not None:
         if pinned:
