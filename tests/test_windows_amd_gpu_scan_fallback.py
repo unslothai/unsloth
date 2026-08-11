@@ -4,28 +4,20 @@
 """setup.ps1 must report the AMD GPU on a host with exactly one AMD adapter.
 
 `$wmiGpus = if (...) { $healthyGpus } else { $amdGpus }` unrolled a one-element branch into a bare
-WMI object, and a bare WMI object has no .Count in PS 5.1, so the guard after it never fired: setup
-printed "gpu none (chat-only / GGUF)" while install.ps1 had just resolved the same GPU. Setup then
-expected cpu torch against the ROCm wheels the installer placed, called the venv stale and exited,
-the installer rolled back, and the desktop app retried the same failure forever.
+WMI object, which has no .Count in PS 5.1, so the guard after it never fired: setup printed "gpu
+none (chat-only / GGUF)" while install.ps1 had just resolved the same GPU, then expected cpu torch
+against the ROCm wheels the installer placed, called the venv stale and exited, the installer rolled
+back, and the desktop app retried forever. Same expression one block down, `$gpuNames`, wraps each
+BRANCH but not the if, so a lone adapter name unrolls to a String and `$gpuNames[$nameIdx]` yields
+"A"; the `$nameArches[0]` rescue hides that unless a visible-device mask is set.
 
-Two notes on why these tests are shaped the way they are.
-
-PowerShell has two member-binding paths and only the optimized one carries the PSv3 scalar
-Count/Length fallback. Types with a custom adapter -- CimInstance, ManagementObject, COM,
-PSCustomObject -- take the other one, which returned null in the 5.1-era engine; PowerShell/
-PowerShell#5745 added the fallback there and shipped it in 6.1, which Windows PowerShell 5.1 never
-received. So under the pwsh that runs these tests, `.Count` on a scalar answers 1 and the bug is
-INVISIBLE. Asserting on `.Count` would pass against the unfixed source and guard nothing. Every
-runtime case here therefore asserts the SHAPE of the value, which is identical on both engines, and
-`ps51` re-runs the same shipped block against stubs carrying an explicit `Count = $null` to
-reproduce 5.1's observable consequence rather than only its cause.
-
-The second bug is the same expression one block down: `$gpuNames = if (...) { @(...) } else { @(...) }`
-wraps each BRANCH but not the if, so a single adapter name unrolls to a bare String and
-`$gpuNames[$nameIdx]` indexes the name, yielding "A". Nothing maps, and the `$nameArches[0]` rescue
-is skipped under a visible-device mask, so a pinned single-GPU host inferred no arch at all. That
-one does reproduce under pwsh, so it is asserted directly.
+Why the assertions look the way they do: only PowerShell's optimized member-binding path carries the
+PSv3 scalar Count fallback, and custom-adapter types (CimInstance, ManagementObject, COM,
+PSCustomObject) take the other one, which returned null until PowerShell/PowerShell#5745 shipped in
+6.1 -- never backported to 5.1. So under pwsh `.Count` answers 1 and the bug is INVISIBLE; asserting
+on it would pass against the unfixed source. Every runtime case asserts the SHAPE of the value,
+which is identical on both engines, and `ps51` re-runs the same block against stubs carrying an
+explicit `Count = $null` to reproduce 5.1's consequence rather than only its cause.
 """
 
 from __future__ import annotations
@@ -241,22 +233,16 @@ def test_installer_forwards_the_arch_through_a_private_handoff():
 
 
 def test_installer_never_exports_the_public_override():
-    """UNSLOTH_ROCM_GFX_ARCH is the operator's to set.
-
-    install_llama_prebuilt.py reads it back as _manual to decide whether a forwarded --rocm-gfx
-    outranks its own probe, so publishing an auto-detected arch there disarms that safeguard on
-    exactly the multi-GPU hosts it exists for.
-    """
+    """install_llama_prebuilt.py reads UNSLOTH_ROCM_GFX_ARCH back as _manual to decide whether a
+    forwarded --rocm-gfx outranks its own probe, so publishing an auto-detected arch there disarms
+    that safeguard on exactly the multi-GPU hosts it exists for."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     assert re.search(r"\$env:UNSLOTH_ROCM_GFX_ARCH\s*=", src) is None
 
 
 def test_installer_restores_the_private_handoff_after_setup():
-    """Matching the save/restore every adjacent handoff variable already does.
-
-    install.ps1 is documented as `irm ... | iex`, so it runs in the caller's own process and a
-    value left behind would be read as an override by the next install in that terminal.
-    """
+    """install.ps1 is documented as `irm ... | iex`, so it runs in the caller's own process and a
+    value left behind would be read as an override by the next install in that terminal."""
     src = INSTALL_PS1.read_text(encoding = "utf-8")
     assert f"$previousRocmGfxHandoff = $env:{HANDOFF}" in src
     assert f"$env:{HANDOFF} = $previousRocmGfxHandoff" in src
@@ -284,8 +270,8 @@ def test_single_amd_adapter_is_reported(tmp_path, ps51, strict):
     out = _run(tmp_path, [(_RADEON, 0)], ps51 = ps51, strict = strict)
     assert out["wmi_array"], f"one adapter must stay an array, got {out['wmi_type']}"
     assert out["labels"] == [_RADEON]
-    # The name reached the inference, which is what "reported" has to mean here: a label alone
-    # still lands on the "AMD ROCm" branch with no arch and installs cpu torch.
+    # A label alone still lands on the "AMD ROCm" branch with no arch and installs cpu torch, so
+    # "reported" has to mean the name reached the inference.
     assert out["arch"] == "gfx1151"
     assert out["label"] == "AMD ROCm (gfx1151)"
 
@@ -440,8 +426,7 @@ def _run_handoff_lifecycle(
         "\n".join(
             [
                 "$ErrorActionPreference = 'Stop'",
-                # The neighbouring handoffs the shipped finally also restores; not under test here, but
-                # the block does not compile without them.
+                # Not under test, but the shipped finally restores these too and needs them bound.
                 "$previousUnslothStudioHome = $null; $hadPreviousUnslothStudioHome = $false",
                 "$previousTauriMode = $null; $hadPreviousTauriMode = $false",
                 "$previousSetupRuntimeGateHandoff = $null; $hadPreviousSetupRuntimeGateHandoff = $false",
@@ -511,12 +496,8 @@ def test_only_this_runs_arch_is_handed_to_the_child(tmp_path, arch, inherited, e
 
 @requires_pwsh
 def test_these_assertions_fail_without_the_array_wraps(tmp_path):
-    """A regression test that passes on the unfixed source is not one.
-
-    The first version of this file asserted on `.Count`, which pwsh answers as 1 for a scalar, so
-    it was green either way. Undo just the two wraps and confirm the failures come back, so a
-    later edit here cannot quietly re-lose them.
-    """
+    """A regression test that passes on the unfixed source is not one, and the first version of
+    this file was exactly that. Undo just the two wraps and confirm the failures come back."""
     unfixed = _without_the_array_wraps(_setup_source())
     before = _run(tmp_path, [(_RADEON, 0)], source = unfixed, ps51 = True)
     pinned = _run(tmp_path, [(_RADEON, 0)], source = unfixed, env = {"HIP_VISIBLE_DEVICES": "0"})

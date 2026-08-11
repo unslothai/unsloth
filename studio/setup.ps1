@@ -2431,13 +2431,12 @@ if (-not $HasNvidiaSmi) {
             }
         }
     }
-    # 3. Last resort: the arch install.ps1 resolved a second ago in the same run. Runs after
-    #    everything above because those are mask- and shadowing-aware and the installer's scan
-    #    is not, so this fills a gap rather than deposing a better answer. Without it, a scan
-    #    that answers there but not here expects cpu torch against the ROCm wheels the
-    #    installer just placed, calls the venv stale, and loops the install forever.
-    #    Private handoff, never UNSLOTH_ROCM_GFX_ARCH: nested installers read that name as an
-    #    operator override, and this value is inferred, not chosen by anyone.
+    # 3. Last resort: the arch install.ps1 resolved a second ago. Last because everything above
+    #    is mask- and shadowing-aware and the installer's scan is not, so this fills a gap rather
+    #    than deposing a better answer. Without it, a scan that answers there but not here expects
+    #    cpu torch against the ROCm wheels just placed, calls the venv stale, and loops forever.
+    #    Private, never UNSLOTH_ROCM_GFX_ARCH: nested installers read that as an operator
+    #    override, and this value is inferred, not chosen by anyone.
     if (-not $script:ROCmGfxArch -and $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF) {
         $script:ROCmGfxArch = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF.Trim().ToLower()
         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"

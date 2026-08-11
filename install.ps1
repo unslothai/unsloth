@@ -4671,18 +4671,15 @@ exit 0
     # installer looked, and there is none".
     $env:_UNSLOTH_PS_PROXY_DEFAULTS =
         if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
-    # Forward the arch this run resolved instead of leaving setup.ps1 to re-derive it alone.
-    # Both scripts scan WMI, so a scan that answers here but not there leaves setup expecting
-    # cpu torch against the ROCm wheels just installed: it reports "needs repair", the
-    # installer rolls back, and the desktop app retries the same failure forever.
+    # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
+    # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
+    # reports "needs repair", the installer rolls back, and the app retries that forever.
     #
-    # A PRIVATE name, not UNSLOTH_ROCM_GFX_ARCH: that one is the documented operator override,
-    # and install_llama_prebuilt.py reads it back as _manual to decide whether a forwarded
-    # --rocm-gfx outranks its own probe. Publishing an auto-detected arch there would disarm
-    # that safeguard, and this scan is the weaker of the two -- it takes the first AMD adapter
-    # (Select-Object -First 1) with no visible-device mask and no shadowing-iGPU repick, both
-    # of which setup.ps1 applies. So setup consumes this only after its own probes come up
-    # empty, and nested installers never see it at all.
+    # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
+    # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
+    # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
+    # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
+    # come up empty, and nested installers never see it.
     $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
     $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
     if ($ROCmGfxArch) {
