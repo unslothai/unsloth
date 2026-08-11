@@ -493,6 +493,94 @@ def test_a_dynamically_imported_builtins_module_is_still_the_builtin():
         assert high, f"a dynamically imported builtins must be flagged: {call}"
 
 
+def test_a_dynamic_import_parked_in_a_name_still_binds_the_alias():
+    # The same dynamic import, split over two lines: `b = __import__('builtins')`
+    # then `b.exec(...)`. The receiver at the call is a bare name, so nothing in
+    # that line says it is the module - only the assignment does, and an alias
+    # pass that reads imports alone never sees it. The pre-rule text scan caught
+    # this by accident, because its bare `exec\s*\(` matched `b.exec(` too, so
+    # leaving it out is a real regression rather than a pre-existing gap.
+    for loader in (
+        "b = __import__('builtins')",
+        "b = importlib.import_module('builtins')",
+        "b = import_module('builtins')",
+        "b = builtins",
+    ):
+        payload = (
+            "import marshal, builtins, importlib\n"
+            "from importlib import import_module\n"
+            f"{loader}\n"
+            "mod = __import__('os')\n"
+            "b.exec(marshal.loads(BLOB))\n"
+        )
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a builtins module parked in a name must be flagged:\n{payload}"
+        assert "b.exec" in "".join(f.evidence for f in high), "the call must be evidence"
+
+    # An alias of `importlib` reaches the same loader.
+    payload = (
+        "import marshal\nimport importlib as il\n"
+        "b = il.import_module('builtins')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an aliased importlib must reach the same loader"
+
+    # Loading anything else binds nothing, so `.eval()` on it stays an ordinary
+    # method call - the assignment has to name `builtins` to make the alias.
+    benign = "import marshal\nb = __import__('torch')\nmod = __import__('os')\nb.eval(BLOB)\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a dynamic import of another module must stay clean: {high}"
+
+
+def test_an_assigned_alias_obeys_the_same_rebinding_cutoff():
+    # An alias made by assignment is cancellable exactly like an imported one,
+    # from the point the rebinding is written: the call above it still runs the
+    # builtin, and `b.eval()` below it is whatever `load_model()` returned.
+    payload = (
+        "import marshal\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+        "b = load_model()\n"
+        "b.eval()\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "the call above the rebinding must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev and "b.exec" in exec_ev[0], f"the call must be evidence: {exec_ev}"
+
+    # Nothing but the rebinding: the assignment that creates the alias must not
+    # read as a rebinding of it, or the alias cancels itself where it is born.
+    clean = (
+        "import marshal\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b = load_model()\n"
+        "b.eval()\n"
+    )
+    findings = sp.check_py_file(clean, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebound assigned alias must not read as the builtin: {high}"
+
+    # And the reverse order re-arms it: the module lands in the name after the
+    # ordinary assignment, so the call below is the builtin again.
+    rearmed = (
+        "import marshal\n"
+        "b = load_model()\n"
+        "b = __import__('builtins')\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(rearmed, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a name rebound to the module must be the builtin again"
+
+
 def test_a_comma_separated_import_still_binds_the_builtins_alias():
     # `import os, builtins as b` binds `b` exactly as `import builtins as b`
     # does. Requiring `builtins` immediately after `import` drops the alias, and

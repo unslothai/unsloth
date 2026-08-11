@@ -116,6 +116,7 @@ RE_BASE64 = re.compile(
 #   3. aliased module    `import builtins as b` ... `b.exec(payload)`
 #   4. aliased function  `from builtins import exec as run` ... `run(payload)`
 #   5. dynamic module    `__import__('builtins').exec(payload)`
+#   6. parked module     `b = __import__('builtins')` ... `b.exec(payload)`
 # Telling those apart from `model.eval()` is a question about the *structure* of
 # the call, and raw text cannot answer it. `model . eval()` and `model. eval()`
 # are legal Python, so a fixed-width lookbehind for the dot reads them as the
@@ -131,6 +132,13 @@ RE_BASE64 = re.compile(
 # and an alias is a set membership test rather than a regex branch. The regexes
 # below stay as the fallback for source that will not tokenize - the scanner
 # reads arbitrary third-party files, including Python 2 and truncated ones.
+#
+# Route 6 stops at the assignment whose value names the module: `b =
+# __import__('builtins')`, `b = importlib.import_module('builtins')` (through an
+# alias of `importlib` too), and `b = builtins`. Following `c = b` from there is
+# general dataflow with no bound, so a chain of aliases is not tracked; the
+# first link is what the pre-token scan happened to catch, because its bare
+# `exec\\s*\\(` also matched the `b.exec(` at the end of the chain.
 
 _EXEC_NAMES = frozenset(("exec", "eval"))
 _BUILTINS_NAMES = frozenset(("builtins", "__builtins__"))
@@ -279,12 +287,18 @@ def _string_body(literal: str) -> "str | None":
     return None
 
 
-def _collect_import_bindings(stmt: list, modules: set, funcs: set) -> bool:
+def _collect_import_bindings(
+    stmt: list, modules: set, funcs: set, loaders: "_Loaders | None" = None
+) -> bool:
     """Record `builtins` aliases bound by `stmt`. True if `stmt` is an import.
 
     Parsing the statement rather than matching `import\\s+builtins` means the
     alias is found wherever it sits in the list: `import os, builtins as b`
     binds `b` just as `import builtins as b` does.
+
+    `loaders`, when given, also collects the local names of the two module
+    loaders `_assignment_bindings` understands, so `import importlib as il` ...
+    `b = il.import_module('builtins')` is read the same as the unaliased call.
     """
     head = stmt[0]
     if head.type != tokenize.NAME:
@@ -295,18 +309,36 @@ def _collect_import_bindings(stmt: list, modules: set, funcs: set) -> bool:
                 continue
             as_at = _name_index(part, "as")
             if as_at is None or as_at + 1 >= len(part):
-                continue
+                continue  # `import importlib` needs no record: it is a default
             dotted = "".join(t.string for t in part[:as_at])
             alias = part[as_at + 1]
-            if dotted == "builtins" and alias.type == tokenize.NAME:
+            if alias.type != tokenize.NAME:
+                continue
+            if dotted == "builtins":
                 modules.add(alias.string)
+            elif loaders is not None and dotted == "importlib":
+                loaders.modules.add(alias.string)
         return True
     if head.string != "from":
         return False
     import_at = _name_index(stmt, "import")
     if import_at is None:
         return True
-    if "".join(t.string for t in stmt[1:import_at]) != "builtins":
+    dotted = "".join(t.string for t in stmt[1:import_at])
+    if dotted != "builtins":
+        if loaders is not None and dotted == "importlib":
+            items = stmt[import_at + 1 :]
+            if items and items[0].type == tokenize.OP and items[0].string == "(":
+                items = items[1:-1] if items[-1].string == ")" else items[1:]
+            for part in _split_top(items):
+                names = [t for t in part if t.type == tokenize.NAME]
+                if not names or names[0].string != "import_module":
+                    continue
+                as_at = _name_index(part, "as")
+                if as_at is not None and as_at + 1 < len(part):
+                    loaders.funcs.add(part[as_at + 1].string)
+                else:
+                    loaders.funcs.add("import_module")
         return True
     items = stmt[import_at + 1 :]
     if items and items[0].type == tokenize.OP and items[0].string == "(":
@@ -321,6 +353,162 @@ def _collect_import_bindings(stmt: list, modules: set, funcs: set) -> bool:
         else:
             funcs.add(names[0].string)
     return True
+
+
+class _Loaders:
+    """The local names one file binds to the module loaders, plus their defaults.
+
+    `importlib` and `import_module` are the spellings that need no import of
+    their own to be meaningful in the source; an alias adds to them.
+    """
+
+    __slots__ = ("modules", "funcs")
+
+    def __init__(self):
+        self.modules = {"importlib"}
+        self.funcs = {"import_module"}
+
+
+def _strip_parens(toks: list) -> list:
+    while (
+        len(toks) >= 2
+        and toks[0].type == tokenize.OP
+        and toks[0].string == "("
+        and toks[-1].type == tokenize.OP
+        and toks[-1].string == ")"
+    ):
+        depth = 0
+        for j, tok in enumerate(toks):
+            if tok.type == tokenize.OP:
+                if tok.string in _OPENERS:
+                    depth += 1
+                elif tok.string in _CLOSERS:
+                    depth -= 1
+                    if depth == 0 and j != len(toks) - 1:
+                        return toks  # `(a).b` - the parens are not the outermost
+        toks = toks[1:-1]
+    return toks
+
+
+def _loads_builtins(value: list, loaders: _Loaders) -> bool:
+    """Whether `value` plainly evaluates to the `builtins` module.
+
+    Only the forms that need no dataflow to read: the module named outright, and
+    the two loader calls that take its name as a literal. `c = b` for an alias
+    `b` is deliberately not one of them - following that is general dataflow,
+    and the chain has no bound.
+    """
+    value = _strip_parens(value)
+    if not value:
+        return False
+    if len(value) == 1:
+        return value[0].type == tokenize.NAME and value[0].string in _BUILTINS_NAMES
+    if not (
+        value[-1].type == tokenize.OP
+        and value[-1].string == ")"
+        and value[-2].type == tokenize.STRING
+        and _string_body(value[-2].string) == "builtins"
+        and value[-3].type == tokenize.OP
+        and value[-3].string == "("
+    ):
+        return False
+    call = value[:-3]
+    if len(call) == 1:
+        # `__import__('builtins')`, or `import_module('builtins')` for a name
+        # `from importlib import import_module` bound.
+        return call[0].type == tokenize.NAME and (
+            call[0].string == "__import__" or call[0].string in loaders.funcs
+        )
+    return (
+        len(call) == 3
+        and call[0].type == tokenize.NAME
+        and call[0].string in loaders.modules
+        and call[1].type == tokenize.OP
+        and call[1].string == "."
+        and call[2].type == tokenize.NAME
+        and call[2].string == "import_module"
+    )
+
+
+def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
+    """The names `stmt` assigns the `builtins` module to, in source order.
+
+    `b = __import__('builtins')` reaches the builtin through `b.exec(...)` just
+    as `import builtins as b` does, and the token pass only follows names it
+    knows are the module. Returns an empty list for every other statement,
+    including `b += ...` and `b = load_model()`, so the caller can also use a
+    non-empty result to mean "this statement is a binding, not a rebinding".
+    """
+    # Every accepted form ends in the module - named outright, or as the closing
+    # parenthesis of a loader call - and needs a plain `=`. That is one test on
+    # the last token for most statements, and a single early-exiting pass for the
+    # rest; nothing is allocated until a statement can actually be one.
+    if len(stmt) < 3:
+        return []
+    last = stmt[-1]
+    if last.type == tokenize.NAME:
+        if last.string not in _BUILTINS_NAMES:
+            return []
+    elif last.type == tokenize.OP and last.string == ")":
+        # The token the parenthesis closes on: the module's name as a literal
+        # for a loader call, the name itself when parenthesized, or another
+        # parenthesis when both are. `v = compute(0)` is rejected here.
+        inner = stmt[-2]
+        if inner.type == tokenize.STRING:
+            if "builtins" not in inner.string:
+                return []
+        elif inner.type == tokenize.NAME:
+            if inner.string not in _BUILTINS_NAMES:
+                return []
+        elif not (inner.type == tokenize.OP and inner.string == ")"):
+            return []
+    else:
+        return []
+    marker = assign = False
+    for tok in stmt:
+        ttype = tok.type
+        if ttype == tokenize.NAME:
+            if tok.string in _BUILTINS_NAMES:
+                if assign:
+                    break
+                marker = True
+        elif ttype == tokenize.OP:
+            if tok.string == "=":
+                if marker:
+                    break
+                assign = True
+        elif ttype == tokenize.STRING and "builtins" in tok.string:
+            if assign:
+                break
+            marker = True
+    else:
+        return []
+    groups = _split_top(stmt, "=")
+    if len(groups) < 2 or not _loads_builtins(groups[-1], loaders):
+        return []
+    names = []
+    for group in groups[:-1]:
+        colon_at = _name_index_op(group, ":")  # annotated target: `b: Any = value`
+        if colon_at is not None:
+            group = group[:colon_at]
+        if len(group) != 1 or group[0].type != tokenize.NAME:
+            return []  # a tuple, attribute or subscript target: not a plain alias
+        names.append(group[0].string)
+    return names
+
+
+def _name_index_op(toks: list, text: str) -> "int | None":
+    depth = 0
+    for i, tok in enumerate(toks):
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _OPENERS:
+            depth += 1
+        elif tok.string in _CLOSERS:
+            depth -= 1
+        elif depth == 0 and tok.string == text:
+            return i
+    return None
 
 
 def _add_assignment_targets(part: list, rebound: set) -> None:
@@ -680,6 +868,16 @@ RE_FALLBACK_CALL = re.compile(r"(?<![\w.])(\w+)\s*\(")
 RE_IMPORT_LIST = re.compile(r"(?<![\w.])import[ \t]+([^\n;]*)")
 RE_MODULE_ALIAS_ITEM = re.compile(r"(?<![\w.])builtins[ \t]+as[ \t]+(\w+)")
 RE_BUILTINS_FUNC_ALIAS = re.compile(r"(?<![\w.])from\s+builtins\s+import\s+([^\n]*)")
+# The same alias without an import statement: `b = __import__('builtins')`. The
+# token pass decides this properly; this is only the fallback for source that
+# will not tokenize, so it stays on one line and does not chase aliases of
+# `importlib` - what it misses, the token pass already has.
+RE_ASSIGN_BUILTINS = re.compile(
+    r"^[ \t]*(\w+)[ \t]*(?::[^=\n]+)?=[ \t]*\(*[ \t]*"
+    r"(?:(?:__import__|(?:importlib[ \t]*\.[ \t]*)?import_module)[ \t]*\([ \t]*"
+    r"""(['"])builtins\2|__builtins__|builtins)[ \t]*\)*[ \t]*$""",
+    re.M,
+)
 RE_FUNC_ALIAS_ITEM = re.compile(r"(?<![\w.])(?:exec|eval)(?:\s+as\s+(\w+))?")
 # Any name this file assigns to. One pass for the whole file, then a set
 # difference: an alias that is also an assignment target is not the builtin at
@@ -710,11 +908,26 @@ def _regex_bindings(text: str) -> "tuple[set, set]":
     for m in RE_BUILTINS_FUNC_ALIAS.finditer(text):
         for item in RE_FUNC_ALIAS_ITEM.finditer(m.group(1)):
             funcs.add(item.group(1) or item.group(0))
+    for m in RE_ASSIGN_BUILTINS.finditer(text):
+        modules.add(m.group(1))
     return modules, funcs
 
 
 def _regex_rebindings(text: str) -> set:
-    return {g for m in RE_ASSIGNED_NAME.finditer(text) for g in m.groups() if g}
+    """Names assigned somewhere in `text`, minus the assignments that bind the
+    module itself. Both patterns anchor at the start of a line, so an alias
+    assignment is recognised by the offset it matched at rather than by
+    re-parsing it - without that, `b = __import__('builtins')` would cancel the
+    very alias it creates.
+    """
+    aliased = {m.start() for m in RE_ASSIGN_BUILTINS.finditer(text)}
+    return {
+        g
+        for m in RE_ASSIGNED_NAME.finditer(text)
+        if m.start() not in aliased
+        for g in m.groups()
+        if g
+    }
 
 
 def _regex_spans(text: str, receivers: frozenset, funcs: frozenset) -> list:
@@ -897,12 +1110,18 @@ class _ExecEvalPattern:
         modules: set = set()
         funcs: set = set()
         cancel: dict = {}
+        loaders = _Loaders()
         if "builtins" in content:
             failed: list = []
             for stmt in _statements(content, failed):
                 head = stmt[0]
                 if head.type == tokenize.NAME and head.string in ("import", "from"):
-                    _collect_import_bindings(stmt, modules, funcs)
+                    _collect_import_bindings(stmt, modules, funcs, loaders)
+                else:
+                    # `b = __import__('builtins')` binds an alias without an
+                    # import statement, and the call through it is route 5 with
+                    # the module parked in a name first.
+                    modules.update(_assignment_bindings(stmt, loaders))
             if failed:
                 re_modules, re_funcs = _regex_bindings(content)
                 modules |= re_modules
@@ -922,9 +1141,28 @@ class _ExecEvalPattern:
                 for stmt in _statements(content, failed):
                     head = stmt[0]
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
+                        if cancel:
+                            # Only once something is cancelled can an import
+                            # re-arm it, so the ordinary file never parses its
+                            # imports twice.
+                            bound: set = set()
+                            _collect_import_bindings(stmt, bound, bound, None)
+                            for name in bound:
+                                cancel.pop(name, None)
                         continue
                     _collect_rebindings(stmt, rebound, candidates)
                     if not rebound:
+                        continue
+                    aliased = _assignment_bindings(stmt, loaders)
+                    if aliased:
+                        # The statement that makes the name the module is not a
+                        # rebinding of it, and it undoes any earlier one:
+                        # `b = load()` ... `b = __import__('builtins')` ...
+                        # `b.exec(BLOB)` runs the builtin. Checked only for a
+                        # statement that does rebind an alias, which is rare.
+                        for name in aliased:
+                            cancel.pop(name, None)
+                        rebound.clear()
                         continue
                     at = offsets.of(*head.start)
                     for name in rebound:
