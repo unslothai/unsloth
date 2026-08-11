@@ -648,9 +648,9 @@ def test_the_receiver_walk_does_not_rescan_the_whole_call_chain():
 
     small = best_of(chain(1_600))
     large = best_of(chain(3_200))
-    assert large < 3.0 * small, (
-        f"the receiver walk grows faster than the input: {small:.2f}s -> {large:.2f}s"
-    )
+    assert (
+        large < 3.0 * small
+    ), f"the receiver walk grows faster than the input: {small:.2f}s -> {large:.2f}s"
 
 
 def test_a_loader_call_receiver_is_the_builtins_module_whatever_it_is_handed():
@@ -1029,9 +1029,9 @@ def test_an_fstring_call_above_its_aliases_rebinding_is_still_flagged():
     tok = sp.tokenize.TokenInfo(sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line)
     out: list = []
     sp._fstring_spans(tok, aliases, sp._Offsets(line), out, True, 0)
-    assert [line[s.start() : s.end()] for s in out] == ["run("], (
-        f"a call above the rebinding must still match: {out}"
-    )
+    assert [line[s.start() : s.end()] for s in out] == [
+        "run("
+    ], f"a call above the rebinding must still match: {out}"
 
     # And below the rebinding the name is the model again, so the false positive
     # the cutoff exists for does not come back through the f-string.

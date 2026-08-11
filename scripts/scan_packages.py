@@ -1129,7 +1129,12 @@ def _regex_rebindings(text: str) -> set:
     }
 
 
-def _regex_spans(text: str, receivers: frozenset, funcs: frozenset, live = None) -> list:
+def _regex_spans(
+    text: str,
+    receivers: frozenset,
+    funcs: frozenset,
+    live = None,
+) -> list:
     """Spans of every call this text reaches the builtin through.
 
     `live(name, at)`, when given, decides whether the alias `name` is still the
