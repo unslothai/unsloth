@@ -3168,6 +3168,13 @@ class LlamaCppBackend:
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
+        # Whether THIS load ran against a probe that did not answer, rather than one
+        # that answered "no". An inconclusive probe reports every capability absent, so it
+        # silently degrades speculative decoding, the DSpark sidecar and the --kv-unified
+        # slot clamp alike. Separate from _spec_fallback_reason, whose UI banner stays
+        # suppressed for an unresolved probe, so a reload can still be judged worth
+        # retrying (#8317).
+        self._capability_probe_inconclusive: bool = False
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
         # Set after an auto-Vulkan crash recovers with all devices disabled.
@@ -3981,6 +3988,21 @@ class LlamaCppBackend:
             and not spec_owned_by_extra_args
         ):
             return False
+        # Retry a runtime the probe degraded, once the probe starts answering (#8317).
+        # The retry window is worth nothing if Apply keeps deduping against the degraded
+        # runtime, since nothing would re-probe. The slot clamp is the trap:
+        # _requested_n_parallel stores the ASK, so a clamped runtime compares equal and
+        # would never be revisited. One reload, not a loop -- it records the conclusive
+        # probe and clears this flag, so a build that really lacks the capability
+        # re-derives the same runtime and dedupes after. The probe is cached, so it is
+        # free on the only path that reaches it.
+        if (
+            self._capability_probe_inconclusive
+            and not self._is_diffusion
+            and not self.probe_server_capabilities().get("mtp_probe_inconclusive")
+        ):
+            return False
+
         compared_draft_n_max = self._spec_draft_n_max
         if self._spec_fallback_reason == "runtime_error" and self._last_load_intent is not None:
             # The MTP-free recovery clears the runtime value but retains the
@@ -4268,7 +4290,10 @@ class LlamaCppBackend:
         return bool(match) and int(match.group(1)) in cls._BROKEN_DSPARK_BUILDS
 
     # Cached on (path, mtime); `unsloth studio update` bumps mtime.
+    _CAPABILITY_PROBE_RETRY_SECONDS = 30.0
     _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
+    _capability_retry_after: dict[tuple[str, int], float] = {}
+    _capability_cache_lock = threading.Lock()
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
@@ -4316,9 +4341,16 @@ class LlamaCppBackend:
         except OSError:
             mtime = 0
         cache_key = (bin_path, mtime)
-        cached = cls._capability_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with cls._capability_cache_lock:
+            cached = cls._capability_cache.get(cache_key)
+            if cached is not None:
+                if not cached.get("mtp_probe_inconclusive"):
+                    return cached
+                retry_after = cls._capability_retry_after.get(cache_key)
+                if retry_after is not None and time.monotonic() < retry_after:
+                    return cached
+                cls._capability_cache.pop(cache_key, None)
+                cls._capability_retry_after.pop(cache_key, None)
 
         mtp_token: Optional[str] = None
         supports_dspark = False
@@ -4340,6 +4372,18 @@ class LlamaCppBackend:
         help_text = ""
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
+            # Capability detection describes the binary, independently of the
+            # user's launch defaults. In particular, a device selected through
+            # LLAMA_ARG_* becomes invalid when the macOS probe disables Metal.
+            for name in tuple(probe_env):
+                if name.startswith("LLAMA_ARG_"):
+                    probe_env.pop(name, None)
+            if sys.platform == "darwin":
+                # Building --help asks llama_supports_rpc(), which otherwise
+                # initializes Metal and compiles its embedded shaders. A cold
+                # compile exceeds this probe's timeout; no device is needed to
+                # enumerate the command-line flags.
+                probe_env["GGML_METAL_DEVICES"] = "0"
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
@@ -4515,8 +4559,26 @@ class LlamaCppBackend:
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
-        cls._capability_cache[cache_key] = info
-        return info
+        with cls._capability_cache_lock:
+            published = cls._capability_cache.get(cache_key)
+            if published is not None and (
+                not published.get("mtp_probe_inconclusive") or mtp_probe_inconclusive
+            ):
+                # Concurrent callers may finish out of order. Never replace a
+                # conclusive result with a timeout, or a newer retry result with
+                # another result of the same confidence.
+                return published
+            cls._capability_cache[cache_key] = info
+            if mtp_probe_inconclusive:
+                # Bound both failure modes: do not pin a transient failure for
+                # the process lifetime, and do not make every caller repeat a
+                # 10-second timeout while a persistent failure remains (#8317).
+                cls._capability_retry_after[cache_key] = (
+                    time.monotonic() + cls._CAPABILITY_PROBE_RETRY_SECONDS
+                )
+            else:
+                cls._capability_retry_after.pop(cache_key, None)
+            return info
 
     @staticmethod
     def _mtp_token_from_spec_help(spec_help: str) -> Optional[str]:
@@ -7976,6 +8038,7 @@ class LlamaCppBackend:
         hf_token: Optional[str] = None,
         near_path: Optional[str] = None,
         binary: Optional[str] = None,
+        caps_probe: Optional[Callable[[Optional[str]], dict]] = None,
     ) -> Optional[str]:
         """Download the published DSpark sidecar, preferring its Q8_0 copy.
 
@@ -7983,7 +8046,13 @@ class LlamaCppBackend:
         ``draft-dspark`` (every prebuilt in the known-broken window included) falls
         back, so the download would never be opened. A raised probe still fetches,
         since launch re-probes and may yet engage.
+
+        ``caps_probe`` is the caller's accumulator: this gate shapes the launch, and a
+        guess here has to latch like any other, or a load that skipped the sidecar on an
+        inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
+        if caps_probe is None:
+            caps_probe = self.probe_server_capabilities
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
@@ -8000,7 +8069,7 @@ class LlamaCppBackend:
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
             )
         try:
-            if not self.probe_server_capabilities(binary).get("supports_dspark"):
+            if not caps_probe(binary).get("supports_dspark"):
                 logger.warning(
                     "Skipping the DSpark sidecar download: llama-server has no usable "
                     "--spec-type draft-dspark, so this load falls back to no speculative "
@@ -9425,6 +9494,20 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+
+            # Every capability answer shaping this launch, latching whether any was a
+            # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
+            # clamp before an HF download, command build after), and with a 30s window a
+            # later success would otherwise erase an earlier one that already degraded it.
+            _launch_probe_inconclusive = False
+
+            def _launch_caps(bin_path):
+                nonlocal _launch_probe_inconclusive
+                caps = self.probe_server_capabilities(bin_path)
+                if caps.get("mtp_probe_inconclusive"):
+                    _launch_probe_inconclusive = True
+                return caps
+
             is_vulkan_backend = self._is_vulkan_backend(binary)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -9437,11 +9520,7 @@ class LlamaCppBackend:
             # build lacking the flag the default of 4 would quarter every context window for a
             # feature it cannot serve: fall back to one slot. Ahead of the KV estimates so the
             # fit matches what launches.
-            if (
-                n_parallel > 1
-                and binary
-                and not self.probe_server_capabilities(binary).get("supports_kv_unified")
-            ):
+            if n_parallel > 1 and binary and not _launch_caps(binary).get("supports_kv_unified"):
                 logger.warning(
                     "llama-server at %s has no --kv-unified, so %d parallel slots would "
                     "split the context window %d ways. Using 1 slot instead; update "
@@ -9610,6 +9689,7 @@ class LlamaCppBackend:
                             hf_token = hf_token,
                             near_path = model_path,
                             binary = binary,
+                            caps_probe = _launch_caps,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -9633,7 +9713,7 @@ class LlamaCppBackend:
                 and not _extra_args_set_spec_type(extra_args)
             ):
                 try:
-                    if self.probe_server_capabilities(binary).get("supports_dspark"):
+                    if _launch_caps(binary).get("supports_dspark"):
                         _spec_canon = "dspark"
                         logger.info("Auto: DSpark sidecar available, using draft-dspark.")
                 except Exception as exc:
@@ -9703,7 +9783,7 @@ class LlamaCppBackend:
                 # same message remote validation already shows.
                 raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
-            server_caps = self.probe_server_capabilities(binary)
+            server_caps = _launch_caps(binary)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -10114,7 +10194,7 @@ class LlamaCppBackend:
                     _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
-                            _fit_caps = self.probe_server_capabilities(binary) or {}
+                            _fit_caps = _launch_caps(binary) or {}
                             _mtp_binary_ok = bool(
                                 _fit_caps.get("supports_dspark")
                                 if _mtp_effective == "dspark"
@@ -11035,7 +11115,7 @@ class LlamaCppBackend:
                 if n_ubatch is not None:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
-                server_caps = self.probe_server_capabilities(binary)
+                server_caps = _launch_caps(binary)
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -12589,6 +12669,11 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                # Commit with the rest of the known-good state: only a launch that got
+                # this far replaced the runtime, so a rejected preflight leaves the old
+                # marker intact, and the diffusion runner returns well before it without
+                # consuming, or paying for, any llama-server capability.
+                self._capability_probe_inconclusive = _launch_probe_inconclusive
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
@@ -13235,6 +13320,7 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
+            self._capability_probe_inconclusive = False
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
             self._cpu_fallback_reason = None
