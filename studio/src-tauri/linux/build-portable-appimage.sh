@@ -524,11 +524,25 @@ if command -v patchelf >/dev/null 2>&1; then
     normalise_interpreter "$obj"
   done < <(find "$webkit_exec" -type f -perm -u+x -print0)
   # Regenerate the loader cache with bundle-relative paths.
-  if command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
-    ( cd "$pixbuf_dir" && GDK_PIXBUF_MODULEDIR="$pixbuf_dir" \
-        gdk-pixbuf-query-loaders > "$pixbuf_dir/loaders.cache" 2>/dev/null ) || true
-    sed -i "s|$pixbuf_dir/|./|g" "$pixbuf_dir/loaders.cache" 2>/dev/null || true
+  #
+  # Mandatory, not best-effort. The bundle ships the pixbuf loaders and AppRun points
+  # GDK_PIXBUF_MODULE_FILE at this cache, so without it gdk-pixbuf can see no loaders
+  # at all and every icon fails with "Could not load a pixbuf from icon theme". The
+  # old `command -v ... ; fi` skipped silently when the query tool was absent -- which
+  # is the case on a stock ubuntu-22.04 runner, so CI shipped bundles whose cache file
+  # simply did not exist while the build reported success.
+  if ! command -v gdk-pixbuf-query-loaders >/dev/null 2>&1; then
+    die "gdk-pixbuf-query-loaders is required to build the loader cache (install libgdk-pixbuf2.0-bin / gdk-pixbuf2-devel)"
   fi
+  ( cd "$pixbuf_dir" && GDK_PIXBUF_MODULEDIR="$pixbuf_dir" \
+      gdk-pixbuf-query-loaders > "$pixbuf_dir/loaders.cache" ) \
+    || die "gdk-pixbuf-query-loaders failed to write the loader cache"
+  sed -i "s|$pixbuf_dir/|./|g" "$pixbuf_dir/loaders.cache"
+  # An empty cache is the same failure wearing a file name: the tool can exit 0 having
+  # found nothing when it is pointed at the wrong module directory.
+  grep -q 'LoaderDir\|"[a-z]' "$pixbuf_dir/loaders.cache" 2>/dev/null \
+    || die "the pixbuf loader cache came out empty; the bundled loaders would be invisible"
+  log "pixbuf loader cache: $(grep -c '^"' "$pixbuf_dir/loaders.cache" 2>/dev/null || echo 0) loader(s)"
   # DT_NEEDED entries that are ABSOLUTE PATHS.
   #
   # A dependency is normally recorded as a bare soname and resolved through
