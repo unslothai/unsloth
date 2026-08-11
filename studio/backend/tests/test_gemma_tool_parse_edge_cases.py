@@ -411,9 +411,8 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
 
 
-# ── Wrapper-less ``call:NAME{...}``: the display strip only removes a call that
-# OWNS its position. The parser is deliberately unchanged, so an executed call is
-# never erased from the answer while a sentence about the syntax survives intact.
+# ── Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS
+# its position. The parser is unchanged, so a promoted call is never erased silently.
 
 
 def _strip(text: str, enabled = None) -> str:

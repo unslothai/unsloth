@@ -458,8 +458,7 @@ def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
     assert "}" not in stripped
     assert "answer:" in stripped and "done" in stripped
 
-    # Mid-sentence, the same shape is a sentence about the syntax: kept whole (the
-    # markerless form owns its position only at a content/line/reasoning boundary).
+    # Mid-sentence the same shape is a sentence about the syntax: kept whole.
     prose = "answer: call:f{loc:{city:NYC},n:3} done"
     assert strip_tool_markup(prose, final = True) == prose
 
@@ -554,9 +553,8 @@ def test_wrapperless_gemma_call_gated_by_enabled_tools():
         real, final = True, enabled_tool_names = {"web_search"}
     )
 
-    # Mid-sentence the shape is ambiguous, so the strip is deliberately NOT a mirror of
-    # the parser: the parser still promotes it, and the text stays visible rather than
-    # the answer being deleted around a call the user never sees.
+    # Mid-sentence the strip is deliberately NOT the parser's mirror: the call is still
+    # promoted, and its text stays visible instead of the answer being deleted around it.
     inline = "Answer. call:web_search{query:hi}"
     inline_calls = parse_tool_calls_from_text(inline, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in inline_calls] == ["web_search"], inline_calls

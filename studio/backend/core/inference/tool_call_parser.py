@@ -495,22 +495,18 @@ def _strip_mistral_closed_calls(text: str) -> str:
     return "".join(out)
 
 
-# Reasoning closers a real call may follow directly: the display strips run per segment
-# after ``strip_outside_think``, so ``</think>call:NAME{..}`` starts its segment.
+# A real call may follow a reasoning close directly: the strips run per segment after
+# ``strip_outside_think``, so ``</think>call:NAME{..}`` starts its segment.
 _GEMMA_ANCHOR_CLOSERS = ("</think>", "[/THINK]", "</thinking>")
 
 
 def _gemma_call_is_anchored(text: str, start: int, floor: int) -> bool:
-    """Whether a markerless ``call:NAME{...}`` at ``start`` OWNS its position.
-
-    A call owns its position when only horizontal whitespace separates it from
-    ``floor`` (the scan origin: content start, past a leading JSON answer, or past
-    the previously stripped call), from the start of its line, or from a reasoning
-    close. Anywhere else the shape is a sentence documenting the syntax -- the model
-    said it mid-prose -- so the DISPLAY strip keeps it rather than deleting the
-    user's answer around it. The parser is deliberately not gated this way: it still
-    promotes an unanchored call, so a call the loop executes stays visible instead of
-    being silently erased from the response."""
+    """Whether a markerless ``call:NAME{...}`` at ``start`` OWNS its position: only
+    horizontal whitespace between it and ``floor`` (the scan origin), the start of its
+    line, or a reasoning close. Anywhere else it reads as a sentence documenting the
+    syntax, so the DISPLAY strip keeps it. The parser is deliberately NOT gated this
+    way, so a call it promotes mid-prose stays visible instead of the answer being
+    deleted around it."""
     i = start - 1
     while i >= floor and text[i] in " \t\r":
         i -= 1
@@ -523,8 +519,7 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
     scanning (nested arguments are removed whole). ``enabled_tool_names`` gates the
     strip like the parser gate: a disabled/example name stays visible; ``None``
-    strips every closed call. An UNANCHORED call (mid-sentence, see
-    ``_gemma_call_is_anchored``) is prose too and is kept whole."""
+    strips every closed call. An unanchored (mid-sentence) call is prose too."""
     if _whole_content_is_json_value(text):
         return text
     n = len(text)
@@ -533,8 +528,8 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
     cursor = _leading_json_value_end(text) or 0
     if cursor:
         out.append(text[:cursor])
-    # Anchor floor: the scan origin, then the end of each call this strip removed, so
-    # ``call:a{} call:b{}`` stays one span pair while prose after a call does not.
+    # Anchor origin, advanced only past calls this strip removed, so ``call:a{} call:b{}``
+    # stays a pair while prose after a call does not inherit its anchor.
     floor = cursor
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
@@ -550,12 +545,11 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         closed = end is not None
         next_index = (end + 1) if closed else len(text)
         if not closed:
-            # Unclosed call: drop an anchored enabled call to EOS; keep prose (a
-            # disabled/example name, or a mid-sentence shape) as written.
+            # Unclosed: drop an anchored enabled call to EOS, keep prose as written.
             out.append(text[cursor:] if keep else text[cursor : m.start()])
             break
         if keep:
-            # Prose, not a call: keep it whole.
+            # Prose, not a call.
             out.append(text[cursor:next_index])
         else:
             out.append(text[cursor : m.start()])

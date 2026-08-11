@@ -666,8 +666,7 @@ class TestParser:
         assert "call:f" not in out
         assert "}" not in out
         assert "ok" in out and "tail" in out
-        # Mid-sentence the same shape is prose: streaming display keeps it, so the
-        # answer never loses a sentence around a call the user cannot see.
+        # Mid-sentence the same shape is prose: streaming display keeps it.
         inline = "ok call:f{loc:{city:NYC},n:3} tail"
         assert strip_tool_markup_streaming(inline) == inline
 
