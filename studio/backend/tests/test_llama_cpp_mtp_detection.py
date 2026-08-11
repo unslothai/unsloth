@@ -2818,3 +2818,78 @@ def test_a_missing_binary_is_not_cached_so_it_is_seen_as_soon_as_it_lands(tmp_pa
     present = LlamaCppBackend.probe_server_capabilities(str(binary))
     assert present["found"] is True
     assert present["supports_mtp"] is True
+
+
+def _inconclusive_fallback_backend():
+    """A backend that asked for MTP, got an inconclusive probe, and launched without
+    speculative decoding. _spec_fallback_reason stays None so the UI banner is suppressed."""
+    return _mtp_backend(
+        _speculative_type = "default",
+        _spec_fallback_reason = None,
+        _spec_probe_inconclusive = True,
+        _gguf_path = None,
+    )
+
+
+def _same_settings_apply():
+    """Apply pressed again with the settings the fallback load already used. The identifier
+    has to be the fixture's own, or the reuse check refuses on identity and every assertion
+    below passes without ever reaching the speculative branch."""
+    return dict(
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,
+    )
+
+
+def _stub_caps(monkeypatch, **caps):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: caps),
+    )
+
+
+def test_apply_reloads_once_an_inconclusive_probe_starts_answering(monkeypatch):
+    # The retry window is worth nothing if Apply dedupes against the fallback: nothing
+    # re-probes, so MTP stays off for the life of the process, which is the symptom the
+    # window exists to end (#8317).
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = "draft-mtp",
+        supports_mtp = True,
+        mtp_probe_inconclusive = False,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is False
+
+
+def test_apply_still_dedupes_while_the_probe_keeps_hanging(monkeypatch):
+    # A binary that hangs for a permanent reason must not relaunch an identical server on
+    # every Apply. Only a probe that has actually turned conclusive earns the reload.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = None,
+        supports_mtp = False,
+        mtp_probe_inconclusive = True,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is True
+
+
+def test_apply_still_dedupes_when_the_build_really_has_no_mtp(monkeypatch):
+    # Conclusive and negative is a permanent answer, same as binary_no_mtp: no reload.
+    _stub_caps(
+        monkeypatch,
+        found = True,
+        mtp_token = None,
+        supports_mtp = False,
+        mtp_probe_inconclusive = False,
+    )
+    assert _matches(_inconclusive_fallback_backend(), **_same_settings_apply()) is True
