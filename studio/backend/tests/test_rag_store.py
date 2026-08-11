@@ -230,3 +230,51 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
     _link_folder(rag_conn, "f1", "kb_b")  # another scope, so nothing is excluded
     filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
     assert fast == filtered
+
+
+def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
+    """A scope retired between the gate and the FTS read must not reach the read.
+
+    Without one snapshot the gate can decide "nothing is linked, run the plain query"
+    against a database state the read no longer sees, and rows from a scope retired in
+    between take slots the caller then loses at hydration.
+    """
+    from storage import rag_db
+
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    observed = {}
+    real = store.linked_folder_rows_exist
+
+    def retire_midway(conn):
+        observed["gate"] = real(conn)
+        writer = rag_db.get_connection()
+        try:
+            writer.execute(
+                "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+                "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+            )
+            writer.commit()
+        finally:
+            writer.close()
+        observed["after_commit"] = real(conn)
+        return observed["gate"]
+
+    monkeypatch.setattr(store, "linked_folder_rows_exist", retire_midway)
+    hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
+
+    assert observed["gate"] is False
+    # Same connection, same call, after another connection committed the retirement.
+    assert observed["after_commit"] is False
+    assert [cid for cid, _ in hits] == ["d1:0"]
+    # The snapshot is released, so the next call sees the retirement and hides the row.
+    monkeypatch.setattr(store, "linked_folder_rows_exist", real)
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def test_lexical_reuses_a_transaction_the_caller_already_opened(rag_conn):
+    """A caller holding a transaction keeps its own snapshot, and keeps it open."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    rag_conn.execute("BEGIN")
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
+    assert rag_conn.in_transaction
+    rag_conn.commit()

@@ -328,30 +328,43 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # The filtered form joins chunks and documents and evaluates both subqueries for
-    # every row the FTS match returns, BEFORE the LIMIT, so its cost grows with how
-    # common the query terms are rather than with k. On an install with no linked
-    # folders that work is provably wasted (see linked_folder_rows_exist), which is the
-    # normal case for a knowledge base built from uploads.
-    if linked_folder_rows_exist(conn):
-        sql = (
-            f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-            f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
-            f"JOIN documents d ON d.id=c.document_id "
-            f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
-            f"AND NOT EXISTS "
-            f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
-            f"AND (d.linked_folder_id IS NULL OR EXISTS "
-            f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
-            f"ORDER BY s LIMIT ?"
-        )
-    else:
-        sql = (
-            f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-            f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
-            f"ORDER BY s LIMIT ?"
-        )
-    rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
+    # The gate and the read share ONE snapshot. In WAL a deferred transaction pins the
+    # database at its first read, so a scope retired by another connection in between
+    # cannot land rows in a result the gate already decided to run unfiltered. Skipped
+    # when the caller is already in a transaction: that snapshot is the one to use.
+    own_read_txn = not conn.in_transaction
+    if own_read_txn:
+        conn.execute("BEGIN")
+    try:
+        # The filtered form joins chunks and documents and evaluates both subqueries for
+        # every row the FTS match returns, BEFORE the LIMIT, so its cost grows with how
+        # common the query terms are rather than with k. On an install with no linked
+        # folders that work is provably wasted (see linked_folder_rows_exist), which is
+        # the normal case for a knowledge base built from uploads.
+        if linked_folder_rows_exist(conn):
+            sql = (
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
+                f"JOIN documents d ON d.id=c.document_id "
+                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"AND NOT EXISTS "
+                f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+                f"AND (d.linked_folder_id IS NULL OR EXISTS "
+                f"(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
+                f"ORDER BY s LIMIT ?"
+            )
+        else:
+            sql = (
+                f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
+                f"ORDER BY s LIMIT ?"
+            )
+        rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
+    finally:
+        # Read-only either way, but it has to end: an open snapshot keeps the WAL from
+        # being checkpointed for as long as the connection lives.
+        if own_read_txn:
+            conn.commit()
     # bm25() is negative (more negative = better); flip to higher-is-better.
     return [(r["chunk_id"], -r["s"]) for r in rows]
 
