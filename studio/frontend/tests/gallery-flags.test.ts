@@ -8,6 +8,7 @@ import {
   PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
+  fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
   newRecordProbeBaseline,
@@ -375,4 +376,38 @@ test("a finished generation does not duplicate a record a resync already loaded"
   assert.equal(merged.length, 2);
   // And it still merges a record nothing had seen.
   assert.deepEqual(ids(mergeGenerated([item("old", 1)], [fresh])), ["new", "old"]);
+});
+
+test("a gallery load is discarded when a pin lands while it is in flight", async () => {
+  // The response was snapshotted before the PATCH, so applying it would show the image unpinned
+  // while the server has it pinned, with nothing scheduled to correct it.
+  let epoch = 0;
+  let fetches = 0;
+  const result = await fetchWhileStable(
+    () => epoch,
+    async () => {
+      fetches += 1;
+      if (fetches === 1) epoch += 1; // the user pins mid request
+      return [item("a", 1, fetches > 1)];
+    },
+  );
+  assert.equal(fetches, 2);
+  assert.ok(result);
+  assert.equal(result[0].pinned, true); // the retry sees the server after the pin
+});
+
+test("a gallery load gives up rather than overwriting a strip that keeps changing", async () => {
+  let epoch = 0;
+  let fetches = 0;
+  const result = await fetchWhileStable(
+    () => epoch,
+    async () => {
+      fetches += 1;
+      epoch += 1;
+      return "stale";
+    },
+  );
+  // Null, so the caller keeps its optimistic state, which is what the server already agreed to.
+  assert.equal(result, null);
+  assert.equal(fetches, PAGE_MAX_ATTEMPTS);
 });

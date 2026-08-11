@@ -214,6 +214,32 @@ export function removeGalleryItem<T extends FlaggableItem>(items: T[], id: strin
 export const PAGE_MAX_ATTEMPTS = 4;
 
 /**
+ * Run `fetch` and hand back its result only if `token` did not move while it ran.
+ *
+ * For a GET whose response REPLACES the strip. The backend can snapshot the flags before a pin or
+ * archive and answer after it, so applying that response unconditionally reverts an action the
+ * user was already told had succeeded: a pin reads as unpinned, an archived image comes back onto
+ * the strip, and nothing refreshes it again. Both galleries render from a module cache while their
+ * first-page load runs, so the tiles are actionable for the whole of that window.
+ *
+ * Retrying is right rather than failing: the local change is already applied and the server now
+ * agrees, so a later read is the one worth having. Giving up after `maxAttempts` returns null and
+ * the caller keeps what it has, which is the optimistic state the server just confirmed.
+ */
+export async function fetchWhileStable<T>(
+  token: () => number,
+  fetch: () => Promise<T>,
+  maxAttempts: number = PAGE_MAX_ATTEMPTS,
+): Promise<T | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const before = token();
+    const result = await fetch();
+    if (token() === before) return result;
+  }
+  return null;
+}
+
+/**
  * Fetch the next page at an offset that is still true when the response lands.
  *
  * The offset is how many records are loaded, and archiving or deleting one shortens the server's

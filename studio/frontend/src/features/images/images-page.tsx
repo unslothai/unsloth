@@ -71,6 +71,7 @@ import {
   type NewRecordProbeBaseline,
   applyPin,
   fetchNextPage,
+  fetchWhileStable,
   hasUnknownRecord,
   mergeGenerated,
   newRecordProbeBaseline,
@@ -1498,7 +1499,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
   const loadGallery = useCallback(async () => {
     try {
-      const page = await getGallery(0, PAGE_SIZE);
+      // Fenced like every other write to the strip: this page renders from the module cache while
+      // the load runs, so its tiles are actionable, and a response snapshotted before a pin or an
+      // archive would put the image back the way it was with nothing to correct it afterwards.
+      const page = await fetchWhileStable(
+        () => stripEpoch.current,
+        () => getGallery(0, PAGE_SIZE),
+      );
+      if (!page) return;
       pageEpoch.current += 1;
       galleryCache.images = page.images;
       galleryCache.hasMore = page.has_more;

@@ -21,6 +21,7 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import {
   applyPin,
   fetchNextPage,
+  fetchWhileStable,
   nextSelectedId,
   pinnedOrder,
   removeGalleryItem,
@@ -1240,7 +1241,14 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
 
   const loadGallery = useCallback(async () => {
     try {
-      const page = await getVideoGallery(0, PAGE_SIZE);
+      // Fenced like every other write to the strip: this page renders from the module cache while
+      // the load runs, so its tiles are actionable, and a response snapshotted before a pin or an
+      // archive would put the clip back the way it was with nothing to correct it afterwards.
+      const page = await fetchWhileStable(
+        () => stripEpoch.current,
+        () => getVideoGallery(0, PAGE_SIZE),
+      );
+      if (!page) return;
       pageEpoch.current += 1;
       galleryCache.videos = page.videos;
       galleryCache.hasMore = page.has_more;
