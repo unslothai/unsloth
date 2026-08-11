@@ -663,7 +663,11 @@ def test_reap_recorded_pid_no_pidfile(tmp_path):
         assert LlamaCppBackend._reap_recorded_pid() == 0
 
 
-def _stat_bytes(pid, comm, start_time = 1000):
+def _stat_bytes(
+    pid,
+    comm,
+    start_time = 1000,
+):
     """A /proc/<pid>/stat line. starttime is field 22, so the filler matters."""
     filler = " ".join(["0"] * 18)  # fields 4..21
     return f"{pid} ({comm}) S {filler} {start_time}".encode("utf-8")

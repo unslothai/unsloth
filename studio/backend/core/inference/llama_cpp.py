@@ -14760,9 +14760,7 @@ class LlamaCppBackend:
                             (
                                 pid,
                                 exe_path,
-                                _make_signal_killer(
-                                    entry.path, pid, _stat_start_time(stat_line)
-                                ),
+                                _make_signal_killer(entry.path, pid, _stat_start_time(stat_line)),
                             )
                         )
             else:
