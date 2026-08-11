@@ -11406,8 +11406,7 @@ class LlamaCppBackend:
                             # is honored verbatim, never capped, and overflows to --fit.
                             _usable_wo = [_gpu_usable(g, _probe_frac(False)) for g in _subset]
                             _probe_reserve_at = lambda c, _k = _n: (
-                                (_pipeline_overhead_bytes if _k > 1 else 0)
-                                + _cc_bytes(c, _k) // _k
+                                (_pipeline_overhead_bytes if _k > 1 else 0) + _cc_bytes(c, _k) // _k
                             )
                             if not self._every_gpu_holds_reserve(
                                 _usable_wo, _probe_reserve_at(_ctx_wo)

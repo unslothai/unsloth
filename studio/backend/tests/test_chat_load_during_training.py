@@ -1837,8 +1837,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             revisions = [
                 SimpleNamespace(
                     files = [
-                        SimpleNamespace(file_name = "big-00001-of-00002.gguf", size_on_disk = 16 * 1024**3),
-                        SimpleNamespace(file_name = "big-00002-of-00002.gguf", size_on_disk = 14 * 1024**3),
+                        SimpleNamespace(
+                            file_name = "big-00001-of-00002.gguf", size_on_disk = 16 * 1024**3
+                        ),
+                        SimpleNamespace(
+                            file_name = "big-00002-of-00002.gguf", size_on_disk = 14 * 1024**3
+                        ),
                         SimpleNamespace(file_name = "notes.txt", size_on_disk = 10),
                     ]
                 )
