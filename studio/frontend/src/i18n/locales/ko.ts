@@ -83,6 +83,7 @@ export const ko = {
       recipes: "레시피",
       images: "이미지",
       video: "동영상",
+      audio: "오디오",
       trainChecking: "이 컴퓨터의 학습 지원 여부를 확인하는 중...",
       videoChecking: "이 컴퓨터의 비디오 지원 여부를 확인하는 중...",
       more: "더 보기",

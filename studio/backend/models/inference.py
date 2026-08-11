@@ -27,6 +27,13 @@ class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     model_path: str = Field(..., description = "Model identifier or local path")
+    load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = "Opaque client attempt ID for scoped in-flight cancellation",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -273,6 +280,13 @@ class UnloadRequest(BaseModel):
     """Request to unload a model"""
 
     model_path: str = Field(..., description = "Model identifier to unload")
+    cancel_load_request_id: Optional[str] = Field(
+        None,
+        min_length = 1,
+        max_length = 128,
+        pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description = ("Cancel only this in-flight load attempt; never unload a resident model"),
+    )
     force_cancel_active: bool = Field(
         False,
         description = (
@@ -3161,6 +3175,54 @@ class ImageGenerationResponse(BaseModel):
 
     created: int = Field(..., description = "Unix timestamp (seconds) the images were created.")
     data: list[ImageGenerationData] = Field(..., description = "The generated images.")
+
+
+# ── OpenAI-compatible audio API (POST /v1/audio/speech) ──
+
+
+class AudioSpeechRequest(BaseModel):
+    """OpenAI ``CreateSpeechRequest`` for ``POST /v1/audio/speech``.
+
+    ``voice`` and ``speed`` are accepted for client compatibility but unused: no loaded
+    TTS backend has voice or rate plumbing (CSM is fixed to speaker 0)."""
+
+    input: str = Field(..., min_length = 1, description = "The text to synthesize.")
+    model: Optional[str] = Field(
+        None, description = "Model id (informational; the loaded audio model is used)."
+    )
+    voice: Optional[str] = Field(None, description = "Voice name (accepted, unused).")
+    response_format: Optional[str] = Field(
+        "wav", description = "Output container. Only 'wav' is supported."
+    )
+    speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+
+    @field_validator("response_format", mode = "before")
+    @classmethod
+    def _null_format_means_default(cls, value):
+        # openai marks response_format nullable with a default, so an explicit null means wav
+        return "wav" if value is None else value
+
+
+class AudioGalleryItem(BaseModel):
+    """One persisted TTS clip. ``url`` serves the WAV bytes (auth required)."""
+
+    id: str
+    url: str
+    prompt: str
+    model: str
+    audio_type: str
+    sample_rate: int
+    duration_s: float
+    created_at: str
+
+
+class AudioGalleryListResponse(BaseModel):
+    """A newest-first window of the audio gallery for infinite scroll."""
+
+    audio: List[AudioGalleryItem] = Field(default_factory = list)
+    has_more: bool = False
+    next_before_mtime: Optional[float] = None
+    next_before_id: Optional[str] = None
 
 
 # ── Video (local text-to-video) ──

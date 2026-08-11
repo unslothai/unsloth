@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 import pandas as pd
 from datasets import Dataset
+from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.third_party_source import (
@@ -172,6 +173,28 @@ def _drop_hf_stdout_callbacks(trainer) -> None:
             trainer.remove_callback(callback_cls)
         except Exception:  # noqa: BLE001 - not attached, or an incompatible trainer
             pass
+
+
+def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> dict:
+    """``subfolder`` for a Spark-TTS repo root, empty for anything else.
+
+    Only the canonical repo layout needs it: a local checkpoint or an alias that already
+    names LLM/ points at the tokenizer directly.
+    """
+    if audio_type != "bicodec":
+        return {}
+    name = str(lookup_name).replace("\\", "/").rstrip("/")
+    if name.endswith("/LLM"):
+        return {}
+    # An LLM/ child is the canonical layout, and a cache-pinned or offline snapshot root has
+    # one too. Treating that as "already at the tokenizer" sent AutoTokenizer at the root,
+    # which holds no tokenizer, and failed the very case this helper exists for.
+    if os.path.isdir(os.path.join(lookup_name, "LLM")):
+        return {"subfolder": "LLM"}
+    # A local checkpoint that carries its own tokenizer is already the right directory.
+    if os.path.isfile(os.path.join(lookup_name, "tokenizer_config.json")):
+        return {}
+    return {"subfolder": "LLM"}
 
 
 class UnslothTrainer:
@@ -308,6 +331,11 @@ class UnslothTrainer:
                 token = hf_token,
                 local_files_only = local_files_only,
                 revision = model_revision,
+                # Spark-TTS keeps only BiCodec, config.yaml and the source tree at its repo
+                # root; the tokenizer lives under LLM/, the same subfolder _load_model loads
+                # weights from. Reading the root finds no vocab and fails to build a backend
+                # tokenizer, blaming a missing sentencepiece that is installed and irrelevant.
+                **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
             )
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
@@ -892,22 +920,16 @@ class UnslothTrainer:
                 from huggingface_hub import snapshot_download
 
                 if model_name.endswith("/LLM"):
-                    # "Spark-TTS-0.5B/LLM" → parent="Spark-TTS-0.5B"
-                    local_dir = model_name.rsplit("/", 1)[0]
-                    hf_repo = f"unsloth/{local_dir}"
-                    llm_path = model_name
+                    # "Spark-TTS-0.5B/LLM" → repo "unsloth/Spark-TTS-0.5B"
+                    hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
                 else:
-                    # "unsloth/Spark-TTS-0.5B" → local_dir="Spark-TTS-0.5B"
                     hf_repo = model_name
-                    local_dir = model_name.split("/")[-1]
-                    llm_path = f"{local_dir}/LLM"
 
                 if local_files_only:
                     repo_path = lookup_name
                 else:
                     repo_path = snapshot_download(
                         hf_repo,
-                        local_dir = local_dir,
                         revision = model_revision,
                     )
                 self._spark_tts_repo_dir = os.path.abspath(repo_path)  # Absolute for sys.path
@@ -2850,6 +2872,14 @@ class UnslothTrainer:
                 return None
 
             # ========== AUDIO MODELS: custom preprocessing ==========
+            # Every audio branch below, and the VLM path, casts an Audio column and reads its array.
+            if self._audio_type or self.is_audio_vlm:
+                if not ensure_audio_decoding():
+                    raise RuntimeError(
+                        "This host cannot decode audio datasets: torchcodec cannot load its "
+                        "FFmpeg libraries, and the soundfile fallback needs soundfile and "
+                        "librosa. Install an FFmpeg full-shared build, or install both."
+                    )
             if self._audio_type == "csm":
                 processed = self._preprocess_csm_dataset(dataset, custom_format_mapping)
                 return (processed, None)

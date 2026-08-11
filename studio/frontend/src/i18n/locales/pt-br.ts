@@ -85,6 +85,7 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      audio: "Áudio",
       trainChecking: "Verificando se esta máquina oferece suporte a treino...",
       videoChecking: "Verificando se esta máquina oferece suporte a vídeo...",
       more: "Mais",

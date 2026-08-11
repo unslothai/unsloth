@@ -78,6 +78,7 @@ export const en = {
       recipes: "Recipes",
       images: "Images",
       video: "Video",
+      audio: "Audio",
       // Hover text while the row spins, before this machine's capability is measured.
       trainChecking: "Checking this machine for training support...",
       videoChecking: "Checking this machine for video support...",
