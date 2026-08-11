@@ -152,9 +152,7 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         unreadable = True
 
     try:
-        for directory, dirnames, filenames in os.walk(
-            snapshot, followlinks = False, onerror = _note
-        ):
+        for directory, dirnames, filenames in os.walk(snapshot, followlinks = False, onerror = _note):
             base = Path(directory)
             kept = []
             for name in dirnames:
