@@ -187,6 +187,12 @@ class TestEnsureFlashAttn:
     def _import_check(self, code: int = 1):
         return subprocess.CompletedProcess(["python", "-c", "import flash_attn"], code)
 
+    def _import_fails_removal_works(self, cmd, **_kwargs):
+        """flash_attn never imports, but uninstalling it succeeds."""
+        if "uninstall" in cmd:
+            return subprocess.CompletedProcess(cmd, 0)
+        return self._import_check()
+
     def test_prefers_exact_match_wheel(self):
         install_calls = []
 
@@ -296,8 +302,8 @@ class TestEnsureFlashAttn:
                     (label, value)
                 ),
             ),
-            # Import never succeeds, before or after the install.
-            mock.patch("subprocess.run", return_value = self._import_check()),
+            # Import never succeeds, before or after the install; the removal does.
+            mock.patch("subprocess.run", side_effect = self._import_fails_removal_works),
         ):
             ips._ensure_flash_attn()
 
@@ -357,6 +363,88 @@ class TestEnsureFlashAttn:
         assert removals, "the rejected wheel must be uninstalled, not left in site-packages"
         assert any("flash-attn" in cmd for cmd in removals), removals
         assert ("warning", "Continuing without flash-attn") in step_messages
+
+    def test_uninstall_mirrors_the_uv_system_mode(self):
+        """UV_NEEDS_SYSTEM is set exactly when --python failed, so --python cannot be used."""
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "UV_NEEDS_SYSTEM", True),
+            mock.patch.object(ips.shutil, "which", return_value = "/usr/bin/uv"),
+            mock.patch("subprocess.run", side_effect = fake_run),
+        ):
+            assert ips._remove_rejected_flash_attn() is True
+
+        assert commands == [["uv", "pip", "uninstall", "--system", "flash-attn"]]
+
+    def test_uninstall_targets_the_interpreter_without_system_mode(self):
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "UV_NEEDS_SYSTEM", False),
+            mock.patch.object(ips.shutil, "which", return_value = "/usr/bin/uv"),
+            mock.patch("subprocess.run", side_effect = fake_run),
+        ):
+            assert ips._remove_rejected_flash_attn() is True
+
+        assert commands == [
+            ["uv", "pip", "uninstall", "--python", sys.executable, "flash-attn"]
+        ]
+
+    def test_a_failed_removal_is_not_reported_as_removed(self):
+        """Still importable in process, so it must not read like a clean skip."""
+        step_messages: list[tuple[str, str]] = []
+
+        def fake_run(cmd, **kwargs):
+            if "uninstall" in cmd:
+                return subprocess.CompletedProcess(cmd, 1)
+            return self._import_check()
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = True),
+            mock.patch.object(
+                ips,
+                "install_wheel",
+                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+            ),
+            mock.patch.object(
+                ips,
+                "_step",
+                side_effect = lambda label, value, color_fn = None: step_messages.append(
+                    (label, value)
+                ),
+            ),
+            mock.patch("subprocess.run", side_effect = fake_run),
+        ):
+            ips._ensure_flash_attn()
+
+        warnings = [value for _, value in step_messages]
+        assert any("could not be removed" in value for value in warnings), warnings
+        assert not any("removed it" in value for value in warnings), warnings
 
     def test_working_wheel_reports_no_warning(self):
         """The happy path stays silent: install exits 0 and the module imports."""

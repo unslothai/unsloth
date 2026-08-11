@@ -3671,15 +3671,24 @@ def _flash_attn_importable() -> bool:
     return result.returncode == 0
 
 
-def _remove_rejected_flash_attn() -> None:
-    """Uninstall a flash-attn that installed but will not import."""
+def _remove_rejected_flash_attn() -> bool:
+    """Uninstall a flash-attn that installed but will not import. True iff it is gone.
+
+    Mirrors the mode the wheel was installed with: UV_NEEDS_SYSTEM is set exactly when the
+    --python probe failed, so uninstalling with --python there would use the one mode
+    already known not to work in this environment.
+    """
     if USE_UV and shutil.which("uv"):
-        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, "flash-attn"]
+        cmd = ["uv", "pip", "uninstall"]
+        if UV_NEEDS_SYSTEM:
+            cmd.append("--system")
+        else:
+            cmd.extend(["--python", sys.executable])
+        cmd.append("flash-attn")
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
-    if removed.returncode != 0:
-        _step("warning", "Could not remove the unusable flash-attn install", _cyan)
+    return removed.returncode == 0
 
 
 def _ensure_flash_attn() -> None:
@@ -3708,12 +3717,21 @@ def _ensure_flash_attn() -> None:
                 # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
                 # it by metadata (_package_available) and then imports the native module
                 # in process, so a wheel that killed the probe would kill training too.
-                _remove_rejected_flash_attn()
-                _step(
-                    "warning",
-                    "flash-attn wheel installed but is not importable on this GPU; removed it",
-                    _cyan,
-                )
+                if _remove_rejected_flash_attn():
+                    _step(
+                        "warning",
+                        "flash-attn wheel installed but is not importable on this GPU; removed it",
+                        _cyan,
+                    )
+                else:
+                    # Say so plainly: it is still importable in process, so this is not the
+                    # same state as never having installed it.
+                    _step(
+                        "warning",
+                        "flash-attn wheel is not importable on this GPU and could not be "
+                        "removed; uninstall flash-attn manually before training",
+                        _cyan,
+                    )
                 break
             _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
