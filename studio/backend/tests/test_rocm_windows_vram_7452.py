@@ -46,13 +46,14 @@ from test_rocm_windows_vram_7072 import (  # noqa: E402, F401  (win_rocm is a fi
     win_rocm,
 )
 
-# The reporter's exact figures: a W7900 and a W7500 sitting idle, plus the
-# Windows Basic Render Driver placeholder counter that every such host carries.
+# The reporter's cards, and his idle used figures as #7072's screenshot showed
+# them (0.22 and 0.14 GiB, which is the 53.0 GiB tile reading 0.36 GiB). One
+# counter instance per visible card and no others, which is the only shape the
+# aggregate is emitted for.
 REPORTER_DEVICES = [("AMD Radeon PRO W7900", 45.0 * GB), ("AMD Radeon PRO W7500", 7.98 * GB)]
 IDLE_ADAPTERS = [
     ("luid_0x00000000_0x0000d1e2_phys_0", 0.22 * GB),  # W7900 idle desktop
     ("luid_0x00000000_0x0000e34a_phys_0", 0.14 * GB),  # W7500 idle desktop
-    ("luid_0x00000000_0x0000f001_phys_0", 3 * MiB),  # Basic Render Driver
 ]
 
 
@@ -93,15 +94,14 @@ def test_gpu_utilization_payload_carries_the_aggregate(win_rocm, monkeypatch):
     assert result["vram_used_gb"] is None
 
 
-def test_loaded_card_keeps_both_the_forced_device_value_and_the_aggregate(win_rocm, monkeypatch):
-    """#7072's own case: a model resident on the W7900. The 40 GiB is capacity-forced
-    onto the 45 GiB card and stays per device, and the aggregate adds the idle card's
-    0.5 GiB, so the tile shows the real total rather than only the attributed part."""
+def test_loaded_card_agrees_with_the_per_device_figures(win_rocm, monkeypatch):
+    """#7072's own case: a model resident on the W7900. 40 GiB exceeds the smaller
+    card, so the ranking is forced and both rows get a value; the aggregate must then
+    equal their sum, or the tile would disagree with the rows underneath it."""
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
     loaded = [
         ("luid_0x00000000_0x0000d1e2_phys_0", 40.0 * GB),
         ("luid_0x00000000_0x0000e34a_phys_0", 0.5 * GB),
-        ("luid_0x00000000_0x0000f001_phys_0", 3 * MiB),
     ]
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(loaded))
@@ -110,8 +110,11 @@ def test_loaded_card_keeps_both_the_forced_device_value_and_the_aggregate(win_ro
     result = hw.get_visible_gpu_utilization()
     by_idx = {d["index"]: d for d in result["devices"]}
     assert by_idx[0]["vram_used_gb"] == pytest.approx(40.0, abs = 0.01)
-    assert by_idx[1]["vram_used_gb"] is None
+    assert by_idx[1]["vram_used_gb"] == pytest.approx(0.5, abs = 0.01)
     assert result["vram_used_gb_aggregate"] == pytest.approx(40.5, abs = 0.01)
+    assert result["vram_used_gb_aggregate"] == pytest.approx(
+        sum(d["vram_used_gb"] for d in result["devices"]), abs = 0.01
+    )
 
 
 def test_no_aggregate_when_the_counter_is_unavailable(win_rocm, monkeypatch):
@@ -132,15 +135,12 @@ def test_aggregate_requires_a_counter_per_visible_device():
     agg = hw._rocm_windows_aggregate_used_bytes
     # One counter per visible card: the sum is the visible set's, whatever the pairing.
     assert agg([0.22 * GB, 0.14 * GB], [45 * GB, 8 * GB]) == pytest.approx(0.36 * GB)
-    # Sub-threshold placeholders drop, leaving exactly one counter per card.
-    assert agg([0.22 * GB, 0.14 * GB, 3 * MiB], [45 * GB, 8 * GB]) == pytest.approx(0.36 * GB)
+    # Two identical cards make the ranking degenerate, and the sum does not care.
+    assert agg([10 * GB, 3 * GB], [24 * GB, 24 * GB]) == pytest.approx(13 * GB)
     # Fewer counters than cards: a card has no reading, so the sum is not the total.
     assert agg([5 * GB], [45 * GB, 8 * GB]) is None
-    # More active counters than visible cards: an adapter outside the visibility
-    # mask is in the list and its usage is not ours to add.
+    # More counters than visible cards: an adapter in the list is not one of ours.
     assert agg([40 * GB, 7 * GB, 6 * GB], [45 * GB, 8 * GB]) is None
-    # Every counter below the noise floor: which is the placeholder is unknowable.
-    assert agg([50 * MiB, 10 * MiB, 5 * MiB], [45 * GB, 8 * GB]) is None
     assert agg([], [45 * GB, 8 * GB]) is None
     assert agg([1 * GB], []) is None
 
@@ -154,3 +154,59 @@ def test_aggregate_rejects_a_usage_larger_than_any_visible_card():
     assert agg([40 * GB, 6 * GB], [45 * GB, 4 * GB]) is None
     # Counter order must not matter.
     assert agg([6 * GB, 40 * GB], [45 * GB, 4 * GB]) is None
+
+
+def test_aggregate_never_sums_bytes_that_are_not_on_a_visible_card():
+    """The reason an unexplained instance is refused rather than filtered out.
+
+    ``Get-Counter`` lists every WDDM adapter and the instance names carry no
+    vendor, LUID or PCI key, so a counter cannot be told apart from a foreign
+    adapter's. Dropping the small ones to force a 1:1 count keeps the foreign
+    reading and drops the quiet visible card whenever the foreign adapter is the
+    busier of the two, and the host total then reports bytes that are on no
+    visible card. Each case below is one that a noise filter would have summed.
+    """
+    agg = hw._rocm_windows_aggregate_used_bytes
+    pair = [45 * GB, 8 * GB]
+    # A third AMD card hidden by HIP_VISIBLE_DEVICES, busy at 5 GiB, while the
+    # visible 8 GiB card idles below the 64 MiB noise floor. Truth is 30.03 GiB.
+    assert agg([30 * GB, 5 * GB, 30 * MiB], pair) is None
+    # An NVIDIA card in the same box. Truth is 30.02 GiB.
+    assert agg([30 * GB, 6 * GB, 20 * MiB], pair) is None
+    # An integrated display GPU holding a 1 GiB carveout. Truth is 30.01 GiB.
+    assert agg([30 * GB, 1 * GB, 10 * MiB], pair) is None
+    # A Basic Render Driver / Remote Display placeholder ABOVE the cutoff.
+    assert agg([30 * GB, 200 * MiB, 20 * MiB], pair) is None
+    # One visible card, idle, beside a busy foreign adapter: the worst case, since
+    # a single card's capacity admits almost any foreign reading. Truth is 30 MiB.
+    assert agg([6 * GB, 30 * MiB], [45 * GB]) is None
+    assert agg([6 * GB, 30 * MiB, 3 * MiB], [45 * GB]) is None
+
+
+def test_aggregate_is_stable_across_a_changing_instance_list(win_rocm, monkeypatch):
+    """Counters come and go between polls (a placeholder adapter appears, a card
+    is masked mid-session). Every poll is judged on its own list, so the tile
+    alternates between the real figure and Unknown, never between two figures."""
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(REPORTER_DEVICES, free_equals_total = True))
+    polls = [
+        (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
+        (IDLE_ADAPTERS + [("luid_0x00000000_0x0000f001_phys_0", 3 * MiB)], None),
+        (IDLE_ADAPTERS + [("luid_0x00000000_0x0000f002_phys_0", 2.0 * GB)], None),
+        (IDLE_ADAPTERS, pytest.approx(0.36, abs = 0.01)),
+    ]
+    for adapters, expected in polls:
+        monkeypatch.setattr(
+            hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+        )
+        result = hw.get_visible_gpu_utilization()
+        assert result["vram_used_gb_aggregate"] == expected
+
+
+def test_aggregate_tolerates_a_wddm_spill_over_the_smaller_card(win_rocm, monkeypatch):
+    """WDDM satisfies an overrun from host RAM, so a usage can exceed the card it
+    sits on. That only has to not fabricate a number: the reading above the LARGEST
+    visible capacity is refused, and one that still fits the ranking is summed as
+    reported rather than clamped."""
+    agg = hw._rocm_windows_aggregate_used_bytes
+    assert agg([9 * GB, 0.3 * GB], [45 * GB, 8 * GB]) == pytest.approx(9.3 * GB)
+    assert agg([46 * GB, 2 * GB], [45 * GB, 8 * GB]) is None

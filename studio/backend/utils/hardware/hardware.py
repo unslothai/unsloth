@@ -1596,26 +1596,40 @@ def _rocm_windows_aggregate_used_bytes(
     bijection it is the same whichever way round the usages go, so the System tab
     keeps a real figure where per-device honestly cannot.
 
-    Emitted only when the counters are exactly the visible set: one supra-threshold
-    counter per device (sub-threshold extras are the Basic Render Driver style
-    placeholders) and no usage above its ranked capacity, which is the same
-    bijection _match_adapter_used_to_devices already requires. Same residual
-    assumption as that function: a sub-threshold counter is taken for a placeholder
-    rather than an idle visible card. ``None`` when that does not hold.
+    Emitted only when the counter list IS the visible set, which is established by
+    cardinality alone: ``Get-Counter`` returns an instance for every WDDM adapter,
+    so a visible card is always somewhere in the list, and a list exactly as long
+    as the visible set therefore contains those cards and nothing else.
+
+    Deliberately NOT the noise filter _match_adapter_used_to_devices uses. Dropping
+    the sub-threshold counters and summing the rest is safe for per-device
+    attribution, which only ever emits a capacity-FORCED value, but not for a sum,
+    which emits every counter it kept. The counters carry no vendor, LUID or PCI
+    key, so a retained counter cannot be told apart from a foreign adapter: a card
+    hidden by ``HIP_VISIBLE_DEVICES``, an iGPU, an NVIDIA card in the same box or a
+    Basic Render Driver placeholder above the cutoff. Whenever such an adapter is
+    busier than one visible card is idle, the filter drops the visible card and
+    keeps the foreign one, and the sum silently gains bytes that are on no visible
+    card at all. A host total that is confidently wrong is worse than Unknown, so
+    an unexplained instance means ``None``.
+
+    Extra instances are common, so this is narrow on purpose. Widening it needs the
+    counters joined to devices on LUID or PCI bus id rather than on capacity rank,
+    which is the same key _match_adapter_used_to_devices lacks.
     """
     n = len(device_totals)
     if n == 0 or not adapter_useds:
         return None
-    useds = sorted(adapter_useds, reverse = True)
-    if len(useds) > n:
-        useds = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
-    # Fewer counters than devices means a visible card has no reading of its own,
-    # so the sum is not the visible set's total.
-    if len(useds) != n:
+    # More counters than devices: an adapter in the list is not one of ours and
+    # there is no key that says which. Fewer: a visible card has no reading of its
+    # own, so the sum is not the visible set's total. Either way, unknown.
+    if len(adapter_useds) != n:
         return None
+    useds = sorted(adapter_useds, reverse = True)
     ranked_totals = sorted(device_totals, reverse = True)
-    # A usage above its ranked capacity cannot be on any visible card, so an adapter
-    # outside the visibility mask is in the list and its bytes are not ours to add.
+    # A usage above its ranked capacity cannot be on any visible card, so the list
+    # is not the visible set after all even at matching length (a reading was
+    # dropped while parsing, or a counter is not a dedicated-VRAM figure).
     for rank in range(n):
         if useds[rank] > ranked_totals[rank]:
             return None
