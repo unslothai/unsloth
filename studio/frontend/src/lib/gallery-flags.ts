@@ -175,6 +175,35 @@ export function removeGalleryItem<T extends FlaggableItem>(items: T[], id: strin
   return items.filter((i) => i.id !== id);
 }
 
+/** Attempts a page fetch may make before giving up, so a burst of actions cannot spin it. */
+export const PAGE_MAX_ATTEMPTS = 4;
+
+/**
+ * Fetch the next page at an offset that is still true when the response lands.
+ *
+ * The offset is how many records are loaded, and archiving or deleting one shortens the server's
+ * shelf under an in-flight request: with 50 loaded, archiving one mid-flight moves the record that
+ * was at index 50 down to 49, so a page starting at 50 begins AFTER it and that record is returned
+ * by no page at all. It then stays missing until a reload, and a short final page can set
+ * `hasMore` false so nothing ever goes looking for it again.
+ *
+ * `count()` is read again after the response, from live state rather than a captured number, and
+ * the fetch is retried at the corrected offset when it moved. Same shape as the archived list's
+ * `showMore`, which had this bug first.
+ */
+export async function fetchNextPage<T>(
+  count: () => number,
+  fetchPage: (offset: number) => Promise<T>,
+  maxAttempts: number = PAGE_MAX_ATTEMPTS,
+): Promise<{ page: T; offset: number } | null> {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const offset = count();
+    const page = await fetchPage(offset);
+    if (count() === offset) return { page, offset };
+  }
+  return null;
+}
+
 /**
  * The selection after `removedId` left the strip: keep the current pick unless it was the one that
  * left, in which case fall to its neighbour so the preview never blanks out with items still on

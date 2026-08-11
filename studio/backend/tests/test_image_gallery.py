@@ -400,6 +400,26 @@ def test_a_repair_never_makes_a_damaged_archive_deletable():
     assert gallery.image_path(other["id"]) is None
 
 
+def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
+    # The sibling case to the test above, and the one it does not cover: when the CONTAINER is
+    # unreadable rather than one entry, there is nothing to repair from. _load substitutes an empty
+    # map, so an unrelated pin used to write a clean, trusted store saying nothing was archived --
+    # and the next default clear() deleted the image the user had shelved.
+    shelved = _save_with_mtime("shelved", 100.0)
+    other = _save_with_mtime("other", 200.0)
+    gallery.set_flags(shelved["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        '{"version": 1, "items": {"shel', encoding = "utf-8"
+    )
+    gallery.set_flags(other["id"], pinned = True)
+    with pytest.raises(gallery_flags.FlagsUnavailable):
+        gallery.clear()
+    assert gallery.image_path(shelved["id"]) is not None
+    assert gallery.image_path(other["id"]) is not None
+    # The escape hatch still works, since it spares nothing and so needs no flags.
+    assert gallery.clear(include_archived = True) == 2
+
+
 def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
     # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
     # landing in that window returned success for a file the same clear went on to delete.

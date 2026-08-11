@@ -153,7 +153,21 @@ def test_a_corrupt_store_is_replaced_rather_than_blocking_new_flags(gdir):
     # Refusing here would leave the user unable to pin anything until they hand-fixed the file.
     _store(gdir).write_text("[]", encoding = "utf-8")
     flags.set_flags(gdir, "a", archived = True)
-    assert flags.is_archived(flags.read_trusted(gdir), "a") is True
+    assert flags.is_archived(flags.read(gdir), "a") is True
+
+
+def test_a_store_rebuilt_from_illegible_contents_stays_untrusted(gdir):
+    # The write above must not be blocked, but the file it leaves behind is not evidence: the old
+    # contents were never read, so "nothing else is archived" is a guess. Trusting the replacement
+    # is what let an unrelated pin hand every previously archived image to the next clear().
+    _store(gdir).write_text("[]", encoding = "utf-8")
+    flags.set_flags(gdir, "a", archived = True)
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
+    # And it stays that way across further writes, rather than being laundered clean by the next one.
+    flags.set_flags(gdir, "b", pinned = True)
+    with pytest.raises(flags.FlagsUnavailable):
+        flags.read_trusted(gdir)
 
 
 def test_a_malformed_entry_taints_the_whole_store_for_trusted_reads(gdir):

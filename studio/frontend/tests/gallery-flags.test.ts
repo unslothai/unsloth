@@ -5,7 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  PAGE_MAX_ATTEMPTS,
   applyPin,
+  fetchNextPage,
   hasUnknownRecord,
   newRecordProbeBaseline,
   nextSelectedId,
@@ -300,4 +302,44 @@ test("a baseline frozen before the request is not softened by a page loaded duri
   // Read after the scroll instead, the same moment claims proof, which is the bug.
   const afterScroll = newRecordProbeBaseline(listing, true, new Set(["p0", "p1"]));
   assert.equal(await hasUnknownRecord(afterScroll, pager(listing, 50), 50), true);
+});
+
+test("a page fetch re-reads its offset when the shelf shortens mid request", async () => {
+  // The server's list, newest first. The client has the first two loaded.
+  let shelf = ["e", "d", "c", "b", "a"];
+  let loaded = ["e", "d"];
+  const requested: number[] = [];
+  const result = await fetchNextPage(
+    () => loaded.length,
+    async (offset) => {
+      requested.push(offset);
+      // The archive lands while the first request is in flight: "d" leaves the shelf, so every
+      // record behind it shifts up by one on the server AND locally.
+      if (requested.length === 1) {
+        shelf = shelf.filter((id) => id !== "d");
+        loaded = loaded.filter((id) => id !== "d");
+      }
+      return shelf.slice(offset, offset + 2);
+    },
+  );
+  assert.ok(result);
+  // Without the re-read this asks for offset 2 against the shortened shelf and returns ["b", "a"],
+  // skipping "c" entirely -- the record that shifted across the boundary.
+  assert.deepEqual(requested, [2, 1]);
+  assert.deepEqual(result.page, ["c", "b"]);
+});
+
+test("a page fetch gives up rather than spinning when the shelf keeps moving", async () => {
+  let loaded = 10;
+  let calls = 0;
+  const result = await fetchNextPage(
+    () => loaded,
+    async () => {
+      calls += 1;
+      loaded -= 1; // something mutates the list on every single response
+      return [];
+    },
+  );
+  assert.equal(result, null);
+  assert.equal(calls, PAGE_MAX_ATTEMPTS);
 });

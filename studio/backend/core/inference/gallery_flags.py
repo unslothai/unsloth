@@ -34,6 +34,10 @@ logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _STORE_NAME = ".flags.json"
+# Marks a store written over one whose ITEMS MAP could not be read at all. Such a write cannot
+# carry the old archive flags forward, because they were never legible, so the new file must not
+# be taken as proof that nothing is archived. See ``_carry_taint``.
+_TAINT_KEY = "unreadable"
 _lock = threading.RLock()
 
 
@@ -104,6 +108,10 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
             and data.get("version") == _SCHEMA_VERSION
             and isinstance(data.get("items"), dict)
         ):
+            # A store carrying the taint below was written over one whose contents could not be
+            # read at all, so what it does NOT say is not evidence of anything.
+            if data.get(_TAINT_KEY):
+                return data, False
             # Every ENTRY has to be readable too, not just the container. A malformed value is
             # dropped by the readers below, which reads as "this id is not archived" -- enough for
             # clear() to delete an archived file. So one bad entry costs the store its trust, but
@@ -124,6 +132,24 @@ def _load(directory: Path) -> tuple[dict[str, Any], bool]:
     except Exception as exc:
         logger.warning("gallery_flags.read_failed: %s", exc)
         return _empty(), False
+
+
+def _carry_taint(data: dict[str, Any], trusted: bool) -> dict[str, Any]:
+    """``data`` prepared for a rewrite, carrying the taint when the old contents were illegible.
+
+    Entry-level damage is repaired in place by ``_sanitize_entry``, so the flags that were still
+    readable survive the write and the store earns its trust back. Damage to the CONTAINER --
+    truncated JSON, an ``items`` that is not a dict, a version we do not know -- leaves nothing to
+    carry forward: ``_load`` substitutes an empty map, and writing that as an ordinary store turns
+    "we cannot say what was archived" into "nothing is archived", which is the answer the default
+    ``clear()`` deletes on. So the replacement is marked, and every destructive caller keeps
+    failing closed until a human resolves it. Listing, pinning, archiving and restoring all keep
+    working; ``clear(include_archived = True)`` is the deliberate way out, since it spares nothing
+    and so needs no flags to be correct.
+    """
+    if not trusted and not data.get("items"):
+        data[_TAINT_KEY] = True
+    return data
 
 
 def _save(directory: Path, data: dict[str, Any]) -> None:
@@ -298,7 +324,7 @@ def set_flags_locked(
     # entry straight back would leave every later clear() refused until someone fixed the file by
     # hand, and refusing here instead would leave the user unable to pin anything at all. Dropping
     # only the unreadable entries keeps the flags that still mean something.
-    data = _load(directory)[0]
+    data = _carry_taint(*_load(directory))
     items: dict[str, Any] = {}
     for key, value in data.get("items", {}).items():
         clean = _sanitize_entry(value)

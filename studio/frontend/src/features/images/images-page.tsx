@@ -70,6 +70,7 @@ import { useSettingsDialogStore } from "@/features/settings/stores/settings-dial
 import {
   type NewRecordProbeBaseline,
   applyPin,
+  fetchNextPage,
   hasUnknownRecord,
   newRecordProbeBaseline,
   nextSelectedId,
@@ -1514,7 +1515,15 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      const page = await getGallery(galleryCache.images.length, PAGE_SIZE);
+      // Re-read the offset after the response: an archive or a delete landing while this GET is in
+      // flight shortens the shelf, and the record that shifted across the page boundary would be
+      // returned by no page at all.
+      const result = await fetchNextPage(
+        () => galleryCache.images.length,
+        (offset) => getGallery(offset, PAGE_SIZE),
+      );
+      if (!result) return;
+      const page = result.page;
       pageEpoch.current += 1;
       setImages((prev) => {
         const seen = new Set(prev.map((i) => i.id));

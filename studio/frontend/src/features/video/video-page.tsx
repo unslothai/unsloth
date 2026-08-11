@@ -20,6 +20,7 @@ import { MediaPageLink } from "@/components/media-page-link";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyPin,
+  fetchNextPage,
   nextSelectedId,
   removeGalleryItem,
   serializeById,
@@ -1256,7 +1257,15 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     if (loadingMore.current || !galleryCache.hasMore) return;
     loadingMore.current = true;
     try {
-      const page = await getVideoGallery(galleryCache.videos.length, PAGE_SIZE);
+      // Re-read the offset after the response: an archive or a delete landing while this GET is in
+      // flight shortens the shelf, and the clip that shifted across the page boundary would be
+      // returned by no page at all.
+      const result = await fetchNextPage(
+        () => galleryCache.videos.length,
+        (offset) => getVideoGallery(offset, PAGE_SIZE),
+      );
+      if (!result) return;
+      const page = result.page;
       pageEpoch.current += 1;
       setVideos((prev) => {
         const seen = new Set(prev.map((v) => v.id));
