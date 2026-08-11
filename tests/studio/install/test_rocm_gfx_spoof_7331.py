@@ -592,6 +592,50 @@ class TestInstallShParity:
         got = _run_sh(body + "\n_kfd_gfx_targets\n")
         assert [c for c in got.split("\n") if c] == expected
 
+    def test_reprobe_falls_through_to_amd_smi_like_python_does(self, tmp_path):
+        """rocminfo is the source that FAILS on the host this feature exists for.
+        Strip the override on a ROCm stack older than the physical arch and ROCr
+        has no ISA entry for it, so hsa_init errors and rocminfo lists no agent.
+        amd-smi reads the driver and still answers, and _detect_amd_gfx_codes falls
+        through to it -- so install.sh must too, or a `studio update` corrects a
+        container that a fresh `curl | sh` install leaves on the segfaulting
+        wheels, which is the divergence TestInstallShParity exists to prevent."""
+        _bin = tmp_path / "bin"
+        _bin.mkdir()
+        (_bin / "rocminfo").write_text(
+            "#!/bin/sh\n"
+            'if [ -z "${HSA_OVERRIDE_GFX_VERSION:-}" ]; then exit 1; fi\n'
+            'echo "  Name:                    gfx1100"\n'
+            'echo "    Name:                    amdgcn-amd-amdhsa--gfx1100"\n',
+            encoding = "utf-8",
+        )
+        (_bin / "amd-smi").write_text(
+            '#!/bin/sh\necho "        TARGET_GRAPHICS_VERSION: gfx1151"\n', encoding = "utf-8"
+        )
+        for _f in ("rocminfo", "amd-smi"):
+            (_bin / _f).chmod(0o755)
+        env = {
+            "FAKE_KFD": "",  # no /sys/class/kfd, so the re-probe is the only witness
+            "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
+            "PATH": str(_bin) + ":" + os.environ.get("PATH", "/usr/bin:/bin"),
+        }
+        got = _run_sh(
+            '_hsa_spoofed_physical_gfx "gfx1151" "gfx1100\ngfx1100" 2>/dev/null', env = env
+        )
+        assert got == "gfx1151", got
+
+        # The Python side, same host, so the parity claim is asserted and not assumed.
+        with (
+            patch.dict(os.environ, env, clear = False),
+            patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
+            patch.object(stack_mod, "_amd_smi_allowed", return_value = True),
+            patch.object(stack_mod, "_safe_print"),
+        ):
+            os.environ.pop("ROCR_VISIBLE_DEVICES", None)
+            os.environ.pop("HIP_VISIBLE_DEVICES", None)
+            py = stack_mod._hsa_spoofed_physical_gfx("gfx1151", ["gfx1100", "gfx1100"])
+        assert py == got, (py, got)
+
     def test_reprobe_clears_the_visible_masks_too(self):
         """install.sh's re-probe runs `unset HSA_OVERRIDE_GFX_VERSION
         ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES`, so the Python one has to drop
