@@ -1235,14 +1235,13 @@ def _remove_pid_file():
     _PID_FILE is checked even when the per-port record was never written, since
     _write_pid_file writes the two independently.
 
-    The startup marker goes here too, not only from the atexit hook: run_server
-    returns while uvicorn runs on a daemon thread, so an embedded host (a
-    notebook) can stop the server and keep the process alive. The marker left
-    behind would then answer every later probe as a live sibling and no backend
-    of this install would ever clear the compiled cache again. atexit stays as
-    the fallback for a startup that fails before any record is written.
+    The startup marker is deliberately NOT dropped here. _graceful_shutdown
+    calls this before the server thread is joined, and a backend that is still
+    finishing an in-flight request or a background warm is still importing from
+    the cache; going invisible there would let a replacement clear it underneath.
+    The marker goes when the server thread actually ends, and from the atexit
+    hook if the process exits first.
     """
-    _remove_startup_marker()
     # Nothing here may raise: _graceful_shutdown calls this at the end, and an
     # unreadable or undeletable record must not abandon the rest of the exit
     # path. _read_pid_record already swallows OSError/UnicodeDecodeError.
@@ -2432,7 +2431,10 @@ def run_server(
             # An embedded host stays alive after the server thread ends, and a
             # post-readiness failure in here never reaches run_server's caller,
             # so nothing else takes these back. They would keep validating
-            # against the still-live host PID with no backend serving.
+            # against the still-live host PID with no backend serving. This is
+            # also the point at which the backend has genuinely stopped serving,
+            # which is why the marker goes here rather than in _remove_pid_file.
+            _remove_startup_marker()
             _remove_pid_file()
 
     thread = Thread(target = _run, daemon = True)

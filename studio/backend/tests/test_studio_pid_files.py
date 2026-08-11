@@ -37,7 +37,10 @@ def isolated_root(tmp_path, monkeypatch):
     monkeypatch.setattr(run, "_OWN_PID_FILE", None)
     monkeypatch.setattr(run, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(run, "_pid_is_studio_backend", lambda pid, created_times = (): True)
-    # The lock lives in the studio home, which is already redirected above.
+    # The lock lives in the studio home. A session-scoped conftest fixture
+    # already keeps that out of the developer's real one, but this file
+    # redirects everything else it touches to tmp_path, so redirect this too.
+    monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: tmp_path)
     monkeypatch.setattr(run, "_OWN_STARTUP_MARKERS", [])
     yield
 
@@ -660,19 +663,23 @@ def test_a_startup_marker_is_invisible_to_the_pid_file_glob(tmp_path):
     assert list(tmp_path.glob(run.PID_FILE_GLOB)) == []
 
 
-def test_stopping_an_embedded_server_removes_the_startup_marker(tmp_path):
-    # run_server returns while uvicorn runs on a daemon thread, so a notebook can
-    # stop the server without the process exiting and atexit never firing. A
-    # marker left behind answers every later probe as a live sibling, and no
-    # backend of this install would clear the compiled cache again.
+def test_the_marker_outlives_the_early_record_drop(tmp_path):
+    # _graceful_shutdown drops the records before the server thread is joined,
+    # while an in-flight request or a background warm may still be importing
+    # from the cache. Going invisible there would let a replacement clear it
+    # underneath, so the marker waits for the thread to actually end.
     run.write_startup_marker()
     marker = tmp_path / f"studio-starting-{os.getpid()}.marker"
-    assert marker.is_file()
+    run._write_pid_file(8906, "127.0.0.1")
 
     run._remove_pid_file()
 
+    assert marker.is_file(), "the backend is still serving until the thread ends"
+    assert _files(tmp_path) == []
+
+    run._remove_startup_marker()
+
     assert not marker.exists()
-    assert not (tmp_path / "shared" / marker.name).exists()
 
 
 def test_a_bare_legacy_record_cannot_resurrect_a_reused_pid(tmp_path, monkeypatch):
@@ -884,13 +891,15 @@ def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
 def test_a_server_thread_that_dies_after_readiness_drops_its_records(tmp_path, monkeypatch):
     # An embedded host stays alive after the uvicorn thread ends, and a failure
     # in there never reaches run_server's caller. Records left behind would keep
-    # validating against the still-live host PID with no backend serving.
+    # validating against the still-live host PID with no backend serving. Both
+    # calls are what the thread's finally block makes.
     run.write_startup_marker()
     run._write_pid_file(8905, "127.0.0.1")
 
     assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
     assert _files(tmp_path) != []
 
+    run._remove_startup_marker()
     run._remove_pid_file()
 
     assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
