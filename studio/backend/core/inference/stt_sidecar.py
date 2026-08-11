@@ -947,7 +947,6 @@ def _reported_device(device: Optional[str]) -> Optional[str]:
         return device
     try:
         import torch
-
         if getattr(torch.version, "hip", None):
             return "rocm"
     except Exception:  # noqa: BLE001 - a label must never fail a status call
