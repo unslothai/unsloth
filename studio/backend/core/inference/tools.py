@@ -4030,8 +4030,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     return True
                 # attrgetter("yaml_constructors") names the registry directly.
                 return any(
-                    isinstance(a, ast.Constant) and a.value in _register_names
-                    for a in node.args
+                    isinstance(a, ast.Constant) and a.value in _register_names for a in node.args
                 )
         return False
 
