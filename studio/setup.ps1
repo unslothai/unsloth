@@ -20,6 +20,14 @@
 #>
 
 $ErrorActionPreference = "Stop"
+
+# This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
+# below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
+# instead of the link: the VC++ runtime (24.4 MB, Ensure-VCRedist) took 38.18s with the bar on
+# against 0.29s with it off on a windows-latest runner. -UseBasicParsing does not help; only this
+# preference does. Script scope, in a separate short-lived process, so nothing outlives it.
+$ProgressPreference = 'SilentlyContinue'
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
