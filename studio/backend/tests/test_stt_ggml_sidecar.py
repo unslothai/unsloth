@@ -293,6 +293,44 @@ def test_slim_guard_rejects_rocm_wiring_without_rocblas(tmp_path):
         assert ggml_module.slim_runtime_intact(binary) is False
 
 
+def test_slim_guard_rejects_an_empty_catalog_the_marker_names(tmp_path):
+    # Membership replaced the equality check on the marker, not the per-directory
+    # "exists and holds a file" check on disk. A wired catalog that went empty is
+    # still a broken install and must send the user through `unsloth studio
+    # update`, never read as intact and fail at server launch instead.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    for empty in ("hipblaslt", "rocblas"):
+        root = tmp_path / f"empty_{empty}"
+        root.mkdir()
+        binary = _slim_install(
+            root,
+            linked_libraries = names,
+            backend = "rocm",
+            linked_runtime_directories = ["hipblaslt", "rocblas"],
+            runtime_wiring_version = 3,
+        )
+        bin_dir = Path(binary).parent
+        (bin_dir / "libggml-hip.so").write_bytes(b"ggml")
+        assert ggml_module.slim_runtime_intact(binary) is True
+        (bin_dir / empty / "kernel.dat").unlink()
+        assert ggml_module.slim_runtime_intact(binary) is False
+
+
+def test_slim_guard_rejects_rocm_wiring_with_no_version(tmp_path):
+    # The version floor is a positive test, not a default: a marker with no
+    # runtime_wiring_version at all predates catalog wiring and must reinstall.
+    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    binary = _slim_install(
+        tmp_path,
+        linked_libraries = names,
+        backend = "rocm",
+        linked_runtime_directories = ["rocblas"],
+        runtime_wiring_version = None,
+    )
+    (Path(binary).parent / "libggml-hip.so").write_bytes(b"ggml")
+    assert ggml_module.slim_runtime_intact(binary) is False
+
+
 def test_slim_guard_rejects_rocm_wiring_with_an_unknown_catalog(tmp_path):
     # Membership is bounded by the catalogs this installer wires, so a name
     # outside the pair means a hand-edited or foreign marker and fails closed

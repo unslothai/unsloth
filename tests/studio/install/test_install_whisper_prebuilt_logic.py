@@ -1447,6 +1447,43 @@ def test_existing_rocm_install_accepts_the_catalogs_the_target_has(
     assert M.existing_install_matches(tmp_path, host, object()) is current
 
 
+@pytest.mark.parametrize("empty", ["hipblaslt", "rocblas"])
+def test_existing_rocm_install_reinstalls_over_an_empty_catalog_on_disk(
+    tmp_path, monkeypatch, empty
+):
+    # Relaxing the marker check to membership must not relax the on-disk check:
+    # a marker that names a catalog still has to find files in it. An install
+    # whose hipblaslt/ went empty (a partial wipe, a half-finished copy) has to
+    # read as broken and reinstall, not as intact-but-broken, or dictation fails
+    # at launch with the marker insisting the install is current.
+    host = _host("linux", "x64", has_rocm = True, rocm_gfx = "gfx1030")
+    monkeypatch.setattr(M.core, "existing_install_matches", lambda *a: True)
+    bin_dir = tmp_path / "build" / "bin"
+    bin_dir.mkdir(parents = True)
+    server = bin_dir / "whisper-server"
+    server.write_text("bin")
+    server.chmod(0o755)
+    (bin_dir / "libggml.so.0").write_text("lib")
+    for name in ("hipblaslt", "rocblas"):
+        (bin_dir / name / "library").mkdir(parents = True)
+        if name != empty:
+            (bin_dir / name / "library" / "kernel.dat").write_text("kernel")
+    monkeypatch.setattr(M, "installed_server_path", lambda d, h: server)
+    monkeypatch.setattr(
+        M,
+        "load_prebuilt_metadata",
+        lambda d: {
+            "install_kind": "slim",
+            "backend": "rocm",
+            "runtime_wiring_version": M.SLIM_RUNTIME_WIRING_VERSION,
+            "linked_libraries": ["libggml.so.0"],
+            "linked_runtime_directories": ["hipblaslt", "rocblas"],
+        },
+    )
+
+    assert M.existing_install_matches(tmp_path, host, object()) is False
+
+
 def test_link_ggml_runtime_libomp_alone_is_not_a_pairing(tmp_path):
     # A libomp without any ggml library is not a usable llama runtime.
     bin_dir = tmp_path / "llama_bin"
