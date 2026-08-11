@@ -1378,9 +1378,9 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
             carried: set = set()
             for index, cell in enumerate(nb["cells"]):
                 missing, bound = _undefined_names("".join(cell["source"]), carried)
-                assert not missing, (
-                    f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
-                )
+                assert (
+                    not missing
+                ), f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
                 carried = bound
 
 
