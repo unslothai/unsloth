@@ -101,7 +101,6 @@ def _core_ggml_names() -> list[str]:
     return ["libggml.so.0", "libggml-base.so.0"]
 
 
-
 def test_env_binary_override_wins(monkeypatch, tmp_path):
     binary = tmp_path / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
