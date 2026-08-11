@@ -71,9 +71,12 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
 # deprecated for this model" on a non-default value. Ref:
 #   https://platform.claude.com/docs/en/about-claude/model-deprecations
 # `[a-z]+` family (not `[a-z0-9]+`) so legacy version-first ids like
-# `claude-3-5-sonnet-...` don't parse as major=5. Minor accepts `-` or `.`.
+# `claude-3-5-sonnet-...` don't parse as major=5. Minor accepts `-` or `.`, and
+# is capped at two digits so the release date in a snapshot id such as
+# `claude-opus-4-20250514` is not read as minor 20250514 (which would sort that
+# Opus 4.0 model above 4.7 and strip the caller's sampling params).
 _ANTHROPIC_MODEL_VERSION = re.compile(
-    r"^claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[-.](?P<minor>\d+))?(?:[-.]|$)",
+    r"^claude-(?P<family>[a-z]+)-(?P<major>\d+)(?:[-.](?P<minor>\d{1,2}))?(?:[-.]|$)",
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")

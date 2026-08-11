@@ -535,6 +535,17 @@ def test_model_capability_tables_cover_claude_5(model, web, code, compaction, fa
         ("claude-sonnet-4.6", False),
         ("claude-3-5-sonnet-20241022", False),
         ("claude-3-7-sonnet-20250219", False),
+        # A snapshot date is not a minor version: claude-opus-4-20250514 is
+        # Opus 4.0, three generations before sampling params were removed, and
+        # reading 20250514 as the minor sorted it above 4.7 and silently
+        # dropped the caller's temperature / top_k.
+        ("claude-opus-4-20250514", False),
+        ("claude-opus-4", False),
+        ("claude-opus-4-1-20250805", False),
+        ("claude-opus-5-20260724", True),
+        ("claude-opus-4-7-20260414", True),
+        # Two-digit minors still parse.
+        ("claude-opus-4-10", True),
     ),
 )
 def test_sampling_capability_handles_alternate_id_spellings(model, sampling_removed):
