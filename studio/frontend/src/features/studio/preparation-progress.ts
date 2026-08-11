@@ -23,7 +23,7 @@ const PREPARATION_PHASES = new Set<TrainingPhase>([
 ]);
 
 /**
- * Whether the run is past its downloads but not yet stepping.
+ * Whether the run is setting up rather than stepping.
  *
  * `training` counts while the step is still 0: the worker reports that phase as soon
  * as the trainer is built, and dataset mapping runs inside it.
@@ -33,9 +33,6 @@ export function shouldShowPreparationStatus(
   currentStep: number,
   isStarting: boolean,
 ): boolean {
-  if (phase === "downloading_model" || phase === "downloading_dataset") {
-    return false;
-  }
   if (isStarting) return true;
   return (
     PREPARATION_PHASES.has(phase) || (phase === "training" && currentStep <= 0)

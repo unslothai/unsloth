@@ -283,8 +283,6 @@ export function TrainingStartOverlay({
   const hfDatasetName = datasetSource === "huggingface" ? dataset : null;
   const hasStartResources = startModelName !== null;
   const useConfiguredResources = !isStarting && !hasStartResources;
-  const isDownloadPhase =
-    phase === "downloading_model" || phase === "downloading_dataset";
   const modelName = hasStartResources
     ? startModelName
     : useConfiguredResources
@@ -296,17 +294,13 @@ export function TrainingStartOverlay({
       ? hfDatasetName
       : null;
   const displayMessage =
-    startFromResume && !isDownloadPhase && /^download/i.test(message)
+    startFromResume && /^download/i.test(message)
       ? t("studio.trainingStart.resumingTraining")
       : message || t("studio.trainingStart.startingTraining");
   const rawModelDownload = useModelDownloadProgress(modelName);
   const rawDatasetDownload = useDatasetDownloadProgress(datasetName);
-  const modelDownload = isDownloadPhase
-    ? rawModelDownload
-    : coerceCachedStateReady(rawModelDownload);
-  const datasetDownload = isDownloadPhase
-    ? rawDatasetDownload
-    : coerceCachedStateReady(rawDatasetDownload);
+  const modelDownload = coerceCachedStateReady(rawModelDownload);
+  const datasetDownload = coerceCachedStateReady(rawDatasetDownload);
   const preparationProgress = shouldShowPreparationStatus(
     phase,
     currentStep,

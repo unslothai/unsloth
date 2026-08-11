@@ -101,12 +101,9 @@ test("a step naming only a repo id routes by that name", () => {
   assert.equal(classifyPreparation("Loading checkpoint shards", {}), "model");
 });
 
-test("the preparation row is hidden while a download owns the overlay", () => {
-  assert.equal(shouldShowPreparationStatus("downloading_model", 0, false), false);
-  assert.equal(shouldShowPreparationStatus("downloading_dataset", 0, true), false);
-});
-
 test("the preparation row covers the gap up to the first step", () => {
+  assert.equal(shouldShowPreparationStatus("finalizing", 0, false), false);
+  assert.equal(shouldShowPreparationStatus("completed", 0, false), false);
   assert.equal(shouldShowPreparationStatus("configuring", 0, false), true);
   assert.equal(shouldShowPreparationStatus("loading_dataset", 0, false), true);
   assert.equal(shouldShowPreparationStatus("idle", 0, true), true);
