@@ -1,0 +1,24 @@
+{
+  "files": {
+    "LICENSE.redoc": "d3026d549cf68ab7355bcfa85877bf8f845b3334a7efbfdc63936432fb34ff0e",
+    "LICENSE.swagger-ui": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "favicon-32x32.png": "3ed612f41e050ca5e7000cad6f1cbe7e7da39f65fca99c02e99e6591056e5837",
+    "redoc.standalone.js": "2d8d13e94b5a21011cc6f8260d87ca475d0f6f2faed16dd12e7394dfa3bb05b8",
+    "swagger-ui-bundle.js": "002503ad9e92c33a9c9e2f7d4910a6fba4dd9dd8c57cfdb53b090629df0f5787",
+    "swagger-ui.css": "bc5e8d5c013477cf1f35e2fb8ba1dff66be0f72f24e669a509635657145e1acb"
+  },
+  "packages": [
+    {
+      "license": "Apache-2.0",
+      "package": "swagger-ui-dist",
+      "source": "https://www.npmjs.com/package/swagger-ui-dist/v/5.30.2",
+      "version": "5.30.2"
+    },
+    {
+      "license": "MIT",
+      "package": "redoc",
+      "source": "https://www.npmjs.com/package/redoc/v/2.5.1",
+      "version": "2.5.1"
+    }
+  ]
+}

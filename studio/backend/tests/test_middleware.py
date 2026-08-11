@@ -7,6 +7,7 @@ import asyncio
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -453,22 +454,27 @@ class TestSecurityHeadersMiddleware:
         nonced = main_module._build_csp("XYZ")
         assert "script-src 'self' 'nonce-XYZ';" in nonced
 
-    def test_docs_csp_allows_swagger_cdn_and_stays_scoped(self, main_module):
+    def test_docs_csp_never_widens_script_src(self, main_module):
+        # The docs pages run vendored bundles off this origin, so the docs branch may relax
+        # style/font/worker only. A third party in script-src here would reach the tokens
+        # localStorage holds for the whole origin.
         docs = main_module._build_csp(docs = True)
         directives = {
             chunk.strip().split(" ", 1)[0]: chunk.strip()
             for chunk in docs.split(";")
             if chunk.strip()
         }
-        assert main_module._DOCS_CDN in directives["script-src"]
-        assert main_module._DOCS_CDN in directives["style-src"]
-        assert "'unsafe-inline'" in directives["script-src"]
+        assert directives["script-src"] == "script-src 'self'"
+        assert "'unsafe-inline'" not in directives["script-src"]
+        assert "cdn.jsdelivr.net" not in docs
+        nonced = main_module._build_csp("XYZ", docs = True)
+        assert "script-src 'self' 'nonce-XYZ';" in nonced
+
         assert "blob:" in directives["worker-src"]
         assert main_module._DOCS_FONT_CSS in directives["style-src"]
         assert main_module._DOCS_FONT_FILES in directives["font-src"]
 
         plain = main_module._build_csp()
-        assert main_module._DOCS_CDN not in plain
         assert main_module._DOCS_FONT_CSS not in plain
         assert main_module._DOCS_FONT_FILES not in plain
         assert "worker-src 'self';" in plain
@@ -493,11 +499,53 @@ class TestSecurityHeadersMiddleware:
 
         c = TestClient(app)
         relaxed = c.get("/docs").headers["content-security-policy"]
-        assert main_module._DOCS_CDN in relaxed
+        assert main_module._DOCS_FONT_CSS in relaxed
 
         for path in ("/docs/", "/plain"):
             strict = c.get(path).headers["content-security-policy"]
-            assert main_module._DOCS_CDN not in strict, path
+            assert main_module._DOCS_FONT_CSS not in strict, path
+
+    def test_docs_pages_load_no_third_party_script(self, main_module):
+        # FastAPI's built-in docs pages point at cdn.jsdelivr.net. They are re-registered on
+        # the same paths against assets/docs_ui so nothing off-origin executes where the
+        # tokens live, and the built-ins must stay off or they would win the path.
+        assert main_module.app.docs_url is None
+        assert main_module.app.redoc_url is None
+        assert main_module.app.swagger_ui_oauth2_redirect_url is None
+
+        paths = {getattr(route, "path", None) for route in main_module.app.routes}
+        assert {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"} <= paths
+
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            body = c.get(path).text
+            assert "cdn.jsdelivr.net" not in body, path
+            assert "fastapi.tiangolo.com" not in body, path
+
+    def test_docs_inline_script_runs_off_the_response_nonce(self, main_module):
+        # Swagger's init is inline, so a strict script-src needs the nonce spliced into the
+        # header to match the tag. A mismatch renders blank, which is what CDN-era /docs did.
+        c = TestClient(main_module.app)
+        for path in ("/docs", "/docs/oauth2-redirect"):
+            r = c.get(path)
+            csp = r.headers["content-security-policy"]
+            nonce = re.search(r"'nonce-([^']+)'", csp)
+            assert nonce, f"{path} served no nonce"
+            assert f'<script nonce="{nonce.group(1)}">' in r.text, path
+            # The hand-off header is internal and must not reach the client.
+            assert main_module._CSP_SCRIPT_NONCE_HEADER not in {k.lower() for k in r.headers}
+
+        # ReDoc has no inline script, so it gets no nonce to leak.
+        assert "nonce-" not in TestClient(main_module.app).get("/redoc").headers[
+            "content-security-policy"
+        ]
+
+    def test_docs_assets_are_served_from_this_origin(self, main_module):
+        c = TestClient(main_module.app)
+        for name in ("swagger-ui-bundle.js", "swagger-ui.css", "redoc.standalone.js"):
+            r = c.get(f"{main_module._DOCS_ASSETS_URL}/{name}")
+            assert r.status_code == 200, name
+            assert len(r.content) > 10_000, name
 
     def test_img_and_media_allow_https_sources(self, main_module):
         # Model-card READMEs and citation favicons pull images/media from many
