@@ -160,7 +160,10 @@ SLIM_BACKEND_MODULE_GLOBS = {
     },
     "cuda": {"linux": "libggml-cuda.so*", "windows": "ggml-cuda.dll"},
     "metal": {"macos": "libggml-metal*.dylib"},
-    "rocm": {"linux": "libggml-hip.so*", "windows": "*hip*.dll"},
+    # Windows rocm must name the ggml module: the bundles also ship amdhip64,
+    # hipblas and libhipblaslt, so a looser *hip*.dll would pass on a runtime
+    # that has no ROCm ggml backend at all.
+    "rocm": {"linux": "libggml-hip.so*", "windows": "ggml-hip*.dll"},
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
@@ -398,7 +401,7 @@ def slim_pairing_for_artifact(
     if runtime is None:
         log(f"slim_selection: {asset} skipped: no managed llama.cpp prebuilt install")
         return None
-    llama_bin_dir, llama_tag, _profile = runtime
+    llama_bin_dir, llama_tag, llama_profile = runtime
     requires_tag = artifact.get("requires_llama_tag")
     if not llama_runtime_pairs(
         llama_tag,
@@ -416,11 +419,11 @@ def slim_pairing_for_artifact(
         log(f"slim_selection: {asset} skipped: manifest lists no requires_ggml_sonames")
         return None
     required_sonames = [str(name) for name in sonames]
-    if host.is_windows:
-        # The shared Windows manifest lists libomp because only the cpu llama
-        # bundle links ggml against it; rocm/cuda/vulkan neither ship nor import
-        # it. It is a transitive dep of llama's own ggml, so a working llama
-        # install already satisfies it and this gate can only mis-reject.
+    if host.is_windows and "cpu" not in llama_profile.lower():
+        # The shared Windows manifest lists libomp because the cpu llama bundle
+        # links ggml against it; the rocm/cuda/vulkan bundles neither ship nor
+        # import it, so requiring it there only ever mis-rejects a valid pairing.
+        # A cpu bundle keeps the gate, since its ggml really does need the DLL.
         # link_ggml_runtime still wires it whenever the bundle ships it.
         required_sonames = [
             name
