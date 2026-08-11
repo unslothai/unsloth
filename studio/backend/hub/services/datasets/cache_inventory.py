@@ -128,23 +128,79 @@ _DATASET_NON_PAYLOAD_FILENAMES = frozenset(
 ) | {name.lower() for name in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE}
 
 
+def _is_payload_name(name: str) -> bool:
+    # `datasets` itself skips dotted names and `__`-prefixed dirs when resolving data files,
+    # so an AppleDouble sidecar (`._train.parquet`) or a `__MACOSX` tree left by a Mac zip is
+    # clutter by the same rule that makes `.DS_Store` clutter.
+    lowered = name.lower()
+    if lowered in _DATASET_NON_PAYLOAD_FILENAMES:
+        return False
+    return not (name.startswith("._") or name.startswith("__"))
+
+
+def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
+    """True/False for this snapshot, or None when a subtree could not be read.
+
+    None is not False. `os.walk` swallows `scandir` errors unless `onerror` is given, so a
+    cache written by another user or on an unavailable mount would otherwise read as an
+    empty snapshot and hide a dataset that was merely uninspectable.
+    """
+    unreadable = False
+
+    def _note(_exc: OSError) -> None:
+        nonlocal unreadable
+        unreadable = True
+
+    try:
+        for directory, dirnames, filenames in os.walk(
+            snapshot, followlinks = False, onerror = _note
+        ):
+            base = Path(directory)
+            kept = []
+            for name in dirnames:
+                entry = base / name
+                # A linked directory is not descended into -- it can point anywhere -- but a
+                # non-metadata name IS evidence of payload, and pruning it silently hid
+                # migrated and shared caches that keep their data behind one.
+                if entry.is_symlink() or getattr(entry, "is_junction", bool)():
+                    if _is_payload_name(name):
+                        return True
+                    continue
+                kept.append(name)
+            dirnames[:] = kept
+            if any(_is_payload_name(name) for name in filenames):
+                return True
+    except OSError:
+        return None
+    return None if unreadable else False
+
+
 def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
-    """Whether the snapshot holds anything beyond repo metadata.
+    """Whether the repo holds anything beyond metadata, in any cached revision.
 
     A cancelled download can leave the dataset card and nothing else, which every structural
     check reads as complete, so the repo was offered On Device and then failed in load_dataset().
+
+    Every cached snapshot counts, not only the one `refs/main` pins: `is_snapshot_partial`
+    judges the newest snapshot, and a repo whose ref still points at a card-only revision
+    beside a complete one was flagged partial by this check alone and vanished from On Device.
     """
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:
         return False
+    pinned = _snapshot_holds_payload(snapshot)
+    if pinned is not False:
+        # True, or unreadable -- and an uninspectable cache is not an empty one.
+        return pinned is not False
     try:
-        for directory, dirnames, filenames in os.walk(snapshot, followlinks = False):
-            base = Path(directory)
-            dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
-            if any(name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES for name in filenames):
-                return True
+        siblings = [path for path in snapshot.parent.iterdir() if path.is_dir()]
     except OSError:
         return False
+    for sibling in siblings:
+        if sibling == snapshot:
+            continue
+        if _snapshot_holds_payload(sibling) is not False:
+            return True
     return False
 
 

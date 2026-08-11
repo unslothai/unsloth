@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -187,6 +188,61 @@ def test_raw_dataset_cache_has_data_finds_nested_payload_of_any_format(monkeypat
     )
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
+def test_raw_dataset_cache_has_data_ignores_appledouble_sidecars(monkeypatch, tmp_path):
+    """A snapshot carried through a Mac zip picks up `._name` sidecars and a `__MACOSX`
+    tree. `datasets` skips dotted names and `__`-prefixed dirs when it resolves data files,
+    so counting them as payload offered a card-only snapshot On Device again."""
+    repo_root = _dataset_snapshot(
+        monkeypatch,
+        tmp_path,
+        ("README.md", "._README.md", "__MACOSX/._README.md"),
+    )
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+
+def test_raw_dataset_cache_has_data_counts_a_linked_payload_directory(monkeypatch, tmp_path):
+    """A migrated or shared cache can keep its data behind a directory link. The walk must
+    not descend into one -- it can point anywhere -- but pruning it silently made the repo
+    read as metadata-only, and On Device drops every partial row."""
+    payload = tmp_path / "elsewhere"
+    payload.mkdir()
+    (payload / "train-00000-of-00001.parquet").write_bytes(b"PAR1")
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    (repo_root / "snapshots" / "abc" / "data").symlink_to(payload, target_is_directory = True)
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
+def test_raw_dataset_cache_has_data_accepts_payload_in_another_revision(monkeypatch, tmp_path):
+    """`refs/main` can still name a card-only revision while a complete one sits beside it.
+    `is_snapshot_partial` judges the newest snapshot, so checking only the pinned one made
+    the two disagree and took a usable dataset off On Device."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
+    (repo_root / "refs").mkdir(parents = True, exist_ok = True)
+    (repo_root / "refs" / "main").write_text("abc")
+    other = repo_root / "snapshots" / "def"
+    other.mkdir(parents = True)
+    (other / "train-00000-of-00001.parquet").write_bytes(b"PAR1")
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+
+
+def test_raw_dataset_cache_has_data_does_not_read_an_unreadable_tree_as_empty(
+    monkeypatch, tmp_path
+):
+    """`os.walk` swallows `scandir` errors unless `onerror` is given, so a cache written by
+    another user answered "no payload" rather than "could not look", and a dataset that was
+    merely uninspectable vanished from On Device."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/train.parquet"))
+    locked = repo_root / "snapshots" / "abc" / "data"
+    os.chmod(locked, 0o000)
+    try:
+        assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+    finally:
+        os.chmod(locked, 0o755)
 
 
 def _metadata_only_raw_repo() -> SimpleNamespace:
