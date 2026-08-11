@@ -351,11 +351,9 @@ def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypat
     # unconditionally failed the test there rather than exercising the branch that runs.
     if os.name == "nt":
         import msvcrt as locking
-
         primitive = "locking"
     else:
         import fcntl as locking
-
         primitive = "flock"
 
     def _unsupported(*_args):
