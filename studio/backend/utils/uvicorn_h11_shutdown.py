@@ -18,13 +18,20 @@ The sequence, all of it in third-party code:
    ``/api/inference/monitor`` on that keep-alive connection, so a request can
    already be sitting in the socket. On Windows the proactor transport still
    hands it to the protocol after ``close()``:
-   ``_ProactorReadPipeTransport._loop_reading()`` returns early on
-   ``self._closing``, but its ``finally:`` clause calls ``_data_received()``
-   anyway (CPython ``Lib/asyncio/proactor_events.py``). The overlapped
-   ``WSARecv()`` is deliberately not cancelled -- see bpo-33694, cancelling it
-   loses data. The selector transport used on Linux and macOS removes the
-   reader inside ``close()``, so its read callback cannot fire again, which is
-   why this is Windows-only in practice.
+   ``_ProactorReadPipeTransport._loop_reading()`` assigns ``length`` from
+   ``fut.result()`` before it returns early on ``self._closing``, and its
+   ``finally:`` clause then calls ``_data_received()`` anyway (CPython
+   ``Lib/asyncio/proactor_events.py``). ``close()`` does cancel ``_read_fut``,
+   but that cannot help here: a read whose overlapped ``WSARecv()`` already
+   completed had ``_ov`` cleared by ``_OverlappedFuture.set_result()``, so
+   ``cancel()`` is a no-op and the done callback queued before ``close()`` still
+   runs. CPython 3.9 also set ``data = None`` in that branch and so never
+   delivered; 3.10 dropped that line when the reader moved to ``recv_into()``,
+   which is why the report needs 3.10 or newer. The selector transport used on
+   Linux and macOS removes the reader inside ``close()``, and uvloop calls
+   ``_stop_reading()`` inside its own ``close()`` (and does not build on
+   Windows at all), so on every other platform the read callback cannot fire
+   again, which is why this is Windows-only in practice.
 3. h11 sees bytes after it expected EOF, so ``next_event()`` raises
    ``RemoteProtocolError``. uvicorn logs "Invalid HTTP request received." and
    calls ``send_400_response()``, whose very first ``self.conn.send(...)``
@@ -62,6 +69,15 @@ def _shutdown_quiet_h11_protocol() -> Union[type, None]:
     # a previous send violated the state machine. In both cases uvicorn can no
     # longer write a response on this connection, so feeding it more inbound
     # bytes can only produce the spurious 400 attempt described above.
+    #
+    # This deliberately reads our_state and never their_state. A malformed
+    # request from a live client is a *remote* violation: h11's next_event()
+    # calls _process_error(their_role), which moves their_state to ERROR and
+    # leaves our_state at IDLE or SEND_RESPONSE, exactly so that a server can
+    # still answer 400 (h11 docs, "error handling"). So the guard cannot fire
+    # on a request uvicorn is still able to reject properly, and h11 only ever
+    # reaches CLOSED from IDLE, DONE or MUST_CLOSE, meaning a response is
+    # either finished or was never started.
     terminal_states = (h11.CLOSED, h11.ERROR)
 
     class _ShutdownQuietH11Protocol(H11Protocol):  # type: ignore[misc, valid-type]

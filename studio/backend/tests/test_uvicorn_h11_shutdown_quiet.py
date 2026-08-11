@@ -52,7 +52,7 @@ def patched_protocol_class(monkeypatch):
 
     monkeypatch.setattr(auto, "AutoHTTPProtocol", H11Protocol)
     protocol_class = uvicorn_http_protocol()
-    assert protocol_class is not "auto"  # noqa: F632 - a class is expected here
+    assert protocol_class != "auto"
     assert issubclass(protocol_class, H11Protocol)
     return protocol_class
 
@@ -162,6 +162,60 @@ def test_live_connection_still_parses_normally(patched_protocol_class):
     """The guard must only fire on a closed connection, never on a live one."""
     _protocol, transport = asyncio.run(_serve_one_request(patched_protocol_class))
     assert b"200 OK" in b"".join(transport.chunks)
+
+
+@pytest.mark.parametrize(
+    "name, raw",
+    [
+        ("bad_request_line", b"GET\r\n\r\n"),
+        ("bad_header_no_colon", b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nNoColonHere\r\n\r\n"),
+        (
+            "invalid_content_length",
+            b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: notanumber\r\n\r\n",
+        ),
+        (
+            "duplicate_content_length",
+            b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\nabc",
+        ),
+        (
+            "invalid_chunked",
+            b"POST / HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\n",
+        ),
+    ],
+)
+def test_malformed_request_still_gets_400(patched_protocol_class, name, raw):
+    """The guard must never swallow uvicorn's real 400 for a genuinely bad request.
+
+    A remote protocol violation moves ``their_state`` to ERROR and leaves
+    ``our_state`` alone (h11 ``Connection.next_event()`` calls
+    ``_process_error(self.their_role)``), so the guard cannot see a terminal
+    ``our_state`` here and uvicorn's ``send_400_response()`` runs as usual. This
+    pins that split, because a guard that also tripped on ``their_state`` would
+    turn a cosmetic shutdown fix into a functional regression.
+    """
+    seen_states = []
+
+    class _Recording(patched_protocol_class):
+        def data_received(self, data):
+            seen_states.append(self.conn.our_state)
+            super().data_received(data)
+
+    async def _drive():
+        protocol = _build_protocol(_Recording)
+        transport = _FakeTransport()
+        protocol.connection_made(transport)
+        protocol.data_received(raw)
+        for _ in range(100):
+            await asyncio.sleep(0)
+        return protocol, transport
+
+    protocol, transport = asyncio.run(_drive())
+
+    assert seen_states and all(
+        state not in (h11.CLOSED, h11.ERROR) for state in seen_states
+    ), f"{name}: guard would have fired on a live connection, states = {seen_states}"
+    assert protocol.conn.their_state is h11.ERROR
+    assert b"400 Bad Request" in b"".join(transport.chunks), name
 
 
 def test_httptools_choice_is_left_alone(monkeypatch):
