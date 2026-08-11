@@ -278,6 +278,25 @@ jobs:
           mkdir -p logs/playwright_update_banner
           python tests/studio/playwright_update_banner_layout.py
 
+      # Firefox and WebKit at the viewports that reproduce, and nothing else:
+      # the card's floor and the action row's wrap threshold are measurements,
+      # and the three engines do not agree on font metrics or on whether a
+      # scrollbar takes width out of the box it sits on. WebKit is the closest
+      # this runner gets to Safari. Cut down to `spot` because a third full
+      # pass would spend minutes re-answering the first pass's questions.
+      - name: Update banner layout, other engines (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
+          STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+          PW_ART_DIR: logs/playwright_update_banner
+          STUDIO_UI_BANNER_SCOPE: spot
+        run: |
+          for engine in firefox webkit; do
+            STUDIO_PLAYWRIGHT_BROWSER="$engine" \
+              python tests/studio/playwright_update_banner_layout.py
+          done
+
       - name: Image model full-footprint selector regression (Playwright)
         env:
           BASE_URL: http://127.0.0.1:18894

@@ -209,12 +209,19 @@ test("a scrolling rail takes pointer input, a fitting one stays click-through", 
       "the rail is click-through unconditionally",
     );
   }
-  // Read from the capped box. Comparing the natural height against the cap
-  // instead reports every stack whose cards are giving up height, which is
-  // most of them, and hands the rail pointer input it does not need.
+  // Derived from the placement, never read back off the node. A DOM reading
+  // latches: the stack scrolls for a frame, the placement then changes to one
+  // that fits, and nothing resizes afterwards to correct the flag, so a rail
+  // with nothing to scroll to keeps the pointer input it took. Compared
+  // against the floor rather than the natural height, since the cards absorb
+  // everything in between.
   assert.match(
     STORE,
-    /const scrolls = node\.scrollHeight > node\.clientHeight;/,
-    "the overflow flag is not measured on the capped box",
+    /overflowing: floorRoom > geometry\.maxHeight/,
+    "the overflow flag is not derived from the placement",
+  );
+  assert.ok(
+    !/setOverflowing/.test(STORE),
+    "a latched DOM reading is back",
   );
 });

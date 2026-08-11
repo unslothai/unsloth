@@ -365,7 +365,6 @@ export function useStackGeometry(): StackPlacement {
   }));
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
-  const [overflowing, setOverflowing] = useState(false);
   useEffect(() => {
     const onResize = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -380,7 +379,6 @@ export function useStackGeometry(): StackPlacement {
       if (node.childElementCount === 0) {
         setNeededRoom((current) => (current === 0 ? current : 0));
         setFloorRoom((current) => (current === 0 ? current : 0));
-        setOverflowing((current) => (current ? false : current));
         return;
       }
       // Drop the cap and put it back in one synchronous block, so scrollHeight
@@ -406,12 +404,6 @@ export function useStackGeometry(): StackPlacement {
       }
       setNeededRoom((current) => (current === natural ? current : natural));
       setFloorRoom((current) => (current === floor ? current : floor));
-      // Whether the stack scrolls is read back from the capped box, not from
-      // `natural` against the cap: under the cap the cards give up height of
-      // their own, so a stack that asks for more than the cap can still fit
-      // inside it. Only the box that scrolls knows that it does.
-      const scrolls = node.scrollHeight > node.clientHeight;
-      setOverflowing((current) => (current === scrolls ? current : scrolls));
     };
     measure();
     // Every box inside the stack, not just the stack itself. At its cap the container's
@@ -465,15 +457,24 @@ export function useStackGeometry(): StackPlacement {
       mutations.disconnect();
     };
   }, []);
+  const geometry = stackGeometry(
+    published,
+    viewport.width,
+    viewport.height,
+    neededRoom,
+    floorRoom,
+  );
   return {
-    ...stackGeometry(
-      published,
-      viewport.width,
-      viewport.height,
-      neededRoom,
-      floorRoom,
-    ),
+    ...geometry,
     ref,
-    overflowing,
+    // Derived from the placement, not read back off the node. A DOM reading
+    // latches: the stack is capped and scrolling for a frame, the placement
+    // then changes to one that fits, and nothing resizes afterwards to correct
+    // the flag, so a rail with nothing to scroll to keeps the pointer input it
+    // took. The cards absorb everything between their floor and their natural
+    // height, so a cap below the floor is exactly when the rail has to scroll.
+    // A pixel of slack, since the floor is a rounded scrollHeight and the cap
+    // is not.
+    overflowing: floorRoom > geometry.maxHeight + 1,
   };
 }

@@ -145,6 +145,43 @@ VIEWPORTS = [
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 
+# Real display and window sizes, walked by RESIZING one already-loaded page
+# rather than booting one each: a resize is what a maximise, an unmaximise, a
+# restore from the dock and a drag of the window edge all are, so this is the
+# cheap sweep and the realistic one at the same time. Ordered largest first so
+# the run starts from the roomiest layout and squeezes.
+#
+# 3840x2160 and 2560x1440 are maximised on a 4K and a QHD display; 1920x1080 is
+# the commonest desktop there is; 1512x982 and 1440x900 are the default scaled
+# resolutions of a 14in MacBook Pro and a MacBook Air; 1366x768 is the commonest
+# Windows laptop; 900x600 is the desktop app's own minimum window; the rest are
+# ordinary small windows down to a phone in portrait.
+RESIZE_SWEEP = [
+    (3840, 2160), (2560, 1440), (1920, 1080), (1680, 1050), (1600, 900),
+    (1512, 982), (1440, 900), (1366, 768), (1280, 800), (1280, 720),
+    (1152, 720), (1024, 768), (1024, 600), (960, 640), (900, 600),
+    (800, 600), (768, 500), (720, 480), (640, 480), (430, 932),
+    (390, 844), (360, 640), (320, 568),
+]
+
+# What a resize needs before it has settled: the ResizeObserver, the placement
+# it feeds, and the reflow after that. Nothing is fetched, so this is short.
+RESIZE_SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_RESIZE_MS", "700"))
+
+# A minimised window has no layout to photograph, so what is actually testable
+# is the RESTORE: the geometry is measured by a ResizeObserver and cached in
+# React state, and a window that goes away and comes back is exactly how a stale
+# measurement would survive. Each pair is (parked, restored).
+RESTORE_CYCLES = [((320, 400), (1920, 1080)), ((320, 400), (900, 600))]
+
+# `spot` is the same suite cut down to what a SECOND browser engine is worth
+# running: the viewports that reproduce, one route, no resize sweep and no type
+# pass. Chromium runs `full`; Firefox and WebKit run this, because the job they
+# share has minutes rather than tens of minutes to spare and a third full pass
+# would mostly re-answer questions the first one already answered.
+SCOPE = os.environ.get("STUDIO_UI_BANNER_SCOPE", "full").lower()
+SPOT = SCOPE == "spot"
+
 # The two that squeeze the rail hardest, re-run at the largest UI font size.
 # The whole matrix again would not fit the job's budget and would say the same
 # thing three times over.
@@ -181,17 +218,33 @@ def api(
     path: str,
     payload: dict | None = None,
     token: str | None = None,
+    method: str | None = None,
 ) -> dict:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         f"{BASE}{path}",
         data = data,
-        method = "POST" if data else "GET",
+        method = method or ("POST" if data else "GET"),
         headers = {"Content-Type": "application/json"}
         | ({"Authorization": f"Bearer {token}"} if token else {}),
     )
     with urllib.request.urlopen(request, timeout = 30) as response:
         return json.loads(response.read().decode())
+
+
+def set_ui_font_size(token: str, size: int | None) -> None:
+    """Set, or clear, the Appearance type size on the SERVER.
+
+    Seeding it into localStorage is not enough and is actively harmful: the
+    appearance store syncs up to `/api/settings/personalization`, so a browser
+    that starts at 20px leaves the install at 20px for everything that runs
+    after it. That is not hypothetical, it is how a whole afternoon of local
+    runs came to be measured at 20px while reporting themselves as default,
+    and how a later suite in the same CI job would inherit it.
+    """
+    current = api("/api/settings/personalization", token = token)
+    current["appearance"]["customization"]["uiFontSize"] = size
+    api("/api/settings/personalization", current, token = token, method = "PUT")
 
 
 # Every box the fix is about, already intersected with whatever clips it.
@@ -245,6 +298,12 @@ MEASURE = """
     // pointer-events-none costs the rail its scrollbar, so it may only be
     // click-through while there is nothing under the fold to scroll to.
     railScrolls: rail ? rail.scrollHeight > rail.clientHeight : null,
+    // A classic scrollbar (Windows, Linux) takes width out of the box it is
+    // on; an overlay one (macOS, and WebKit generally) does not. The rail
+    // reserves a gutter for exactly this, so the card's width must not depend
+    // on which platform it is or on whether the rail happens to be scrolling.
+    railGutterPx: rail ? Math.round(rail.offsetWidth - rail.clientWidth) : null,
+    cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
     railPointerEvents: rail ? getComputedStyle(rail).pointerEvents : null,
     // What a click on the rail's own gutter lands on when it is click-through.
     gutterIsRail: rail ? (() => {
@@ -355,6 +414,15 @@ def measure(page, label: str) -> dict:
             reached and not seen["offscreen"],
             f"{name}={seen}",
         )
+    if facts["cardWidth"] is not None:
+        # 448px is the card's max width and 2rem the viewport inset it keeps.
+        want = min(448, view["width"] - 32)
+        check(
+            f"{label}: the card keeps its full width whatever the scrollbar does",
+            abs(facts["cardWidth"] - want) <= 1,
+            f"cardWidth={facts['cardWidth']} want={want} "
+            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']}",
+        )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
         check(
@@ -464,7 +532,7 @@ def main() -> int:
         browser = getattr(p, PLAYWRIGHT_BROWSER).launch(**launch_kwargs)
 
         llama_payload = [LLAMA_STATUS]
-        for width, height in VIEWPORTS:
+        for width, height in (VIEWPORTS[2:5] if SPOT else VIEWPORTS):
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -495,7 +563,7 @@ def main() -> int:
                 ),
             )
             page = context.new_page()
-            for name, path in ROUTES:
+            for name, path in (ROUTES[:1] if SPOT else ROUTES):
                 size = f"{width}x{height}"
                 boot(page, path)
                 if path == "/":
@@ -526,50 +594,117 @@ def main() -> int:
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
-        # Settings > Appearance scales the type, and the card's floor is
-        # written against that scale rather than measured once at the default.
-        # At the 20px maximum the action row wraps at every card width, so a
-        # default-font floor left the buttons clipped inside the card.
-        for width, height in FONT_SCALE_VIEWPORTS:
-            context = browser.new_context(
-                viewport = {"width": width, "height": height},
+        if SPOT:
+            info(f"{checks[0]} checks, {len(failures)} failed")
+            for failure in failures:
+                info(f"  {failure}")
+            browser.close()
+            return 1 if failures else 0
+
+        # One page, many window sizes. Every check the core matrix runs, at
+        # every resolution in RESIZE_SWEEP, for the price of one boot: the
+        # cards are already mounted and a resize is all a maximise or a restore
+        # ever is. It also exercises the path a fresh load never does, where
+        # the placement has to re-measure rather than measure once.
+        context = browser.new_context(
+            viewport = {"width": RESIZE_SWEEP[0][0], "height": RESIZE_SWEEP[0][1]},
+            reduced_motion = "reduce",
+        )
+        context.add_init_script(seed_js)
+        for pattern, payload in (
+            ("**/api/studio/update-status*", UPDATE_STATUS),
+            ("**/api/studio/release-notes*", RELEASE_NOTES),
+            ("**/api/llama/update-status*", LLAMA_STATUS),
+        ):
+            context.route(pattern, stub(payload))
+        page = context.new_page()
+        boot(page, "/")
+        for width, height in RESIZE_SWEEP:
+            page.set_viewport_size({"width": width, "height": height})
+            # Long enough for the ResizeObserver, the placement it feeds and the
+            # reflow that follows. Short because nothing is being fetched.
+            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            measure(page, f"{width}x{height} resized")
+        page.set_viewport_size({"width": 1280, "height": 830})
+        page.wait_for_timeout(RESIZE_SETTLE_MS)
+        page.screenshot(path = str(ART / "resize-sweep-end.png"))
+
+        # Parked small and brought back. A minimised window cannot be
+        # photographed, but the restore is where a cached measurement would
+        # show, and the claim is that it lands where a fresh load of the same
+        # size does rather than merely looking tidy.
+        for (small_w, small_h), (back_w, back_h) in RESTORE_CYCLES:
+            page.set_viewport_size({"width": small_w, "height": small_h})
+            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            page.set_viewport_size({"width": back_w, "height": back_h})
+            page.wait_for_timeout(RESIZE_SETTLE_MS)
+            restored = measure(page, f"{back_w}x{back_h} restored from {small_w}x{small_h}")
+            fresh_context = browser.new_context(
+                viewport = {"width": back_w, "height": back_h},
                 reduced_motion = "reduce",
             )
-            context.add_init_script(seed_js)
-            context.add_init_script(
-                "localStorage.setItem('unsloth_appearance_customization', "
-                + json.dumps(
-                    json.dumps(
-                        {
-                            "state": {"customization": {"uiFontSize": UI_FONT_SIZE_MAX}},
-                            "version": APPEARANCE_STORE_VERSION,
-                        }
-                    )
-                )
-                + ");"
-            )
+            fresh_context.add_init_script(seed_js)
             for pattern, payload in (
                 ("**/api/studio/update-status*", UPDATE_STATUS),
                 ("**/api/studio/release-notes*", RELEASE_NOTES),
                 ("**/api/llama/update-status*", LLAMA_STATUS),
             ):
-                # A two-argument handler is called with (route, request), so the
-                # payload has to be closed over rather than defaulted in.
-                context.route(pattern, stub(payload))
-            page = context.new_page()
-            boot(page, "/")
-            scale = page.evaluate(
-                "() => getComputedStyle(document.documentElement)"
-                ".getPropertyValue('--ui-font-scale').trim()"
-            )
-            check(
-                f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
-                scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
-                f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
-            )
-            measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
-            page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
-            context.close()
+                fresh_context.route(pattern, stub(payload))
+            fresh_page = fresh_context.new_page()
+            boot(fresh_page, "/")
+            fresh = measure(fresh_page, f"{back_w}x{back_h} fresh")
+            for name in ("card", "llama", "footer"):
+                a, b = restored[name], fresh[name]
+                check(
+                    f"{back_w}x{back_h}: the {name} restores to where a fresh load puts it",
+                    a is not None and b is not None
+                    and abs(a["top"] - b["top"]) <= 1.0
+                    and abs(a["height"] - b["height"]) <= 1.0,
+                    f"restored={a} fresh={b}",
+                )
+            fresh_context.close()
+        context.close()
+
+        # Settings > Appearance scales the type, and the card's floor is
+        # written against that scale rather than measured once at the default.
+        # At the 20px maximum the action row wraps at every card width, so a
+        # default-font floor left the buttons clipped inside the card.
+        #
+        # Set on the server and put back in a finally, because the appearance
+        # store syncs up: leaving it at 20px hands every later suite in this job
+        # a Studio whose type is not the default, and they will not notice.
+        set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
+        try:
+            for width, height in FONT_SCALE_VIEWPORTS:
+                context = browser.new_context(
+                    viewport = {"width": width, "height": height},
+                    reduced_motion = "reduce",
+                )
+                context.add_init_script(seed_js)
+                for pattern, payload in (
+                    ("**/api/studio/update-status*", UPDATE_STATUS),
+                    ("**/api/studio/release-notes*", RELEASE_NOTES),
+                    ("**/api/llama/update-status*", LLAMA_STATUS),
+                ):
+                    context.route(pattern, stub(payload))
+                page = context.new_page()
+                boot(page, "/")
+                scale = page.evaluate(
+                    "() => getComputedStyle(document.documentElement)"
+                    ".getPropertyValue('--ui-font-scale').trim()"
+                )
+                check(
+                    f"{width}x{height} at {UI_FONT_SIZE_MAX}px: the type is actually scaled",
+                    scale not in ("", str(UI_FONT_SIZE_DEFAULT / UI_FONT_SIZE_CSS_BASE)),
+                    f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
+                )
+                measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
+                page.screenshot(
+                    path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png")
+                )
+                context.close()
+        finally:
+            set_ui_font_size(session["access_token"], None)
         browser.close()
 
     info(f"{checks[0]} checks, {len(failures)} failed")
