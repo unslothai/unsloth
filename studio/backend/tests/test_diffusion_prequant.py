@@ -28,6 +28,38 @@ from core.inference.diffusion_prequant import (
 )
 
 
+@pytest.fixture(autouse = True)
+def real_prequant_safe_globals(monkeypatch):
+    """Stand in for the allowlist entries this host cannot import, and hand back the real resolver.
+
+    The file header promises these tests run without torchao, and the Backend CI image keeps that
+    promise literally: it installs torch and transformers and no torchao at all. Production then
+    resolves not one entry of ``_PREQUANT_SAFE_GLOBALS``, the registration floor ("TorchVersion
+    plus at least one real torchao class") is not met, every load refuses, and 19 tests in here
+    fail on ``assert None is not None`` -- saying nothing whatever about the loader they are
+    about. The tests also swap ``sys.modules["torch"]`` for a bare module while a load runs, so
+    even ``torch.torch_version`` is unimportable at that moment, torchao or no torchao.
+
+    Standing in only for the names that did NOT resolve keeps a host that has torchao testing the
+    real classes. Which names a given release actually ships is asked separately, by
+    ``test_the_registration_floor_needs_a_real_torchao``, which skips rather than pretends -- and
+    ``test_the_registration_refuses_when_nothing_resolves`` pins the refusal itself, so the gate
+    that the CI image trips is still under test rather than merely worked around.
+    """
+    resolver = pq._prequant_safe_globals
+    resolved = {name: obj for obj, name in resolver()}
+    pairs = [
+        (resolved.get(f"{module}.{name}") or type(name, (), {}), f"{module}.{name}")
+        for module, name in pq._PREQUANT_SAFE_GLOBALS
+    ]
+    monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
+    # Per test rather than per process: the memo is a module global, so one test's registration
+    # would otherwise decide the answer for every test that ran after it.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
+    return resolver
+
+
 # ── resolve_prequant_source ──────────────────────────────────────────────────────
 def _fam(prequant_repos = (), prequant_variant_repos = ()):
     return DiffusionFamily(
@@ -592,7 +624,9 @@ def test_the_checkpoint_is_deserialized_under_an_allowlist(monkeypatch):
     assert seen["safe_globals"], "the allowlist has to be registered before the load"
 
 
-def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkeypatch):
+def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(
+    monkeypatch, real_prequant_safe_globals
+):
     """The exact set read out of the pickles Studio actually resolves.
 
     Surveyed with ``pickletools`` (no unpickling) over every hosted prequant repo the family
@@ -628,7 +662,38 @@ def test_the_allowlist_names_every_constructor_the_hosted_checkpoints_use(monkey
     monkeypatch.setattr(
         pq, "_PREQUANT_SAFE_GLOBALS", (("torchao.nowhere", "Nope"), ("collections", "OrderedDict"))
     )
-    assert [name for _obj, name in pq._prequant_safe_globals()] == ["collections.OrderedDict"]
+    assert [name for _obj, name in real_prequant_safe_globals()] == ["collections.OrderedDict"]
+
+
+def test_the_registration_floor_needs_a_real_torchao(real_prequant_safe_globals):
+    """On a host that HAS torchao, the real resolution must clear the floor.
+
+    Every other test in this file stands in for the names the host cannot import, which is what
+    lets them run on the torchao-free CI image. That stand-in would also hide a torchao release
+    that renamed or retired the constructors out from under us -- ``AffineQuantizedTensor`` is
+    already deprecated upstream (pytorch/ao#2752). So this one asks the unpatched resolver, and
+    skips where there is nothing to ask."""
+    pytest.importorskip("torchao")
+    resolved = {name for _obj, name in real_prequant_safe_globals()}
+    assert "torch.torch_version.TorchVersion" in resolved
+    assert [name for name in resolved if name.startswith("torchao.")], (
+        "no torchao constructor resolved, so no pre-quant checkpoint could be opened: " +
+        repr(sorted(resolved))
+    )
+
+
+def test_the_registration_refuses_when_nothing_resolves(monkeypatch):
+    """And where there IS nothing to ask, the load refuses rather than unpickling unrestricted.
+
+    This is the CI image's own situation -- torch installed, torchao not -- so it is worth
+    pinning directly: an install that cannot express the allowlist gets a raise and a dense
+    fallback, never a ``torch.load`` with the restriction dropped."""
+    monkeypatch.setattr(pq, "_prequant_safe_globals", list)
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    assert pq._register_prequant_safe_globals() is False
+    assert pq.restricted_prequant_load_supported("fp8") is False
+    with pytest.raises(RuntimeError, match = "allowlist"):
+        pq._torch_load_prequant("/x.pt", map_location = "cpu")
 
 
 def test_a_malicious_checkpoint_is_refused_before_it_executes():
