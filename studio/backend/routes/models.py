@@ -2613,9 +2613,7 @@ async def scan_loras(
 
 
 def _scan_loras_sync(
-    resolved_outputs_dir: str,
-    resolved_exports_dir: str,
-    hf_token: Optional[str],
+    resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
     """The filesystem half of scan_loras, so it can run in a worker thread."""
     lora_list: List[LoRAInfo] = []

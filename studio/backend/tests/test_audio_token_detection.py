@@ -188,7 +188,8 @@ def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     monkeypatch.setattr(model_config, "_audio_offline_miss_cache", {})
     answers = iter([(None, False), ("snac", True)])
     monkeypatch.setattr(
-        model_config, "_detect_audio_from_tokenizer",
+        model_config,
+        "_detect_audio_from_tokenizer",
         lambda name, token = None, **kw: next(answers),
     )
     clock = [1000.0]
@@ -210,7 +211,8 @@ def test_an_online_transient_failure_still_retries_immediately(monkeypatch):
     monkeypatch.setattr(model_config, "_audio_offline_miss_cache", {})
     probes = []
     monkeypatch.setattr(
-        model_config, "_detect_audio_from_tokenizer",
+        model_config,
+        "_detect_audio_from_tokenizer",
         lambda name, token = None, **kw: (probes.append(name), (None, False))[1],
     )
 
