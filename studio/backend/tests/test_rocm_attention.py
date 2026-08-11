@@ -13,7 +13,7 @@ def test_opens_the_gate_when_unset():
 
 
 def test_zero_is_the_opt_out_and_survives():
-    """"0" is a deliberate choice by someone who hit an AOTriton bug, not an empty slot."""
+    """ "0" is a deliberate choice by someone who hit an AOTriton bug, not an empty slot."""
     env = {AOTRITON_ENV: "0"}
     assert enable_rocm_aotriton_attention(env) is False
     assert env[AOTRITON_ENV] == "0"
@@ -34,7 +34,7 @@ def test_idempotent():
 
 
 def test_defaults_to_the_real_environment(monkeypatch):
-    monkeypatch.delenv(AOTRITON_ENV, raising=False)
+    monkeypatch.delenv(AOTRITON_ENV, raising = False)
     import os
 
     assert enable_rocm_aotriton_attention() is True
@@ -45,7 +45,7 @@ def test_run_py_opens_the_gate_before_importing_torch():
     """The whole fix is ordering: torch latches the var at import, so a late set is dead code."""
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding="utf-8")
+    src = (Path(__file__).resolve().parents[1] / "run.py").read_text(encoding = "utf-8")
     gate = src.index("enable_rocm_aotriton_attention()")
     # Nothing before the gate may pull torch, directly or via the stub installers.
     assert "import torch" not in src[:gate]
