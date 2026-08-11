@@ -88,9 +88,22 @@ def test_curated_filenames_match_repo_naming():
 # Binary discovery
 # ---------------------------------------------------------------------------
 
+# The launcher looks for whisper-server.exe on Windows, and the slim guard checks the
+# libraries the marker names verbatim, so a fixture hardcoding the Unix spellings is
+# invisible to both and the tests fail for the filename rather than the behaviour.
+_SERVER_NAME = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
+
+
+def _core_ggml_names() -> list[str]:
+    """The two core ggml libraries _slim_install writes for this platform."""
+    if sys.platform == "win32":
+        return ["ggml.dll", "ggml-base.dll"]
+    return ["libggml.so.0", "libggml-base.so.0"]
+
+
 
 def test_env_binary_override_wins(monkeypatch, tmp_path):
-    binary = tmp_path / "whisper-server"
+    binary = tmp_path / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)  # find_whisper_server_binary requires an executable
     monkeypatch.setenv("WHISPER_SERVER_PATH", str(binary))
@@ -101,7 +114,7 @@ def test_env_dir_override_scans_layouts(monkeypatch, tmp_path):
     monkeypatch.delenv("WHISPER_SERVER_PATH", raising = False)
     build_bin = tmp_path / "build" / "bin"
     build_bin.mkdir(parents = True)
-    binary = build_bin / "whisper-server"
+    binary = build_bin / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)  # find_whisper_server_binary requires an executable
     monkeypatch.setenv("UNSLOTH_WHISPER_CPP_PATH", str(tmp_path))
@@ -122,7 +135,7 @@ def test_missing_binary_reports_unavailable(monkeypatch, tmp_path):
 def test_non_executable_binary_is_not_runnable(monkeypatch, tmp_path):
     if sys.platform == "win32":
         pytest.skip("X_OK is an existence check on Windows")
-    binary = tmp_path / "whisper-server"
+    binary = tmp_path / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")  # written but not chmod +x
     monkeypatch.setenv("WHISPER_SERVER_PATH", str(binary))
     monkeypatch.setattr(ggml_module.shutil, "which", lambda name: None)
@@ -148,7 +161,7 @@ def _slim_install(
     install_dir = tmp_path / "whisper.cpp"
     bin_dir = install_dir / "build" / "bin"
     bin_dir.mkdir(parents = True)
-    binary = bin_dir / "whisper-server"
+    binary = bin_dir / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     binary.chmod(0o755)
     marker: dict = {
@@ -194,7 +207,7 @@ def test_slim_guard_flags_missing_ggml_links(monkeypatch, tmp_path):
 
 
 def test_slim_guard_passes_with_links_in_place(monkeypatch, tmp_path):
-    names = ["libggml.so.0", "libggml-base.so.0"]
+    names = _core_ggml_names()
     binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     assert ggml_module.slim_runtime_intact(binary) is True
     monkeypatch.setattr(ggml_module, "find_whisper_server_binary", lambda: binary)
@@ -225,7 +238,7 @@ def test_slim_guard_malformed_authoritative_marker_fails_closed(tmp_path):
 
 
 def test_slim_guard_prefers_authoritative_root_marker(tmp_path):
-    names = ["libggml.so.0", "libggml-base.so.0"]
+    names = _core_ggml_names()
     binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     packaging_marker = Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json"
     packaging_marker.write_text(json.dumps({"backend": "slim", "release_tag": "packaging"}))
@@ -242,7 +255,7 @@ def test_slim_guard_rejects_invalid_root_even_with_inner_marker(tmp_path):
 
 
 def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
-    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
         linked_libraries = names,
@@ -260,7 +273,7 @@ def test_slim_guard_rejects_missing_rocm_catalog(tmp_path):
 def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
     # The guard pins a floor, not one version: an installer bump must not strand
     # ROCm installs as unavailable when every wired library is present.
-    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
         linked_libraries = names,
@@ -274,7 +287,7 @@ def test_slim_guard_accepts_newer_rocm_wiring_version(tmp_path):
 
 def test_slim_guard_rejects_pre_catalog_rocm_wiring_version(tmp_path):
     # Version 1 predates linked_runtime_directories, so it stays rejected.
-    names = ["libggml.so.0", "libggml-base.so.0", "libggml-hip.so"]
+    names = [*_core_ggml_names(), "libggml-hip.so"]
     binary = _slim_install(
         tmp_path,
         linked_libraries = names,
@@ -305,7 +318,7 @@ def test_slim_guard_ignores_fat_and_markerless_installs(tmp_path):
     # Fat installs carry their own ggml; no marker means source/custom build.
     fat = _slim_install(tmp_path / "fat", install_kind = None, with_ggml = False)
     assert ggml_module.slim_runtime_intact(fat) is True
-    bare = tmp_path / "bare" / "whisper-server"
+    bare = tmp_path / "bare" / _SERVER_NAME
     bare.parent.mkdir(parents = True)
     bare.write_text("#!/bin/sh\n")
     assert ggml_module.slim_runtime_intact(str(bare)) is True
@@ -326,7 +339,7 @@ def test_child_env_scrubs_secrets_and_adds_lib_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("HTTPS_PROXY", "http://u:p@px:8080")  # url-name
     monkeypatch.setenv("SOME_REMOTE", "https://u:pw@host/repo")  # url-userinfo value
     monkeypatch.setenv("STT_KEEPME", "keep")  # benign
-    binary = tmp_path / "whisper-server"
+    binary = tmp_path / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     env = ggml_module._whisper_server_child_env(str(binary))
     for scrubbed in ("HF_TOKEN", "MY_API_KEY", "HTTPS_PROXY", "SOME_REMOTE"):
@@ -342,7 +355,7 @@ def test_child_env_isolates_home_and_cred_locations(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", "/real/hf")
     monkeypatch.setenv("NETRC", "/real/.netrc")
     monkeypatch.setattr(ggml_module, "_managed_whisper_cpp_dir", lambda: tmp_path / "managed")
-    binary = tmp_path / "whisper-server"
+    binary = tmp_path / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     env = ggml_module._whisper_server_child_env(str(binary))
     assert env["HOME"] == str(tmp_path / "managed" / ".child_home")
@@ -358,7 +371,7 @@ def test_child_env_wsl_rocm_prepends_system_hip(monkeypatch, tmp_path):
     rocm.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    binary = bindir / "whisper-server"
+    binary = bindir / _SERVER_NAME
     binary.write_text("#!/bin/sh\n")
     monkeypatch.setattr(ggml_module, "_wsl_system_rocm_lib_dirs", lambda: [str(rocm)])
     env = ggml_module._whisper_server_child_env(str(binary))
@@ -377,13 +390,13 @@ def test_child_env_adds_cuda_runtime_dirs_for_cuda_bundle(monkeypatch, tmp_path)
 
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "whisper-server").write_text("#!/bin/sh\n")
+    (bindir / _SERVER_NAME).write_text("#!/bin/sh\n")
     module_name = "ggml-cuda.dll" if sys.platform == "win32" else "libggml-cuda.so.0"
     (bindir / module_name).write_text("")
     cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
     cuda_dir.mkdir(parents = True)
     monkeypatch.setattr(rl, "python_runtime_dirs", lambda: [str(cuda_dir)])
-    env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     parts = env[_loader_path_var()].split(os.pathsep)
     assert str(bindir.resolve()) in parts
     assert str(cuda_dir.resolve()) in parts
@@ -399,7 +412,7 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
 
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "whisper-server").write_text("#!/bin/sh\n")
+    (bindir / _SERVER_NAME).write_text("#!/bin/sh\n")
     cuda_dir = tmp_path / "nvidia" / "cuda_runtime" / "lib"
     cuda_dir.mkdir(parents = True)
     called = {"n": 0}
@@ -409,7 +422,7 @@ def test_child_env_omits_cuda_runtime_dirs_for_cpu_bundle(monkeypatch, tmp_path)
         return [str(cuda_dir)]
 
     monkeypatch.setattr(rl, "python_runtime_dirs", _fake_dirs)
-    env = ggml_module._whisper_server_child_env(str(bindir / "whisper-server"))
+    env = ggml_module._whisper_server_child_env(str(bindir / _SERVER_NAME))
     parts = env[_loader_path_var()].split(os.pathsep)
     assert str(cuda_dir.resolve()) not in parts
     assert called["n"] == 0
@@ -601,7 +614,7 @@ def test_training_forces_whisper_server_off_gpu(monkeypatch):
 
 
 def test_cpu_root_marker_forces_no_gpu_despite_inner_packaging_marker(monkeypatch, tmp_path):
-    names = ["libggml.so.0", "libggml-base.so.0"]
+    names = _core_ggml_names()
     binary = _slim_install(tmp_path, with_ggml = True, linked_libraries = names)
     (Path(binary).parent / "UNSLOTH_WHISPER_PREBUILT_INFO.json").write_text(
         json.dumps({"backend": "slim"})
