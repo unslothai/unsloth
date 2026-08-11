@@ -1001,6 +1001,11 @@ def _patch_trl_trainer():
     trl_configs = set(x[: -len("Config")] for x in trl_classes if x.endswith("Config"))
     trl_classes = list(trl_trainers & trl_configs)
 
+    # Auto-packing must wrap first so it ends up INSIDE the backwards-compatible
+    # wrapper: a moved `packing` kwarg has to reach the config before packing is
+    # decided, else the block is undone right after it is applied.
+    _patch_sft_trainer_auto_packing(trl)
+
     for x in trl_classes:
         try:
             exec(
@@ -1009,7 +1014,5 @@ def _patch_trl_trainer():
             )
         except:
             continue
-
-    _patch_sft_trainer_auto_packing(trl)
 
     trl.__UNSLOTH_BACKWARDS_COMPATIBLE__ = True

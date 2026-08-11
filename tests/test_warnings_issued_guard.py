@@ -445,3 +445,20 @@ def test_trainer_kwargs_still_go_to_the_trainer(tmp_path):
     trainer = Trainer(model = _Bare(), args = config, train_dataset = "DS", packing = True)
 
     assert trainer.train_dataset == "DS"
+
+
+def test_auto_packing_wraps_inside_the_backwards_compatible_wrapper():
+    """Order matters now that the kwargs are applied. `_patch_sft_trainer_auto_packing`
+    reads `packing` off the config and blocks it for VLMs, custom collators and the
+    padding-free blocklist, so it has to wrap first (inner) and see the moved value.
+    Wrapped last it decides on the old value, and the block is undone right after."""
+    for node in ast.walk(ast.parse(SRC)):
+        if isinstance(node, ast.FunctionDef) and node.name == "_patch_trl_trainer":
+            body = ast.get_source_segment(SRC, node)
+            break
+    else:
+        raise AssertionError("_patch_trl_trainer not found")
+
+    assert body.index("_patch_sft_trainer_auto_packing(trl)") < body.index(
+        "_backwards_compatible_trainer(trl."
+    )
