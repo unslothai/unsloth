@@ -253,6 +253,83 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _hsa_override_gfx_arch(value: Optional[str]) -> Optional[str]:
+    """gfx arch named by an HSA_OVERRIDE_GFX_VERSION value, or None if unreadable.
+
+    libhsakmt reads the variable as a major.minor.stepping triple
+    (``sscanf(envvar, "%u.%u.%u%c") != 3`` rejects anything else) and the target
+    name concatenates the stepping in hex, which is why 9.0.10 is gfx90a and not
+    gfx9010. 11.0.0 -> gfx1100, 11.5.1 -> gfx1151.
+
+    Kept in sync with _hsa_override_gfx_arch in studio/install_python_stack.py
+    and in install.sh.
+    """
+    if not value:
+        return None
+    # [0-9] rather than str.isdigit()/\d, both of which accept non-ASCII digits.
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value.strip()):
+        return None
+    major, minor, step = (int(p) for p in value.strip().split("."))
+    # Steppings are a single hex nibble; anything wider is not a real target.
+    if not (0 <= step <= 15) or major <= 0 or minor > 9:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
+def _installed_rocm_single_arch(venv_dir: Path) -> Optional[str]:
+    """gfx arch of the per-arch AMD ROCm libraries in *venv_dir*, or None.
+
+    AMD's per-gfx index ships one distribution per architecture, named
+    ``rocm_sdk_libraries_<arch>``, and the torch beside it carries code objects
+    for that architecture alone. The dist-info name therefore states the single
+    ISA this install has kernels for, without probing any hardware. A generic
+    multi-arch index installs no such distribution and yields None.
+    """
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for info in sp.glob("rocm_sdk_libraries_gfx*.dist-info"):
+                m = re.match(r"rocm_sdk_libraries_(gfx[0-9a-z]+)-", info.name)
+                if m:
+                    return m.group(1).lower()
+    return None
+
+
+def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
+    """Drop an HSA_OVERRIDE_GFX_VERSION no installed kernel can satisfy (#7331).
+
+    libhsakmt writes the variable's major.minor.stepping straight into the KFD
+    node's EngineId and ROCr names the agent from that, so the override decides
+    the ISA every later process sees. Against per-gfx wheels, which hold code
+    objects for one architecture, an override naming a different one leaves the
+    runtime asking for kernels the install does not contain and every launch
+    fails on the first allocation, exactly as it did before the routing fix.
+
+    install.sh clears it for the one launch it performs itself, but that unset
+    dies with the installer: `unsloth studio update` runs install_python_stack.py
+    as a child (studio/setup.sh:1444), and every later launch inherits the user's
+    shell instead. This is the chokepoint the exec, the Windows Popen and the
+    in-process paths all pass through.
+
+    Keyed on the INSTALL, never on a hardware probe. On a generic multi-arch
+    index there is nothing to contradict and the override is often the only thing
+    making the GPU usable, so nothing is cleared there. Returns the installed
+    arch when the variable was dropped, else None.
+    """
+    raw = os.environ.get("HSA_OVERRIDE_GFX_VERSION")
+    # Windows ROCm ignores the variable entirely, so there is nothing to correct.
+    if not raw or platform.system() == "Windows":
+        return None
+    arch = _installed_rocm_single_arch(venv_dir)
+    if arch is None:
+        return None
+    named = _hsa_override_gfx_arch(raw)
+    # Unreadable: libhsakmt rejects it too, so it is not this spoof to undo.
+    if named is None or named == arch:
+        return None
+    os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
+    return arch
+
+
 def _find_run_py() -> Optional[Path]:
     """Find studio/backend/run.py.
 
@@ -1547,6 +1624,20 @@ def studio_default(
     # must_change_password=1 with no password to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
     in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    # Before any of the three launch paths below, and before the environment is
+    # handed to a child: an override that contradicts single-arch wheels makes
+    # every kernel launch fail, and the installer's own unset cannot reach a
+    # launch it does not perform (#7331).
+    _spoof_arch = _clear_hsa_override_contradicting_install(
+        Path(sys.prefix) if in_studio_venv else studio_venv_dir
+    )
+    if _spoof_arch is not None and not silent:
+        typer.echo(
+            f"Cleared HSA_OVERRIDE_GFX_VERSION: this install carries {_spoof_arch} "
+            f"kernels only, so the runtime has to report the real arch. Remove the "
+            f"export from your shell profile as well, or the next terminal restores it.",
+            err = True,
+        )
     studio_python = run_py = None
     resolved_frontend = frontend
     if not in_studio_venv:
