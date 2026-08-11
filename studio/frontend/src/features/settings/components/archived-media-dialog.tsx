@@ -210,6 +210,10 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
         if (cancelled) return;
         if (!visible.has(row.id)) continue;
         if (requested.current.has(row.id)) continue;
+        // The cap has to be checked HERE too, not only where the retry is scheduled. A failure
+        // clears `requested`, so any later run of this effect -- a scroll changing `visible`, another
+        // page -- would fetch a permanently missing file again, without limit.
+        if ((failures.current.get(row.id) ?? 0) > THUMB_RETRY_LIMIT) continue;
         requested.current.add(row.id);
         try {
           if (isImages) {

@@ -7,6 +7,7 @@ atomic writes and orphan pruning."""
 from __future__ import annotations
 
 import json
+import math
 import os
 
 import pytest
@@ -83,6 +84,22 @@ def test_a_coarse_clock_still_orders_two_pins(gdir, monkeypatch):
     flags.set_flags(gdir, "first", pinned = True)
     items = flags.read(gdir)
     assert flags.pin_rank(items, "first") > flags.pin_rank(items, "third")
+
+
+def test_a_pin_never_stores_a_non_finite_timestamp(gdir):
+    # The monotonic nudge must not be able to manufacture the value _pinned_at refuses. A store
+    # holding the largest finite float nudges to infinity, which would read back as unpinned and
+    # leave the store untrusted, so the default clear stops working after a successful PATCH.
+    import sys
+
+    _store(gdir).write_text(
+        json.dumps({"version": 1, "items": {"huge": {"pinned_at": sys.float_info.max}}}),
+        encoding = "utf-8",
+    )
+    assert flags.set_flags(gdir, "a", pinned = True) == {"pinned": True, "archived": False}
+    items = flags.read_trusted(gdir)  # must not raise: the store is still readable
+    assert flags.flags_for(items, "a")["pinned"] is True
+    assert math.isfinite(flags.pin_rank(items, "a"))
 
 
 @pytest.mark.parametrize(

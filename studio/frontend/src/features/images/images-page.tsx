@@ -1656,7 +1656,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const collected: GalleryImage[] = [];
         let more = false;
         while (collected.length < wanted) {
-          const page = await getGallery(collected.length, PAGE_SIZE);
+          // The REMAINDER, not a whole page: a window of 51 (a page plus one new generation) would
+          // otherwise ask for 100 and grow the strip to match, reading 49 recipes off disk and
+          // rendering their tiles for a one-row shortfall.
+          const page = await getGallery(
+            collected.length,
+            Math.min(PAGE_SIZE, wanted - collected.length),
+          );
           collected.push(...page.images);
           more = page.has_more;
           if (!page.has_more || page.images.length === 0) break;
