@@ -426,9 +426,18 @@ def unresolvable_patch_targets(targets = None) -> list:
                 # a real break is never written off as an environment gap.
                 reason = f"missing attribute {attr!r}"
                 environment = False
-                if inspect.ismodule(obj):
+                if inspect.ismodule(obj) and hasattr(obj, "__path__"):
+                    candidate = f"{obj.__name__}.{attr}"
                     try:
-                        importlib.import_module(f"{obj.__name__}.{attr}")
+                        importlib.import_module(candidate)
+                    except ModuleNotFoundError as exc:
+                        # Only a failure to import something *else* is environmental. If
+                        # the candidate itself is what is missing, the name is genuinely
+                        # gone and the patch target is dead, which is the whole point of
+                        # this check.
+                        if exc.name and exc.name != candidate:
+                            reason = f"submodule {attr!r} needs {exc.name!r}, absent here"
+                            environment = True
                     except ImportError as exc:
                         reason = f"submodule {attr!r} is unimportable here: {exc}"
                         environment = True

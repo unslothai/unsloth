@@ -92,3 +92,25 @@ def test_every_string_patch_target_still_resolves():
     ]
 
     assert not broken, "\n".join(f"{e['target']}: {e['reason']} ({e['tests'][0]})" for e in broken)
+
+
+def test_a_deleted_patch_target_is_not_written_off_as_environmental():
+    """The ``environment`` escape hatch must not swallow a genuinely dead target.
+
+    ``importlib.import_module("mod.attr")`` raises ``ModuleNotFoundError`` for a deleted
+    attribute just as it does for a missing optional dependency, so classifying every
+    such failure as environmental would have made the check above vacuous: the test
+    filters those entries out.
+    """
+    broken = refactor_guard.unresolvable_patch_targets(
+        {
+            "core.tool_healing.deleted_name": ["fake_test.py"],
+            "core.inference.deleted_name": ["fake_test.py"],
+        }
+    )
+
+    assert {entry["target"] for entry in broken} == {
+        "core.tool_healing.deleted_name",
+        "core.inference.deleted_name",
+    }
+    assert not any(entry.get("environment") for entry in broken)
