@@ -10,8 +10,10 @@ streaming drops that opening tag, so the safetensors/MLX paths must re-emit
 it for the frontend's <think> parser to render a thinking block.
 """
 
+import ast
 import os
 import sys
+from pathlib import Path
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
@@ -260,3 +262,223 @@ def test_gemma_channel_normalization_is_prefix_monotonic_and_preserves_tools():
     assert compact.feed("<|channel>thought<channel|>answer") + compact.finish() == (
         "<think></think>answer"
     )
+
+
+# --- Muse Glimmer: recipient-addressed assistant channels ---
+
+_MUSE_TEMPLATE = (
+    "{%- if message.get('reasoning_content') -%}"
+    "{{- '<|start|>assistant to=self<|message|>' + message['reasoning_content'] + '<|eom|>' -}}"
+    "{%- endif -%}{{- '<|start|>assistant' -}}"
+)
+_MUSE_MARKERS = ("self", "user")
+
+
+def _muse_normalizer():
+    from core.inference.chat_template_helpers import make_reasoning_normalizer
+    return make_reasoning_normalizer(_MUSE_MARKERS)
+
+
+def test_muse_glimmer_channel_detected_from_its_template():
+    class TemplateTokenizer:
+        chat_template = _MUSE_TEMPLATE
+
+    class PlainTokenizer:
+        chat_template = "plain assistant template"
+
+    assert detect_reasoning_channel_markers(TemplateTokenizer()) == _MUSE_MARKERS
+    assert detect_reasoning_channel_markers(PlainTokenizer()) is None
+
+
+def test_muse_glimmer_marker_pair_selects_the_recipient_normalizer():
+    from core.inference.chat_template_helpers import (
+        RecipientChannelNormalizer,
+        ReasoningChannelNormalizer,
+        make_reasoning_normalizer,
+    )
+    assert isinstance(make_reasoning_normalizer(_MUSE_MARKERS), RecipientChannelNormalizer)
+    assert isinstance(
+        make_reasoning_normalizer(("<|channel>thought", "<channel|>")),
+        ReasoningChannelNormalizer,
+    )
+
+
+def test_muse_glimmer_reply_header_is_consumed_across_chunk_boundaries():
+    """Generation resumes after the prompt's trailing "<|start|>assistant", so
+    the first header arrives without that prefix. Every header here is split
+    across chunks, which is what the streamer sees token by token."""
+    parser = _muse_normalizer()
+    output = ""
+    for chunk in (
+        " to=self<|mess",
+        "age|>Two plus two.",
+        "<|eom|><|start|>assis",
+        "tant to=user<|message|>",
+        "4",
+    ):
+        output += parser.feed(chunk)
+    output += parser.finish()
+
+    assert output == " <think>Two plus two.</think>4"
+
+
+def test_muse_glimmer_direct_reply_without_reasoning_is_normalized():
+    """The reply header is consumed whether or not reasoning preceded it."""
+    parser = _muse_normalizer()
+    output = parser.feed(" to=user<|message|>4") + parser.finish()
+
+    assert output == " 4"
+
+
+def test_muse_glimmer_reasoning_after_a_reply_still_becomes_a_think_block():
+    """A reply closes with <|eom|> like any other block, so the turn can carry
+    on afterwards; treating the reply as the end would leak the rest verbatim."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        " to=user<|message|>Partly.<|eom|>"
+        "<|start|>assistant to=self<|message|>Reconsider.<|eom|>"
+        "<|start|>assistant to=user<|message|>Actually four."
+    )
+    output += parser.finish()
+
+    assert output == " Partly.<think>Reconsider.</think>Actually four."
+
+
+def test_muse_glimmer_tool_addressed_block_after_a_reply_keeps_its_markup():
+    """Normalization still ends at a tool call: the tool-call parser needs it."""
+    tool_block = (
+        '<|start|>assistant to=web_search<|message|>{"q": 1}<|eom|>'
+        "<|start|>assistant to=user<|message|>Done."
+    )
+    parser = _muse_normalizer()
+    output = parser.feed(" to=user<|message|>Checking.<|eom|>" + tool_block)
+    output += parser.finish()
+
+    assert output == " Checking." + tool_block
+
+
+def test_muse_glimmer_repeated_reasoning_blocks_each_become_a_think_block():
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=self<|message|>First.<|eom|>"
+        "<|start|>assistant to=self<|message|>Second.<|eom|>"
+        "<|start|>assistant to=user<|message|>Done."
+    )
+    output += parser.finish()
+
+    assert output == "<think>First.</think><think>Second.</think>Done."
+
+
+def test_muse_glimmer_tool_call_header_survives_for_the_tool_parser():
+    """A block addressed to a tool is content the tool-call parser must see."""
+    parser = _muse_normalizer()
+    output = parser.feed(
+        "to=self<|message|>Need a search.<|eom|>"
+        "<|start|>assistant to=web_search<|message|><atem:function_calls>"
+    )
+    output += parser.finish()
+
+    assert output == (
+        "<think>Need a search.</think>"
+        "<|start|>assistant to=web_search<|message|><atem:function_calls>"
+    )
+
+
+def test_muse_glimmer_tool_header_split_across_chunks_is_not_swallowed():
+    parser = _muse_normalizer()
+    output = ""
+    for chunk in (
+        "to=self<|message|>Think.<|eom|><|start|>assistant to=web_",
+        "search<|message|>x",
+    ):
+        output += parser.feed(chunk)
+    output += parser.finish()
+
+    assert output == "<think>Think.</think><|start|>assistant to=web_search<|message|>x"
+
+
+def test_muse_glimmer_unterminated_reasoning_block_is_closed_at_finish():
+    parser = _muse_normalizer()
+    output = parser.feed("to=self<|message|>Cut short.") + parser.finish()
+
+    assert output == "<think>Cut short.</think>"
+
+
+def test_muse_glimmer_stream_ending_inside_a_header_keeps_the_text():
+    parser = _muse_normalizer()
+    output = parser.feed("to=self<|message|>Done.<|eom|><|start|>assis")
+    output += parser.finish()
+
+    assert output == "<think>Done.</think><|start|>assis"
+
+
+def test_gemma_pair_protocol_is_unchanged_by_the_recipient_normalizer():
+    parser = ReasoningChannelNormalizer("<|channel>thought", "<channel|>")
+    output = parser.feed("<|channel>thought\nReason<channel|>answer") + parser.finish()
+
+    assert output == "<think>Reason</think>answer"
+
+
+def test_every_production_site_builds_the_normalizer_through_the_factory():
+    """Markers are recipient names now, so a site still calling the marker-pair
+    parser directly would treat the literal "self"/"user" as markup."""
+    root = Path(__file__).resolve().parent.parent / "core" / "inference"
+
+    def constructions(tree):
+        return {
+            id(node): node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id.endswith("ChannelNormalizer")
+        }
+
+    built_in_factory = set()
+    built_anywhere = {}
+    for name in ("chat_template_helpers.py", "inference.py", "mlx_inference.py"):
+        tree = ast.parse((root / name).read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "make_reasoning_normalizer":
+                built_in_factory |= set(constructions(node))
+        built_anywhere.update(
+            {key: f"{name}:{node.lineno}" for key, node in constructions(tree).items()}
+        )
+
+    assert built_in_factory, "the factory itself must construct a normalizer"
+    outside = sorted(
+        location for key, location in built_anywhere.items() if key not in built_in_factory
+    )
+    assert outside == [], outside
+
+
+def test_muse_glimmer_snapshot_stream_normalizes_both_channels():
+    """The non-streaming path consumes cumulative snapshots rather than deltas."""
+    from core.inference.chat_template_helpers import normalize_reasoning_snapshots
+
+    def normalized(raw):
+        snapshots = [raw[:index] for index in range(1, len(raw) + 1)]
+        emitted = list(normalize_reasoning_snapshots(iter(snapshots), markers = _MUSE_MARKERS))
+        assert all(
+            later.startswith(earlier) for earlier, later in zip(emitted, emitted[1:])
+        ), emitted
+        return emitted[-1]
+
+    turn = "to=self<|message|>Reason<|eom|><|start|>assistant to=user<|message|>Reply"
+    assert normalized(turn) == "<think>Reason</think>Reply"
+    # Generation stops on <|eot|>, so it only reaches here when a caller replays
+    # a whole turn; leave it to the control-markup neutralizer like other markup.
+    assert normalized(turn + "<|eot|>") == "<think>Reason</think>Reply<|eot|>"
+
+
+def test_streamer_builds_the_recipient_parser_from_muse_markers():
+    from core.inference.chat_template_helpers import RecipientChannelNormalizer
+    from core.inference.inference import ReasoningTextIteratorStreamer
+
+    class _Tokenizer:
+        def decode(self, *_args, **_kwargs):
+            return ""
+
+    streamer = ReasoningTextIteratorStreamer(_Tokenizer(), markers = _MUSE_MARKERS)
+
+    assert isinstance(streamer._normalizer, RecipientChannelNormalizer)
+    assert streamer._normalizer.feed("to=self<|message|>x<|eom|>") == "<think>x</think>"

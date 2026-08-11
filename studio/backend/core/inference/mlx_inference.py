@@ -13,8 +13,8 @@ from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
-    ReasoningChannelNormalizer,
     detect_reasoning_channel_markers,
+    make_reasoning_normalizer,
     markup_for_tokenizer,
     neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
@@ -1593,7 +1593,7 @@ class MLXInferenceBackend:
         preserve_native_channels = reasoning_channel_markers is not None
         token_ids = []
         normalizer = (
-            ReasoningChannelNormalizer(*reasoning_channel_markers)
+            make_reasoning_normalizer(reasoning_channel_markers)
             if reasoning_channel_markers is not None
             else None
         )
@@ -1931,7 +1931,7 @@ class MLXInferenceBackend:
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
-        normalizer = ReasoningChannelNormalizer(*markers) if markers is not None else None
+        normalizer = make_reasoning_normalizer(markers) if markers is not None else None
         # Hold the adapter state for the whole stream, as text and vision do,
         # so Base-vs-LoRA compare doesn't run the adapter on both sides.
         with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):

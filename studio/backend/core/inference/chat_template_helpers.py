@@ -33,6 +33,22 @@ _GEMMA_TEMPLATE_OPENERS = (
     _GEMMA_THOUGHT_OPEN + _GEMMA_THOUGHT_CLOSE,
 )
 
+# Muse Glimmer's recipient-addressed blocks; see RecipientChannelNormalizer.
+# Both header prefixes occur: generation resumes after the prompt's trailing
+# "<|start|>assistant", so the first header arrives without it and later ones carry it.
+_ATEM_REASONING_RECIPIENT = "self"
+_ATEM_REPLY_RECIPIENT = "user"
+_ATEM_CLOSE = "<|eom|>"
+_ATEM_TEMPLATE_OPENER = "<|start|>assistant to=self<|message|>"
+_ATEM_HEADER_PREFIXES = ("<|start|>assistant to=", "to=")
+_ATEM_HEADER_RE = re.compile(r"(?:<\|start\|>assistant )?to=(?P<recipient>[^<\s]+)<\|message\|>")
+# A partially streamed header tail: a recipient name, then a prefix of "<|message|>".
+_ATEM_PARTIAL_TAIL_RE = re.compile(
+    r"[^<\s]*(?:<(?:\|(?:m(?:e(?:s(?:s(?:a(?:g(?:e(?:\|)?)?)?)?)?)?)?)?)?)?"
+)
+# Longest holdback. 64 is the tool-name cap, so a recipient cannot be longer.
+_ATEM_HEADER_MAX_LEN = len("<|start|>assistant to=") + 64 + len("<|message|>")
+
 # Control markup must not reach the prompt as raw text from a user / system / tool turn:
 # "</think>" ends the reasoning block early, and "<|start|>assistant<|channel|>final
 # <|message|>" in a tool result forges an assistant turn (#7066). One lookahead over the four
@@ -1901,15 +1917,17 @@ def _selected_chat_template_strings(tokenizer, tools = None) -> tuple[str, ...]:
 
 def _detect_reasoning_channel_markers_from_templates(
     templates: tuple[str, ...],
-) -> Optional[tuple[str, str]]:
-    """Return Gemma native reasoning markers only when a template emits them."""
+) -> Optional[tuple[str, ...]]:
+    """Return native reasoning markers only when a template emits them."""
     if any(opener in template for template in templates for opener in _GEMMA_TEMPLATE_OPENERS):
         return _GEMMA_THOUGHT_OPEN, _GEMMA_THOUGHT_CLOSE
+    if any(_ATEM_TEMPLATE_OPENER in template for template in templates):
+        return _ATEM_REASONING_RECIPIENT, _ATEM_REPLY_RECIPIENT
     return None
 
 
-def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, str]]:
-    """Return native Gemma thought-channel markers supported by a tokenizer.
+def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[str, ...]]:
+    """Return the native reasoning-channel markers a tokenizer's template emits.
 
     Detection uses the active chat template rather than model names or vocabulary
     membership. Some models expose Gemma control tokens without using the native
@@ -1925,8 +1943,8 @@ def detect_reasoning_channel_markers(tokenizer, tools = None) -> Optional[tuple[
 
 def detect_reasoning_channel_markers_from_template(
     template, tools = None
-) -> Optional[tuple[str, str]]:
-    """Return native Gemma thought-channel markers from a raw template value."""
+) -> Optional[tuple[str, ...]]:
+    """Return native reasoning-channel markers from a raw template value."""
     return _detect_reasoning_channel_markers_from_templates(
         _selected_template_strings_from_value(template, tools)
     )
@@ -1936,7 +1954,7 @@ def detect_reasoning_channel_markers_from_model_info(
     tokenizer,
     model_info: Optional[dict] = None,
     tools = None,
-) -> Optional[tuple[str, str]]:
+) -> Optional[tuple[str, ...]]:
     """Return reasoning markers from the active or cached native template."""
     markers = detect_reasoning_channel_markers(tokenizer, tools = tools)
     if markers is not None or not isinstance(model_info, dict):
@@ -1958,12 +1976,33 @@ class ChatTemplateRenderResult:
     """Prompt plus response-protocol metadata selected by the renderer."""
 
     prompt: str
-    reasoning_channel_markers: Optional[tuple[str, str]] = None
+    reasoning_channel_markers: Optional[tuple[str, ...]] = None
     # The tool catalog the SELECTED template actually rendered. The native-template
     # fallback sanitizes with the native model's profile, which can drop a tool the active
     # profile kept, so a healer or controller built from the active catalog could promote a
     # call for a tool the prompt never advertised (#7066).
     advertised_tools: Optional[list] = None
+
+
+def _atem_header_can_extend(tail: str) -> bool:
+    """Whether ``tail`` is a prefix of some recipient header."""
+    for prefix in _ATEM_HEADER_PREFIXES:
+        if prefix.startswith(tail):
+            return True
+        if tail.startswith(prefix):
+            rest = tail[len(prefix) :]
+            # A recipient name, optionally followed by a partial "<|message|>".
+            if _ATEM_PARTIAL_TAIL_RE.fullmatch(rest):
+                return True
+    return False
+
+
+def _split_partial_atem_header(text: str) -> tuple[str, str]:
+    """Hold the longest suffix that may still become a recipient header."""
+    for start in range(max(0, len(text) - _ATEM_HEADER_MAX_LEN), len(text)):
+        if _atem_header_can_extend(text[start:]):
+            return text[:start], text[start:]
+    return text, ""
 
 
 def _split_partial_marker(text: str, marker: str) -> tuple[str, str]:
@@ -2043,11 +2082,122 @@ class ReasoningChannelNormalizer:
         return output
 
 
+class RecipientChannelNormalizer:
+    """Convert a recipient-addressed reasoning protocol to ``<think>``.
+
+    Muse Glimmer addresses every assistant block to a recipient: "self" carries
+    reasoning, "user" the reply, any other name a tool call. Blocks repeat, so
+    this tracks the recipient of each rather than one opener/closer pair.
+    Generation resumes after the prompt's trailing ``<|start|>assistant``, so
+    the first header arrives without that prefix.
+
+    A tool-addressed header ends normalization with its markup intact: the
+    tool-call parser downstream needs to see it.
+    """
+
+    def __init__(
+        self,
+        reasoning_recipient: str = "self",
+        reply_recipient: str = "user",
+    ):
+        self._reasoning_recipient = reasoning_recipient
+        self._reply_recipient = reply_recipient
+        self._buffer = ""
+        self._in_reasoning = False
+        self._in_reply = False
+        self._passthrough = False
+        self._skip_opening_newline = False
+
+    def feed(self, text: str) -> str:
+        self._buffer += text or ""
+        output: list[str] = []
+        while self._buffer:
+            if self._passthrough:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+
+            if self._in_reply:
+                # The reply is content, but the turn can continue after it, so
+                # follow it to its close rather than giving up on the rest.
+                index = self._buffer.find(_ATEM_CLOSE)
+                if index < 0:
+                    stable, self._buffer = _split_partial_marker(self._buffer, _ATEM_CLOSE)
+                    output.append(stable)
+                    break
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(_ATEM_CLOSE) :]
+                self._in_reply = False
+                continue
+
+            if self._in_reasoning:
+                if self._skip_opening_newline:
+                    if self._buffer.startswith("\n"):
+                        self._buffer = self._buffer[1:]
+                    self._skip_opening_newline = False
+                    if not self._buffer:
+                        break
+                index = self._buffer.find(_ATEM_CLOSE)
+                if index < 0:
+                    stable, self._buffer = _split_partial_marker(self._buffer, _ATEM_CLOSE)
+                    output.append(stable)
+                    break
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(_ATEM_CLOSE) :]
+                output.append(_THINK_CLOSE)
+                self._in_reasoning = False
+                continue
+
+            match = _ATEM_HEADER_RE.search(self._buffer)
+            if match is None:
+                stable, self._buffer = _split_partial_atem_header(self._buffer)
+                output.append(stable)
+                break
+
+            recipient = match.group("recipient")
+            if recipient == self._reasoning_recipient:
+                output.append(self._buffer[: match.start()])
+                self._buffer = self._buffer[match.end() :]
+                output.append(_THINK_OPEN)
+                self._in_reasoning = True
+                self._skip_opening_newline = True
+            elif recipient == self._reply_recipient:
+                output.append(self._buffer[: match.start()])
+                self._buffer = self._buffer[match.end() :]
+                self._in_reply = True
+            else:
+                # A tool call: hand the header on untouched and stop parsing.
+                self._passthrough = True
+        return "".join(output)
+
+    def finish(self) -> str:
+        output = self.drain()
+        if self._in_reasoning:
+            output += _THINK_CLOSE
+            self._in_reasoning = False
+        return output
+
+    def drain(self) -> str:
+        output = self._buffer
+        self._buffer = ""
+        if not self._in_reasoning:
+            # Flushed between blocks: a later delta must not be re-parsed as a
+            # header now that the text before it has already been emitted.
+            self._passthrough = True
+        return output
+
+
+def make_reasoning_normalizer(markers: tuple[str, ...]):
+    if markers and markers[0] == _ATEM_REASONING_RECIPIENT:
+        return RecipientChannelNormalizer(*markers)
+    return ReasoningChannelNormalizer(*markers)
+
+
 def normalize_reasoning_snapshots(
     stream,
     tokenizer = None,
     cancel_event = None,
-    markers: Optional[tuple[str, str]] = None,
+    markers: Optional[tuple[str, ...]] = None,
     tools = None,
 ):
     """Normalize a prefix-monotonic cumulative text stream when supported."""
@@ -2056,7 +2206,7 @@ def normalize_reasoning_snapshots(
         yield from stream
         return
 
-    normalizer = ReasoningChannelNormalizer(*markers)
+    normalizer = make_reasoning_normalizer(markers)
     raw_output = ""
     normalized_output = ""
     for snapshot in stream:
