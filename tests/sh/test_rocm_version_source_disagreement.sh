@@ -181,6 +181,21 @@ MOCK
     chmod +x "$_MOCK_DIR/amd-smi"
 }
 
+# $1 = the raw value of the "ROCm version:" field, e.g. "6.4.0" or "N/A".
+# Unlike add_amd_smi this reproduces the WHOLE line amd-smi really prints, with
+# the amdgpu driver version following the ROCm one, so a parser that runs past
+# the field separator is caught.
+add_amd_smi_line() {
+    cat > "$_MOCK_DIR/amd-smi" <<MOCK
+#!/bin/sh
+case "\$1" in
+    list) printf 'GPU: 0\\n  BDF: 0000:03:00.0\\n  NAME: gfx1100\\n' ;;
+    *) echo "AMDSMI Tool: 24.7.1+b446d6c-dirty | AMDSMI Library version: 24.7.2.0 | ROCm version: $1 | amdgpu version: 6.10.10 | hsmp version: 2.2" ;;
+esac
+MOCK
+    chmod +x "$_MOCK_DIR/amd-smi"
+}
+
 # $1 = rocm-core version as dpkg reports it (epoch prefixes allowed, e.g. 1:6.2.4-1)
 # $2 = dpkg status word, default "installed". "config-files" is the state a
 #      package left behind by `apt remove` without `apt purge` sits in: still in
@@ -463,6 +478,36 @@ for _case in "6.0.2:rocm6.0" "6.1.3:rocm6.1" "6.2.4:rocm6.2" "6.3.1:rocm6.3" \
     add_amd_smi "$_ver"
     assert_eq "amd-smi $_ver -> $_want" "$_BASE/$_want" "$(run_index)"
 done
+
+# ── 13. amd-smi reports one pipe-delimited line, and the ROCm field can be N/A ──
+# Real output carries the amdgpu driver version AFTER the ROCm one on the same
+# line, and prints "ROCm version: N/A" when no ROCm userspace is detectable.
+# Reading the field without stopping at the separator glued the two together and
+# reported the driver version as ROCm (N/A + amdgpu 6.10.10 -> "rocm6.10").
+# Position used to hide that; under highest-wins a fabricated reading can outvote
+# a correct source, so an unparseable field has to yield nothing at all.
+for _case in "N/A:" "6.4.0:rocm6.4" "7.0.2:rocm7.0" ":"; do
+    _field="${_case%%:*}"
+    _want="${_case##*:}"
+    reset_sources
+    add_amd_smi_line "$_field"
+    if [ -n "$_want" ]; then
+        assert_eq "amd-smi full line, ROCm field '$_field' -> $_want" \
+            "$_BASE/$_want" "$(run_index)"
+    else
+        # Nothing else answers, so an unusable field must reach the CPU fallback
+        # rather than contribute a number.
+        assert_eq "amd-smi full line, ROCm field '$_field' -> no reading" \
+            "$_BASE/cpu" "$(run_index)"
+    fi
+done
+
+# The driver version must never win the vote over a real, lower ROCm reading.
+reset_sources
+add_amd_smi_line "N/A"
+add_version_file "6.1.3-42"
+assert_eq "amd-smi N/A beside amdgpu 6.10 does not outvote a real 6.1" \
+    "$_BASE/rocm6.1" "$(run_index)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

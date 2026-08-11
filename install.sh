@@ -2919,8 +2919,13 @@ _cap_cuda_family_for_pre_turing() {
 # kill the installer, so every helper returns 0 no matter what its source does.
 _rocm_tag_from_amd_smi() {
     command -v amd-smi >/dev/null 2>&1 || return 0
+    # Stop at the field separator and require digits. amd-smi prints one pipe-delimited line
+    # ("... | ROCm version: N/A | amdgpu version: 6.10.10 | ..."), so stripping every non-digit
+    # glued the amdgpu driver version onto the ROCm one and reported the driver as ROCm. That
+    # was harmless while this source was shadowed by position; under highest-wins a fabricated
+    # reading can outvote a correct one, so an unparseable field must yield nothing instead.
     amd-smi version 2>/dev/null | awk -F'ROCm version: ' \
-        'NF>1{gsub(/[^0-9.]/, "", $2); split($2,a,"."); print "rocm"a[1]"."a[2]; exit}' || return 0
+        'NF>1{v=$2; sub(/[ \t|].*$/, "", v); if (v ~ /^[0-9]+\.[0-9]+/) {split(v,a,"."); print "rocm"a[1]"."a[2]} exit}' || return 0
 }
 
 _rocm_tag_from_version_file() {
