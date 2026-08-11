@@ -248,6 +248,23 @@ LEGS: dict[str, Leg] = {
             # release reordering the ladder shows up as this leg going red,
             # not as it silently selecting something else.
             "VLLM_ATTENTION_BACKEND": "TRITON_ATTN",
+            # Kaggle cannot link what flashinfer JIT-compiles. Measured on
+            # kernel unsloth-t4-ci-e2d9ce9b: vLLM 0.19.1 reached engine
+            # construction on a real T4, flashinfer 0.6.6 started building its
+            # sampling ops, all three .cu files compiled CLEANLY for
+            # `-gencode=arch=compute_75,code=sm_75`, and the link step died on
+            #
+            #   /usr/bin/ld: cannot find -lcuda
+            #
+            # `-L/usr/local/cuda/lib64/stubs` is on the command line, so the
+            # driver stub `libcuda.so` is simply not in this image; only the
+            # runtime `libcuda.so.1` is. Nothing about that is sm_75, and
+            # nothing about it is fixable from here.
+            #
+            # So do not JIT at all. The sampler has a native path, and skipping
+            # the build also saves a four-file nvcc compile inside a session
+            # billed by wall clock.
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
         },
         # Now true, and that is the point of the version choice above: this
         # leg no longer replaces torch, so it can share the image's view
@@ -301,16 +318,26 @@ UNWIRED: dict[str, str] = {
         "`vllm==0.19.1` and replaces nothing. That removes the cause of 1 "
         "and 2 outright, and removes the reason probe 3 needed an isolated "
         "venv at all.\n\n"
+        "MEASURED SINCE, kernel unsloth-t4-ci-e2d9ce9b. The install works. "
+        "torch stayed at the image's 2.10.0+cu128, vllm 0.19.1 installed and "
+        "imported, xformers was absent as intended, and the payload ran on a "
+        "real Tesla T4 reporting DeviceCapability(major=7, minor=5) with "
+        "VLLM_ATTENTION_BACKEND=TRITON_ATTN accepted. It reached engine "
+        "construction, which is further than any earlier probe got by the "
+        "whole width of the install.\n\n"
+        "It then died in flashinfer 0.6.6's JIT, and NOT for an sm_75 reason: "
+        "all three .cu files compiled cleanly for "
+        "`-gencode=arch=compute_75,code=sm_75` and the LINK failed with "
+        "`/usr/bin/ld: cannot find -lcuda`. `-L/usr/local/cuda/lib64/stubs` "
+        "is on the command line, so the image simply has no driver stub "
+        "`libcuda.so`, only the runtime `libcuda.so.1`. The leg now sets "
+        "VLLM_USE_FLASHINFER_SAMPLER=0 so nothing JITs at all.\n\n"
         "WHAT IS STILL UNKNOWN, and is the whole content of the session that "
         "would wire this:\n"
-        "  a. Whether vLLM 0.19.1 actually starts on sm_75. The static "
-        "     evidence is good and is not a run: 7.5 is still in "
-        "     CUDA_SUPPORTED_ARCHS in v0.19.1's CMakeLists, fp16 is a "
-        "     supported dtype below capability 8.0, and the backend ladder "
-        "     in vllm/platforms/cuda.py is FLASH_ATTN, FLASHINFER, "
-        "     TRITON_ATTN, FLEX_ATTENTION -- the first two are unavailable "
-        "     on Turing, so TRITON_ATTN is what is left, and the leg names "
-        "     it rather than trusting the order. Nobody has run it there.\n"
+        "  a. Whether the engine builds once flashinfer is out of the way. "
+        "     Everything up to that point is now measured rather than "
+        "     argued, but engine construction itself has not yet "
+        "     succeeded.\n"
         "  b. Whether 8GB of 16-bit weights plus a vLLM engine plus a LoRA "
         "     trainer fit in 14.56GB. The notebook's own committed output "
         "     shows vLLM auto-reducing gpu_memory_utilization 0.9 -> 0.69 on "
