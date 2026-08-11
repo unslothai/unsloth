@@ -3283,3 +3283,66 @@ def test_variant_plans_still_carry_the_published_dflash_sidecar():
         ]
     )
     assert "dflash-kquant.gguf" in plans["ud-q4_k_xl"].target_filenames
+
+
+def test_download_dflash_skips_a_root_weight_too_big_to_be_a_drafter(monkeypatch, tmp_path):
+    """The runtime picker needs the bound the plan has: a root dflash-*.gguf that is
+    an ordinary weight passes the filename test, and the header can only answer once
+    the whole object is on disk."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    weight = tmp_path / "Qwen3.6-27B-Q4_K_M.gguf"
+    weight.write_bytes(b"x" * 4_000)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_remote_root_gguf_sizes",
+        staticmethod(
+            lambda repo, token = None: {
+                "dflash-Qwen3.6-27B-BF16.gguf": 40_000,
+                "dflash-kquant.gguf": 500,
+            }
+        ),
+    )
+    picked = _dflash_download_pick(
+        monkeypatch,
+        listing = ["Qwen3.6-27B-Q4_K_M.gguf", "dflash-Qwen3.6-27B-BF16.gguf", "dflash-kquant.gguf"],
+        near_path = str(weight),
+    )
+    assert picked == "dflash-kquant.gguf"
+
+
+def test_download_companion_refuses_a_listing_missing_part_of_a_split_set(monkeypatch):
+    """The snapshot and cache paths both refuse half a split companion; the download
+    path returned shard 1 and handed llama-server a set it cannot open."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+    # Patched at the source: _download_companion_gguf imports list_repo_files inside
+    # its own body, so a module attribute on llama_cpp is never consulted.
+    import huggingface_hub
+
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda repo, token = None: ["dflash-kquant-00001-of-00002.gguf"],
+    )
+    downloads: list = []
+    monkeypatch.setattr(
+        llama_cpp_module,
+        "hf_hub_download_with_xet_fallback",
+        lambda *a, **k: downloads.append(a) or "/tmp/x.gguf",
+        raising = False,
+    )
+    b = LlamaCppBackend()
+    got = b._download_companion_gguf(
+        hf_repo = "org/repo",
+        hf_token = None,
+        pick = lambda files: next(iter(files), None),
+        label = "DFlash drafter",
+    )
+    assert got is None
+    assert downloads == []

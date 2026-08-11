@@ -4120,7 +4120,12 @@ class LlamaCppBackend:
             and self._spec_fallback_reason == "drafter_not_found"
             and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark", "dflash")
             and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
-            and not (self._spec_drafter_kind == "dflash" and self._dflash_sidecar_absent)
+            # DFlash asks through _dflash_retry_needed below instead. A permanent
+            # listing error (gated repo, offline) records no answer at all, so
+            # _dflash_sidecar_absent stays False and this arm relaunched a healthy
+            # server on every Apply; the flag is set only for the failures worth
+            # another attempt.
+            and self._spec_drafter_kind != "dflash"
             and not spec_owned_by_extra_args
         ):
             return False
@@ -8036,6 +8041,19 @@ class LlamaCppBackend:
         # disagree about what belongs to a set; empty for the single-file case,
         # which is every mmproj and every published sidecar so far.
         extra_shards = _gguf_extra_shards(available, target)
+        # The filename carries the set size, so a listing missing part of it is
+        # answerable before the download rather than after: half a split companion is
+        # not a companion, the same rule the snapshot and cache reuse above apply.
+        _shard_total = _SHARD_FULL_RE.match(target)
+        if _shard_total and len(extra_shards) + 1 != int(_shard_total.group(3)):
+            logger.info(
+                "Skipping %s: %s lists %d of %s shards.",
+                label,
+                hf_repo,
+                len(extra_shards) + 1,
+                _shard_total.group(3),
+            )
+            return None
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             # Same policy; companions are best-effort (caller below swallows failures to None).
@@ -8430,11 +8448,22 @@ class LlamaCppBackend:
                 for name in candidates
                 if name.lower().endswith(".gguf") and not _is_root_dflash_drafter_path(name)
             ]
+            # Same bound dflash_plan_files applies, for the same reason: dflash- is a
+            # prefix real weights carry, the header only reads once the bytes are here,
+            # and a drafter is a few layers of its target so it cannot outweigh it.
+            # Sizes the listing does not carry leave the candidate in, as before.
+            sizes = self._remote_root_gguf_sizes(hf_repo, hf_token)
+            try:
+                target_bytes = (self._get_gguf_size_bytes(near_path) or 0) if near_path else 0
+            except OSError:
+                target_bytes = 0
             files = sorted(
                 (
                     name
                     for name in candidates
-                    if _is_root_dflash_drafter_path(name) and Path(name).name not in rejected
+                    if _is_root_dflash_drafter_path(name)
+                    and Path(name).name not in rejected
+                    and not (target_bytes and sizes.get(Path(name).name, 0) >= target_bytes)
                 ),
                 key = lambda name: dflash_repo_preference_key(name, weight_name, others),
             )
@@ -8535,6 +8564,26 @@ class LlamaCppBackend:
         # same permanent absence: there is nothing usable here to fetch next time.
         self._dflash_sidecar_absent = outcome.get("listed") is False
         return found
+
+    @staticmethod
+    def _remote_root_gguf_sizes(hf_repo: str, hf_token: Optional[str] = None) -> dict[str, int]:
+        """Root-level GGUF basenames to their listed byte size, {} when unavailable.
+
+        list_repo_files answers names only, so the size bound needs the metadata
+        listing. Best effort: an empty map leaves every candidate eligible, which is
+        the behaviour before the bound existed.
+        """
+        try:
+            from huggingface_hub import model_info
+            info = model_info(hf_repo, token = hf_token, files_metadata = True)
+            return {
+                name: int(getattr(sibling, "size", 0) or 0)
+                for sibling in (getattr(info, "siblings", None) or [])
+                if isinstance(name := getattr(sibling, "rfilename", None), str) and "/" not in name
+            }
+        except Exception as exc:
+            logger.debug("Could not size the DFlash candidates for %s: %s", hf_repo, exc)
+            return {}
 
     def _dspark_wins_auto(
         self,

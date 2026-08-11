@@ -5727,13 +5727,16 @@ def _estimate_gguf_required_gb(
         # DFlash: same shape as DSpark above, and Auto sizes it for the same
         # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
         # protects a running training job still has to charge for it.
+        # Extra args owning --spec-type end _build_speculative_flags before any mode
+        # branch runs, so neither the forced mode nor the Auto promotion reaches the
+        # sidecar and charging it refuses a load for bytes nothing will open. Extra
+        # args asking for draft-dflash themselves are the one case that still pays.
+        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
         _forced_dflash = bool(
-            _spec_mode == "dflash" or _extra_args_requests_dflash(llama_extra_args, env = {})
+            _extra_args_requests_dflash(llama_extra_args, env = {})
+            or (_spec_mode == "dflash" and not _extra_args_own_spec)
         )
-        # Extra args owning --spec-type stop the loader's Auto promotion, so charging
-        # the sidecar here would refuse a load for ~1.5 GiB nothing will open. Extra
-        # args asking for draft-dflash are _forced_dflash above and keep the charge.
-        _auto_dflash = _spec_mode == "auto" and not _extra_args_set_spec_type(llama_extra_args)
+        _auto_dflash = _spec_mode == "auto" and not _extra_args_own_spec
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:

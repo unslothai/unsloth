@@ -1726,8 +1726,16 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 speculative_type = "auto",
                 llama_extra_args = ["--spec-type", "draft-dflash"],
             )
+            # Same for the forced mode: _build_speculative_flags returns before any
+            # mode branch when extra args own --spec-type, so dflash never emits.
+            forced = self.route._estimate_gguf_required_gb(
+                cfg,
+                speculative_type = "dflash",
+                llama_extra_args = ["--spec-type", "ngram-mod"],
+            )
         self.assertAlmostEqual(owned, 10.0, places = 6)
         self.assertAlmostEqual(asked, 12.0, places = 6)
+        self.assertAlmostEqual(forced, 10.0, places = 6)
 
     # ── Auto charges ONE drafter, the one the promotion leaves resident ──
 

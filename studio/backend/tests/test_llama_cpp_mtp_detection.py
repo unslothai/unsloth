@@ -2768,6 +2768,23 @@ def test_diffusion_load_clears_the_previous_models_spec_fallback():
     assert "self._dflash_retry_needed = False" in src[diffusion:start]
 
 
+def test_already_in_target_state_settles_a_dflash_listing_that_never_answered():
+    """A permanent listing error (gated repo, offline) records no answer, so
+    _dflash_sidecar_absent stays False. The drafter_not_found arm read that as "worth
+    another go" and relaunched a healthy drafter-free server on every Apply. DFlash
+    asks through _dflash_retry_needed instead, which a permanent error never sets."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/Muse-Glimmer-30B-GGUF",
+        _speculative_type = "default",
+        _gguf_path = None,
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dflash",
+        _dflash_sidecar_absent = False,
+        _dflash_retry_needed = False,
+    )
+    assert _matches(backend, **_binary_fallback_kwargs()) is True
+
+
 def test_already_in_target_state_reloads_after_a_dflash_fetch_that_dropped():
     """Under Auto a lost sidecar leaves no fallback reason at all -- the promotion
     never ran -- so the flag is the only thing that can ask for one more attempt."""
