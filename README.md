@@ -122,7 +122,38 @@ unsloth start claude --as-subagent --model unsloth/model-GGUF:quant
 ```
 
 ## 📥 Install
-Unsloth can be used in two ways: through **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI, or through **Unsloth Core**, the code-based version. Each has different requirements.
+Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
+
+### Unsloth Desktop (recommended)
+
+The desktop app is the easiest way to use Unsloth and needs no setup, so start here.
+
+<table>
+  <tr>
+    <td><b>Platform</b></td>
+    <td><b>Link</b></td>
+  </tr>
+  <tr>
+    <td><b>Windows</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Windows.exe'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>macOS</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-MacOS.dmg'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Linux.deb'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (AppImage)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Linux (Arm64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.60-beta/Unsloth-Desktop-0_1_60_beta-ARM64.app.tar.gz'>Download</a></td>
+  </tr>
+</table>
 
 ### Unsloth Studio (web UI)
 Unsloth Studio (Beta) works on **Windows, Linux, WSL** and **macOS**.
