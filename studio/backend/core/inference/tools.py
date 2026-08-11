@@ -3605,6 +3605,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # attr_open_aliases does for open, and the same for the module itself
     # (box.loader_module = yaml), which is then a loader receiver.
     attr_load_aliases: "set[str]" = set()
+    # The subset of those that are PyYAML load/load_all, which Loader= can exempt.
+    attr_yaml_load_aliases: "set[str]" = set()
     attr_load_module_aliases: "set[str]" = set()
     # Names bound to yaml.safe_load / safe_load_all, gated only once a registered
     # constructor makes even that read tag-directed.
@@ -3926,9 +3928,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # yaml.YAMLObject's metaclass registers the class's from_yaml against
         # whatever yaml_loader names, so the registration has no call site.
         "YAMLObject",
-        "yaml_loader",
-        "from_yaml",
     }
+    # These two only carry registration meaning inside a YAMLObject subclass;
+    # a module-level def from_yaml(path) is ordinary config-loading code.
+    _yamlobject_member_names = frozenset({"yaml_loader", "from_yaml"})
     for _n in ast.walk(tree):
         if isinstance(_n, ast.ImportFrom):
             for _al in _n.names:
@@ -3942,16 +3945,40 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     )
 
     _loader_import_aliases: "set[str]" = set()
+    _safe_reader_aliases: "set[str]" = set()
     for _n in ast.walk(tree):
         if isinstance(_n, (ast.Import, ast.ImportFrom)):
             _root_mod = (_n.module or "") if isinstance(_n, ast.ImportFrom) else ""
             for _al in _n.names:
                 if _al.name in _AUTO_SAFE_PY_LOAD_CLASSES or _al.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
                     _loader_import_aliases.add(_al.asname or _al.name)
+                elif _al.name in _AUTO_SAFE_PY_LOAD_FUNCS:
+                    _safe_reader_aliases.add(_al.asname or _al.name)
+                    _loader_import_aliases.add(_al.asname or _al.name)
                 elif _root_mod.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     _loader_import_aliases.add(_al.asname or _al.name)
                 elif _al.name.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     _loader_import_aliases.add(_al.asname or _al.name.split(".")[0])
+
+    for _pass in range(2):
+        for _n in ast.walk(tree):
+            if not isinstance(_n, ast.Assign) or not isinstance(
+                _n.value, (ast.Attribute, ast.Name)
+            ):
+                continue
+            _v = _n.value
+            _is_loader_val = (
+                isinstance(_v, ast.Attribute)
+                and (
+                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                    or _v.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                    or _v.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+                )
+            ) or (isinstance(_v, ast.Name) and _v.id in _loader_import_aliases)
+            if _is_loader_val:
+                for _t in _n.targets:
+                    if isinstance(_t, ast.Name):
+                        _loader_import_aliases.add(_t.id)
 
     def _mentions_loader_literal(node) -> bool:
         # A loader named anywhere in this expression, by module, class or
@@ -4000,17 +4027,42 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
             targets = [node.target]
         for t in targets:
-            for sub in ast.walk(t):
-                if isinstance(sub, ast.Attribute) and sub.attr in _AUTO_SAFE_PY_LOAD_FUNCS:
-                    return True
-                if isinstance(sub, ast.Name) and (
-                    sub.id in _AUTO_SAFE_PY_LOAD_FUNCS or sub.id in _loader_import_aliases
-                ):
-                    return True
+            # The symbol being written, not the path it hangs off: patching
+            # yaml.Dumper.ignore_aliases says nothing about safe_load.
+            if isinstance(t, ast.Attribute) and t.attr in _AUTO_SAFE_PY_LOAD_FUNCS:
+                return True
+            if isinstance(t, ast.Name) and (
+                t.id in _AUTO_SAFE_PY_LOAD_FUNCS or t.id in _safe_reader_aliases
+            ):
+                return True
         return False
 
+    def _declares_yamlobject_member(node) -> bool:
+        # class T(yaml.YAMLObject): yaml_loader = ...; from_yaml = ...
+        if not isinstance(node, ast.ClassDef):
+            return False
+        if not any(_mentions_loader_literal(b) or _base_is_yamlobject(b) for b in node.bases):
+            return False
+        for stmt in node.body:
+            names = []
+            if isinstance(stmt, ast.Assign):
+                names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                names = [stmt.target.id]
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = [stmt.name]
+            if any(n in _yamlobject_member_names for n in names):
+                return True
+        return False
+
+    def _base_is_yamlobject(base) -> bool:
+        if isinstance(base, ast.Attribute):
+            return base.attr == "YAMLObject"
+        return isinstance(base, ast.Name) and base.id == "YAMLObject"
+
     registers_constructor = any(
-        _is_loader_registration(n) or _rebinds_safe_reader(n) for n in ast.walk(tree)
+        _is_loader_registration(n) or _rebinds_safe_reader(n) or _declares_yamlobject_member(n)
+        for n in ast.walk(tree)
     )
     # Kept separate only because the messages below distinguish them; both mean
     # the loader may not be the stock one any more.
@@ -4256,6 +4308,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         load_func_aliases.update(targets)
                         if _is_yaml_module(value.value):
                             yaml_func_aliases.update(targets)  # f = yaml.load
+                            if value.attr in ("load", "load_all"):
+                                attr_yaml_load_aliases.update(attr_targets)
                     else:
                         load_class_aliases.update(targets)
                     attr_load_aliases.update(attr_targets)
@@ -4538,6 +4592,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             break
     if not _alias_converged:
         return True
+    # A loader returned from a function escapes this analysis entirely (the
+    # caller's name for it is unknowable here), so returning one asks. Capturing
+    # it in a local, which stays visible, is unaffected.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and node.value is not None:
+            for sub in ast.walk(node.value):
+                if isinstance(sub, ast.Attribute) and (
+                    sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+                ):
+                    return True
     # Naming an always-unsafe loader anywhere asks, no matter what expression
     # binds, forwards or invokes it (a decorator, a factory return, a loop, a
     # starred base, a rebound alias). The safe reads never mention these names.
@@ -4756,8 +4820,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     if func.attr in attr_open_aliases and _builtin_open_writes(node):
                         return True
                     # A loader parked on an attribute (holder.load = yaml.load).
+                    # A yaml load/load_all keeps its Loader= exemption there too.
                     if func.attr in attr_load_aliases:
-                        return True
+                        if not (func.attr in attr_yaml_load_aliases and _loads_safely(node)):
+                            return True
                     # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
                     # the 2nd arg (like builtin open), so ZipFile(name, "w") writes
                     # but ZipFile(name) reads.

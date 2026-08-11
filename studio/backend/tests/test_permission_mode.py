@@ -1958,6 +1958,23 @@ def test_high_risk_dispatcher_non_terminal():
             "yaml.safe_load('!e x')",
             True,
         ),  # an aliased loader is still a loader
+        (
+            "import yaml\nSafe = yaml.SafeLoader\nsetattr(Safe, 'construct_object', evil)\n"
+            "yaml.load(s, Loader=Safe)",
+            True,
+        ),  # patched through a local alias
+        ("import yaml\ndef choose(): return yaml.load\nld = choose()\nld(s)", True),  # escapes
+        ("def get(): return 5\nprint(get())", False),
+        # Names that only mean something inside a YAMLObject, and writes that do
+        # not touch the reader, must not cost a prompt on ordinary code.
+        (
+            "import yaml\ndef from_yaml(path): return yaml.safe_load(open(path))\n"
+            "print(from_yaml('c.yml'))",
+            False,
+        ),
+        ("import yaml\nyaml.Dumper.ignore_aliases = lambda *_: True\nyaml.safe_load(d)", False),
+        ("import yaml\nh.load = yaml.load\nprint(h.load(d, Loader=yaml.SafeLoader))", False),
+        ("import yaml\nh.load = yaml.load\nh.load(d, Loader=yaml.Loader)", True),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
