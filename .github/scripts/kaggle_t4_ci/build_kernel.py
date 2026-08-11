@@ -132,10 +132,25 @@ print("{PAYLOAD_SENTINEL} install done", flush=True)
 # child process's captured stdout, forty minutes and one GPU session later.
 # Here it surfaces immediately, named, in the driver log.
 import importlib, json
+# Everything above was pip-installed AFTER this interpreter started, and the
+# import system caches the directory listing of each sys.path entry. Without
+# this, a just-installed package can be invisible to the very next import.
+importlib.invalidate_caches()
+
 missing = []
 versions = {{}}
+# ORDER IS PART OF THE TEST, not cosmetic. `unsloth` comes before
+# `unsloth_zoo`: zoo's __init__ ends with
+#     if find_spec("unsloth") is None:
+#         raise ImportError("Please install Unsloth via `pip install unsloth`!")
+# and on a real T4 that fired on a session where unsloth WAS installed and
+# imported cleanly one line later -- because by then `unsloth` was in
+# sys.modules and find_spec answered from there. Probing zoo first therefore
+# reported a missing dependency that was not missing, and aborted the payload
+# before a single training step ran. Importing unsloth first is also the
+# order every Unsloth notebook uses.
 for mod in ("torch", "transformers", "trl", "peft", "datasets",
-            "bitsandbytes", "unsloth_zoo", "unsloth"):
+            "bitsandbytes", "unsloth", "unsloth_zoo"):
     try:
         m = importlib.import_module(mod)
         versions[mod] = getattr(m, "__version__", "unknown")
@@ -170,8 +185,20 @@ for name, blob in FILES.items():
 print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 '''
 
-    ref_arg = (f' --reference "{{ROOT}}/references/{reference}"'
-               if reference else "")
+    # The reference path is built at RUNTIME, from the notebook's own ROOT,
+    # and appended as two list elements.
+    #
+    # It used to be a single f-string ' --reference "{{ROOT}}/..."' spliced
+    # into the middle of a Python list literal, which is shell syntax in a
+    # place that wanted Python. On a real T4 that cell died with
+    #   "--outdir", str(OUT), "--label", "gpu0" --reference "{{ROOT}}/..."]
+    #   SyntaxError: invalid syntax. Perhaps you forgot a comma?
+    # before a single training step ran, and the doubled braces meant ROOT
+    # would not have been substituted even if it had parsed. The workflow
+    # always passes --reference, so this was on every path. Cheap and
+    # airtight to prevent: test_generated_cells_compile.
+    ref_line = (f'cmd += ["--reference", str(ROOT / "references" / '
+                f'{json.dumps(reference)})]\n' if reference else "")
     run = f'''# Run the smoke test in a child process.
 #
 # A child, not an import, for two reasons: the determinism setup has to run
@@ -187,8 +214,8 @@ env["PYTHONUNBUFFERED"] = "1"
 env["UNSLOTH_DISABLE_STATISTICS"] = "1"
 
 cmd = [sys.executable, str(ROOT / "run_t4_smoke.py"),
-       "--outdir", str(OUT), "--label", "{label}"{ref_arg}]
-cmd += {json.dumps(smoke_args.split())}
+       "--outdir", str(OUT), "--label", "{label}"]
+{ref_line}cmd += {json.dumps(smoke_args.split())}
 print("{PAYLOAD_SENTINEL} exec " + " ".join(cmd), flush=True)
 
 proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
