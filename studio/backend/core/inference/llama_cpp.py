@@ -9504,6 +9504,7 @@ class LlamaCppBackend:
                 if caps.get("mtp_probe_inconclusive"):
                     _launch_probe_inconclusive = True
                 return caps
+
             is_vulkan_backend = self._is_vulkan_backend(binary)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -9516,11 +9517,7 @@ class LlamaCppBackend:
             # build lacking the flag the default of 4 would quarter every context window for a
             # feature it cannot serve: fall back to one slot. Ahead of the KV estimates so the
             # fit matches what launches.
-            if (
-                n_parallel > 1
-                and binary
-                and not _launch_caps(binary).get("supports_kv_unified")
-            ):
+            if n_parallel > 1 and binary and not _launch_caps(binary).get("supports_kv_unified"):
                 logger.warning(
                     "llama-server at %s has no --kv-unified, so %d parallel slots would "
                     "split the context window %d ways. Using 1 slot instead; update "

@@ -3023,8 +3023,7 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
         for node in ast.walk(load_model)
         if isinstance(node, ast.Call)
         and (
-            (isinstance(node.func, ast.Attribute)
-             and node.func.attr == "probe_server_capabilities")
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "probe_server_capabilities")
             or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
         )
     ]
@@ -3048,8 +3047,7 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
         for node in ast.walk(branch)
         if isinstance(node, ast.Call)
         and (
-            (isinstance(node.func, ast.Attribute)
-             and node.func.attr == "probe_server_capabilities")
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "probe_server_capabilities")
             or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
         )
     }
@@ -3148,8 +3146,11 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
     helper = next(
-        (node for node in ast.walk(load_model)
-         if isinstance(node, ast.FunctionDef) and node.name == "_launch_caps"),
+        (
+            node
+            for node in ast.walk(load_model)
+            if isinstance(node, ast.FunctionDef) and node.name == "_launch_caps"
+        ),
         None,
     )
     assert helper is not None, "the accumulating probe helper vanished; re-pin this test"
@@ -3159,8 +3160,9 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
         node
         for node in ast.walk(helper)
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive"
-                for t in node.targets)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive" for t in node.targets
+        )
     ]
     assert assigns, "the helper no longer records the probe state"
     for node in assigns:
@@ -3174,13 +3176,14 @@ def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
         node.lineno
         for node in ast.walk(load_model)
         if isinstance(node, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive"
-                for t in node.targets)
+        and any(
+            isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive" for t in node.targets
+        )
         and not (helper.lineno <= node.lineno <= (helper.end_lineno or helper.lineno))
     ]
-    assert len(outside) == 1, (
-        f"expected only the initialisation outside the helper, found {outside}"
-    )
+    assert (
+        len(outside) == 1
+    ), f"expected only the initialisation outside the helper, found {outside}"
 
 
 def test_the_accumulator_latches_across_probes():
@@ -3192,6 +3195,6 @@ def test_the_accumulator_latches_across_probes():
             state["inconclusive"] = True
         return caps
 
-    launch_caps({"mtp_probe_inconclusive": True})    # slot clamp, probe timed out
-    launch_caps({"mtp_probe_inconclusive": False})   # command build, probe recovered
+    launch_caps({"mtp_probe_inconclusive": True})  # slot clamp, probe timed out
+    launch_caps({"mtp_probe_inconclusive": False})  # command build, probe recovered
     assert state["inconclusive"] is True, "a later success must not erase the earlier guess"
