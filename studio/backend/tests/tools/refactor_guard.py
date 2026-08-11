@@ -92,7 +92,7 @@ def _pattern_literals(tree: ast.Module) -> dict:
 def ast_inventory() -> dict:
     inventory = {}
     for mod_name, path in GUARDED_MODULES.items():
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
         symbols = {}
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -372,7 +372,7 @@ def patch_targets(tests_dir = None) -> dict:
     tests_dir = tests_dir or (BACKEND_ROOT / "tests")
     targets = {}
     for path in sorted(tests_dir.rglob("test_*.py")):
-        for match in _PATCH_TARGET_RE.finditer(path.read_text(errors = "ignore")):
+        for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding = "utf-8", errors = "ignore")):
             dotted = match.group(1)
             targets.setdefault(dotted, []).append(str(path.relative_to(BACKEND_ROOT)))
     return targets
@@ -504,12 +504,15 @@ def twin_divergence(corpus) -> dict:
 def _write(name, payload):
     BASELINE_DIR.mkdir(parents = True, exist_ok = True)
     path = BASELINE_DIR / name
-    path.write_text(json.dumps(payload, indent = 2, sort_keys = True, ensure_ascii = False) + "\n")
+    path.write_text(
+        json.dumps(payload, indent = 2, sort_keys = True, ensure_ascii = False) + "\n",
+        encoding = "utf-8",
+    )
     return path
 
 
 def _read(name):
-    return json.loads((BASELINE_DIR / name).read_text())
+    return json.loads((BASELINE_DIR / name).read_text(encoding = "utf-8"))
 
 
 def _diff(label, old, new):
