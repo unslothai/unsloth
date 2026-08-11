@@ -739,20 +739,62 @@ _STRIP_SENTINELS = (
     "</think",
     "[THINK",
     "[/THINK",
-    "call:",  # markerless Gemma
+    "call",  # markerless Gemma; ``call\s*:`` tolerates whitespace before the colon
 )
+# Confirmed against ``_GEMMA_BARE_TC_RE`` rather than taken at face value: see
+# ``_first_sentinel``.
+_GEMMA_BARE_SENTINEL = "call"
 _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 # Bytes sampled from each end when checking that a buffer continues the previous one.
 _EXTENSION_SAMPLE = 64
 
 
 def _first_sentinel(text: str, start: int) -> int:
-    """Lowest index >= ``start`` at which any strip sentinel occurs, or -1."""
+    """Lowest index >= ``start`` at which any strip sentinel occurs, or -1.
+
+    ``call`` is the one sentinel that is also an ordinary English word, and treating
+    every "I will call the tool" as markup would put the full strip back on the per-token
+    path for a plain prose answer. It is therefore confirmed against the arm it stands
+    for: either the whole ``call:NAME{`` anchor is present, or the buffer ends inside a
+    partial one that the next token could complete (``_GEMMA_BARE_TC_PREFIX_RE``, which
+    the parser already keeps for exactly that reason). Every append is checked, so a call
+    that arrives a character at a time is caught while it is still a partial.
+    """
     best = -1
     for sentinel in _STRIP_SENTINELS:
+        if sentinel == _GEMMA_BARE_SENTINEL:
+            continue
         found = text.find(sentinel, start)
         if found >= 0 and (best < 0 or found < best):
             best = found
+    at = start
+    while True:
+        found = text.find(_GEMMA_BARE_SENTINEL, at)
+        if found < 0 or (0 <= best <= found):
+            return best
+        if _GEMMA_BARE_TC_RE.match(text, found) or _GEMMA_BARE_TC_PREFIX_RE.search(text, found):
+            return found
+        at = found + len(_GEMMA_BARE_SENTINEL)
+
+
+def _unmatched_think_closer(text: str, start: int = 0) -> int:
+    """Lowest index >= ``start`` of a reasoning closer with no opener ahead of it, or -1.
+
+    A stray closer is what a prefilled reasoning turn looks like, and
+    ``strip_outside_think`` handles it by synthesising a span that begins at offset 0 of
+    the segment. Anything that changes where offset 0 sits therefore has to leave such a
+    segment alone.
+    """
+    best = -1
+    for opener, closer in (("<think>", "</think>"), ("[THINK]", "[/THINK]")):
+        close_at = text.find(closer, start)
+        if close_at < 0:
+            continue
+        open_at = text.find(opener, start)
+        if 0 <= open_at < close_at:
+            continue
+        if best < 0 or close_at < best:
+            best = close_at
     return best
 
 
@@ -770,6 +812,9 @@ def _safe_cut(text: str, first: int) -> int:
       opening fence can sit arbitrarily far back. If any backtick or tilde precedes the
       cut, no cut is safe.
 
+    (The markerless Gemma arm reaches back to the start of the segment as well, but is
+    handled by its caller rather than here: see ``StreamingMarkupStripper.strip``.)
+
     The result is then snapped back to a line start. The code-fence pattern is anchored
     with ``^``, so cutting mid-line can turn a fence that was mid-line into one that opens
     a block -- which flips the in-code gate and changes the output. Snapping to a newline
@@ -783,6 +828,13 @@ def _safe_cut(text: str, first: int) -> int:
             cut -= 1
     cut = text.rfind("\n", 0, cut) + 1
     if "`" in text[:cut] or "~" in text[:cut]:
+        return 0
+    # A closer with no opener makes everything before it reasoning, and
+    # ``_think_spans_outside_tool_markup`` decides that from whether offset 0 of the
+    # segment falls inside a call. Trimming the segment moves offset 0, so a cut is only
+    # safe when there is nothing before that closer for it to move onto.
+    close_at = _unmatched_think_closer(text)
+    if 0 <= close_at and first < close_at:
         return 0
     return cut
 
@@ -883,6 +935,26 @@ class StreamingMarkupStripper:
         self._scanned_upto = end
         return "settled"
 
+    def _needs_whole_buffer(self, text: str) -> bool:
+        """True when no split of ``text`` is safe and the strip has to see all of it.
+
+        Two shapes reach back to the start of a segment rather than to their own anchor:
+
+        * the markerless Gemma arm keeps a whole-JSON or leading-JSON answer's
+          ``call:NAME{...}`` examples visible as data, and earlier arms can leave behind
+          a trimmed segment that is whole JSON when the untrimmed one was not; and
+        * a reasoning closer with no opener, which makes offset 0 of the segment the
+          thing ``_think_spans_outside_tool_markup`` decides from.
+
+        Either way a split can delete text out of the user's answer, so the buffer is
+        stripped whole instead. That is the pre-change cost, paid only by a buffer that
+        actually holds one of these -- and only once markup is present, since this runs
+        after the sentinel scan rather than in front of it.
+        """
+        return bool(_GEMMA_BARE_TC_RE.search(text, self._floor)) or (
+            self._floor > 0 and _unmatched_think_closer(text, self._floor) >= 0
+        )
+
     def _full_strip(self, text: str) -> str:
         def _seg(segment: str, is_last: bool) -> str:
             # Streaming has no separate ``final`` pass: the last segment always gets the
@@ -915,14 +987,20 @@ class StreamingMarkupStripper:
 
     def strip(self, text: str) -> str:
         previous = self._last_in
-        if text is previous or (previous is not None and len(text) == len(previous) and text == previous):
+        if text is previous or (
+            previous is not None and len(text) == len(previous) and text == previous
+        ):
             return self._last_out
         if not self._is_extension(text):
             # Not an extension of what we saw: the cached prefix no longer applies.
             self._reset()
 
         if self._degenerate:
-            out = self._floor_out + self._full_strip(text[self._floor :])
+            out = (
+                self._full_strip(text)
+                if self._needs_whole_buffer(text)
+                else self._floor_out + self._full_strip(text[self._floor :])
+            )
             self._last_in = text
             self._last_out = out
             return out
@@ -946,6 +1024,12 @@ class StreamingMarkupStripper:
                 return self._unchanged(text)
             if state != "settled":
                 break
+
+        if self._needs_whole_buffer(text):
+            out = self._full_strip(text)
+            self._last_in = text
+            self._last_out = out
+            return out
 
         tail = text[self._floor :]
         # Markup at offset 0 of the unsettled text: the cut is 0 now and stays 0 as the

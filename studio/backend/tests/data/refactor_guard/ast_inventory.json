@@ -848,6 +848,10 @@
             "decorators": [],
             "signature": "self, text: str"
           },
+          "_needs_whole_buffer": {
+            "decorators": [],
+            "signature": "self, text: str"
+          },
           "_reset": {
             "decorators": [],
             "signature": "self"
@@ -921,6 +925,9 @@
         "kind": "assign"
       },
       "_FUNC_CLOSE_TAG_RE": {
+        "kind": "assign"
+      },
+      "_GEMMA_BARE_SENTINEL": {
         "kind": "assign"
       },
       "_GEMMA_BARE_TC_PREFIX_RE": {
@@ -1301,6 +1308,11 @@
       },
       "_trim_param_value": {
         "kind": "assign"
+      },
+      "_unmatched_think_closer": {
+        "decorators": [],
+        "kind": "def",
+        "signature": "text: str, start: int=0"
       },
       "_whole_content_is_json_value": {
         "decorators": [],

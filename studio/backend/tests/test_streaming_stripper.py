@@ -41,18 +41,16 @@ import refactor_guard  # noqa: E402
 ENABLED = {"get_weather", "search", "trunc", "broken"}
 
 
-def _reference_strip(text, enabled_tool_names=ENABLED):
+def _reference_strip(text, enabled_tool_names = ENABLED):
     """The pre-refactor streaming strip: full rescan, no caching."""
 
     def _seg(segment, is_last):
-        return strip_segment(
-            segment, seg_final=is_last, enabled_tool_names=enabled_tool_names
-        )
+        return strip_segment(segment, seg_final = is_last, enabled_tool_names = enabled_tool_names)
 
     return tool_healing.strip_outside_think(text, _seg)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def corpus():
     return refactor_guard.build_corpus()
 
@@ -97,9 +95,9 @@ def test_prefix_split_property(corpus):
         first = _first_sentinel(text, 0)
         cut = _safe_cut(text, first) if first >= 0 else len(text)
         expected = _reference_strip(text)
-        assert text[:cut] + _reference_strip(text[cut:]) == expected, (
-            f"prefix split at {cut} changed the result for {text!r}"
-        )
+        assert (
+            text[:cut] + _reference_strip(text[cut:]) == expected
+        ), f"prefix split at {cut} changed the result for {text!r}"
 
 
 def test_prefix_split_property_fuzz():
@@ -110,9 +108,9 @@ def test_prefix_split_property_fuzz():
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 80)))
         first = _first_sentinel(text, 0)
         cut = _safe_cut(text, first) if first >= 0 else len(text)
-        assert text[:cut] + _reference_strip(text[cut:]) == _reference_strip(text), (
-            f"prefix split at {cut} changed the result for {text!r}"
-        )
+        assert text[:cut] + _reference_strip(text[cut:]) == _reference_strip(
+            text
+        ), f"prefix split at {cut} changed the result for {text!r}"
 
 
 def test_incremental_matches_reference_token_by_token(corpus):
@@ -121,9 +119,9 @@ def test_incremental_matches_reference_token_by_token(corpus):
         stripper = StreamingMarkupStripper(ENABLED)
         for end in range(len(text) + 1):
             prefix = text[:end]
-            assert stripper.strip(prefix) == _reference_strip(prefix), (
-                f"diverged at offset {end} of {text!r}"
-            )
+            assert stripper.strip(prefix) == _reference_strip(
+                prefix
+            ), f"diverged at offset {end} of {text!r}"
 
 
 def test_incremental_matches_reference_for_random_chunkings(corpus):
@@ -135,9 +133,9 @@ def test_incremental_matches_reference_for_random_chunkings(corpus):
         while pos < len(text):
             pos = min(len(text), pos + rng.randint(1, 7))
             prefix = text[:pos]
-            assert stripper.strip(prefix) == _reference_strip(prefix), (
-                f"diverged at offset {pos} of {text!r}"
-            )
+            assert stripper.strip(prefix) == _reference_strip(
+                prefix
+            ), f"diverged at offset {pos} of {text!r}"
 
 
 def test_incremental_matches_reference_on_fuzz():
@@ -149,9 +147,9 @@ def test_incremental_matches_reference_on_fuzz():
         stripper = StreamingMarkupStripper(ENABLED)
         for end in range(len(text) + 1):
             prefix = text[:end]
-            assert stripper.strip(prefix) == _reference_strip(prefix), (
-                f"diverged at offset {end} of {text!r}"
-            )
+            assert stripper.strip(prefix) == _reference_strip(
+                prefix
+            ), f"diverged at offset {end} of {text!r}"
 
 
 def test_rewind_resets_cached_state():
@@ -206,3 +204,126 @@ def test_scan_is_amortized_not_quadratic():
         f"incremental cost grew {incremental_growth:.1f}x vs the reference's "
         f"{reference_growth:.1f}x; expected roughly linear against its quadratic"
     )
+
+
+# Cases that the corpus and the alphabet fuzz both missed. Each one produced a real
+# divergence from the reference strip before the guard it names was added, so each is
+# recorded here as a literal rather than left to a generator to rediscover.
+_MISSED_BY_THE_CORPUS = (
+    # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so a space or newline before the colon is
+    # still a call. Sentinel completeness needs the literal ``call``, not ``call:``.
+    "call :get_weather{city:Paris}",
+    "call\n:get_weather{city:Paris}",
+    "The answer.\ncall : get_weather{city:Paris}",
+    # A JSON answer is data: its ``call:NAME{...}`` examples stay visible. That decision
+    # keys on the whole segment, so trimming the segment must not reach it.
+    '{\n  "tool_syntax": "call:get_weather{city:Paris}",\n  "note": "example"\n}',
+    '[\n  "call:search{q:1}"\n]',
+    # Earlier arms can leave behind a segment that is whole JSON when the untrimmed one
+    # was not, which is the same hazard arrived at from the other side.
+    'answer\n[TOOL_CALLS]search[ARGS]{"q":1}{\n  "k": "call:get_weather{c:P}"\n}',
+    # A reasoning closer with no opener makes offset 0 of the segment meaningful, so
+    # nothing may be trimmed off the front of it.
+    '\n[TOOL_CALLS]search[ARGS]{"q":1}[/THINK]<function=search>{}</function>',
+    '[THINK]r[/THINK]<function name="s">{}</function>[/THINK]tail',
+)
+
+
+@pytest.mark.parametrize("text", _MISSED_BY_THE_CORPUS)
+@pytest.mark.parametrize("enabled", [ENABLED, None])
+def test_incremental_matches_reference_on_known_hard_cases(text, enabled):
+    stripper = StreamingMarkupStripper(enabled)
+    for size in range(1, len(text) + 1):
+        prefix = text[:size]
+        assert stripper.strip(prefix) == _reference_strip(
+            prefix, enabled
+        ), f"diverged at {size} for {text!r}"
+
+
+@pytest.mark.parametrize("text", _MISSED_BY_THE_CORPUS)
+def test_known_hard_cases_are_still_sentinel_reachable(text):
+    """Each hard case must carry a sentinel, or claim 1 is what is broken."""
+    assert not _sentinel_free(text)
+
+
+def test_incremental_matches_reference_on_structured_fuzz():
+    """Fuzz built from whole markup fragments rather than from an alphabet.
+
+    The alphabet fuzz above rarely assembles a complete, well-formed call, which is why
+    it missed every case in ``_MISSED_BY_THE_CORPUS``. Splicing real fragments reaches
+    the arms that only fire on a complete one.
+    """
+    fragments = _MISSED_BY_THE_CORPUS + (
+        "Hello world. ",
+        "I will call the tool. ",
+        "<think>reasoning</think>",
+        "[THINK]r[/THINK]",
+        "[/THINK]",
+        "</think>",
+        "```py\ncode\n```\n",
+        "~~~\nx\n~~~\n",
+        '<tool_call>{"name": "search"}</tool_call>',
+        "<function=search>{}</function>",
+        '[TOOL_CALLS]search[ARGS]{"q": 1}',
+        'get_weather[ARGS]{"a": 1}',
+        "<|python_tag|>x",
+        "<|tool_call>call:search{q:1}<tool_call|>",
+        "recall: not a call",
+    )
+    rng = random.Random(20260811)
+    for _ in range(3000):
+        text = "".join(rng.choice(fragments) for _ in range(rng.randint(1, 4)))
+        enabled = rng.choice([ENABLED, None, set()])
+        stripper = StreamingMarkupStripper(enabled)
+        for size in range(1, len(text) + 1):
+            prefix = text[:size]
+            assert stripper.strip(prefix) == _reference_strip(
+                prefix, enabled
+            ), f"diverged at {size} for {text!r}"
+
+
+def test_prose_containing_the_word_call_is_still_amortized():
+    """``call`` is a sentinel and an ordinary English word.
+
+    Taking it at face value put the full strip back on the per-token path for any answer
+    that says "I will call the tool", which measured slower than the code this replaces.
+    ``_first_sentinel`` confirms the hit against the arm instead, and this pins that.
+    """
+    import time
+
+    def elapsed(fn, tokens):
+        text = ""
+        start = time.perf_counter()
+        for token in tokens:
+            text += token
+            fn(text)
+        return time.perf_counter() - start
+
+    short = ["I will call it. " for _ in range(300)]
+    long = ["I will call it. " for _ in range(1200)]
+
+    def incremental(tokens):
+        return elapsed(StreamingMarkupStripper(ENABLED).strip, tokens)
+
+    reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
+    incremental_growth = incremental(long) / max(incremental(short), 1e-9)
+
+    assert incremental_growth < reference_growth / 2, (
+        f"incremental cost grew {incremental_growth:.1f}x vs the reference's "
+        f"{reference_growth:.1f}x on prose containing the word 'call'"
+    )
+
+
+def test_a_real_bare_call_is_still_seen_as_a_sentinel():
+    """The other side of the same refinement: a real call must not be skipped.
+
+    Including while it is still a partial, which is the state the buffer is in for every
+    token but the last one of it.
+    """
+    text = "Sure. call:get_weather{city:Paris}"
+    for size in range(text.index("call") + len("call"), len(text) + 1):
+        assert _first_sentinel(text[:size], 0) == text.index(
+            "call"
+        ), f"lost the call anchor at {size}: {text[:size]!r}"
+    assert _first_sentinel("Please call me back tomorrow.", 0) == -1
+    assert _first_sentinel("I made a call: yesterday it worked.", 0) == -1
