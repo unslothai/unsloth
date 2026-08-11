@@ -70,7 +70,6 @@ def import_version(module: str):
     finding, not an accident to be swallowed.
     """
     import importlib
-
     try:
         return getattr(importlib.import_module(module), "__version__", "unknown")
     except BaseException as exc:  # noqa: BLE001

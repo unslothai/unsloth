@@ -27,16 +27,16 @@ from pathlib import Path
 
 
 def _summary(text: str) -> None:
-    print(text, flush=True)
+    print(text, flush = True)
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding = "utf-8") as fh:
             fh.write(text + "\n")
 
 
 def _notice(level: str, title: str, message: str) -> None:
     flat = message.replace("\n", " ").replace("::", ":")
-    print(f"::{level} title={title}::{flat}", flush=True)
+    print(f"::{level} title={title}::{flat}", flush = True)
 
 
 def _fmt_metric(value) -> str:
@@ -79,11 +79,13 @@ def version_table(reports: list) -> list[str]:
     if len(columns) < 2:
         return []
     packages = sorted({p for _, versions in columns for p in versions})
-    differing = [p for p in packages
-                 if len({str(versions.get(p)) for _, versions in columns}) > 1]
-    lines = ["<details><summary>Resolved library versions per leg"
-             + (f" ({len(differing)} differ)" if differing else
-                " (identical across legs)") + "</summary>", ""]
+    differing = [p for p in packages if len({str(versions.get(p)) for _, versions in columns}) > 1]
+    lines = [
+        "<details><summary>Resolved library versions per leg"
+        + (f" ({len(differing)} differ)" if differing else " (identical across legs)")
+        + "</summary>",
+        "",
+    ]
     lines.append("| package | " + " | ".join(l for l, _ in columns) + " |")
     lines.append("| --- |" + " --- |" * len(columns))
     for package in packages:
@@ -97,19 +99,25 @@ def version_table(reports: list) -> list[str]:
 
 
 def render(report: dict) -> list[str]:
-    lines = [f"#### payload `{report.get('label', '?')}`  "
-             f"model `{report.get('model', '?')}`", ""]
+    lines = [
+        f"#### payload `{report.get('label', '?')}`  " f"model `{report.get('model', '?')}`",
+        "",
+    ]
     if report.get("probe"):
-        lines += ["This payload ran in **probe mode**: everything is "
-                  "recorded and nothing is asserted, so `passed` says only "
-                  "that it reported back. Read `observed_failures`.", ""]
+        lines += [
+            "This payload ran in **probe mode**: everything is "
+            "recorded and nothing is asserted, so `passed` says only "
+            "that it reported back. Read `observed_failures`.",
+            "",
+        ]
     env = report.get("environment", {})
     if env:
         lines.append(
             f"GPU `{env.get('gpu_name', '?')}` ({env.get('gpu_capability', '?')}, "
             f"{env.get('gpu_total_gb', '?')} GB) - torch `{env.get('torch', '?')}` "
             f"- transformers `{env.get('transformers', '?')}` "
-            f"- trl `{env.get('trl', '?')}` - unsloth `{env.get('unsloth', '?')}`")
+            f"- trl `{env.get('trl', '?')}` - unsloth `{env.get('unsloth', '?')}`"
+        )
         lines.append("")
 
     config = report.get("config", {})
@@ -120,39 +128,46 @@ def render(report: dict) -> list[str]:
             f"Config: max_steps `{config.get('max_steps')}` - lr "
             f"`{config.get('learning_rate')}` - batch "
             f"`{config.get('batch_size')}` - init_loss_scale "
-            f"`{config.get('init_loss_scale')}`")
-        scales = [r.get("loss_scale") for r in report.get("runs", [])
-                  if r.get("loss_scale")]
+            f"`{config.get('init_loss_scale')}`"
+        )
+        scales = [r.get("loss_scale") for r in report.get("runs", []) if r.get("loss_scale")]
         if scales and not all(s.get("applied") for s in scales):
             lines.append(
                 f"fp16 loss-scale pin did NOT apply: "
                 f"`{scales[0].get('reason', 'unknown')}`. The run used the "
                 f"framework default, so its first steps were spent on scaler "
-                f"overflows.")
+                f"overflows."
+            )
         lines.append("")
 
     lines += ["| step | loss | grad_norm |", "| --- | --- | --- |"]
     for entry in report.get("metrics", []):
-        lines.append(f"| {entry.get('step')} | {_fmt_metric(entry.get('loss'))} "
-                     f"| {_fmt_metric(entry.get('grad_norm'))} |")
+        lines.append(
+            f"| {entry.get('step')} | {_fmt_metric(entry.get('loss'))} "
+            f"| {_fmt_metric(entry.get('grad_norm'))} |"
+        )
     lines.append("")
 
     repro = report.get("reproducibility")
     if repro:
         if repro.get("identical"):
-            lines.append("Reproducibility: two fresh processes agreed "
-                         "**bitwise** on every step.")
+            lines.append(
+                "Reproducibility: two fresh processes agreed **bitwise** on every step."
+            )
         else:
             lines.append(
                 f"Reproducibility: **DIFFERED** from step "
                 f"{repro.get('first_diff_step')} "
-                f"(max abs {repro.get('max_abs_diff')}).")
+                f"(max abs {repro.get('max_abs_diff')})."
+            )
         lines.append("")
 
     for run in report.get("runs", []):
-        lines.append(f"Cycle {run.get('run_index')} generated: "
-                     f"`{run.get('generated', '')}` - canary "
-                     f"{'found' if run.get('canary_found') else '**MISSING**'}")
+        lines.append(
+            f"Cycle {run.get('run_index')} generated: "
+            f"`{run.get('generated', '')}` - canary "
+            f"{'found' if run.get('canary_found') else '**MISSING**'}"
+        )
     lines.append("")
 
     ref = report.get("reference_check")
@@ -162,10 +177,13 @@ def render(report: dict) -> list[str]:
             lines.append(
                 f"Reference band: within tolerance (worst relative deviation "
                 f"{ref.get('worst_rel')}), against a reference captured at "
-                f"max_steps={ref.get('reference_max_steps')}.")
+                f"max_steps={ref.get('reference_max_steps')}."
+            )
         elif status == "absent":
-            lines.append("Reference band: no committed reference for this "
-                         "configuration, so nothing was compared.")
+            lines.append(
+                "Reference band: no committed reference for this "
+                "configuration, so nothing was compared."
+            )
         elif ref.get("note"):
             # A refusal, not a deviation. Say what was refused and why, in
             # the summary itself: the deviations list is empty for these and
@@ -178,23 +196,31 @@ def render(report: dict) -> list[str]:
     pins = report.get("pins")
     if pins:
         lines.append(
-            "Pins: " + ("held" if not pins.get("failures") else
-                        "**DID NOT HOLD** - " + "; ".join(pins["failures"]))
-            + f" ({len(pins.get('requested', {}))} pinned).")
+            "Pins: "
+            + (
+                "held"
+                if not pins.get("failures")
+                else "**DID NOT HOLD** - " + "; ".join(pins["failures"])
+            )
+            + f" ({len(pins.get('requested', {}))} pinned)."
+        )
         lines.append("")
 
     compiled = report.get("compile")
     if compiled:
         if not compiled.get("available"):
-            lines.append(f"torch.compile: **unreadable** - "
-                         f"{compiled.get('error')}")
+            lines.append(f"torch.compile: **unreadable** - " f"{compiled.get('error')}")
         else:
             lines.append(
                 f"torch.compile: {compiled.get('unique_graphs')} unique "
                 f"graph(s), {compiled.get('calls_captured')} calls captured, "
                 f"{compiled.get('graph_breaks_total')} graph break(s)."
-                + ("" if compiled.get("unique_graphs") else
-                   " **Zero graphs means the run was entirely eager.**"))
+                + (
+                    ""
+                    if compiled.get("unique_graphs")
+                    else " **Zero graphs means the run was entirely eager.**"
+                )
+            )
         lines.append("")
 
     memory = report.get("memory_peak") or report.get("memory_after_train")
@@ -202,7 +228,8 @@ def render(report: dict) -> list[str]:
         lines.append(
             f"Peak VRAM: {memory.get('peak_reserved_gb')} GB reserved / "
             f"{memory.get('peak_allocated_gb')} GB allocated of "
-            f"{memory.get('total_gb')} GB.")
+            f"{memory.get('total_gb')} GB."
+        )
         lines.append("")
 
     history = report.get("log_history")
@@ -213,12 +240,13 @@ def render(report: dict) -> list[str]:
         for entry in history:
             if entry.get("reward") is None:
                 continue
-            lines.append(f"| {entry.get('step')} | "
-                         f"{_fmt_metric(entry.get('reward'))} | "
-                         f"{_fmt_metric(entry.get('reward_std'))} |")
+            lines.append(
+                f"| {entry.get('step')} | "
+                f"{_fmt_metric(entry.get('reward'))} | "
+                f"{_fmt_metric(entry.get('reward_std'))} |"
+            )
         lines.append("")
-        sample = [t for group in (report.get("completions") or [])
-                  for t in group if t.strip()]
+        sample = [t for group in (report.get("completions") or []) for t in group if t.strip()]
         if sample:
             lines.append(f"First completion: `{sample[0][:200]}`")
             lines.append("")
@@ -235,8 +263,15 @@ def render(report: dict) -> list[str]:
     return lines
 
 
-SENTINELS = ("KAGGLE_T4_CI_DRIVER", "KAGGLE_T4_CI_PAYLOAD", "Error",
-             "error:", "Traceback", "SystemExit", "papermill.exceptions")
+SENTINELS = (
+    "KAGGLE_T4_CI_DRIVER",
+    "KAGGLE_T4_CI_PAYLOAD",
+    "Error",
+    "error:",
+    "Traceback",
+    "SystemExit",
+    "papermill.exceptions",
+)
 
 
 def kernel_log_text(evidence: Path) -> str:
@@ -251,7 +286,7 @@ def kernel_log_text(evidence: Path) -> str:
     # rglob: a run is several kernels now and each collects into its own
     # directory, so there is no single kernel.log any more.
     for path in sorted(evidence.rglob("kernel.log")):
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_text(encoding = "utf-8", errors = "replace")
         try:
             records = json.loads(raw)
         except json.JSONDecodeError:
@@ -260,8 +295,7 @@ def kernel_log_text(evidence: Path) -> str:
         if not isinstance(records, list):
             chunks.append(raw)
             continue
-        chunks.append("".join(r.get("data", "") for r in records
-                              if isinstance(r, dict)))
+        chunks.append("".join(r.get("data", "") for r in records if isinstance(r, dict)))
     return "".join(chunks)
 
 
@@ -277,28 +311,28 @@ def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
     text = kernel_log_text(evidence)
     if not text:
         return []
-    hits = [line.rstrip() for line in text.splitlines()
-            if any(s in line for s in SENTINELS)]
+    hits = [line.rstrip() for line in text.splitlines() if any(s in line for s in SENTINELS)]
     return hits[-limit:]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--evidence", required=True)
-    ap.add_argument("--expect", type=int, default=2)
+    ap.add_argument("--evidence", required = True)
+    ap.add_argument("--expect", type = int, default = 2)
     args = ap.parse_args()
 
     evidence = Path(args.evidence)
     result_file = evidence / "launch_result.json"
     if not result_file.exists():
-        _summary("### Kaggle T4 smoke\n\nNo launch result was written. The "
-                 "launcher did not get far enough to record anything, so "
-                 "nothing is known about the code under test.")
-        _notice("warning", "Kaggle T4 smoke did not run",
-                "no launch_result.json was produced")
+        _summary(
+            "### Kaggle T4 smoke\n\nNo launch result was written. The "
+            "launcher did not get far enough to record anything, so "
+            "nothing is known about the code under test."
+        )
+        _notice("warning", "Kaggle T4 smoke did not run", "no launch_result.json was produced")
         return 0
 
-    result = json.loads(result_file.read_text(encoding="utf-8"))
+    result = json.loads(result_file.read_text(encoding = "utf-8"))
     verdict = result.get("verdict", "infra")
     reason = result.get("reason", "")
     reports = result.get("reports", [])
@@ -313,14 +347,19 @@ def main() -> int:
     lines = [header, "", reason, ""]
     for kernel in result.get("kernels") or []:
         if kernel.get("slug"):
-            lines.append(f"Kernel: `{kernel['slug']}` (private), terminal "
-                         f"state `{kernel.get('state')}`.")
+            lines.append(
+                f"Kernel: `{kernel['slug']}` (private), terminal " f"state `{kernel.get('state')}`."
+            )
         else:
-            lines.append(f"Kernel from `{kernel.get('notebook')}` was never "
-                         f"pushed: {kernel.get('push_error')}")
+            lines.append(
+                f"Kernel from `{kernel.get('notebook')}` was never "
+                f"pushed: {kernel.get('push_error')}"
+            )
     if not result.get("kernels") and result.get("slug"):
-        lines.append(f"Kernel: `{result['slug']}` (private), terminal state "
-                     f"`{result.get('kernel_state')}`.")
+        lines.append(
+            f"Kernel: `{result['slug']}` (private), terminal state "
+            f"`{result.get('kernel_state')}`."
+        )
     lines.append("")
 
     lines += version_table(reports)
@@ -330,8 +369,11 @@ def main() -> int:
     if verdict in ("infra", "partial") and len(reports) < args.expect:
         hits = diagnostic_lines(evidence)
         if hits:
-            lines += ["<details><summary>Kernel log, filtered</summary>", "",
-                      "```"] + hits + ["```", "", "</details>", ""]
+            lines += (
+                ["<details><summary>Kernel log, filtered</summary>", "", "```"]
+                + hits
+                + ["```", "", "</details>", ""]
+            )
 
     if verdict == "infra":
         lines += [

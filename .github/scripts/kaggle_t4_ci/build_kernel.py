@@ -102,7 +102,7 @@ def _arg_expression(value: str) -> str:
     SyntaxError before a single training step ran.
     """
     if value.startswith("@ROOT/"):
-        parts = [p for p in value[len("@ROOT/"):].split("/") if p]
+        parts = [p for p in value[len("@ROOT/") :].split("/") if p]
         joined = " / ".join(["ROOT"] + [json.dumps(p) for p in parts])
         return f"str({joined})"
     return json.dumps(value)
@@ -133,8 +133,7 @@ def build_payload_notebook(
     for name in wanted:
         path = payload_dir / name
         if not path.exists():
-            raise FileNotFoundError(
-                f"leg {leg.name!r} needs {name}, which is not in {payload_dir}")
+            raise FileNotFoundError(f"leg {leg.name!r} needs {name}, which is not in {payload_dir}")
         files[name] = _encode_bytes(path.read_bytes())
 
     materialise = f"""# Materialise the test sources carried inside this notebook.
@@ -151,8 +150,7 @@ for name, blob in FILES.items():
 print("{PAYLOAD_SENTINEL} sources " + json.dumps(sorted(FILES)), flush=True)
 """
 
-    groups = expand_install(leg, unsloth_ref = unsloth_ref, zoo_ref = zoo_ref,
-                            payload_dir = payload_dir)
+    groups = expand_install(leg, unsloth_ref = unsloth_ref, zoo_ref = zoo_ref, payload_dir = payload_dir)
     install = f"""# Install this leg's library set.
 #
 # The groups below are generated from legs.py and are the ONLY thing that
@@ -294,8 +292,7 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
             _code_cell(run),
         ],
         "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python",
-                           "name": "python3"},
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
             "accelerator": "GPU",
             "kaggle_t4_ci_leg": leg.name,
@@ -305,8 +302,11 @@ print("{PAYLOAD_SENTINEL} complete rc=" + str(proc.returncode), flush=True)
     }
 
 
-def build_driver(payloads: dict[str, dict], per_run_timeout: int,
-                 isolation: dict[str, bool] | None = None) -> dict:
+def build_driver(
+    payloads: dict[str, dict],
+    per_run_timeout: int,
+    isolation: dict[str, bool] | None = None,
+) -> dict:
     """Kernel notebook that fans the payloads out one per GPU.
 
     ``isolation`` maps a payload to whether its virtualenv may see the
@@ -314,8 +314,7 @@ def build_driver(payloads: dict[str, dict], per_run_timeout: int,
     because the legs that share a kernel do not share an answer: see
     ``Leg.system_site_packages``.
     """
-    encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8"))
-               for name, nb in payloads.items()}
+    encoded = {name: _encode_bytes(json.dumps(nb).encode("utf-8")) for name, nb in payloads.items()}
     isolation = isolation or {}
     system_site = {name: bool(isolation.get(name, True)) for name in payloads}
 
@@ -477,8 +476,7 @@ print("{DRIVER_SENTINEL} complete", flush=True)
     return {
         "cells": [_code_cell(setup), _code_cell(runner), _code_cell(tail)],
         "metadata": {
-            "kernelspec": {"display_name": "Python 3", "language": "python",
-                           "name": "python3"},
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
             "accelerator": "GPU",
             "kaggle_t4_ci": {"payloads": sorted(payloads)},
@@ -488,18 +486,28 @@ print("{DRIVER_SENTINEL} complete", flush=True)
     }
 
 
-def build_kernel(payload_dir: Path, leg_names, *, unsloth_ref: str,
-                 zoo_ref: str, extra_args: tuple[str, ...],
-                 per_run_timeout: int, skip_reference: bool = False) -> dict:
+def build_kernel(
+    payload_dir: Path,
+    leg_names,
+    *,
+    unsloth_ref: str,
+    zoo_ref: str,
+    extra_args: tuple[str, ...],
+    per_run_timeout: int,
+    skip_reference: bool = False,
+) -> dict:
     payloads = {}
     isolation = {}
     for leg in resolve(leg_names):
         name = f"t4_{leg.name}.ipynb"
         payloads[name] = build_payload_notebook(
-            payload_dir, leg,
-            unsloth_ref = unsloth_ref, zoo_ref = zoo_ref,
+            payload_dir,
+            leg,
+            unsloth_ref = unsloth_ref,
+            zoo_ref = zoo_ref,
             extra_args = extra_args,
-            reference = "" if skip_reference else None)
+            reference = "" if skip_reference else None,
+        )
         isolation[name] = leg.system_site_packages
     return build_driver(payloads, per_run_timeout, isolation)
 
@@ -507,26 +515,37 @@ def build_kernel(payload_dir: Path, leg_names, *, unsloth_ref: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--payload-dir", required = True)
-    ap.add_argument("--out", required = True,
-                    help = "output notebook. With --all-kernels this is a "
-                           "prefix and the files are <prefix>1.ipynb, "
-                           "<prefix>2.ipynb, ...")
-    ap.add_argument("--legs",
-                    help = "comma separated leg names; one per T4 of the "
-                           "session. See legs.py")
-    ap.add_argument("--all-kernels", action = "store_true",
-                    help = "build every kernel in legs.KERNELS. This is what "
-                           "the workflow uses, so the leg-to-kernel plan lives "
-                           "in one place rather than being restated in YAML")
+    ap.add_argument(
+        "--out",
+        required = True,
+        help = "output notebook. With --all-kernels this is a "
+        "prefix and the files are <prefix>1.ipynb, "
+        "<prefix>2.ipynb, ...",
+    )
+    ap.add_argument(
+        "--legs", help = "comma separated leg names; one per T4 of the session. See legs.py"
+    )
+    ap.add_argument(
+        "--all-kernels",
+        action = "store_true",
+        help = "build every kernel in legs.KERNELS. This is what "
+        "the workflow uses, so the leg-to-kernel plan lives "
+        "in one place rather than being restated in YAML",
+    )
     ap.add_argument("--unsloth-ref", default = "main")
     ap.add_argument("--zoo-ref", default = "main")
-    ap.add_argument("--smoke-args", default = "",
-                    help = "extra args appended to EVERY leg's entry script. "
-                           "Shared on purpose: the control and canary legs "
-                           "must not differ in anything but versions")
-    ap.add_argument("--skip-reference", action = "store_true",
-                    help = "build with no band check at all. Only for the one "
-                           "run that recaptures a reference")
+    ap.add_argument(
+        "--smoke-args",
+        default = "",
+        help = "extra args appended to EVERY leg's entry script. "
+        "Shared on purpose: the control and canary legs "
+        "must not differ in anything but versions",
+    )
+    ap.add_argument(
+        "--skip-reference",
+        action = "store_true",
+        help = "build with no band check at all. Only for the one run that recaptures a reference",
+    )
     ap.add_argument("--per-run-timeout", type = int, default = 2400)
     args = ap.parse_args()
 
@@ -544,15 +563,20 @@ def main() -> int:
 
     for names, out in zip(plan, outputs):
         driver = build_kernel(
-            Path(args.payload_dir), names,
-            unsloth_ref = args.unsloth_ref, zoo_ref = args.zoo_ref,
+            Path(args.payload_dir),
+            names,
+            unsloth_ref = args.unsloth_ref,
+            zoo_ref = args.zoo_ref,
             extra_args = tuple(args.smoke_args.split()),
             per_run_timeout = args.per_run_timeout,
-            skip_reference = args.skip_reference)
+            skip_reference = args.skip_reference,
+        )
         out.parent.mkdir(parents = True, exist_ok = True)
         out.write_text(json.dumps(driver, indent = 1), encoding = "utf-8")
-        print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB) packing "
-              f"{len(names)} leg(s): {', '.join(names)}")
+        print(
+            f"wrote {out} ({out.stat().st_size / 1024:.0f} KB) packing "
+            f"{len(names)} leg(s): {', '.join(names)}"
+        )
     # The launcher needs one --notebook per kernel and the expected payload
     # count; both are consequences of the plan, so they are emitted here
     # rather than restated in the workflow.

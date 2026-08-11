@@ -84,9 +84,16 @@ class Leg:
     # Files copied verbatim from the payload directory into the notebook.
     files: tuple[str, ...] = ()
     # Modules the fail-fast probe imports before spending the session.
-    imports: tuple[str, ...] = ("torch", "transformers", "trl", "peft",
-                                "datasets", "bitsandbytes", "unsloth",
-                                "unsloth_zoo")
+    imports: tuple[str, ...] = (
+        "torch",
+        "transformers",
+        "trl",
+        "peft",
+        "datasets",
+        "bitsandbytes",
+        "unsloth",
+        "unsloth_zoo",
+    )
     # Filename under <payload-dir>/references to band-check against, if any.
     reference: str = ""
     # Extra environment for the child process.
@@ -203,8 +210,17 @@ LEGS: dict[str, Leg] = {
         install = (("vllm==0.11.2", "xformers"),) + BASE_INSTALL,
         entry = "run_grpo_t4.py",
         files = COMMON_FILES + ("run_grpo_t4.py",),
-        imports = ("torch", "transformers", "trl", "peft", "datasets",
-                   "bitsandbytes", "vllm", "unsloth", "unsloth_zoo"),
+        imports = (
+            "torch",
+            "transformers",
+            "trl",
+            "peft",
+            "datasets",
+            "bitsandbytes",
+            "vllm",
+            "unsloth",
+            "unsloth_zoo",
+        ),
         args = ("--max-steps", "3"),
         env = {"UNSLOTH_VLLM_STANDBY": "1"},
         # See the field's own comment. This leg replaces torch, so it cannot
@@ -255,7 +271,8 @@ UNWIRED: dict[str, str] = {
         "weights plus a vLLM engine plus a LoRA trainer fit in 14.56GB, and "
         "whether sm_75 still has an attention backend at either vLLM "
         "version. The payload asserts on reward and reward_std rather than "
-        "loss and is ready for that session; the install is not."),
+        "loss and is ready for that session; the install is not."
+    ),
 }
 
 # Which legs travel in which kernel. One entry per kernel, and a kernel runs
@@ -275,19 +292,18 @@ KERNELS: tuple[tuple[str, ...], ...] = (
 )
 
 
-def expand_install(leg: Leg, *, unsloth_ref: str, zoo_ref: str,
-                   payload_dir: Path) -> list[list[str]]:
+def expand_install(
+    leg: Leg, *, unsloth_ref: str, zoo_ref: str, payload_dir: Path
+) -> list[list[str]]:
     """Resolve a leg's install groups into concrete pip argument lists."""
     groups: list[list[str]] = []
     for group in leg.install:
         expanded: list[str] = []
         for item in group:
             if item.startswith("@PINS:"):
-                expanded.extend(_read_pins(payload_dir / "pins"
-                                           / item[len("@PINS:"):]))
+                expanded.extend(_read_pins(payload_dir / "pins" / item[len("@PINS:") :]))
                 continue
-            expanded.append(item.format(unsloth_ref = unsloth_ref,
-                                        zoo_ref = zoo_ref))
+            expanded.append(item.format(unsloth_ref = unsloth_ref, zoo_ref = zoo_ref))
         if expanded:
             groups.append(expanded)
     return groups
@@ -302,8 +318,9 @@ def _read_pins(path: Path) -> list[str]:
         if line:
             out.append(line)
     if not out:
-        raise ValueError(f"pin file {path} names no versions at all, so the "
-                         f"control leg would pin nothing")
+        raise ValueError(
+            f"pin file {path} names no versions at all, so the " f"control leg would pin nothing"
+        )
     return out
 
 
@@ -316,7 +333,6 @@ def resolve(names) -> list[Leg]:
     legs = []
     for name in names:
         if name not in LEGS:
-            raise SystemExit(f"unknown leg {name!r}; known legs are "
-                             f"{', '.join(sorted(LEGS))}")
+            raise SystemExit(f"unknown leg {name!r}; known legs are " f"{', '.join(sorted(LEGS))}")
         legs.append(LEGS[name])
     return legs

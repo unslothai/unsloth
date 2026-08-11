@@ -76,9 +76,7 @@ from versions import (  # noqa: E402
 SEED = 3407
 DEFAULT_MODEL = "unsloth/Qwen3-4B-Base"
 
-SYSTEM_PROMPT = (
-    "You are given a question. Answer it as briefly as you can."
-)
+SYSTEM_PROMPT = "You are given a question. Answer it as briefly as you can."
 
 # Every completion the reward functions were shown, in order. A module global
 # rather than a closure because TRL calls the reward functions itself and
@@ -123,8 +121,7 @@ def reward_digit(completions, **kwargs) -> list[float]:
     like a broken generation path. Two disagreeing sources make that
     distinguishable in the report.
     """
-    return [1.0 if any(c.isdigit() for c in t) else 0.0
-            for t in _texts(completions)]
+    return [1.0 if any(c.isdigit() for c in t) else 0.0 for t in _texts(completions)]
 
 
 def memory() -> dict:
@@ -134,9 +131,9 @@ def memory() -> dict:
         return {}
     props = torch.cuda.get_device_properties(0)
     return {
-        "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1024 ** 3, 2),
-        "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
-        "total_gb": round(props.total_memory / 1024 ** 3, 2),
+        "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1024**3, 2),
+        "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / 1024**3, 2),
+        "total_gb": round(props.total_memory / 1024**3, 2),
     }
 
 
@@ -152,7 +149,6 @@ def vllm_facts() -> dict:
     facts: dict = {"env_override": os.environ.get("VLLM_ATTENTION_BACKEND")}
     try:
         import vllm
-
         facts["version"] = getattr(vllm, "__version__", "unknown")
     except BaseException as exc:  # noqa: BLE001
         facts["version"] = None
@@ -160,7 +156,6 @@ def vllm_facts() -> dict:
         return facts
     try:
         from vllm.platforms import current_platform
-
         facts["platform"] = str(current_platform.device_name)
         facts["capability"] = str(current_platform.get_device_capability())
     except Exception as exc:  # noqa: BLE001
@@ -168,34 +163,39 @@ def vllm_facts() -> dict:
     # The backend enum has moved between releases and its absence is a
     # finding, not a crash: a build with no xformers backend to name is
     # exactly the state this leg is probing for.
-    for path in ("vllm.attention.backends.registry",
-                 "vllm.attention.selector",
-                 "vllm.platforms.interface"):
+    for path in (
+        "vllm.attention.backends.registry",
+        "vllm.attention.selector",
+        "vllm.platforms.interface",
+    ):
         try:
             module = __import__(path, fromlist = ["*"])
         except Exception:  # noqa: BLE001
             continue
-        backends = getattr(module, "_Backend", None) or getattr(
-            module, "Backend", None)
+        backends = getattr(module, "_Backend", None) or getattr(module, "Backend", None)
         if backends is not None:
             names = sorted(getattr(b, "name", str(b)) for b in backends)
             facts["backend_enum_source"] = path
             facts["backends_available"] = names
-            facts["xformers_backend_present"] = any(
-                "XFORMERS" in n.upper() for n in names)
+            facts["xformers_backend_present"] = any("XFORMERS" in n.upper() for n in names)
             break
     return facts
 
 
 def build_dataset(rows: list[dict]):
     from datasets import Dataset
-
-    return Dataset.from_dict({
-        "prompt": [[{"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": row["question"]}]
-                   for row in rows],
-        "answer": [row["answer"] for row in rows],
-    })
+    return Dataset.from_dict(
+        {
+            "prompt": [
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": row["question"]},
+                ]
+                for row in rows
+            ],
+            "answer": [row["answer"] for row in rows],
+        }
+    )
 
 
 def train(args) -> dict:
@@ -215,22 +215,30 @@ def train(args) -> dict:
     result["load_seconds"] = round(time.time() - t0, 1)
     result["engine_built"] = True
     result["memory_after_load"] = memory()
-    _log(f"loaded in {result['load_seconds']}s, "
-         f"memory {result['memory_after_load']}")
+    _log(f"loaded in {result['load_seconds']}s, " f"memory {result['memory_after_load']}")
 
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_rank,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         lora_alpha = args.lora_rank * 2,
         use_gradient_checkpointing = "unsloth",
         random_state = SEED,
     )
 
-    rows = [json.loads(line) for line
-            in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
-            if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
+        if line.strip()
+    ]
     dataset = build_dataset(rows)
 
     from trl import GRPOConfig, GRPOTrainer
@@ -268,20 +276,34 @@ def train(args) -> dict:
     trainer.train()
     result["train_seconds"] = round(time.time() - t0, 1)
     result["log_history"] = [
-        {k: v for k, v in entry.items()
-         if k in ("step", "loss", "reward", "reward_std", "kl",
-                  "completions/mean_length", "frac_reward_zero_std")
-         or k.startswith("rewards/")}
-        for entry in trainer.state.log_history]
+        {
+            k: v
+            for k, v in entry.items()
+            if k
+            in (
+                "step",
+                "loss",
+                "reward",
+                "reward_std",
+                "kl",
+                "completions/mean_length",
+                "frac_reward_zero_std",
+            )
+            or k.startswith("rewards/")
+        }
+        for entry in trainer.state.log_history
+    ]
     # The shape the launcher and the summary renderer already understand.
     result["metrics"] = [
-        {"step": entry.get("step"), "loss": entry.get("loss"),
-         "grad_norm": entry.get("grad_norm")}
-        for entry in trainer.state.log_history if "loss" in entry]
-    result["completions"] = SEEN_COMPLETIONS[:args.max_steps * 2]
+        {"step": entry.get("step"), "loss": entry.get("loss"), "grad_norm": entry.get("grad_norm")}
+        for entry in trainer.state.log_history
+        if "loss" in entry
+    ]
+    result["completions"] = SEEN_COMPLETIONS[: args.max_steps * 2]
     result["memory_peak"] = memory()
-    _log(f"trained in {result['train_seconds']}s; "
-         f"log {json.dumps(result['log_history'])[:1500]}")
+    _log(
+        f"trained in {result['train_seconds']}s; " f"log {json.dumps(result['log_history'])[:1500]}"
+    )
 
     # Generation through the vLLM path after training. `fast_generate` is
     # what the notebook uses and it is a different code path from the
@@ -289,11 +311,8 @@ def train(args) -> dict:
     try:
         from vllm import SamplingParams
 
-        params = SamplingParams(temperature = 1.0, top_k = 50,
-                                max_tokens = 32, seed = SEED)
-        out = model.fast_generate([rows[0]["question"]],
-                                  sampling_params = params,
-                                  lora_request = None)
+        params = SamplingParams(temperature = 1.0, top_k = 50, max_tokens = 32, seed = SEED)
+        out = model.fast_generate([rows[0]["question"]], sampling_params = params, lora_request = None)
         result["fast_generate"] = out[0].outputs[0].text
     except BaseException as exc:  # noqa: BLE001
         result["fast_generate"] = None
@@ -316,20 +335,23 @@ def failures_for(result: dict, args) -> list[str]:
     if not rewards:
         failures.append(
             "no reward was logged on any step, so the reward functions never "
-            "ran and generation produced nothing to score")
+            "ran and generation produced nothing to score"
+        )
     elif any(r != r or r in (float("inf"), float("-inf")) for r in rewards):
         failures.append(f"non-finite reward: {rewards}")
 
     stds = [e["reward_std"] for e in history if e.get("reward_std") is not None]
     if not stds:
-        failures.append("reward_std was never logged, so group diversity "
-                        "could not be established")
+        failures.append(
+            "reward_std was never logged, so group diversity could not be established"
+        )
     elif not any(s > 0 for s in stds):
         failures.append(
             f"reward_std was zero on every step ({stds}): every completion in "
             f"each group scored identically, which means the group was not "
             f"diverse. The GRPO advantage is exactly zero in that state, so "
-            f"the run trained on nothing while reporting a healthy loss.")
+            f"the run trained on nothing while reporting a healthy loss."
+        )
 
     seen = result.get("completions") or []
     flat = [text for group in seen for text in group]
@@ -338,16 +360,19 @@ def failures_for(result: dict, args) -> list[str]:
     elif not any(t.strip() for t in flat):
         failures.append(
             f"every one of the {len(flat)} completions was empty, so the "
-            f"identical rewards above are not evidence of anything")
+            f"identical rewards above are not evidence of anything"
+        )
 
     if len(result.get("metrics") or []) != args.max_steps:
-        failures.append(f"expected {args.max_steps} logged steps, got "
-                        f"{len(result.get('metrics') or [])}")
+        failures.append(
+            f"expected {args.max_steps} logged steps, got " f"{len(result.get('metrics') or [])}"
+        )
 
     if result.get("fast_generate") is None:
         failures.append(
             "fast_generate (the vLLM inference path the notebook uses after "
-            f"training) failed: {result.get('fast_generate_error')}")
+            f"training) failed: {result.get('fast_generate_error')}"
+        )
     return failures
 
 
@@ -365,12 +390,9 @@ def main() -> int:
     ap.add_argument("--gpu-memory-utilization", type = float, default = 0.9)
     # The switch the probe exists to decide. The notebook says False, which
     # is ~8GB of 16-bit weights plus an engine plus a trainer on a 16GB card.
-    ap.add_argument("--load-in-4bit", dest = "load_in_4bit",
-                    action = "store_true", default = False)
-    ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit",
-                    action = "store_false")
-    ap.add_argument("--probe", action = "store_true",
-                    help = "record everything, assert nothing")
+    ap.add_argument("--load-in-4bit", dest = "load_in_4bit", action = "store_true", default = False)
+    ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit", action = "store_false")
+    ap.add_argument("--probe", action = "store_true", help = "record everything, assert nothing")
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
@@ -381,14 +403,23 @@ def main() -> int:
         "model": args.model,
         "leg": "grpo",
         "probe": args.probe,
-        "config": {k: getattr(args, k) for k in
-                   ("max_steps", "max_seq_length", "max_prompt_length",
-                    "num_generations", "lora_rank", "gpu_memory_utilization",
-                    "load_in_4bit")},
+        "config": {
+            k: getattr(args, k)
+            for k in (
+                "max_steps",
+                "max_seq_length",
+                "max_prompt_length",
+                "num_generations",
+                "lora_rank",
+                "gpu_memory_utilization",
+                "load_in_4bit",
+            )
+        },
         "failures": [],
     }
     report["versions"] = resolved_versions(
-        GOAL_PACKAGES, import_check = ("torch", "transformers", "trl", "vllm"))
+        GOAL_PACKAGES, import_check = ("torch", "transformers", "trl", "vllm")
+    )
     report["versions_flat"] = flatten_versions(report["versions"])
     _log("versions " + json.dumps(report["versions_flat"]))
     report["vllm"] = vllm_facts()
@@ -396,7 +427,6 @@ def main() -> int:
 
     try:
         import torch
-
         props = torch.cuda.get_device_properties(0)
         report["environment"] = {
             "python": platform.python_version(),
@@ -404,7 +434,7 @@ def main() -> int:
             "cuda": torch.version.cuda,
             "gpu_name": props.name,
             "gpu_capability": f"sm_{props.major}{props.minor}",
-            "gpu_total_gb": round(props.total_memory / 1024 ** 3, 1),
+            "gpu_total_gb": round(props.total_memory / 1024**3, 1),
             "gpu_count_visible": torch.cuda.device_count(),
             "bf16_supported": bool(torch.cuda.is_bf16_supported()),
             "vllm_standby": os.environ.get("UNSLOTH_VLLM_STANDBY"),
@@ -435,7 +465,8 @@ def main() -> int:
         report["passed"] = not failures
 
     (outdir / "t4_smoke_report.json").write_text(
-        json.dumps(report, indent = 2, default = str), encoding = "utf-8")
+        json.dumps(report, indent = 2, default = str), encoding = "utf-8"
+    )
     print("T4_SMOKE_REPORT " + json.dumps(report, default = str), flush = True)
     for entry in failures:
         _log(f"OBSERVED FAILURE: {entry}")

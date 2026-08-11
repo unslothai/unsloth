@@ -138,15 +138,15 @@ MAX_KERNEL_PAGES = 5
 def _out(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding = "utf-8") as fh:
             fh.write(f"{key}={value}\n")
-    print(f"[gate] {key}={value}", flush=True)
+    print(f"[gate] {key}={value}", flush = True)
 
 
 def _summary(text: str) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding="utf-8") as fh:
+        with open(path, "a", encoding = "utf-8") as fh:
             fh.write(text + "\n")
 
 
@@ -154,7 +154,7 @@ def _decide(run: bool, reason: str) -> int:
     _out("should_run", "true" if run else "false")
     _out("reason", reason)
     verdict = "RUN" if run else "SKIP"
-    print(f"[gate] {verdict}: {reason}", flush=True)
+    print(f"[gate] {verdict}: {reason}", flush = True)
     _summary(f"### Kaggle T4 gate: {verdict}\n\n{reason}\n")
     return 0
 
@@ -198,13 +198,16 @@ def _as_naive_utc(value):
         return None
     if value.tzinfo is None:
         return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value.astimezone(timezone.utc).replace(tzinfo = None)
 
 
-def survey_kernels(api, now: datetime | None = None,
-                   lookback_hours: float = LOOKBACK_HOURS,
-                   page_size: int = KERNELS_PAGE_SIZE,
-                   max_pages: int = MAX_KERNEL_PAGES) -> dict:
+def survey_kernels(
+    api,
+    now: datetime | None = None,
+    lookback_hours: float = LOOKBACK_HOURS,
+    page_size: int = KERNELS_PAGE_SIZE,
+    max_pages: int = MAX_KERNEL_PAGES,
+) -> dict:
     """Status-check every kernel that could still be in flight.
 
     Walks the account's kernels most-recently-run first and stops at the
@@ -230,8 +233,8 @@ def survey_kernels(api, now: datetime | None = None,
     """
     # Naive UTC, to match what Kaggle returns. utcnow() would do the same
     # thing and is deprecated from 3.12.
-    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
-    cutoff = now - timedelta(hours=lookback_hours)
+    now = now or datetime.now(timezone.utc).replace(tzinfo = None)
+    cutoff = now - timedelta(hours = lookback_hours)
     busy: list[str] = []
     own: list[str] = []
     foreign: list[str] = []
@@ -240,8 +243,9 @@ def survey_kernels(api, now: datetime | None = None,
     complete = False
 
     for page in range(1, max_pages + 1):
-        kernels = api.kernels_list(mine=True, page=page, page_size=page_size,
-                                   sort_by="dateRun") or []
+        kernels = (
+            api.kernels_list(mine = True, page = page, page_size = page_size, sort_by = "dateRun") or []
+        )
         for kernel in kernels:
             ref = getattr(kernel, "ref", None)
             if not ref:
@@ -259,8 +263,7 @@ def survey_kernels(api, now: datetime | None = None,
                 # An unreadable status is not evidence of an idle account.
                 # Count it, say so, and keep going.
                 unreadable += 1
-                print(f"[gate] status unreadable for {ref}: "
-                      f"{type(exc).__name__}", flush=True)
+                print(f"[gate] status unreadable for {ref}: " f"{type(exc).__name__}", flush = True)
                 continue
             state = status.rsplit(".", 1)[-1].upper()
             if state in BUSY_STATES:
@@ -270,8 +273,7 @@ def survey_kernels(api, now: datetime | None = None,
                 # username: a foreign kernel on this account belongs to the
                 # same user, so the user half says nothing.
                 slug = ref.rsplit("/", 1)[-1]
-                (own if slug.startswith(OWN_KERNEL_PREFIX)
-                 else foreign).append(entry)
+                (own if slug.startswith(OWN_KERNEL_PREFIX) else foreign).append(entry)
         if complete:
             break
         if len(kernels) < page_size:
@@ -280,16 +282,22 @@ def survey_kernels(api, now: datetime | None = None,
             complete = True
             break
 
-    return {"busy": busy, "own": own, "foreign": foreign,
-            "surveyed": surveyed, "unreadable": unreadable,
-            "complete": complete,
-            "window_hours": lookback_hours}
+    return {
+        "busy": busy,
+        "own": own,
+        "foreign": foreign,
+        "surveyed": surveyed,
+        "unreadable": unreadable,
+        "complete": complete,
+        "window_hours": lookback_hours,
+    }
 
 
-def concurrency_verdict(survey: dict,
-                        kernels_needed: int = KERNELS_PER_INVOCATION,
-                        allowed_foreign: int = ALLOWED_IN_FLIGHT_FOREIGN_KERNELS
-                        ) -> tuple[bool, str]:
+def concurrency_verdict(
+    survey: dict,
+    kernels_needed: int = KERNELS_PER_INVOCATION,
+    allowed_foreign: int = ALLOWED_IN_FLIGHT_FOREIGN_KERNELS,
+) -> tuple[bool, str]:
     """Is the account idle enough? Returns (clear_to_launch, why not).
 
     Two separate questions, in this order, because they have different
@@ -321,7 +329,8 @@ def concurrency_verdict(survey: dict,
             f"are not this workflow's, and this job tolerates "
             f"{allowed_foreign}: {', '.join(foreign)}. The account is shared "
             f"with human use and CI yields to it; standing down rather than "
-            f"queueing.")
+            f"queueing."
+        )
     free = MAX_CONCURRENT_GPU_KERNELS - len(foreign) - len(own)
     if free < kernels_needed:
         return False, (
@@ -330,77 +339,104 @@ def concurrency_verdict(survey: dict,
             f"({len(own)} already held by this workflow, {len(foreign)} by "
             f"something else). A partial launch would report a subset of the "
             f"legs, and the control and canary legs are only worth anything "
-            f"as a pair.")
+            f"as a pair."
+        )
     if not survey["complete"]:
         return False, (
             "the in-flight survey did not reach the end of its "
             f"{survey['window_hours']}h window within {MAX_KERNEL_PAGES} "
             "pages, so an older kernel of this account could still be "
-            "running unseen")
+            "running unseen"
+        )
     if survey["surveyed"] and survey["unreadable"] == survey["surveyed"]:
         return False, (
             f"no kernel status could be read at all ({survey['unreadable']} "
             f"of {survey['surveyed']} unreadable), so whether the account is "
-            "busy is unknown")
+            "busy is unknown"
+        )
     return True, ""
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--percent", type=int, default=10,
-                    help="sampling rate when no override is present")
-    ap.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "0"))
-    ap.add_argument("--run-attempt",
-                    default=os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
-    ap.add_argument("--force", default="false",
-                    help="workflow_dispatch force input")
-    ap.add_argument("--labels", default="",
-                    help="comma or newline separated PR labels")
-    ap.add_argument("--label-name", default="kaggle-t4-ci")
-    ap.add_argument("--budget-hours", type=float, required=True,
-                    help="worst-case GPU hours this invocation can spend")
-    ap.add_argument("--reserve-hours", type=float, default=6.0,
-                    help="quota CI refuses to dip into, left for humans")
-    ap.add_argument("--kernels", type=int, default=KERNELS_PER_INVOCATION,
-                    help="how many Kaggle kernels this invocation will push. "
-                         "The gate refuses unless that many slots are free")
-    ap.add_argument("--allow-foreign-in-flight", type=int,
-                    default=ALLOWED_IN_FLIGHT_FOREIGN_KERNELS,
-                    help="kernels NOT belonging to this workflow that may "
-                         "already be running and this job still launch. "
-                         "Default 0: the account is shared with human use and "
-                         "CI yields to it. See "
-                         "ALLOWED_IN_FLIGHT_FOREIGN_KERNELS before raising it")
-    ap.add_argument("--soft-fail", action="store_true", default=True,
-                    help="treat a gate error as a skip rather than a failure")
-    ap.add_argument("--no-soft-fail", dest="soft_fail", action="store_false")
+    ap.add_argument(
+        "--percent", type = int, default = 10, help = "sampling rate when no override is present"
+    )
+    ap.add_argument("--run-id", default = os.environ.get("GITHUB_RUN_ID", "0"))
+    ap.add_argument("--run-attempt", default = os.environ.get("GITHUB_RUN_ATTEMPT", "1"))
+    ap.add_argument("--force", default = "false", help = "workflow_dispatch force input")
+    ap.add_argument("--labels", default = "", help = "comma or newline separated PR labels")
+    ap.add_argument("--label-name", default = "kaggle-t4-ci")
+    ap.add_argument(
+        "--budget-hours",
+        type = float,
+        required = True,
+        help = "worst-case GPU hours this invocation can spend",
+    )
+    ap.add_argument(
+        "--reserve-hours",
+        type = float,
+        default = 6.0,
+        help = "quota CI refuses to dip into, left for humans",
+    )
+    ap.add_argument(
+        "--kernels",
+        type = int,
+        default = KERNELS_PER_INVOCATION,
+        help = "how many Kaggle kernels this invocation will push. "
+        "The gate refuses unless that many slots are free",
+    )
+    ap.add_argument(
+        "--allow-foreign-in-flight",
+        type = int,
+        default = ALLOWED_IN_FLIGHT_FOREIGN_KERNELS,
+        help = "kernels NOT belonging to this workflow that may "
+        "already be running and this job still launch. "
+        "Default 0: the account is shared with human use and "
+        "CI yields to it. See "
+        "ALLOWED_IN_FLIGHT_FOREIGN_KERNELS before raising it",
+    )
+    ap.add_argument(
+        "--soft-fail",
+        action = "store_true",
+        default = True,
+        help = "treat a gate error as a skip rather than a failure",
+    )
+    ap.add_argument("--no-soft-fail", dest = "soft_fail", action = "store_false")
     args = ap.parse_args()
 
     override = args.force.strip().lower() in ("true", "1", "yes")
-    labels = [l.strip().lower() for l in
-              args.labels.replace("\n", ",").split(",") if l.strip()]
+    labels = [l.strip().lower() for l in args.labels.replace("\n", ",").split(",") if l.strip()]
     if args.label_name.lower() in labels:
         override = True
-        print(f"[gate] override: label {args.label_name!r} present", flush=True)
+        print(f"[gate] override: label {args.label_name!r} present", flush = True)
 
     # The draw is reported even when overridden, so the log always shows what
     # the unforced answer would have been.
     # Re-runs of the same run must not reroll, so run_attempt is excluded.
     picked, draw = sampled_in(str(args.run_id), args.percent)
-    print(f"[gate] sampling draw={draw} threshold={args.percent} "
-          f"picked={picked} (run {args.run_id}, attempt {args.run_attempt})",
-          flush=True)
+    print(
+        f"[gate] sampling draw={draw} threshold={args.percent} "
+        f"picked={picked} (run {args.run_id}, attempt {args.run_attempt})",
+        flush = True,
+    )
 
     if not override and not picked:
-        return _decide(False, f"not sampled this time (draw {draw} of 100, "
-                              f"threshold {args.percent}); this is the normal "
-                              f"outcome for roughly {100 - args.percent}% of "
-                              f"invocations")
+        return _decide(
+            False,
+            f"not sampled this time (draw {draw} of 100, "
+            f"threshold {args.percent}); this is the normal "
+            f"outcome for roughly {100 - args.percent}% of "
+            f"invocations",
+        )
 
     if not os.environ.get("KAGGLE_API_TOKEN"):
-        return _decide(False, "KAGGLE_API_TOKEN is not available to this "
-                              "context (expected on a fork pull request, "
-                              "where secrets are withheld)")
+        return _decide(
+            False,
+            "KAGGLE_API_TOKEN is not available to this "
+            "context (expected on a fork pull request, "
+            "where secrets are withheld)",
+        )
 
     try:
         api = kaggle_client()
@@ -409,7 +445,7 @@ def main() -> int:
             raise
         msg = f"could not authenticate to Kaggle: {type(exc).__name__}"
         if not args.soft_fail:
-            print(f"[gate] {msg}", flush=True)
+            print(f"[gate] {msg}", flush = True)
             return 1
         return _decide(False, msg)
 
@@ -417,7 +453,7 @@ def main() -> int:
         quota = remaining_gpu_hours(api)
     except Exception as exc:  # noqa: BLE001
         quota = {"ok": False, "error": type(exc).__name__}
-    print("[gate] quota " + json.dumps(quota), flush=True)
+    print("[gate] quota " + json.dumps(quota), flush = True)
     _out("quota", json.dumps(quota))
 
     if quota.get("ok"):
@@ -428,34 +464,52 @@ def main() -> int:
                 f"insufficient weekly GPU quota: {quota['remaining_hours']}h "
                 f"remaining of {quota['total_hours']}h, and this run needs up "
                 f"to {args.budget_hours}h on top of a {args.reserve_hours}h "
-                f"reserve. Quota refreshes at {quota.get('refresh_at')}")
+                f"reserve. Quota refreshes at {quota.get('refresh_at')}",
+            )
     else:
         # An unreadable quota is not permission to spend it.
-        return _decide(False, "could not read the Kaggle accelerator quota, "
-                              "so the remaining budget is unknown")
+        return _decide(
+            False,
+            "could not read the Kaggle accelerator quota, so the remaining budget is unknown",
+        )
 
     try:
         survey = survey_kernels(api)
     except Exception as exc:  # noqa: BLE001
-        return _decide(False, "could not list this account's kernels "
-                              f"({type(exc).__name__}), so concurrency cannot "
-                              "be established")
-    print("[gate] concurrency " + json.dumps(
-        {k: v for k, v in survey.items()
-         if k not in ("busy", "own", "foreign")}
-        | {"busy": len(survey["busy"]), "own": len(survey["own"]),
-           "foreign": len(survey["foreign"])}), flush=True)
+        return _decide(
+            False,
+            "could not list this account's kernels "
+            f"({type(exc).__name__}), so concurrency cannot "
+            "be established",
+        )
+    print(
+        "[gate] concurrency "
+        + json.dumps(
+            {k: v for k, v in survey.items() if k not in ("busy", "own", "foreign")}
+            | {
+                "busy": len(survey["busy"]),
+                "own": len(survey["own"]),
+                "foreign": len(survey["foreign"]),
+            }
+        ),
+        flush = True,
+    )
 
-    clear, why_not = concurrency_verdict(survey, args.kernels,
-                                         args.allow_foreign_in_flight)
+    clear, why_not = concurrency_verdict(survey, args.kernels, args.allow_foreign_in_flight)
     if not clear:
         return _decide(False, why_not)
 
-    why = "forced by override" if override else \
-        f"sampled in (draw {draw} of 100, threshold {args.percent})"
-    return _decide(True, f"{why}; {quota['remaining_hours']}h of GPU quota "
-                         f"remaining and {args.kernels} of the account's "
-                         f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots are free")
+    why = (
+        "forced by override"
+        if override
+        else f"sampled in (draw {draw} of 100, threshold {args.percent})"
+    )
+    return _decide(
+        True,
+        f"{why}; {quota['remaining_hours']}h of GPU quota "
+        f"remaining and {args.kernels} of the account's "
+        f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots are free",
+    )
 
 
 if __name__ == "__main__":

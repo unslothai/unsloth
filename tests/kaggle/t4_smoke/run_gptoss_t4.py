@@ -138,10 +138,13 @@ def placement(model) -> dict:
     device_map = getattr(model, "hf_device_map", None)
     return {
         "parameters_by_device": counts,
-        "hf_device_map_devices": (sorted({str(v) for v in device_map.values()})
-                                  if isinstance(device_map, dict) else None),
-        "offloaded": bool(isinstance(device_map, dict) and any(
-            str(v) in ("cpu", "disk") for v in device_map.values())),
+        "hf_device_map_devices": (
+            sorted({str(v) for v in device_map.values()}) if isinstance(device_map, dict) else None
+        ),
+        "offloaded": bool(
+            isinstance(device_map, dict)
+            and any(str(v) in ("cpu", "disk") for v in device_map.values())
+        ),
     }
 
 
@@ -152,9 +155,9 @@ def memory() -> dict:
         return {}
     props = torch.cuda.get_device_properties(0)
     return {
-        "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1024 ** 3, 2),
-        "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
-        "total_gb": round(props.total_memory / 1024 ** 3, 2),
+        "peak_reserved_gb": round(torch.cuda.max_memory_reserved() / 1024**3, 2),
+        "peak_allocated_gb": round(torch.cuda.max_memory_allocated() / 1024**3, 2),
+        "total_gb": round(props.total_memory / 1024**3, 2),
     }
 
 
@@ -170,10 +173,16 @@ def build_dataset(tokenizer, rows: list[dict]):
 
     texts = []
     for row in rows:
-        texts.append(tokenizer.apply_chat_template(
-            [{"role": "user", "content": row["question"]},
-             {"role": "assistant", "content": row["answer"]}],
-            tokenize = False, add_generation_prompt = False))
+        texts.append(
+            tokenizer.apply_chat_template(
+                [
+                    {"role": "user", "content": row["question"]},
+                    {"role": "assistant", "content": row["answer"]},
+                ],
+                tokenize = False,
+                add_generation_prompt = False,
+            )
+        )
     return Dataset.from_dict({"text": texts})
 
 
@@ -186,7 +195,7 @@ def train_and_infer(args) -> dict:
     t0 = time.time()
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = args.model,
-        dtype = None,               # let the loader choose; T4 has no bf16
+        dtype = None,  # let the loader choose; T4 has no bf16
         max_seq_length = args.max_seq_length,
         load_in_4bit = True,
         full_finetuning = False,
@@ -205,9 +214,13 @@ def train_and_infer(args) -> dict:
     result["resolved_checkpoint"] = getattr(model_config, "_name_or_path", None)
     quant = getattr(model_config, "quantization_config", None)
     result["quantization"] = (
-        {"method": str(getattr(quant, "quant_method", None)),
-         "type": str(getattr(quant, "bnb_4bit_quant_type", None))}
-        if quant is not None else None)
+        {
+            "method": str(getattr(quant, "quant_method", None)),
+            "type": str(getattr(quant, "bnb_4bit_quant_type", None)),
+        }
+        if quant is not None
+        else None
+    )
     result["placement_after_load"] = placement(model)
     result["memory_after_load"] = memory()
     _log(f"loaded in {result['load_seconds']}s, dtype {result['model_dtype']}")
@@ -215,8 +228,15 @@ def train_and_infer(args) -> dict:
     model = FastLanguageModel.get_peft_model(
         model,
         r = args.lora_r,
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                          "gate_proj", "up_proj", "down_proj"],
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         lora_alpha = args.lora_r * 2,
         lora_dropout = 0,
         bias = "none",
@@ -224,9 +244,11 @@ def train_and_infer(args) -> dict:
         random_state = SEED,
     )
 
-    rows = [json.loads(line) for line
-            in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
-            if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
+        if line.strip()
+    ]
     dataset = build_dataset(tokenizer, rows)
 
     from trl import SFTConfig, SFTTrainer
@@ -283,15 +305,17 @@ def train_and_infer(args) -> dict:
     stats = trainer.train()
     result["train_seconds"] = round(time.time() - t0, 1)
     result["metrics"] = [
-        {"step": entry.get("step"), "loss": entry.get("loss"),
-         "grad_norm": entry.get("grad_norm")}
-        for entry in trainer.state.log_history if "loss" in entry]
-    result["train_metrics"] = {k: v for k, v in
-                               (stats.metrics or {}).items()}
+        {"step": entry.get("step"), "loss": entry.get("loss"), "grad_norm": entry.get("grad_norm")}
+        for entry in trainer.state.log_history
+        if "loss" in entry
+    ]
+    result["train_metrics"] = {k: v for k, v in (stats.metrics or {}).items()}
     result["compile"] = compile_counters()
     result["memory_after_train"] = memory()
-    _log(f"trained {len(result['metrics'])} logged steps in "
-         f"{result['train_seconds']}s; compile {result['compile']}")
+    _log(
+        f"trained {len(result['metrics'])} logged steps in "
+        f"{result['train_seconds']}s; compile {result['compile']}"
+    )
 
     # Inference on the trained model. The notebook's own shape: chat
     # template with a reasoning effort, greedy decode, short.
@@ -299,27 +323,37 @@ def train_and_infer(args) -> dict:
     try:
         inputs = tokenizer.apply_chat_template(
             [{"role": "user", "content": rows[0]["question"]}],
-            add_generation_prompt = True, return_tensors = "pt",
-            return_dict = True, reasoning_effort = "low").to("cuda")
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+            reasoning_effort = "low",
+        ).to("cuda")
     except TypeError:
         # reasoning_effort is a gpt-oss template keyword. A template that
         # does not take it is a finding worth recording, not a crash.
         result["reasoning_effort_supported"] = False
         inputs = tokenizer.apply_chat_template(
             [{"role": "user", "content": rows[0]["question"]}],
-            add_generation_prompt = True, return_tensors = "pt",
-            return_dict = True).to("cuda")
+            add_generation_prompt = True,
+            return_tensors = "pt",
+            return_dict = True,
+        ).to("cuda")
     else:
         result["reasoning_effort_supported"] = True
 
     t0 = time.time()
     with torch.inference_mode():
-        out = model.generate(**inputs, max_new_tokens = args.max_new_tokens,
-                             do_sample = False, temperature = None,
-                             top_p = None, top_k = None, use_cache = True)
+        out = model.generate(
+            **inputs,
+            max_new_tokens = args.max_new_tokens,
+            do_sample = False,
+            temperature = None,
+            top_p = None,
+            top_k = None,
+            use_cache = True,
+        )
     result["infer_seconds"] = round(time.time() - t0, 1)
-    generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1]:],
-                                 skip_special_tokens = True)
+    generated = tokenizer.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens = True)
     result["generated"] = generated
     result["canary_found"] = CANARY in generated
     result["memory_peak"] = memory()
@@ -336,8 +370,7 @@ def failures_for(result: dict, args) -> list[str]:
     failures: list[str] = []
     metrics = result.get("metrics") or []
     if len(metrics) != args.max_steps:
-        failures.append(f"expected {args.max_steps} logged steps, got "
-                        f"{len(metrics)}")
+        failures.append(f"expected {args.max_steps} logged steps, got " f"{len(metrics)}")
     losses = [m.get("loss") for m in metrics if m.get("loss") is not None]
     if not losses:
         failures.append("no loss was logged at all, so nothing trained")
@@ -351,19 +384,22 @@ def failures_for(result: dict, args) -> list[str]:
             failures.append(
                 "torch._dynamo counters were unreadable, so whether "
                 "torch.compile engaged could not be established: "
-                f"{compiled.get('error')}")
+                f"{compiled.get('error')}"
+            )
         elif compiled.get("unique_graphs", 0) < 1:
             failures.append(
                 "torch.compile captured zero graphs, so this run exercised "
                 "the eager path only. That is the silent fallback this leg "
-                "exists to catch; it is a failure, not a slow pass.")
+                "exists to catch; it is a failure, not a slow pass."
+            )
 
     generated = result.get("generated")
     if generated is None:
         failures.append("generation did not run")
     elif not generated.strip():
-        failures.append("generation after training returned empty text, so "
-                        "the trained model is unusable")
+        failures.append(
+            "generation after training returned empty text, so the trained model is unusable"
+        )
     return failures
 
 
@@ -377,14 +413,15 @@ def main() -> int:
     ap.add_argument("--max-seq-length", type = int, default = 1024)
     ap.add_argument("--lora-r", type = int, default = 8)
     ap.add_argument("--max-new-tokens", type = int, default = 32)
-    ap.add_argument("--require-compile", dest = "require_compile",
-                    action = "store_true", default = True)
-    ap.add_argument("--no-require-compile", dest = "require_compile",
-                    action = "store_false")
-    ap.add_argument("--probe", action = "store_true",
-                    help = "record everything, assert nothing. For the "
-                           "one-off feasibility runs, whose job is to come "
-                           "back with evidence rather than an exit code")
+    ap.add_argument("--require-compile", dest = "require_compile", action = "store_true", default = True)
+    ap.add_argument("--no-require-compile", dest = "require_compile", action = "store_false")
+    ap.add_argument(
+        "--probe",
+        action = "store_true",
+        help = "record everything, assert nothing. For the "
+        "one-off feasibility runs, whose job is to come "
+        "back with evidence rather than an exit code",
+    )
     args = ap.parse_args()
 
     outdir = Path(args.outdir)
@@ -395,9 +432,10 @@ def main() -> int:
         "model": args.model,
         "leg": "gptoss",
         "probe": args.probe,
-        "config": {k: getattr(args, k) for k in
-                   ("max_steps", "max_seq_length", "lora_r", "max_new_tokens",
-                    "require_compile")},
+        "config": {
+            k: getattr(args, k)
+            for k in ("max_steps", "max_seq_length", "lora_r", "max_new_tokens", "require_compile")
+        },
         "versions": {},
         "environment": {},
         "failures": [],
@@ -407,13 +445,13 @@ def main() -> int:
     # the loader still has to say which library set it died with, or the
     # crash is unattributable and the session was spent for nothing.
     report["versions"] = resolved_versions(
-        GOAL_PACKAGES, import_check = ("torch", "transformers", "trl"))
+        GOAL_PACKAGES, import_check = ("torch", "transformers", "trl")
+    )
     report["versions_flat"] = flatten_versions(report["versions"])
     _log("versions " + json.dumps(report["versions_flat"]))
 
     try:
         import torch
-
         props = torch.cuda.get_device_properties(0)
         report["environment"] = {
             "python": platform.python_version(),
@@ -421,11 +459,10 @@ def main() -> int:
             "cuda": torch.version.cuda,
             "gpu_name": props.name,
             "gpu_capability": f"sm_{props.major}{props.minor}",
-            "gpu_total_gb": round(props.total_memory / 1024 ** 3, 1),
+            "gpu_total_gb": round(props.total_memory / 1024**3, 1),
             "gpu_count_visible": torch.cuda.device_count(),
             "bf16_supported": bool(torch.cuda.is_bf16_supported()),
-            "compile_disabled_env":
-                os.environ.get("UNSLOTH_COMPILE_DISABLE"),
+            "compile_disabled_env": os.environ.get("UNSLOTH_COMPILE_DISABLE"),
         }
     except Exception as exc:  # noqa: BLE001
         report["environment"] = {"error": f"{type(exc).__name__}: {exc}"}
@@ -459,7 +496,8 @@ def main() -> int:
         report["passed"] = not failures
 
     (outdir / "t4_smoke_report.json").write_text(
-        json.dumps(report, indent = 2, default = str), encoding = "utf-8")
+        json.dumps(report, indent = 2, default = str), encoding = "utf-8"
+    )
     print("T4_SMOKE_REPORT " + json.dumps(report, default = str), flush = True)
     for entry in failures:
         _log(f"OBSERVED FAILURE: {entry}")

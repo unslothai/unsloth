@@ -416,9 +416,13 @@ def extract_reports(outdir: Path) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--notebook", required = True, action = "append",
-                    help = "kernel notebook to push. Repeatable: all of them "
-                           "are pushed before any of them is waited on")
+    ap.add_argument(
+        "--notebook",
+        required = True,
+        action = "append",
+        help = "kernel notebook to push. Repeatable: all of them "
+        "are pushed before any of them is waited on",
+    )
     ap.add_argument("--user", required = True)
     ap.add_argument("--outdir", required = True)
     ap.add_argument(
@@ -470,8 +474,12 @@ def main() -> int:
             if not slug or entry.get("released"):
                 continue
             try:
-                subprocess.run(["kaggle", "kernels", "delete", slug, "-y"],
-                               capture_output = True, text = True, timeout = 180)
+                subprocess.run(
+                    ["kaggle", "kernels", "delete", slug, "-y"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 180,
+                )
                 entry["released"] = True
             except Exception:  # noqa: BLE001
                 _log(f"could not delete {slug}; it may keep billing")
@@ -500,10 +508,14 @@ def main() -> int:
     for notebook in args.notebook:
         _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
         pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
-        entry = {"notebook": notebook, "slug": pushed.get("slug"),
-                 "state": None,
-                 "push_error": None if pushed["ok"] else
-                 f"{pushed['reason']}: {pushed.get('detail', '')}"}
+        entry = {
+            "notebook": notebook,
+            "slug": pushed.get("slug"),
+            "state": None,
+            "push_error": None
+            if pushed["ok"]
+            else f"{pushed['reason']}: {pushed.get('detail', '')}",
+        }
         kernels.append(entry)
         if pushed["ok"]:
             _log(f"pushed as {pushed['slug']}")
@@ -513,8 +525,7 @@ def main() -> int:
 
     live = [k for k in kernels if k["slug"]]
     if not live:
-        result["reason"] = "; ".join(
-            k["push_error"] for k in kernels if k["push_error"])
+        result["reason"] = "; ".join(k["push_error"] for k in kernels if k["push_error"])
         return finish()
     # Kept for the summary and for anything reading the previous single-kernel
     # shape of this file.
@@ -536,7 +547,8 @@ def main() -> int:
         # would otherwise overwrite each other's kernel.log.
         try:
             entry["evidence"] = fetch_evidence(
-                entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1])
+                entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1]
+            )
             _log(f"collected {entry['slug']}: {entry['evidence']}")
         except Exception as exc:  # noqa: BLE001
             entry["evidence"] = None
