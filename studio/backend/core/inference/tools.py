@@ -3871,7 +3871,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             # SafeLoader is not necessarily the class the exemption assumes.
             _args = node.args
             for _p in (
-                _args.posonlyargs + _args.args + _args.kwonlyargs
+                _args.posonlyargs
+                + _args.args
+                + _args.kwonlyargs
                 + ([_args.vararg] if _args.vararg else [])
                 + ([_args.kwarg] if _args.kwarg else [])
             ):
