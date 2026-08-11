@@ -187,14 +187,27 @@ def _register_prequant_safe_globals() -> bool:
             # class for every name asked of it, so the allowlist would register fakes and this
             # would answer yes for an install that cannot rebuild a single quantized tensor.
             if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
-                add(_prequant_safe_globals())
-                # The same derivation the unpickler runs, so a form this torch cannot express
-                # fails here, once, rather than under a load a plan has already been sized on.
-                try:
-                    torch._weights_only_unpickler._get_user_allowed_globals()
-                except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
-                    pass
-                ok = True
+                pairs = _prequant_safe_globals()
+                resolved = {name for _obj, name in pairs}
+                # A name a release does not ship is skipped rather than raised, which is right for
+                # a scheme this install cannot produce anyway -- but "some entries resolved" is not
+                # the same as "a checkpoint can be opened". Require the two every artifact needs
+                # whatever its scheme: the version string torch.save stamps into the subclass
+                # state, and at least one real torchao tensor class. Absent, torchao is missing or
+                # too skewed to rebuild anything, and planning must not size a load on it.
+                # Deliberately not per-scheme: the scheme is not known here, and all three torchao
+                # releases install_python_stack pins resolve the whole set.
+                if "torch.torch_version.TorchVersion" in resolved and any(
+                    name.startswith("torchao.") for name in resolved
+                ):
+                    add(pairs)
+                    # The same derivation the unpickler runs, so a form this torch cannot express
+                    # fails here, once, rather than under a load a plan was already sized on.
+                    try:
+                        torch._weights_only_unpickler._get_user_allowed_globals()
+                    except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
+                        pass
+                    ok = True
         except Exception:  # noqa: BLE001 -- no allowlist means no restricted load, never a raise
             ok = False
         _SAFE_GLOBALS_REGISTERED = ok

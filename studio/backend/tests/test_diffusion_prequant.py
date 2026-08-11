@@ -787,6 +787,48 @@ def test_a_stubbed_torchao_cannot_open_a_checkpoint(monkeypatch):
     assert pq.restricted_prequant_load_supported() is False
 
 
+def test_a_torchao_that_resolves_nothing_reports_no_support(monkeypatch):
+    """Registering successfully is not the same as being able to open a checkpoint.
+
+    A missing or badly skewed torchao leaves the allowlist with nothing to register but the torch
+    entries, and ``add_safe_globals`` is perfectly happy with that -- while the load then refuses
+    the first torchao global the file names, after planning has already dropped the dense shards
+    for it. So the answer requires the two entries every artifact needs whatever its scheme."""
+    registered = []
+    torch = types.ModuleType("torch")
+    torch.__version__ = "2.9.1"
+    torch.serialization = types.SimpleNamespace(add_safe_globals = registered.append)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    def only(names):
+        return [(object(), n) for n in names]
+
+    # torchao contributes nothing: the version string alone opens no checkpoint.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(
+        pq, "_prequant_safe_globals", lambda: only(["torch.torch_version.TorchVersion"])
+    )
+    assert pq.restricted_prequant_load_supported() is False
+    assert registered == [], "and nothing is registered on the way to saying no"
+
+    # torchao is there but the version stamp is not: every torchao checkpoint carries one.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(
+        pq, "_prequant_safe_globals", lambda: only(["torchao.quantization.Float8Tensor"])
+    )
+    assert pq.restricted_prequant_load_supported() is False
+
+    # Both present: supported, and registered exactly once.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(
+        pq,
+        "_prequant_safe_globals",
+        lambda: only(["torch.torch_version.TorchVersion", "torchao.quantization.Float8Tensor"]),
+    )
+    assert pq.restricted_prequant_load_supported() is True
+    assert len(registered) == 1
+
+
 def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monkeypatch, tmp_path):
     """Planning has to ask the loader's question BEFORE it sizes the load.
 
