@@ -5351,3 +5351,37 @@ def test_openrouter_no_synthetic_web_search_event_on_forced_function_tool_choice
             tool_event = extra.get("toolEvent") if isinstance(extra, dict) else None
             if isinstance(tool_event, dict):
                 assert tool_event.get("tool_name") != "web_search", evt
+
+
+@pytest.mark.parametrize(
+    "model",
+    (
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-pro-latest",
+    ),
+)
+def test_gemini_3_family_uses_thinking_level(monkeypatch, model):
+    """Any 3.x minor must take thinkingLevel; an int budget 400s upstream."""
+    body = _capture_body(monkeypatch, model = model, enable_thinking = False)["body"]
+    thinking = body["generationConfig"]["thinkingConfig"]
+    assert "thinkingLevel" in thinking, (model, thinking)
+    assert "thinkingBudget" not in thinking, (model, thinking)
+
+
+@pytest.mark.parametrize("model", ("gemini-2.5-flash", "gemini-2.5-pro"))
+def test_gemini_2_5_still_uses_thinking_budget(monkeypatch, model):
+    body = _capture_body(monkeypatch, model = model, enable_thinking = False)["body"]
+    assert "thinkingBudget" in body["generationConfig"]["thinkingConfig"]
+
+
+def test_gemini_3_pro_floor_is_low_not_minimal(monkeypatch):
+    """Pro has no `minimal` level, so thinking off floors at `low`."""
+    body = _capture_body(
+        monkeypatch,
+        model = "gemini-3.1-pro-preview",
+        enable_thinking = False,
+    )["body"]
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
