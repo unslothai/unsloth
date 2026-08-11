@@ -973,9 +973,8 @@ def _is_importable(import_name: str) -> bool:
         __import__(import_name)
         return True
     except Exception as exc:
-        # A wheel built for another arch/ABI raises OSError/RuntimeError ("undefined symbol",
-        # "no kernel image is available"), not ImportError, so catch everything: the caller
-        # treats any failure as "not installed" and falls back rather than hard-failing.
+        # A wrong-arch/ABI wheel raises OSError/RuntimeError ("undefined symbol"), not
+        # ImportError, so catch everything and let the caller fall back.
         logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
         return False
 
@@ -1025,8 +1024,8 @@ def _install_package_wheel_first(
             run = _sp.run,
         ):
             if result.returncode == 0:
-                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch); verify
-                # before trusting it, else fall through to the PyPI/source path below.
+                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so
+                # verify rather than trust the exit code.
                 if _is_importable(import_name):
                     logger.info("Installed prebuilt %s wheel successfully", display_name)
                     return True

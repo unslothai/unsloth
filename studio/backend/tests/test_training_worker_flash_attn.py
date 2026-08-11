@@ -59,9 +59,8 @@ def _missing_flash_attn_import():
 def _flash_attn_import_until_installed(state: dict[str, bool]):
     """Import stub for a flash_attn that appears only once ``state['installed']`` is set.
 
-    The installers verify the import after a zero exit code, so a mock that keeps failing
-    models a broken wheel, not a working one. Tests that mean "the wheel worked" have to
-    flip the flag when install_wheel runs.
+    The installers verify the import, so a mock that keeps failing models a broken wheel,
+    not a working one: "the wheel worked" means flipping the flag when install_wheel runs.
     """
     real_import = builtins.__import__
 
@@ -140,11 +139,10 @@ def test_runtime_flash_attn_prefers_prebuilt_wheel(monkeypatch):
 
 @linux_only
 def test_runtime_flash_attn_wheel_that_does_not_import_falls_back(monkeypatch):
-    """A wheel for the wrong arch/ABI installs with rc=0 and then will not load.
+    """A wrong-arch/ABI wheel installs with rc=0 and then will not load.
 
-    This is the shape of the Blackwell breakage in #6961 and #5420: trusting the exit code
-    left a flash_attn in site-packages that raised on import mid-training. Verify the import
-    instead, so a wheel that cannot load is treated as not installed.
+    The Blackwell shape (#5420, #6961): trusting the exit code left a flash_attn that
+    raised on import mid-training. It must be treated as not installed.
     """
     statuses: list[str] = []
     pypi_calls: list[list[str]] = []

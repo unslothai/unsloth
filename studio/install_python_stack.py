@@ -3649,12 +3649,11 @@ def _flash_attn_install_disabled() -> bool:
 
 
 def _flash_attn_importable() -> bool:
-    """Whether flash_attn imports in this interpreter, checked out of process.
+    """Whether flash_attn imports, checked out of process.
 
-    A wheel built for another arch/ABI installs fine and then raises OSError/RuntimeError
-    ("undefined symbol", "no kernel image is available") on import, so a zero pip exit code
-    is not proof the install is usable. Run it in a child so a half-loaded native extension
-    cannot poison the installer process.
+    A wrong-arch/ABI wheel installs fine and raises on import, so a zero pip exit code is
+    not proof the install is usable. Run it in a child so a half-loaded native extension
+    cannot poison the installer.
     """
     return (
         subprocess.run(
@@ -3686,8 +3685,7 @@ def _ensure_flash_attn() -> None:
             uv_needs_system = UV_NEEDS_SYSTEM,
         ):
             if wheel_result.returncode == 0:
-                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch); verify
-                # rather than trusting the exit code, so setup reports what actually happened.
+                # Verify rather than trust the exit code, so setup reports what happened.
                 if _flash_attn_importable():
                     return
                 _step(

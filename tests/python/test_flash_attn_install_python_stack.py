@@ -227,10 +227,10 @@ class TestEnsureFlashAttn:
         assert kwargs["uv_needs_system"] is True
 
     def test_wheel_that_does_not_import_is_not_trusted(self):
-        """pip exits 0 on a wheel built for another arch/ABI; the import is what decides.
+        """pip exits 0 on a wrong-arch/ABI wheel; the import is what decides.
 
-        This is the #5420 / #6961 Blackwell shape: the wheel installs, then raises on import.
-        Setup has to report that rather than claiming flash-attn is ready.
+        The #5420 / #6961 Blackwell shape: setup must report that rather than claim
+        flash-attn is ready.
         """
         step_messages: list[tuple[str, str]] = []
 

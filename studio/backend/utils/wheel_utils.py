@@ -24,16 +24,11 @@ _logger = logging.getLogger(__name__)
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
 
 
-# No arch gate on the flash-attn install path, deliberately. One lived here: Dao-AILab
-# published no sm_100+ wheels, the older-arch ones failed to load on Blackwell, so
-# has_blackwell_gpu() skipped the install (#5420). Upstream then shipped Blackwell
-# kernels -- the wheels this resolver builds now carry sm_100/sm_120 cubins -- and the
-# gate became the bug instead, denying B200 hosts a wheel that works (#6961).
-#
-# It is not coming back. An arch gate encodes a snapshot of what upstream published and
-# goes stale silently in both directions. What both failures actually needed is the
-# post-install import check the callers now do: it catches a wheel that installs and
-# will not load, whatever the reason, and needs no table of who ships what.
+# No arch gate here, deliberately. has_blackwell_gpu() skipped flash-attn when upstream
+# published no sm_100+ wheels (#5420), then became the bug once it did, denying B200 hosts
+# a working wheel (#6961). An arch gate encodes a snapshot of what upstream ships and goes
+# stale silently both ways; the callers' post-install import check catches a wheel that
+# will not load whatever the cause.
 
 
 def wheel_platform_tag() -> str | None:
