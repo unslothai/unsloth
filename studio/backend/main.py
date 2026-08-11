@@ -1878,6 +1878,12 @@ def _get_cached_system_gpu_info(logger) -> tuple[dict[str, Any], dict[str, Any]]
             "devices": enriched_devices,
             "backend": visibility_info.get("backend"),
             "gguf_gpu_ids_supported": gpu_ids_supported,
+            # Host-level used VRAM, reported when the per-device figures are unknown
+            # because no counter can be attributed to one card (#7452). Only the
+            # Windows ROCm path sets it, so it is None everywhere else.
+            "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
+            if metrics_match
+            else None,
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp

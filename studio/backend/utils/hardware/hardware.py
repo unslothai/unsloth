@@ -1057,11 +1057,29 @@ def _torch_get_physical_gpu_count() -> Optional[int]:
         return None
 
 
+def rocm_windows_free_is_untrusted() -> bool:
+    """Whether ``mem_get_info``'s FREE half must be treated as an over-report.
+
+    On Windows ROCm the driver's free figure does not track residency: it is
+    commonly returned unchanged as VRAM fills, so it reads at or near ``total`` on
+    a card that is nearly full (ROCm/librocdxg#57, ROCm/TheRock#3724, and
+    ggml-org/llama.cpp#24836 on the reading being OS-dependent). The TOTAL half is
+    fine, and every other platform is left alone.
+
+    One predicate for the whole backend so the sentinel is recognised in one place
+    (#7452 reporting side, #8403 guard side).
+    """
+    return sys.platform == "win32" and IS_ROCM
+
+
 def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]]:
     """Query torch for per-GPU name, total VRAM, and used VRAM.
 
-    ``used_gb`` is ``None`` on Windows ROCm when ``hipMemGetInfo`` reports
-    ``free == total`` (ROCm/ROCm#1909): that 0 means unknown, not empty.
+    ``used_gb`` is ``None`` on Windows ROCm when the driver reports ``free ==
+    total``: that 0 means unknown, not empty. This is the DISPLAY path, so it
+    reports unknown rather than a pessimistic ceiling; a ceiling is the right
+    answer for a refusal and the wrong one for a number shown to the user as
+    measured.
     """
     mod, _ = _torch_get_device_module()
     if mod is None:
@@ -1069,7 +1087,7 @@ def _torch_get_per_device_info(device_indices: list[int]) -> list[Dict[str, Any]
 
     device = get_device()
     # free==total is a Windows-ROCm-only quirk.
-    _win_rocm = sys.platform == "win32" and IS_ROCM
+    _win_rocm = rocm_windows_free_is_untrusted()
     devices = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
@@ -1567,19 +1585,61 @@ def _match_adapter_used_to_devices(
     return assigned
 
 
-def _rocm_windows_per_device_vram(device_indices: list[int]) -> list[Dict[str, Any]]:
+def _rocm_windows_aggregate_used_bytes(
+    adapter_useds: list[float], device_totals: list[float]
+) -> Optional[float]:
+    """Total VRAM used across the visible devices, when the counters cover them 1:1.
+
+    Per-device attribution needs capacity to FORCE a pairing, and on an asymmetric
+    pair (45 GiB + 8 GiB) nothing at or below 8 GiB is forced, so idle and every
+    small model report unknown (#7452). The SUM does not need the pairing: over a
+    bijection it is the same whichever way round the usages go, so the System tab
+    keeps a real figure where per-device honestly cannot.
+
+    Emitted only when the counters are exactly the visible set: one supra-threshold
+    counter per device (sub-threshold extras are the Basic Render Driver style
+    placeholders) and no usage above its ranked capacity, which is the same
+    bijection _match_adapter_used_to_devices already requires. Same residual
+    assumption as that function: a sub-threshold counter is taken for a placeholder
+    rather than an idle visible card. ``None`` when that does not hold.
+    """
+    n = len(device_totals)
+    if n == 0 or not adapter_useds:
+        return None
+    useds = sorted(adapter_useds, reverse = True)
+    if len(useds) > n:
+        useds = [u for u in useds if u >= _ROCM_WIN_ADAPTER_MIN_BYTES]
+    # Fewer counters than devices means a visible card has no reading of its own,
+    # so the sum is not the visible set's total.
+    if len(useds) != n:
+        return None
+    ranked_totals = sorted(device_totals, reverse = True)
+    # A usage above its ranked capacity cannot be on any visible card, so an adapter
+    # outside the visibility mask is in the list and its bytes are not ours to add.
+    for rank in range(n):
+        if useds[rank] > ranked_totals[rank]:
+            return None
+    return float(sum(useds))
+
+
+def _rocm_windows_per_device_vram(
+    device_indices: list[int],
+) -> tuple[list[Dict[str, Any]], Optional[float]]:
     """Per-GPU VRAM on Windows AMD/ROCm: total from torch properties (reliable),
     used from the per-adapter Dedicated Usage counter.
 
-    Returns ``{index, visible_ordinal, name, used_gb, total_gb}`` per visible GPU
-    (``used_gb`` may be ``None`` when the counter is unavailable), or ``[]`` when
-    torch can't enumerate devices so callers fall through to the torch last resort.
+    Returns ``([{index, visible_ordinal, name, used_gb, total_gb}], aggregate_gb)``
+    per visible GPU (``used_gb`` may be ``None`` when the counter is unavailable or
+    the pairing is not capacity-forced), or ``([], None)`` when torch can't
+    enumerate devices so callers fall through to the torch last resort. The second
+    element is the visible set's total used VRAM, which survives a pairing that no
+    single device can claim (#7452), or ``None`` when even that is not established.
     """
     if platform.system() != "Windows":
-        return []
+        return [], None
     mod, _ = _torch_get_device_module()
     if mod is None:
-        return []
+        return [], None
     # Totals/names from torch properties (mem_get_info's free==total quirk zeroes used).
     dev_meta: list[Dict[str, Any]] = []
     for ordinal, phys_idx in enumerate(device_indices):
@@ -1596,14 +1656,17 @@ def _rocm_windows_per_device_vram(device_indices: list[int]) -> list[Dict[str, A
         except Exception as e:
             logger.debug("torch property probe failed for ordinal %d: %s", ordinal, e)
     if not dev_meta:
-        return []
+        return [], None
 
     adapters = _rocm_windows_perf_counter_vram_by_adapter()
+    aggregate_gb: Optional[float] = None
     if adapters:
-        assigned = _match_adapter_used_to_devices(
-            [used for _, used in adapters],
-            [d["total_bytes"] for d in dev_meta],
-        )
+        adapter_useds = [used for _, used in adapters]
+        totals = [d["total_bytes"] for d in dev_meta]
+        assigned = _match_adapter_used_to_devices(adapter_useds, totals)
+        aggregate_bytes = _rocm_windows_aggregate_used_bytes(adapter_useds, totals)
+        if aggregate_bytes is not None:
+            aggregate_gb = round(aggregate_bytes / (1024**3), 2)
     else:
         # Counter unavailable: show every GPU with a correct total, used unknown.
         assigned = [None] * len(dev_meta)
@@ -1621,7 +1684,7 @@ def _rocm_windows_per_device_vram(device_indices: list[int]) -> list[Dict[str, A
                 "total_gb": total_gb,
             }
         )
-    return devices
+    return devices, aggregate_gb
 
 
 def _rocm_windows_device_payload_entry(
@@ -1718,7 +1781,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
             _win_ids = _get_parent_visible_gpu_spec().get("numeric_ids")
             if not _win_ids:
                 _win_ids = list(range(_torch_get_physical_gpu_count() or 0))
-            _win_devices = _rocm_windows_per_device_vram(_win_ids)
+            _win_devices, _win_aggregate = _rocm_windows_per_device_vram(_win_ids)
             if _win_devices:
                 # A single visible GPU can own the aggregate 3D-engine utilization;
                 # across several GPUs the sum isn't per-device, so leave it unset.
@@ -1731,6 +1794,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
                         _rocm_windows_device_payload_entry(device, _wd, _win_util)
                         for _wd in _win_devices
                     ],
+                    vram_used_gb_aggregate = _win_aggregate,
                 )
 
         # Fallback Linux ROCm
@@ -2040,7 +2104,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
             else:
                 win_ids = list(range(_torch_get_physical_gpu_count() or 0))
                 win_index_kind = "relative"
-            win_devices = _rocm_windows_per_device_vram(win_ids)
+            win_devices, win_aggregate = _rocm_windows_per_device_vram(win_ids)
             if win_devices:
                 devices = []
                 for wd in win_devices:
@@ -2070,6 +2134,9 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "parent_visible_gpu_ids": win_numeric_ids or [],
                     "devices": devices,
                     "index_kind": win_index_kind,
+                    # Host-level used VRAM for the System tab tile: known even when
+                    # no single device's usage is attributable (#7452).
+                    "vram_used_gb_aggregate": win_aggregate,
                 }
 
     # Torch-based fallback for CUDA (nvidia-smi unavailable, AMD ROCm) and XPU (Intel)
