@@ -1787,113 +1787,34 @@ def detect_mmproj_file(path: str, search_root: Optional[str] = None) -> Optional
     return str(best[1])
 
 
-def _drafter_pairing_stem(name: str, *, kind: str) -> str:
-    """The model family a drafter filename names, stripped of its own markers.
+# Drafter naming, ranking and DFlash discovery live in utils.models.drafters, so one
+# rule serves the local scan, the download, the snapshot reuse and the offline cache.
+# Only the names this module calls are imported here; the rest import from drafters at
+# their use site. A re-export shim would read better, but verify_import_hoist.py scopes
+# its __all__ exemption to package __init__.py on purpose (see its
+# reexport_in_ordinary_module_is_still_blocked self-test).
+from utils.models.drafters import (  # noqa: E402
+    _drafter_launch_path,
+    _drafter_matches_weight,
+    _drafter_split_is_complete,
+    _drafter_stem_rank,
+    _drafter_total_size,
+    detect_dflash_file,
+    dspark_precision_rank,
+)
+from utils.models.drafters import (  # noqa: E402
+    dspark_preference_key as _drafters_dspark_preference_key,
+)
 
-    Both published schemes are handled: ``<kind>-<model>`` and the older
-    ``<model>-<KIND>``. The shard suffix sits outside the quant token, so it
-    goes first or the anchored quant strip below cannot match. Full quant
-    vocabulary, not a subset: K/IQ/UD/MXFP drafters pair too, and the optional
-    bpw modifier goes with it, as _extract_quant_label does.
+
+def dspark_preference_key(name: str) -> Tuple[int, str]:
+    """Sort key picking the preferred DSpark sidecar by name alone.
+
+    Delegates rather than re-exports: routes/inference.py has imported this from here
+    since #7968, and repointing that function-local import trips verify_import_hoist.py's
+    TARGET-CHANGED rule, whose relocation exemption only covers module-level imports.
     """
-    stem = Path(name).stem.lower()
-    if stem.startswith(f"{kind}-"):
-        stem = stem[len(kind) + 1 :]
-    stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
-    if stem.endswith(f"-{kind}"):
-        stem = stem[: -(len(kind) + 1)]
-    return re.sub(
-        rf"-(?:{_GGUF_KNOWN_QUANT_RE.pattern})(?:-[0-9]+(?:\.[0-9]+)?bpw)?$",
-        "",
-        stem,
-        flags = re.IGNORECASE,
-    )
-
-
-def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, kind: str) -> bool:
-    """Whether a drafter pairs with the weight, by name.
-
-    A multi-model folder must not attach a foreign drafter, so the family the
-    drafter names has to PREFIX the weight filename at a non-alphanumeric
-    boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` /
-    ``DeepSeek-V4-Flash`` pair but not the other: the shorter family name is a
-    prefix of the longer weight, so a base-family sidecar still matches a
-    longer-named sibling's weights. Exact equality cannot replace the prefix
-    rule -- ``mtp-gemma-4-12B-it.gguf`` really does ship beside
-    ``gemma-4-12B-it-qat-*.gguf`` -- so the remaining direction is settled by
-    ranking: callers prefer the longest matching stem (see _drafter_stem_rank).
-    """
-    if weight_name is None:
-        return True
-    stem = _drafter_pairing_stem(candidate_name, kind = kind)
-    weight = weight_name.lower()
-    return (
-        bool(stem)
-        and weight.startswith(stem)
-        and (len(weight) == len(stem) or not weight[len(stem)].isalnum())
-    )
-
-
-def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
-    """Sort key placing the most specific family first (longest stem wins).
-
-    Both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and
-    ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and
-    only the second is really its drafter.
-    """
-    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
-
-
-def _drafter_launch_path(candidate: Path) -> str:
-    """The path llama-server should receive for *candidate*.
-
-    llama-server takes shard 1 as the model path, and a split copy must stay on
-    its snapshot path: the blob target has no sibling shard names. Single-file
-    drafters still resolve, as callers expect.
-    """
-    loadable = _local_gguf_load_path(candidate)
-    if _GGUF_SPLIT_FILE_RE.match(loadable.name):
-        return str(loadable)
-    return str(loadable.resolve())
-
-
-def _drafter_split_is_complete(candidate: Path) -> bool:
-    """False for a partial split set, which would fail llama-server's draft
-    startup and disable speculation entirely; skip it so a complete copy wins."""
-    try:
-        _, complete = colocated_split_shards(candidate)
-    except OSError:
-        return False
-    return complete
-
-
-def _drafter_total_size(candidate: Path) -> int:
-    """Bytes across every shard. Candidates are collapsed to shard 1, so a split
-    copy must be summed or it would outrank a smaller single file."""
-    try:
-        shards, _ = colocated_split_shards(candidate)
-        return sum(shard.stat().st_size for shard in shards)
-    except OSError:
-        return sys.maxsize
-
-
-def dspark_precision_rank(name: str) -> int:
-    """Sidecar precision preference: Q8_0 first, the precision the DSpark model
-    card recommends. Shared with the hub download and VRAM-sizing paths so the
-    file Studio budgets for is the file it fetches and launches."""
-    base = Path(name).name.lower()
-    if "-q8_0" in base:
-        return 0
-    if "-q4_0" in base:
-        return 1
-    if "-bf16" in base or "-f16" in base:
-        return 2
-    return 3
-
-
-def dspark_preference_key(name: str) -> tuple[int, str]:
-    """Sort key picking the preferred sidecar by name alone (no filesystem)."""
-    return dspark_precision_rank(name), Path(name).name.lower()
+    return _drafters_dspark_preference_key(name)
 
 
 def detect_mtp_file(
@@ -3663,6 +3584,7 @@ class ModelConfig:
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
+    gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
     gguf_hf_repo: Optional[str] = (
         None  # HF repo ID for -hf mode (e.g. "unsloth/gemma-3-4b-it-GGUF")
     )
@@ -3725,6 +3647,7 @@ class ModelConfig:
         hf_token: Optional[str] = None,
         is_lora: bool = False,
         gguf_variant: Optional[str] = None,
+        drafter_accept: Optional[Callable[[str, str, str, str], bool]] = None,
     ) -> Optional["ModelConfig"]:
         """Create ModelConfig from a clean model identifier (HF repo or local
         path), for FastAPI routes that send sanitized paths.
@@ -3735,6 +3658,16 @@ class ModelConfig:
             is_lora: Whether this is a LoRA adapter
             gguf_variant: Optional GGUF quant variant (e.g. "Q4_K_M") to load
                 via -hf for remote repos; None auto-selects via _pick_best_gguf().
+            drafter_accept: ``(candidate, gguf_file, kind, search_root) -> bool``,
+                the caller's extra admission rule for a discovered drafter. A
+                native-grant load passes the lease boundary here so it is applied
+                BEFORE this scan inspects a candidate: detect_dflash_file reads
+                the header of the file it is about to accept, and a
+                ``dflash-*.gguf`` symlink in a granted directory can point at a
+                target outside the lease, which the validated rescan on the load
+                route rejects only after the read already happened. Left None by
+                every caller that has no boundary to impose, which sees the same
+                candidates in the same order as before.
 
         Returns:
             ModelConfig or None if it cannot be created.
@@ -3803,6 +3736,18 @@ class ModelConfig:
 
                 # Direct file selections may point into a quant subdir while mmproj-*.gguf sits at the root.
                 companion_root = _local_gguf_companion_search_root(path, gguf_file)
+
+                # One accept per drafter kind, bound to the file this load opens.
+                # Each kind admits a different companion directory, so they cannot
+                # share one closure or an MTP load would take a sidecar out of
+                # dspark/.
+                def _drafter_accept_for(kind: str) -> Optional[Callable[[str], bool]]:
+                    if drafter_accept is None:
+                        return None
+                    return lambda candidate: drafter_accept(
+                        candidate, gguf_file, kind, companion_root
+                    )
+
                 mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 if mmproj_file:
                     gguf_is_vision = True
@@ -3811,10 +3756,27 @@ class ModelConfig:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
+                mtp_file = detect_mtp_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("mtp"),
+                )
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
-                dspark_file = detect_dspark_file(gguf_file, search_root = companion_root)
+                # DSpark and DFlash take the boundary for the same reason, even
+                # though only the DFlash scan opens a candidate: all three are the
+                # same discovery, and a kind that skipped the check would hand the
+                # load route a sidecar it has to reject a second time.
+                dspark_file = detect_dspark_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dspark"),
+                )
+                dflash_file = detect_dflash_file(
+                    gguf_file,
+                    search_root = companion_root,
+                    accept = _drafter_accept_for("dflash"),
+                )
 
                 return cls(
                     identifier = identifier,
@@ -3835,6 +3797,7 @@ class ModelConfig:
                     gguf_mmproj_file = mmproj_file,
                     gguf_mtp_file = mtp_file,
                     gguf_dspark_file = dspark_file,
+                    gguf_dflash_file = dflash_file,
                 )
         else:
             # Does the HF repo contain GGUF files?
