@@ -320,6 +320,9 @@ def _stub_torch_accelerate(
     load_raises = False,
 ):
     torch = types.ModuleType("torch")
+    # The registration is version-gated (the (object, name) form is 2.6+), so the stub has to
+    # carry a version or every load here silently declines.
+    torch.__version__ = "2.9.1+cu128"
     seen = {"weights_only": None, "safe_globals": None}
 
     def _load(
@@ -743,6 +746,45 @@ def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(m
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     with pytest.raises(RuntimeError, match = "add_safe_globals"):
         pq._torch_load_prequant("/nonexistent.pt", map_location = "cpu")
+
+
+def test_an_old_torch_registers_nothing_at_all(monkeypatch):
+    """2.4/2.5 take the (object, name) pairs without looking at them and only fail later, in
+    ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry. That list is
+    process-wide, so a tuple left in it breaks every OTHER weights_only load in Studio too.
+    Hence: decide by version first, register nothing below 2.6."""
+    torch = types.ModuleType("torch")
+    torch.serialization = types.SimpleNamespace(
+        add_safe_globals = lambda entries: pytest.fail("nothing may be registered below 2.6")
+    )
+    torch.load = lambda *a, **k: pytest.fail("and no load may run")
+    for version in ("2.4.0", "2.5.1+cu124", "2.5.0"):
+        torch.__version__ = version
+        monkeypatch.setitem(sys.modules, "torch", torch)
+        monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+        assert pq._tuple_safe_globals_supported() is False, version
+        assert pq.restricted_prequant_load_supported() is False, version
+    torch.__version__ = "2.6.0"
+    assert pq._tuple_safe_globals_supported() is True
+
+
+def test_a_stubbed_torchao_cannot_open_a_checkpoint(monkeypatch):
+    """Windows ROCm runs on the torchao IMPORT STUB, which fabricates a class for every name
+    asked of it. The allowlist would happily register those fakes and answer yes for an install
+    that cannot rebuild a single quantized tensor, and the H3 auto fallback treats ROCm as
+    eligible, so the plan would drop the dense denoiser shards for a checkpoint nothing can
+    open."""
+    import core._torchao_stub as stub
+
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(stub, "is_stubbed", lambda package: package == "torchao")
+    torch = types.ModuleType("torch")
+    torch.__version__ = "2.9.1"
+    torch.serialization = types.SimpleNamespace(
+        add_safe_globals = lambda entries: pytest.fail("a stub must never be registered")
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    assert pq.restricted_prequant_load_supported() is False
 
 
 def test_an_install_that_cannot_restrict_the_load_offers_no_prequant_source(monkeypatch, tmp_path):

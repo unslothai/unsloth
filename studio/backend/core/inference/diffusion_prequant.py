@@ -131,6 +131,23 @@ _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
 
 
+def _tuple_safe_globals_supported() -> bool:
+    """Whether this torch's ``add_safe_globals`` understands ``(object, name)`` pairs.
+
+    torch 2.6. Asked by VERSION rather than by trying it, because 2.4/2.5 accept the pairs
+    silently -- ``_add_safe_globals`` just extends a list -- and only fail later, inside
+    ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry. That list is
+    process-wide, so a tuple left in it breaks every other weights_only load in Studio, not just
+    ours. Nothing is registered unless the answer here is yes."""
+    try:
+        import torch
+
+        parts = str(torch.__version__).split("+")[0].split(".")
+        return (int(parts[0]), int(parts[1])) >= (2, 6)
+    except Exception:  # noqa: BLE001 -- an unreadable version is not a supported one
+        return False
+
+
 def _register_prequant_safe_globals() -> bool:
     """Register the allowlist ONCE, process-wide and permanently. True when the load can run.
 
@@ -147,10 +164,12 @@ def _register_prequant_safe_globals() -> bool:
     naming ANY global, which is still refused.
 
     Registration takes ``(object, name)`` pairs so a re-exported class is registered under the
-    name the pickle records. Torch grew that form in 2.6; an older torch registers under the
-    class's own ``__module__`` instead, which would silently refuse an fp8 checkpoint, so it
-    counts as unsupported here and ``restricted_prequant_load_supported`` tells planning to stop
-    offering pre-quant sources. Answered once and memoised, including the failure."""
+    name the pickle records, and that form is checked BEFORE anything is registered. Torch grew
+    it in 2.6; 2.4/2.5 take the list without looking at it and then do ``f.__module__`` on each
+    entry at load time, so a tuple there is an AttributeError -- in a list shared by the whole
+    process, which would break every other weights_only load too. Below 2.6 nothing is
+    registered and ``restricted_prequant_load_supported`` tells planning to stop offering
+    pre-quant sources at all. Answered once and memoised, including the failure."""
     global _SAFE_GLOBALS_REGISTERED
 
     if _SAFE_GLOBALS_REGISTERED is not None:
@@ -160,10 +179,21 @@ def _register_prequant_safe_globals() -> bool:
             return _SAFE_GLOBALS_REGISTERED
         ok = False
         try:
+            from core._torchao_stub import is_stubbed
+
             import torch
             add = getattr(torch.serialization, "add_safe_globals", None)
-            if add is not None:
+            # A STUBBED torchao (Windows ROCm, where the real one cannot import) fabricates a
+            # class for every name asked of it, so the allowlist would register fakes and this
+            # would answer yes for an install that cannot rebuild a single quantized tensor.
+            if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
                 add(_prequant_safe_globals())
+                # The same derivation the unpickler runs, so a form this torch cannot express
+                # fails here, once, rather than under a load a plan has already been sized on.
+                try:
+                    torch._weights_only_unpickler._get_user_allowed_globals()
+                except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
+                    pass
                 ok = True
         except Exception:  # noqa: BLE001 -- no allowlist means no restricted load, never a raise
             ok = False

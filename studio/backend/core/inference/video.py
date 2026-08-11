@@ -1868,6 +1868,18 @@ class VideoBackend:
         direction: unanswerable keeps the dense shards."""
         if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task):
             return False
+        from .diffusion_prequant import restricted_prequant_load_supported
+
+        if not restricted_prequant_load_supported():
+            # An install that cannot open a pre-quant checkpoint has to keep the dense shards.
+            # This is the decision that COMMITS -- it is what drops 66 GB from the pull -- and it
+            # runs for an EXPLICIT request too, which the auto selector's gate never sees.
+            logger.info(
+                "video.denoiser_prequant: this install cannot deserialize a pre-quantized "
+                "checkpoint, so the %s request keeps its dense denoiser shards",
+                transformer_quant,
+            )
+            return False
         try:
             from huggingface_hub import HfApi
             repo, _files = self._denoiser_prequant_hub_files(
