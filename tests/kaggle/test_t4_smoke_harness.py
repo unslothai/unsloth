@@ -1580,7 +1580,6 @@ def test_grpo_does_not_share_a_session_with_gptoss():
     Re-pairing them to save a queue slot is the change this test exists to
     stop."""
     from legs import KERNELS
-
     for kernel in KERNELS:
         assert not ("grpo" in kernel and "gptoss" in kernel), kernel
 
@@ -1592,7 +1591,6 @@ def test_control_and_canary_still_share_a_session():
     uncontrolled variable between the only two legs whose comparison has to be
     clean."""
     from legs import KERNELS
-
     assert any(set(k) >= {"control", "canary"} for k in KERNELS), KERNELS
 
 
