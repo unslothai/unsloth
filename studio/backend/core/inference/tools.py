@@ -2539,8 +2539,23 @@ _AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset(
 # tagged objects without going through yaml.load, and subclassing one of these
 # (the documented way to extend PyYAML) inherits that.
 _AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset(
-    {"Loader", "UnsafeLoader", "CLoader", "CUnsafeLoader", "FullLoader", "CFullLoader"}
+    {
+        "Loader",
+        "UnsafeLoader",
+        "CLoader",
+        "CUnsafeLoader",
+        "FullLoader",
+        "CFullLoader",
+        # yaml.constructor.Constructor().construct_document(yaml.compose(s)) is
+        # the loader's own object-building half, reachable without a Loader.
+        "Constructor",
+        "UnsafeConstructor",
+        "FullConstructor",
+    }
 )
+# Only PyYAML gives Loader= its meaning, so the exemption below is scoped to it:
+# torch.load(f, Loader=yaml.SafeLoader) must stay gated.
+_AUTO_YAML_MODULES = frozenset({"yaml"})
 _AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
 # Loader classes that cannot construct arbitrary callables in any PyYAML
 # version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
@@ -3554,6 +3569,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a code-executing loader (import torch as t), so
     # t.load(...) is still gated as a code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # The PyYAML subset of the above, and of the bare load-function names, so
+    # the Loader= exemption cannot reach torch.load / joblib.load.
+    yaml_module_aliases = set(_AUTO_YAML_MODULES)
+    yaml_func_aliases: "set[str]" = set()
     # Names bound to such a loader directly (from yaml import unsafe_load [as u];
     # ld = yaml.load), so calling the bare name is gated like the attribute call.
     # The class aliases stay separate: only the load functions take a Loader=
@@ -3681,6 +3700,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             node = node.value
         return isinstance(node, ast.Name) and node.id in load_module_aliases
 
+    def _is_yaml_module(node) -> bool:
+        # The PyYAML half of _is_load_module, for the Loader= exemption only.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in yaml_module_aliases
+
     def _is_loader_attr(node) -> bool:
         # yaml.unsafe_load / yl.CLoader / torch.load: a loader reached through a
         # tracked module, so json.load and a same-named local method are not it.
@@ -3715,6 +3740,17 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             return False
         return any(kw.arg == "Loader" and _is_safe_loader(kw.value) for kw in call.keywords or [])
 
+    def _holds_write_callable(arg) -> bool:
+        # A callable handed over directly, or packed into a literal container the
+        # helper unpacks itself: run((yaml.unsafe_load, payload)).
+        if isinstance(arg, (ast.Tuple, ast.List, ast.Set)):
+            return any(_holds_write_callable(e) for e in arg.elts)
+        if isinstance(arg, ast.Dict):
+            return any(_holds_write_callable(v) for v in arg.values)
+        if isinstance(arg, ast.Name) and arg.id in packed_callable_names:
+            return True
+        return _passed_write_callable(arg)
+
     def _forwards_callable(call) -> bool:
         # Whether a call hands a concrete write/loader callable to a helper,
         # including the ones an unpacking hides: run(*(yaml.load, s)),
@@ -3726,7 +3762,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                 elif isinstance(arg.value, ast.Name) and arg.value.id in packed_callable_names:
                     return True
-            elif _passed_write_callable(arg):
+            elif _holds_write_callable(arg):
                 return True
         for kw in call.keywords:
             if kw.arg is None:
@@ -3735,7 +3771,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                 elif isinstance(kw.value, ast.Name) and kw.value.id in packed_callable_names:
                     return True
-            elif _passed_write_callable(kw.value):
+            elif _holds_write_callable(kw.value):
                 return True
         return False
 
@@ -3754,6 +3790,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 or arg.id in archive_ctor_aliases
                 or arg.id in load_func_aliases
                 or arg.id in load_class_aliases
+                # the module itself: def run(mod): mod.unsafe_load(s); run(yaml)
+                or arg.id in load_module_aliases
             )
         if isinstance(arg, ast.Attribute):
             # A loader is receiver-matched (yaml.load, torch.load) so a helper
@@ -3828,6 +3866,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             _rebound = [node.target]
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             rebindable_names.add(node.name)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # A parameter shadows an outer name inside the body, so an imported
+            # SafeLoader is not necessarily the class the exemption assumes.
+            _args = node.args
+            for _p in (
+                _args.posonlyargs + _args.args + _args.kwonlyargs
+                + ([_args.vararg] if _args.vararg else [])
+                + ([_args.kwarg] if _args.kwarg else [])
+            ):
+                rebindable_names.add(_p.arg)
         for target in _rebound:
             for sub in ast.walk(target):
                 if isinstance(sub, ast.Name):
@@ -3844,6 +3892,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # the loader classes too (yl.Loader); a dotted import without
                     # an asname binds the root package.
                     load_module_aliases.add(alias.asname or alias.name.split(".")[0])
+                    if alias.name.split(".")[0] in _AUTO_YAML_MODULES:
+                        yaml_module_aliases.add(alias.asname or alias.name.split(".")[0])
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
@@ -3890,6 +3940,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 for alias in node.names:
                     if alias.name in _AUTO_UNSAFE_PY_LOAD_FUNCS:
                         load_func_aliases.add(alias.asname or alias.name)
+                        if node.module.split(".")[0] in _AUTO_YAML_MODULES:
+                            yaml_func_aliases.add(alias.asname or alias.name)
                     elif alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES:
                         load_class_aliases.add(alias.asname or alias.name)
                     # from yaml.loader import SafeLoader is the documented safe
@@ -3907,6 +3959,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         # submodule that carries the loaders (from yaml import
                         # loader as yl), so treat the name as a receiver.
                         load_module_aliases.add(alias.asname or alias.name)
+                        if node.module.split(".")[0] in _AUTO_YAML_MODULES:
+                            yaml_module_aliases.add(alias.asname or alias.name)
             for alias in node.names:
                 if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
                     writer_aliases.add(alias.asname or alias.name)
@@ -3941,6 +3995,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             elif isinstance(value, ast.Name) and value.id in load_module_aliases:
                 load_module_aliases.update(targets)  # c = yaml; c.load(...)
                 attr_load_module_aliases.update(attr_targets)  # box.mod = yaml
+                if value.id in yaml_module_aliases:
+                    yaml_module_aliases.update(targets)
             elif _is_loader_attr(value):
                 # ld = yaml.load / L = yaml.Loader, on a name or an attribute
                 # (holder.ld = yaml.unsafe_load), which is called like the module
@@ -4047,6 +4103,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     packed_callable_names.update(targets)
             elif isinstance(value, ast.Name) and value.id in packed_callable_names:
                 packed_callable_names.update(targets)  # q = p; run(*q)
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr in _AUTO_SAFE_PY_LOAD_FUNCS
+                and _is_load_module(value.value)
+            ) or (isinstance(value, ast.Name) and value.id in safe_func_aliases):
+                safe_func_aliases.update(targets)  # f = yaml.safe_load
             if _is_safe_loader(value):
                 # Safe = yaml.SafeLoader factors out a provably safe read, so keep
                 # the exemption, but only for a name bound exactly once here.
@@ -4165,6 +4227,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         load_class_aliases.add(_param.arg)
                     elif _did in load_module_aliases:
                         load_module_aliases.add(_param.arg)  # def run(y=yaml)
+                        if _did in yaml_module_aliases:
+                            yaml_module_aliases.add(_param.arg)
                 elif _is_loader_attr(_default):
                     # def run(loader=yaml.unsafe_load): loader(payload)
                     if _default.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
@@ -4290,9 +4354,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # load functions honour Loader=, so a class alias never does.
                     if func.id in load_class_aliases:
                         return True
-                    if registers_constructor and func.id in safe_func_aliases:
+                    if (registers_constructor or uses_setattr) and func.id in safe_func_aliases:
                         return True
-                    if func.id in load_func_aliases and not _loads_safely(node):
+                    if func.id in load_func_aliases and not (
+                        func.id in yaml_func_aliases and _loads_safely(node)
+                    ):
                         return True
                     # A bare archive constructor (from zipfile import ZipFile)
                     # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
@@ -4353,7 +4419,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # yaml.safe_load is a safe read until a constructor has been
                     # registered, which puts a callback behind the payload's tags.
                     if (
-                        registers_constructor
+                        (registers_constructor or uses_setattr)
                         and func.attr in _AUTO_SAFE_PY_LOAD_FUNCS
                         and _is_load_module(func.value)
                     ):
@@ -4362,7 +4428,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # yaml.load/unsafe_load) runs code embedded in the data it
                     # deserializes, unless an explicit safe Loader= rules it out.
                     if _is_loader_attr(func) and not (
-                        func.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS and _loads_safely(node)
+                        func.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS
+                        and _is_yaml_module(func.value)
+                        and _loads_safely(node)
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):

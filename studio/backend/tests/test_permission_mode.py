@@ -1782,6 +1782,29 @@ def test_high_risk_dispatcher_non_terminal():
         ),
         ("import yaml\nbox.mod = yaml\nbox.mod.unsafe_load(s)", True),  # module on an attr
         ("import json\nbox.mod = json\nprint(box.mod.dumps({}))", False),
+        # Loader= is a PyYAML contract, so it never exempts another loader.
+        ("import torch, yaml\ntorch.load(p, pickle_module=P, Loader=yaml.SafeLoader)", True),
+        ("from torch import load\nimport yaml\nload(p, Loader=yaml.SafeLoader)", True),
+        ("import yaml\nf = yaml.safe_load\nyaml.SafeLoader.add_constructor('!e', cb)\nf(s)", True),
+        ("import yaml\nf = yaml.safe_load\nprint(f(open('c.yml')))", False),  # no registration
+        (
+            "import yaml\nsetattr(yaml.SafeLoader, 'yaml_constructors', {'!e': cb})\n"
+            "yaml.safe_load(s)",
+            True,
+        ),
+        ("import yaml\ndef run(mod): mod.unsafe_load(s)\nrun(yaml)", True),  # module forwarded
+        (
+            "import yaml\nfrom yaml.constructor import Constructor\n"
+            "Constructor().construct_document(yaml.compose(s))",
+            True,
+        ),  # the loader's object-building half
+        (
+            "from yaml import SafeLoader\nimport yaml\n"
+            "(lambda SafeLoader: yaml.load(s, Loader=SafeLoader))([yaml.Loader][0])",
+            True,
+        ),  # a parameter shadows the imported class
+        ("import yaml\ndef run(p):\n    f, d = p\n    f(d)\nrun((yaml.unsafe_load, s))", True),
+        ("def run(p):\n    a, b = p\n    return a + b\nprint(run((1, 2)))", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
