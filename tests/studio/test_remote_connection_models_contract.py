@@ -49,7 +49,9 @@ def test_frontend_sync_backfills_local_models_to_backend():
     assert "settleTasksIfCurrent(backfillTasks" in source
     helper = (FRONTEND / "features/credentials/reconciliation.ts").read_text(encoding = "utf-8")
     assert "export async function settleTasksIfCurrent" in helper
-    assert "allSettled" in helper, "the batch must still settle rather than reject on the first failure"
+    assert (
+        "allSettled" in helper
+    ), "the batch must still settle rather than reject on the first failure"
 
 
 def test_frontend_sync_preserves_local_provider_options():
@@ -73,9 +75,9 @@ def test_connections_are_hydrated_on_startup():
     bootstrap = CREDENTIAL_BOOTSTRAP.read_text(encoding = "utf-8")
     assert "syncExternalProvidersFromBackend" in bootstrap
     root = ROOT_ROUTE.read_text(encoding = "utf-8")
-    assert "bootstrapPersistedCredentials" in root, (
-        "nothing calls the credential bootstrap, so no page hydrates connections"
-    )
+    assert (
+        "bootstrapPersistedCredentials" in root
+    ), "nothing calls the credential bootstrap, so no page hydrates connections"
     # The chat page still hydrates its own persisted settings.
     assert "hydratePersistedSettings()" in CHAT_PAGE.read_text(encoding = "utf-8")
 
