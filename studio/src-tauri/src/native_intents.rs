@@ -742,10 +742,20 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "unsloth-native-intents-{name}-{}-{nanos}",
-            std::process::id()
-        ))
+        // Not std::env::temp_dir(): on macOS that is /var/folders/..., whose
+        // real path is under /private, which this policy treats as a sensitive
+        // root on purpose. Every scratch path here would be rejected for that
+        // reason rather than the one under test. The test binary's own
+        // directory is writable, is inside the build tree, and is sensitive
+        // nowhere.
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!(
+                "unsloth-native-intents-{name}-{}-{nanos}",
+                std::process::id()
+            ))
     }
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
