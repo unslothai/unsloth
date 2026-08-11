@@ -804,7 +804,11 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            if name.endswith("Pipeline"):
+            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
+            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
+            # pipeline. Answering only pipelines let that probe miss and turned routing tests
+            # into the 400 about diffusers this proxy exists to prevent.
+            if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
 
