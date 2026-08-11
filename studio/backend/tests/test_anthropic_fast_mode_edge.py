@@ -120,10 +120,11 @@ def test_fast_mode_attaches_on_dated_opus_4_8_snapshot(monkeypatch):
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
-def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
+def test_fast_mode_dropped_on_dated_opus_4_6_snapshot(monkeypatch):
+    """4.6 accepts `speed` but runs at standard speed, so we never send it."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6-2026-02-01")
-    assert cap["body"].get("speed") == "fast", cap["body"]
-    assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
@@ -365,7 +366,6 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
         "claude-opus-5",
         "claude-opus-4-8",
-        "claude-opus-4-6",
     }, _ANTHROPIC_FAST_MODE_PREFIXES
 
 

@@ -417,15 +417,16 @@ _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
 _ANTHROPIC_COMPACTION_MIN = 50_000
 
 
-# Anthropic fast-mode beta (Opus 4.6 / 4.8 / 5 only, per
+# Anthropic fast-mode beta (Opus 5 / Opus 4.8 only, per
 # https://platform.claude.com/docs/en/build-with-claude/fast-mode).
-# Opus 4.7 dropped it and now 400s on `speed`; Sonnet 5 never had it.
+# Opus 4.7 400s on `speed`; Opus 4.6 accepts it but runs at standard speed and
+# reports `usage.speed: "standard"`, so exposing the toggle there promises a
+# speed-up that never happens. Sonnet 5 never had it.
 # Mutually exclusive with the Priority service tier.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
     "claude-opus-5",
     "claude-opus-4-8",
-    "claude-opus-4-6",
 )
 
 
@@ -947,7 +948,7 @@ class ExternalProviderClient:
         provider-capability map already filters these per provider, so they're
         opt-in here.
 
-        ``fast_mode`` only applies to Anthropic Opus 4.6 / 4.7 (silently
+        ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
         """
         # tool_choice="none" hard-disables hosted/builtin tools across every
@@ -2240,7 +2241,7 @@ class ExternalProviderClient:
                 ]
             }
 
-        # fast_mode is Opus 4.6/4.7 only; silently drop elsewhere. Incompatible
+        # fast_mode is Opus 5 / 4.8 only; silently drop elsewhere. Incompatible
         # with the Priority service_tier (frontend gate prevents both at once;
         # backend lets Anthropic 400 if combined).
         fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)

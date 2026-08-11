@@ -645,3 +645,46 @@ def test_openai_gpt56_family_uses_verified_prices():
         long = calculate_cost("openai", model, {"input_tokens": 300_000, "output_tokens": 1000})
         assert _isclose(long["input_usd"], 300_000 / 1_000_000.0 * long_in), model
         assert _isclose(long["output_usd"], 1000 / 1_000_000.0 * long_out), model
+
+
+def test_sonnet_5_bills_the_launch_rate_until_the_cutover():
+    """Sonnet 5 ships at $2/$10 through 2026-08-31 and $3/$15 from 2026-09-01.
+    Ref: https://platform.claude.com/docs/en/about-claude/pricing"""
+    import datetime
+
+    from core.inference.pricing import _launch_prices
+
+    table = ANTHROPIC_PRICING["claude-sonnet-5"]
+    assert table["input_per_mtok"] == 3.0 and table["output_per_mtok"] == 15.0
+
+    launch = _launch_prices(
+        "anthropic", "claude-sonnet-5", table, today = datetime.date(2026, 8, 31)
+    )
+    assert launch["input_per_mtok"] == 2.0 and launch["output_per_mtok"] == 10.0
+    # A dated snapshot inherits the same launch rate.
+    dated = _launch_prices(
+        "anthropic", "claude-sonnet-5-20260629", table, today = datetime.date(2026, 8, 31)
+    )
+    assert dated["input_per_mtok"] == 2.0
+
+    after = _launch_prices(
+        "anthropic", "claude-sonnet-5", table, today = datetime.date(2026, 9, 1)
+    )
+    assert after == table
+    # Neighbouring families are untouched on either side of the cutover.
+    opus = ANTHROPIC_PRICING["claude-opus-5"]
+    assert (
+        _launch_prices("anthropic", "claude-opus-5", opus, today = datetime.date(2026, 8, 31))
+        == opus
+    )
+
+
+def test_fast_mode_multiplier_is_2x_for_the_supported_opus_models():
+    """Fast mode is Opus 5 / Opus 4.8 only, at $10/$50 against a $5/$25 base.
+    Ref: https://platform.claude.com/docs/en/build-with-claude/fast-mode#pricing"""
+    assert ANTHROPIC_FAST_MODE_MULT == 2.0
+    for model in ("claude-opus-5", "claude-opus-4-8"):
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "speed": "fast"}
+        out = calculate_cost("anthropic", model, usage)
+        assert _isclose(out["input_usd"], 10.0), model
+        assert _isclose(out["output_usd"], 50.0), model
