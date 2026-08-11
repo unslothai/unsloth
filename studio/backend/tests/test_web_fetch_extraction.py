@@ -726,10 +726,7 @@ def test_fetch_url_raw_missing_content_type_reported_empty(monkeypatch):
     ],
 )
 def test_fetch_url_raw_dns_pinning_proxy_opt_out(
-    monkeypatch,
-    disable_dns_pinning,
-    proxied,
-    expected_url,
+    monkeypatch, disable_dns_pinning, proxied, expected_url
 ):
     import email
     import urllib.request
