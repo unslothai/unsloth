@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -345,6 +346,63 @@ def test_the_builtin_reached_through_an_alias_is_still_flagged():
     findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
     assert high == [], f"unaliased model.eval() must stay clean: {high}"
+
+
+def test_a_parenthesized_builtins_module_is_still_the_builtin():
+    # `(builtins).exec(...)` is the same call with one pair of parentheses. It
+    # reaches neither the qualified branch (the name is not glued to the dot) nor
+    # the bare branch (which refuses a leading dot), so it needs its own spelling.
+    for payload in (
+        "mod = __import__('os')\n(builtins).exec(marshal.loads(BLOB))\n",
+        "mod = __import__('os')\n(__builtins__).eval(BLOB)\n",
+        "mod = __import__('os')\n((builtins)).exec(BLOB)\n",
+    ):
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"parenthesized builtin must be flagged:\n{payload}"
+
+
+def test_an_alias_bound_after_the_call_site_is_still_flagged():
+    # Python resolves `b` when the function runs, not where it is written, so a
+    # module-level import below the body still makes this the builtin. Pairing the
+    # alias with its call inside the regex could only search forward from the
+    # import, and missed exactly this.
+    payload = (
+        "def go():\n"
+        "    b.exec(marshal.loads(BLOB))\n"
+        "mod = __import__('os')\n"
+        "import builtins as b\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an alias imported below its call must still be flagged"
+
+
+def test_a_rebound_alias_is_not_treated_as_the_builtin():
+    # `import builtins as m` then `m = load_model()` leaves `m.eval()` an ordinary
+    # torch call. Treating every later use of the spelling as the module would
+    # reintroduce the false positive this whole rule exists to remove.
+    payload = (
+        "import builtins as m\n"
+        "plugin = __import__(name)\n"
+        "m = load_model()\n"
+        "m.eval()\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a rebound alias must not read as the builtin: {high}"
+
+
+def test_alias_matching_stays_linear_on_hostile_source():
+    # Archive members are allowed up to 64 MiB and check_py_file searches this
+    # pattern more than once, so pairing each candidate import with a call by
+    # rescanning the tail of the file (quadratic) is a way to stall the scanner.
+    # 3,000 distinct aliases in ~75 KB took about 5.5 s that way.
+    hostile = "".join(f"import builtins as b{i}\n" for i in range(3_000))
+    start = time.monotonic()
+    assert sp.RE_EXEC_EVAL.search(hostile) is None
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"alias collection is not linear: {elapsed:.2f}s"
 
 
 def test_the_real_exec_builtin_is_still_flagged():

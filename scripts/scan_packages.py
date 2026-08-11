@@ -111,19 +111,119 @@ RE_BASE64 = re.compile(
 #
 # Four ways to reach the builtin, all of which must stay detectable:
 #   1. bare              `exec(payload)`
-#   2. through builtins  `builtins.exec(payload)`, `__builtins__.eval(payload)`
+#   2. through builtins  `builtins.exec(payload)`, `(__builtins__).eval(payload)`
 #   3. aliased module    `import builtins as b` ... `b.exec(payload)`
 #   4. aliased function  `from builtins import exec as run` ... `run(payload)`
-# The last two are matched by binding the alias where it is created and requiring
-# the same name at the call, so they cost nothing against `model.eval()`: an
-# arbitrary object only qualifies if the file aliased `builtins` to that name.
-RE_EXEC_EVAL = re.compile(
-    r"(?<![\w.])(?:__builtins__|builtins)\s*\.\s*(?:exec|eval)\s*\("
+# 1 and 2 are one linear regex. 3 and 4 cannot be: pairing an alias with its call
+# inside the regex needs `[\s\S]*?` between them, which rescans the tail of the
+# file once per candidate import (quadratic: 3,000 `import builtins as b` lines
+# in 75 KB cost ~5.5 s a search, and check_py_file searches more than once, on
+# members allowed up to 64 MiB). It is also wrong in both directions: the call
+# has to sit *after* the import textually, though Python resolves the name at
+# call time, so a function defined above a module-level import still runs; and a
+# name that the file rebinds (`import builtins as m` ... `m = load_model()`)
+# stays "the builtin" forever, which is the very `m.eval()` false positive this
+# is meant to remove. `_ExecEvalPattern` below collects the aliases in one pass
+# instead, drops the rebound ones, and matches the calls order-independently.
+RE_BUILTINS_EXEC_EVAL = re.compile(
+    # `\)*` so a parenthesized module expression - `(builtins).exec(BLOB)` - is
+    # still the builtin. Bare `exec(`/`eval(` must reject a leading dot, so the
+    # parenthesized spelling reaches neither branch without this.
+    r"(?<![\w.])(?:__builtins__|builtins)\s*\)*\s*\.\s*(?:exec|eval)\s*\("
     r"|(?<![\w.])(?:exec|eval)\s*\("
-    r"|(?<![\w.])import\s+builtins\s+as\s+(\w+)[\s\S]*?(?<![\w.])\1\s*\.\s*(?:exec|eval)\s*\("
-    r"|(?<![\w.])from\s+builtins\s+import\s+[^\n]*?\b(?:exec|eval)\s+as\s+(\w+)"
-    r"[\s\S]*?(?<![\w.])\2\s*\("
 )
+
+# `import builtins as b`, and `from builtins import exec as run`.
+RE_BUILTINS_MODULE_ALIAS = re.compile(r"(?<![\w.])import\s+builtins\s+as\s+(\w+)")
+RE_BUILTINS_FUNC_ALIAS = re.compile(
+    r"(?<![\w.])from\s+builtins\s+import\s+([^\n]*)"
+)
+RE_FUNC_ALIAS_ITEM = re.compile(r"(?<![\w.])(?:exec|eval)\s+as\s+(\w+)")
+# Any name this file assigns to. One pass for the whole file, then a set
+# difference: an alias that is also an assignment target is not the builtin at
+# the call site, and per-name searching would reintroduce the quadratic cost.
+RE_ASSIGNED_NAME = re.compile(
+    r"^[ \t]*(\w+)[ \t]*(?::[^=\n]+)?=(?!=)"
+    r"|(?<![\w.])for\s+(\w+)\s+in\s"
+    r"|(?<![\w.])(?:def|class)\s+(\w+)"
+    r"|(?<![\w.])as\s+(\w+)\s*:",
+    re.M,
+)
+
+
+def _builtins_alias_call_pattern(content: str) -> "re.Pattern | None":
+    """Compile a matcher for this file's live aliases of the exec/eval builtins.
+
+    Returns None when the file aliases nothing, which is every ordinary file, so
+    the common path costs two linear scans and no compile.
+    """
+    modules: set[str] = set()
+    funcs: set[str] = set()
+    for m in RE_BUILTINS_MODULE_ALIAS.finditer(content):
+        modules.add(m.group(1))
+    for m in RE_BUILTINS_FUNC_ALIAS.finditer(content):
+        for item in RE_FUNC_ALIAS_ITEM.finditer(m.group(1)):
+            funcs.add(item.group(1))
+    if not modules and not funcs:
+        return None
+    rebound = {g for m in RE_ASSIGNED_NAME.finditer(content) for g in m.groups() if g}
+    modules -= rebound
+    funcs -= rebound
+    parts = []
+    if modules:
+        names = "|".join(sorted(re.escape(n) for n in modules))
+        parts.append(rf"(?<![\w.])(?:{names})\s*\)*\s*\.\s*(?:exec|eval)\s*\(")
+    if funcs:
+        names = "|".join(sorted(re.escape(n) for n in funcs))
+        parts.append(rf"(?<![\w.])(?:{names})\s*\(")
+    if not parts:
+        return None
+    return re.compile("|".join(parts))
+
+
+class _ExecEvalPattern:
+    """`re.Pattern`-shaped view over the direct forms plus this file's aliases.
+
+    Only `search` and `finditer` are used against it (`_extract_evidence` and
+    the per-check tables), and both take the text they are given, so the alias
+    set is always derived from the same text being matched. A `search` handed a
+    single line cannot see an alias bound on another line; the whole-content
+    `finditer` in `_extract_evidence` does, and records those spans.
+    """
+
+    def __init__(self, direct: re.Pattern):
+        self.direct = direct
+        self.pattern = direct.pattern
+
+    def for_text(self, content: str) -> re.Pattern:
+        """One plain pattern covering the direct forms and `content`'s aliases.
+
+        `_extract_evidence` scans line by line, and a line holding an alias call
+        says nothing on its own about whether that name is the builtin. Binding
+        the aliases to the whole file up front lets that per-line pass see them,
+        so an alias-only payload gets its line recorded as evidence instead of
+        an empty string.
+        """
+        alias = _builtins_alias_call_pattern(content)
+        if alias is None:
+            return self.direct
+        return re.compile(f"{self.direct.pattern}|{alias.pattern}")
+
+    def search(self, text: str):
+        hit = self.direct.search(text)
+        if hit is not None:
+            return hit
+        alias = _builtins_alias_call_pattern(text)
+        return alias.search(text) if alias is not None else None
+
+    def finditer(self, text: str):
+        yield from self.direct.finditer(text)
+        alias = _builtins_alias_call_pattern(text)
+        if alias is not None:
+            yield from alias.finditer(text)
+
+
+RE_EXEC_EVAL = _ExecEvalPattern(RE_BUILTINS_EXEC_EVAL)
 
 # Network APIs (excludes urllib.parse which is pure string manipulation)
 RE_NETWORK = re.compile(
@@ -1403,6 +1503,12 @@ def _extract_evidence(
     pathological greedy span is bounded to its head line plus a digest of the
     rest.
     """
+    # Patterns whose meaning depends on the rest of the file (exec/eval reached
+    # through an alias of `builtins`) resolve against the whole content once,
+    # before the line-by-line scan below can no longer see it.
+    for_text = getattr(pattern, "for_text", None)
+    if for_text is not None:
+        pattern = for_text(content)
     lines = content.splitlines()
     sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
     ml_blanked = _blank_code_strings(lines)
