@@ -149,10 +149,9 @@ def looks_like_quant(variant: Optional[str]) -> bool:
         return False
     # _extract_quant_label can append a bpw modifier (IQ4_XS-3.53bpw); still a quant.
     label = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", variant.strip(), flags = re.IGNORECASE)
-    # A qualified variant key is one of OUR advertised rows: usually a path such as
-    # ``distilled/model-Q6_K``, but H3 uses a root-level full stem such as
-    # ``minimax_h3_ref2va_pruned-Q6_K``. It must be an explicit request and MISS when absent.
-    # Falling through instead served the caller a different checkpoint under the requested id.
+    # A qualified key is one of OUR advertised rows: a path (``distilled/model-Q6_K``) or an H3
+    # root stem (``minimax_h3_ref2va_pruned-Q6_K``). Explicit, so it must MISS when absent;
+    # falling through served the caller a different checkpoint under the requested id.
     normalized = label.replace("\\", "/")
     if "/" in normalized or is_h3_denoiser_variant_key(normalized):
         return True

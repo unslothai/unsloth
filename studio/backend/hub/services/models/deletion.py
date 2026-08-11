@@ -134,11 +134,10 @@ def _remove_empty_variant_dirs(target_repos: list, variant: str) -> tuple[int, l
     """Remove now-empty ``snapshots/<rev>/<quant>/`` folders for *variant* (the
     quant label names the folder); only empty dirs go, so siblings are safe.
     Returns (count removed, removal failures other than a concurrent refill)."""
-    # A qualified variant key names its own folder; its quant token belongs to sibling
-    # checkpoints too, so it must not reach for a <quant>/ dir it does not own. Qualification
-    # includes a path (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier
-    # (``IQ4_XS-3.53bpw``, whose token-only ``IQ4_XS/`` folder, if it exists, is a
-    # different build's).
+    # A qualified key names its own folder; its quant token belongs to sibling checkpoints too,
+    # so it must not reach for a <quant>/ dir it does not own. Qualified means a path
+    # (``distilled/...-Q6_K``), an H3 root stem, or a bpw modifier (``IQ4_XS-3.53bpw``, whose
+    # token-only ``IQ4_XS/`` folder is a different build's).
     qualified = (
         is_qualified_gguf_variant_key(variant)
         or (quant_token_with_bpw(variant) or "").lower() == variant.lower()

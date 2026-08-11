@@ -362,9 +362,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
           { gpuGb: 123, systemRamGb: 80 },
         ],
       }),
-      // One official bundle for both denoiser partitions. The GGUF lister labels every
-      // variant as Text & frames or References, plus its build, so both remain explicit
-      // without pretending two partitions in one repo are two repository identities.
+      // One official bundle for both denoiser partitions. The GGUF lister labels every variant
+      // Text & frames or References plus its build, so both stay explicit under one repo id.
       gguf("unsloth/MiniMax-H3-GGUF", {
         label: "GGUF",
         keywords: [

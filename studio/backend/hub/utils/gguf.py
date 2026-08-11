@@ -393,10 +393,9 @@ def bare_quant_alias(key: str) -> str:
 def is_qualified_gguf_variant_key(key: str) -> bool:
     """Whether *key* names more than its bare quantization.
 
-    Most qualified keys carry a directory (``distilled/model-Q6_K``), but MiniMax H3's
-    independently loadable root-level partitions use full filename stems instead
-    (``minimax_h3_ref2va_pruned-Q6_K``). Comparing the key with its bare alias covers both
-    shapes and leaves ordinary keys such as ``Q6_K`` and ``IQ4_XS-3.53bpw`` untouched.
+    Usually a directory (``distilled/model-Q6_K``), but H3's root-level partitions use the full
+    filename stem (``minimax_h3_ref2va_pruned-Q6_K``). Comparing against the bare alias covers
+    both and leaves ordinary keys such as ``Q6_K`` and ``IQ4_XS-3.53bpw`` untouched.
     """
     normalized = (key or "").strip().replace("\\", "/")
     return bool(normalized) and bare_quant_alias(normalized).lower() != normalized.lower()
