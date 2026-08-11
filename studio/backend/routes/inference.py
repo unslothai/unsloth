@@ -5679,7 +5679,14 @@ def _remote_gguf_companion_bytes(
 # (llama_cpp's _tp_flat_mtp), because it answers the same question: the launch
 # will make a drafter resident and nothing here can say how big it is. Zero is
 # the one answer that is certainly wrong, since it admits the load.
-_REMOTE_DRAFTER_RESERVE_BYTES = 2 * 1024**3
+# What an unreadable remote drafter costs the guard. Sized to cover the largest
+# drafter class Studio knows of rather than a typical one: a DSpark sidecar is
+# about 11 GB (see the --fit note in llama_cpp._emit_dspark), --spec-draft-hf can
+# name any repo at all, and this guard protects a running training job, so the
+# established direction here is to over-estimate. Only reached when the listing
+# cannot be read at all, where llama-server may still open the repo from its
+# local HF cache and make every one of those bytes resident.
+_REMOTE_DRAFTER_RESERVE_BYTES = 12 * 1024**3
 
 
 def _split_hf_draft_spec(spec: str) -> tuple[Optional[str], str]:
@@ -5955,11 +5962,12 @@ def _estimate_gguf_required_gb(
         # one would leave a multi-GB resident drafter charged nowhere and let the
         # guard admit a load that evicts the training job it protects.
         _extras_own_draft_path = _extra_args_mtp_draft_path(llama_extra_args, env = {})
-        _extras_own_drafter = bool(
-            _extra_args_own_spec
-            and _extras_own_draft_path
-            and Path(_extras_own_draft_path).is_file()
-        )
+        # Local file or remote repo alike: both are now charged as _extras_bytes
+        # below, a local one by stat and a remote one from its own listing (or the
+        # flat reserve). Charging the target repository's sidecar on top of either
+        # is the double count that 409s a load which fits. The earlier local-only
+        # form predates the remote pricing and would now over-charge.
+        _extras_own_drafter = bool(_extra_args_own_spec and _extras_own_draft_path)
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter

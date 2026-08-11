@@ -1770,12 +1770,14 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 msg = extras,
             )
 
-    def test_a_remote_extras_drafter_still_pays_the_conservative_charge(self):
-        """--spec-draft-hf names an HF repo, not a file, so _extras_bytes charges
-        nothing for it while llama-server still downloads and loads it (its
-        has_dft() only asks whether a draft path was given). Suppressing the
-        repository sidecar on top would leave the resident drafter charged
-        nowhere and admit a load that evicts the training job this guard protects."""
+    def test_a_priced_remote_extras_drafter_is_not_charged_twice(self):
+        """--spec-draft-hf names the drafter that actually loads, and it is now
+        priced from its own listing, so the target repository's sidecar must NOT
+        be charged as well: _build_speculative_flags returns before Studio emits
+        that sidecar, so it never becomes resident and billing it 409s a load
+        that fits. (Before the remote repo was priced this test asserted the
+        opposite, which was the safe reading while the drafter was charged
+        nowhere at all.)"""
         import utils.models.model_config as mc
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -1812,7 +1814,17 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.route._estimate_gguf_required_gb(
                     cfg, speculative_type = "auto", llama_extra_args = extras
                 )
-                self.assertTrue(comp.call_args.kwargs[kind], extras)
+                self.assertFalse(comp.call_args.kwargs[kind], extras)
+                self.assertFalse(comp.call_args.kwargs["include_mtp"], extras)
+
+    def test_the_unreadable_drafter_reserve_covers_the_largest_drafter_class(self):
+        """The fallback is only reached when the listing cannot be read, and
+        llama-server can still open the repo from its local HF cache, so the
+        number has to cover what it might find. A DSpark sidecar is about 11 GB
+        (llama_cpp._emit_dspark says so where it warns that --fit skips it), and
+        --spec-draft-hf can name any repo, so a typical-drafter figure here
+        underprices the load the guard is protecting a training run from."""
+        self.assertGreaterEqual(self.route._REMOTE_DRAFTER_RESERVE_BYTES, 11 * 1024**3)
 
     def test_a_partial_dflash_shard_set_is_not_charged(self):
         """The fetch refuses a family whose encoded shard count is short, so a
