@@ -419,6 +419,113 @@ Check "it says incomplete, not out of date" ($_reuse -match 'incomplete rather t
 Check "a venv with an interpreter still just prints its version" (
     $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?--version')
 
+# The interpreter is not the only file that has to be there. Everything after this point reaches
+# the venv through the dot-sourced Activate.ps1 and a bare `python` -- Fast-Install resolves its
+# target with (Get-Command python).Source -- and install.ps1 leaves the venv's Scripts directory
+# off PATH on purpose. So a venv that kept python.exe but lost Activate.ps1 hits the SAME hazard
+# proven above, one file over: the dot-source fails without stopping anything and the whole stack
+# lands in the ambient interpreter. Newly reachable, because an installer-managed stale verdict
+# now repairs where it used to abort.
+Check "it refuses a venv with no activation script" (
+    $_reuse -match 'Exit-SetupFailure "No activation script at')
+Check "the activation script path is built next to the interpreter" (
+    $_reuse -match '\$_venvActivate = Join-Path \$VenvDir "Scripts\\Activate\.ps1"')
+# The -ge 0 is not decoration: IndexOf answers -1 when the refusal is not there at all, and -1
+# is less than every other offset, so the ordering alone passes on a tree that never grew it.
+Check "that refusal also precedes the activation" (
+    $setupText.IndexOf('Exit-SetupFailure "No activation script at') -ge 0 -and
+    $setupText.IndexOf('Exit-SetupFailure "No activation script at') -lt
+    $setupText.IndexOf('$ActivateScript = Join-Path $VenvDir'))
+# It is checked on the arm where the interpreter EXISTS, or it only ever fires alongside the
+# missing-interpreter refusal and never on its own.
+Check "the check sits inside the interpreter-present arm" (
+    $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?Exit-SetupFailure "No activation script at.*?\} else \{')
+Check "it does not delete that venv either" (-not ($_reuse -match 'Remove-Item'))
+
+Write-Host ""
+Write-Host "=== an installer-managed repair never downgrades a GPU wheel to CPU ==="
+# install.ps1 resolves the index and installs the torch trio ITSELF, minutes before it invokes
+# setup, and hands over no record of which family it chose -- setup probes the hardware again
+# from scratch. When that second probe fails (a Get-CimInstance that throws, an nvidia-smi that
+# does not answer, the single-Radeon unroll at the top of this file) setup lands on "cpu",
+# reads the +cu / +rocm / +xpu wheel install.ps1 just placed as stale, and the in-place repair
+# --force-reinstalls CPU torch over it. Then setup exits 0, install.ps1 counts the run a success
+# and drops the rollback copy. The abort this repair replaced at least failed loudly; this would
+# commit a CPU-only install on a GPU box, silently, which is a worse trade.
+$_guardPat = '(?s)(if \(\$shouldRebuild -and \$InstallerManagedSetup -and\n.*?\n    \}\n)'
+$_guard = if ($setupText -match $_guardPat) { $Matches[1] } else { "" }
+Check "the downgrade guard was found"       ($_guard -ne "")
+Check "CRLF is normalised, not tolerated"   (-not (($setupText -replace "`n", "`r`n") -match $_guardPat))
+# The exact condition, because each term is load-bearing. $installedTorchTag is tested FIRST so
+# the read of $expectedTorchTag short-circuits away: that variable is assigned only inside the
+# `if (-not $shouldRebuild)` block above, so on a venv whose torch would not import at all it was
+# never created, and reading it under a caller's Set-StrictMode is fatal.
+Check "it only fires under the installer"   ($_guard -match '\$InstallerManagedSetup')
+Check "it only fires on a GPU wheel"        ($_guard -match '\$installedTorchTag -and \$installedTorchTag -ne "cpu"')
+Check "it only fires when the rescan said cpu" ($_guard -match '\$expectedTorchTag -eq "cpu"')
+Check "the installed tag is tested before the expected one" (
+    $_guard.IndexOf('$installedTorchTag -and') -ge 0 -and
+    $_guard.IndexOf('$installedTorchTag -and') -lt $_guard.IndexOf('$expectedTorchTag -eq "cpu"'))
+Check "it clears the rebuild flag"          ($_guard -match '\$shouldRebuild = \$false')
+# The whole point: no --force-reinstall is raised, so the CPU arm below leaves the GPU wheel in
+# place (a +cu / +rocm / +xpu build already satisfies its torch>= range).
+Check "it does not raise force-reinstall"   (-not ($_guard -match 'PinChangedForceReinstall = \$true'))
+Check "it does not wipe the venv"           (-not ($_guard -match 'Remove-Item'))
+# An xpu venv kept here needs the same index lock the direct-update escape takes, or the pass
+# installs triton-windows over torch's XPU triton with nothing to swap it back.
+Check "a kept xpu venv still locks the xpu index" (
+    $_guard -match 'if \(\$installedTorchTag -eq "xpu"\) \{ \$script:PreservedXpuVenv = \$true \}')
+# ...and it has to run BEFORE the repair, or the repair has already fired.
+Check "the guard precedes the in-place repair" (
+    $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -ge 0 -and
+    $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup -and') -lt
+    $setupText.IndexOf('if ($shouldRebuild -and $InstallerManagedSetup) {'))
+# The repair itself must survive: an unimportable torch ($installedTorchTag $null) and a
+# GPU-to-different-GPU family move are exactly what it is for, and the guard must not swallow
+# them. Driven, not asserted as a shape, over the four combinations that reach it.
+function Test-DowngradeGuard {
+    param($Installed, $Expected)
+    $shouldRebuild = $true
+    $InstallerManagedSetup = $true
+    $installedTorchTag = $Installed
+    $expectedTorchTag = $Expected
+    $force = $false
+    if ($shouldRebuild -and $InstallerManagedSetup -and
+        $installedTorchTag -and $installedTorchTag -ne "cpu" -and $expectedTorchTag -eq "cpu") {
+        $shouldRebuild = $false
+    }
+    if ($shouldRebuild -and $InstallerManagedSetup) { $force = $true; $shouldRebuild = $false }
+    return [pscustomobject]@{ Force = $force; Rebuild = $shouldRebuild }
+}
+Check "rocm wheel + cpu rescan is kept, not reinstalled" (-not (Test-DowngradeGuard "rocm" "cpu").Force)
+Check "cu128 wheel + cpu rescan is kept, not reinstalled" (-not (Test-DowngradeGuard "cu128" "cpu").Force)
+Check "xpu wheel + cpu rescan is kept, not reinstalled"  (-not (Test-DowngradeGuard "xpu" "cpu").Force)
+Check "an unimportable torch still repairs in place"     ((Test-DowngradeGuard $null "cpu").Force)
+Check "a cpu wheel on a CUDA host still repairs in place" ((Test-DowngradeGuard "cpu" "cu128").Force)
+Check "a rocm wheel on a CUDA host still repairs in place" ((Test-DowngradeGuard "rocm" "cu128").Force)
+Check "nothing reaches the wipe under the installer"      (
+    -not (Test-DowngradeGuard "rocm" "cpu").Rebuild -and -not (Test-DowngradeGuard $null "cpu").Rebuild)
+
+Write-Host ""
+Write-Host "=== the AMD fast-path probe is bounded too ==="
+# The disk-based rescue above KEEPS a venv whose `import torch` never came back. On a direct
+# update that venv then reaches the AMD fast-path check, and a bare `& python -c "import torch"`
+# there waits forever: setup would hang instead of finishing, on precisely the host the rescue
+# was added for. Before the rescue this could not happen, because the same venv was deleted.
+# The leading \n and indent matter: `elseif ($script:ROCmGfxArch) {` ENDS in that same text, and
+# there are two of those higher up the file, so a bare anchor starts the region 1700 lines early
+# and every -not check below it goes green on unrelated code.
+$_amdFastPat = '(?s)(\n        if \(\$script:ROCmGfxArch\) \{\n.*?reinstalling ROCm PyTorch[^\n]*\n)'
+$_amdFast = if ($setupText -match $_amdFastPat) { $Matches[1] } else { "" }
+Check "the AMD fast-path escape was found"  ($_amdFast -ne "")
+Check "CRLF is normalised, not tolerated"   (-not (($setupText -replace "`n", "`r`n") -match $_amdFastPat))
+Check "no bare interpreter call is left"    (-not ($_amdFast -match '&\s*python -c'))
+Check "it goes through the bounded probe"   ($_amdFast -match 'Invoke-BoundedPythonProbe -PythonExe "python"')
+Check "it still asks torch.cuda.is_available" ($_amdFast -match 'torch\.cuda\.is_available')
+# A probe that does not answer must keep reading as CPU: forcing one dependency pass is the safe
+# direction, and reading a timeout as "the GPU is fine" would fast-path past the ROCm install.
+Check "an unanswered probe still reads as CPU" ($_amdFast -match '\$_torchIsCpu = -not \$_rocmTorchProbe\.Ok')
+
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }
 Write-Host "All checks passed" -ForegroundColor Green

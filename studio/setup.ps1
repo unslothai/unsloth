@@ -4009,6 +4009,27 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PreservedXpuVenv = $true
     }
 
+    # A GPU wheel is never force-reinstalled down to CPU on the strength of a rescan. Under
+    # $InstallerManagedSetup install.ps1 resolved the index and installed this trio minutes ago
+    # in this same run, off its own probe -- so when setup's second, independent probe lands on
+    # "cpu" while the venv holds +cu / +rocm / +xpu, the disagreement is setup's, not the host's:
+    # a Get-CimInstance that threw, an nvidia-smi that did not answer, the single-Radeon unroll
+    # of #8335. The in-place repair below would then --force-reinstall CPU torch over a working
+    # GPU environment and exit 0, at which point install.ps1 discards the rollback copy and the
+    # downgrade is permanent -- a loud failure traded for a silently wrong install, which is
+    # worse than the loop this whole block exists to end. Keep the wheel: with no
+    # --force-reinstall the CPU arm below leaves it alone, because a +cu / +rocm / +xpu build
+    # already satisfies the CPU torch>= range.
+    if ($shouldRebuild -and $InstallerManagedSetup -and
+        $installedTorchTag -and $installedTorchTag -ne "cpu" -and $expectedTorchTag -eq "cpu") {
+        substep "This host scanned as CPU-only but the installer just placed a $installedTorchTag build here -- keeping it." "Yellow"
+        substep "Set UNSLOTH_TORCH_INDEX_URL to move this environment onto CPU torch on purpose." "DarkGray"
+        $shouldRebuild = $false
+        # Same reason as the direct-update escape above: the pass has to stay on the xpu index,
+        # or triton-windows lands over torch's XPU triton with nothing to swap it back.
+        if ($installedTorchTag -eq "xpu") { $script:PreservedXpuVenv = $true }
+    }
+
     $reason = $null
     if ($shouldRebuild) {
         $reason = if ($installedTorchTag) { "torch $installedTorchTag != required $expectedTorchTag" } else { "torch could not be imported" }
@@ -4080,7 +4101,22 @@ if (-not (Test-Path -LiteralPath $VenvDir)) {
 } else {
     substep "reusing existing virtual environment at $VenvDir"
     $_venvPyExe = Join-Path $VenvDir "Scripts\python.exe"
+    $_venvActivate = Join-Path $VenvDir "Scripts\Activate.ps1"
     if (Test-Path -LiteralPath $_venvPyExe) {
+        # The interpreter is not the only file the rest of this script needs. Everything below
+        # reaches the venv through the dot-sourced Activate.ps1 and a bare `python` -- Fast-Install
+        # resolves its target with (Get-Command python).Source -- and install.ps1 deliberately
+        # leaves the venv's Scripts directory off PATH. So a venv that kept python.exe but lost
+        # Activate.ps1 fails the dot-source, non-terminating at the "Continue" the pip section
+        # runs at, and installs the whole stack into whatever interpreter is on PATH before
+        # exiting 0. Same silent-success hazard as a missing python.exe, one file over, and it is
+        # newly reachable now that an installer-managed stale verdict repairs instead of aborting.
+        if (-not (Test-Path -LiteralPath $_venvActivate)) {
+            Write-StudioLine "[ERROR] $VenvDir has no activation script at Scripts\Activate.ps1." -ForegroundColor Red
+            Write-StudioLine "        The environment is incomplete rather than out of date. Re-run the installer" -ForegroundColor Yellow
+            Write-StudioLine "        to rebuild it: irm https://unsloth.ai/install.ps1 | iex" -ForegroundColor Yellow
+            Exit-SetupFailure "No activation script at $_venvActivate"
+        }
         try {
             $_venvPyVer = (& $_venvPyExe --version 2>&1 | Out-String).Trim()
             if ($_venvPyVer) { substep $_venvPyVer }
@@ -4269,11 +4305,17 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # date" path would leave the user on CPU torch with Train/Export disabled.
         # Force the dependency pass so the ROCm wheels get installed.
         if ($script:ROCmGfxArch) {
-            $_torchIsCpu = $true
-            try {
-                & python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>$null
-                if ($LASTEXITCODE -eq 0) { $_torchIsCpu = $false }
-            } catch {}
+            # Bounded, like every other torch probe in this file and for the reason the disk-based
+            # ROCm rescue above exists: on a faulted HIP runtime `import torch` can never come
+            # back, and the rescue now KEEPS that venv rather than deleting it -- so this is the
+            # first `import torch` such a host reaches. A bare `& python` here waits forever and
+            # setup never finishes. A probe that does not answer keeps $_torchIsCpu true, which is
+            # the same safe direction as before: one dependency pass, never a silent skip. The
+            # default bound is the one the flavour probe above already ran under, on a warmer
+            # page cache, so a healthy venv that answered there answers here.
+            $_rocmTorchProbe = Invoke-BoundedPythonProbe -PythonExe "python" `
+                -Code "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)"
+            $_torchIsCpu = -not $_rocmTorchProbe.Ok
             if ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
