@@ -6031,9 +6031,7 @@ def _estimate_gguf_required_gb(
         # launches, including one Studio discovered itself, so none of them belongs
         # in a VRAM budget. An embedded head is unaffected by draft-only flags and
         # is inside the main weights either way, so nothing here suppresses it.
-        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(
-            llama_extra_args, env = os.environ
-        )
+        _draft_pinned_to_cpu = _extra_args_draft_offloaded_to_cpu(llama_extra_args, env = os.environ)
         _forced_dspark = bool(
             (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
             and not _extras_own_drafter
@@ -6041,9 +6039,7 @@ def _estimate_gguf_required_gb(
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = (
-            _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
-        )
+        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter and not _draft_pinned_to_cpu
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
