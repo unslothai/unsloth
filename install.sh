@@ -1837,10 +1837,16 @@ fi
 # ── Architecture detection & Python version ──
 _ARCH=$(uname -m)
 MAC_INTEL=false
+# Rosetta is a property of the shell, not of the machine, so it is tracked apart from
+# MAC_INTEL: torch and the Python version rightly follow the x86_64 shell, but anything
+# that reasons about the HARDWARE (the /usr/bin CLT shims in _has_working_git) must see
+# an Apple Silicon Mac here, not an Intel one.
+_MAC_ROSETTA=false
 if [ "$OS" = "macos" ] && [ "$_ARCH" = "x86_64" ]; then
     # Guard against Apple Silicon running under Rosetta (reports x86_64).
     # sysctl hw.optional.arm64 returns "1" on Apple Silicon even in Rosetta.
     if [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
+        _MAC_ROSETTA=true
         echo ""
         echo "  WARNING: Apple Silicon detected, but this shell is running under Rosetta (x86_64)."
         echo "  Re-run install.sh from a native arm64 terminal for full PyTorch support."
@@ -2117,12 +2123,15 @@ _has_working_git() {
     # also ship a working /usr/bin/git after CLT masking, so MAC_INTEL must probe that path;
     # only Apple Silicon treats it as the known dialog shim without execution. xcode-select
     # -p only asks which toolchain is selected and never prompts.
+    # The hardware decides, not the shell: MAC_INTEL is also true for an x86_64 shell under
+    # Rosetta, where /usr/bin/git is still the arm64 machine's dialog shim, so _MAC_ROSETTA
+    # puts that host back on the non-executing branch.
     # $OS is the platform detected above, not a fresh `uname` call: this can run with a
     # scrubbed PATH where uname is not resolvable, and a failed probe there would silently
     # fall through to executing the shim. _CLT_GIT_SHIM is the shim path, overridable so
     # the branch is testable without a /usr/bin write.
     if [ "${OS:-}" = "macos" ] &&
-       [ "${MAC_INTEL:-false}" != true ] &&
+       { [ "${MAC_INTEL:-false}" != true ] || [ "${_MAC_ROSETTA:-false}" = true ]; } &&
        [ "$(command -v git)" = "${_CLT_GIT_SHIM:-/usr/bin/git}" ] &&
        ! xcode-select -p >/dev/null 2>&1; then
         return 1
