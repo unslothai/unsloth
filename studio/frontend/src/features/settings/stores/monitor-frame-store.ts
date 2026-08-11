@@ -122,25 +122,22 @@ function inStackColumn(frame: MonitorFrame, viewportWidth: number): boolean {
  *
  * This is the whole difference between the two composer layouts. Docked under a
  * thread it crowds the corner and has to be dodged, or the card covers Send. On
- * an empty chat the welcome layout pads it well clear of the bottom, and
- * lifting over it there is what put the banners in the middle of the page with
- * the corner underneath them empty.
+ * an empty chat it sits well clear of the bottom, and lifting over it there
+ * strands the stack mid-page with the corner underneath it empty.
  *
- * Measured against what the stack actually is, not a fixed guess. In a short
- * window the welcome composer left 83px under it and the 80px card fits, but the
- * old constant said 120, so the stack lifted over the composer and left the very
- * corner it was dodging empty. `neededRoom` comes from the stack's own
- * ResizeObserver (see useStackGeometry), so a taller stack still gets dodged.
+ * So the room is measured, never guessed: `neededRoom` is the stack's own
+ * ResizeObserver height (see useStackGeometry). A fixed 120 once lifted an 80px
+ * card out of an 83px gap it fit in.
  *
  * Asked against the inset in force, never a fixed one: lifting over one box
  * moves the stack up into the next, and a box that had room at the corner may
  * have none there.
  *
- * A box that may be covered is asked against the floor, not the natural height.
- * It has already said the stack outranks it, so a band holding every card is
- * enough and the room they would prefer is not worth leaving the corner for.
- * Two downloads make the rail taller than the welcome composer's band, and
- * lifting for that put the panel mid-window with the corner under it empty.
+ * A box that may be covered is asked against the floor instead. It has already
+ * said the stack outranks it, so a band holding every card whole is enough, and
+ * the height the cards would prefer is not worth leaving the corner for: a rail
+ * taller than the welcome composer's band was being parked mid-window for room
+ * it scrolls anyway.
  */
 function reachesStack(
   frame: MonitorFrame,
