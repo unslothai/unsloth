@@ -39,7 +39,11 @@ class _Sidecar:
         self.loaded_with = model
         self.load_cancel_event = request_cancel_event
 
-    def unload(self, wait = True, expected_model = None):
+    def unload(
+        self,
+        wait = True,
+        expected_model = None,
+    ):
         if self._fail:
             raise RuntimeError("boom")
         self.unload_waits.append(wait)
@@ -77,9 +81,8 @@ def test_load_releases_the_other_engines_after_the_target_loads(monkeypatch):
     order = []
     sidecars = {name: _Sidecar(name) for name in stt_registry.STT_ENGINES}
     for name, sidecar in sidecars.items():
-        sidecar.unload = (
-            lambda wait = True, expected_model = None, name = name:
-            order.append(f"unload:{name}")
+        sidecar.unload = lambda wait = True, expected_model = None, name = name: order.append(
+            f"unload:{name}"
         )
     target = sidecars["mtmd"]
     target.load = lambda model, request_cancel_event = None: order.append("load:mtmd")
@@ -428,20 +431,27 @@ def test_an_implicit_transcribe_load_releases_the_other_engines(monkeypatch):
     loaded: list[tuple] = []
     monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
     monkeypatch.setattr(
-        ri, "_stt_sidecar_for",
-        lambda engine: type("S", (), {"transcribe": staticmethod(
-            lambda *a, **k: {"text": "hi", "model": "qwen3-asr-0.6b"}
-        )})(),
+        ri,
+        "_stt_sidecar_for",
+        lambda engine: type(
+            "S",
+            (),
+            {"transcribe": staticmethod(lambda *a, **k: {"text": "hi", "model": "qwen3-asr-0.6b"})},
+        )(),
     )
     monkeypatch.setattr(
-        ri, "_stt_lifecycle",
-        lambda: (lambda model, engine, cancel = None: loaded.append((model, engine)),
-                 lambda *a: []),
+        ri,
+        "_stt_lifecycle",
+        lambda: (lambda model, engine, cancel = None: loaded.append((model, engine)), lambda *a: []),
     )
 
     result = asyncio.run(
         ri._transcribe_audio_result(
-            b"audio", model = "qwen3-asr-0.6b", language = None, fast = True, engine = "mtmd",
+            b"audio",
+            model = "qwen3-asr-0.6b",
+            language = None,
+            fast = True,
+            engine = "mtmd",
         )
     )
     assert result["text"] == "hi"
@@ -455,9 +465,12 @@ def test_the_registry_load_is_what_frees_the_other_engines(monkeypatch):
 
     released: list = []
     monkeypatch.setattr(stt_registry, "_model_is_downloaded", lambda engine, model: True)
-    monkeypatch.setattr(stt_registry, "unload", lambda engines, wait = True: released.append(list(engines)))
     monkeypatch.setattr(
-        stt_registry, "sidecar_for",
+        stt_registry, "unload", lambda engines, wait = True: released.append(list(engines))
+    )
+    monkeypatch.setattr(
+        stt_registry,
+        "sidecar_for",
         lambda engine: type("S", (), {"load": staticmethod(lambda *a, **k: None)})(),
     )
 
@@ -512,10 +525,17 @@ def test_the_registry_passes_the_claimed_model_to_each_sidecar(monkeypatch):
 
     seen: list[tuple] = []
     monkeypatch.setattr(
-        stt_registry, "sidecar_for",
-        lambda engine: type("S", (), {"unload": staticmethod(
-            lambda wait = True, expected_model = None: seen.append((engine, expected_model))
-        )})(),
+        stt_registry,
+        "sidecar_for",
+        lambda engine: type(
+            "S",
+            (),
+            {
+                "unload": staticmethod(
+                    lambda wait = True, expected_model = None: seen.append((engine, expected_model))
+                )
+            },
+        )(),
     )
     stt_registry.unload(["gguf"], expected_model = "small")
     assert seen == [("gguf", "small")]

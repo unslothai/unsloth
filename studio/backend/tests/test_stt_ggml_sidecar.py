@@ -958,7 +958,11 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
         def __init__(self, name):
             self.name = name
 
-        def unload(self, wait = True, expected_model = None):
+        def unload(
+            self,
+            wait = True,
+            expected_model = None,
+        ):
             calls.append(self.name)
 
     from core.inference import stt_registry
@@ -980,7 +984,11 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
         def __init__(self, name):
             self.name = name
 
-        def unload(self, wait = True, expected_model = None):
+        def unload(
+            self,
+            wait = True,
+            expected_model = None,
+        ):
             attempted.append(self.name)
             if self.name == "transformers":
                 raise RuntimeError("boom")
@@ -1010,7 +1018,11 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
         def loaded_model(self):
             return "whisper-small"
 
-        def unload(self, wait = True, expected_model = None):
+        def unload(
+            self,
+            wait = True,
+            expected_model = None,
+        ):
             raise RuntimeError("transformers unload failed")
 
     class _GgmlSidecar:
@@ -1024,7 +1036,11 @@ def test_free_stt_frees_gguf_even_when_transformers_unload_raises(monkeypatch):
         def loaded_model(self):
             return None if self.unloaded else "small"
 
-        def unload(self, wait = True, expected_model = None):
+        def unload(
+            self,
+            wait = True,
+            expected_model = None,
+        ):
             self.unloaded = True
 
     ggml = _GgmlSidecar()

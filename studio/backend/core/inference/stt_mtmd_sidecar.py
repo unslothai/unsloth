@@ -655,7 +655,11 @@ class MtmdSttSidecar:
         except Exception:  # noqa: BLE001 - an unresolvable name is not this model
             return False
 
-    def unload(self, wait: bool = True, expected_model: Optional[str] = None) -> None:
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
         """Release the resident model. ``wait=False`` skips a sidecar mid-request.
 
         `transcribe` runs outside ``_lock`` and counts itself in ``_active_requests``, so
