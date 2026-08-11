@@ -166,9 +166,7 @@ class TestWaitForHealthResilience:
     def test_stdout_drain_sets_health_event_on_readiness_line(self):
         b = _make_backend()
         b._health_probe_event = threading.Event()
-        b._process.stdout = iter(
-            ["main: server is listening on http://127.0.0.1:12345\n"]
-        )
+        b._process.stdout = iter(["main: server is listening on http://127.0.0.1:12345\n"])
         event_seen_while_draining = []
         b._llama_log_fh = mock.Mock()
         b._llama_log_fh.write.side_effect = lambda _line: event_seen_while_draining.append(

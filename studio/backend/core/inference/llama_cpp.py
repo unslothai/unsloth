@@ -7011,10 +7011,7 @@ class LlamaCppBackend:
                     # Restrict wakeups to readiness lines: waking for every
                     # tensor-load log can turn startup into a health-probe spin.
                     line_lower = line.lower()
-                    if (
-                        "server is listening" in line_lower
-                        or "model loaded" in line_lower
-                    ):
+                    if "server is listening" in line_lower or "model loaded" in line_lower:
                         health_probe_event = getattr(self, "_health_probe_event", None)
                         if health_probe_event is not None:
                             health_probe_event.set()
@@ -14677,6 +14674,7 @@ class LlamaCppBackend:
                     except (ProcessLookupError, PermissionError):
                         return False
                     return True
+
                 return _kill
 
             # /proc exists on Linux only. Tests point _PROC_ROOT elsewhere to
@@ -14744,6 +14742,7 @@ class LlamaCppBackend:
                     psutil = None
 
                 if psutil is not None:
+
                     def _make_psutil_killer(psutil_mod, proc):
                         def _kill():
                             try:
@@ -14755,6 +14754,7 @@ class LlamaCppBackend:
                             ):
                                 return False
                             return True
+
                         return _kill
 
                     for proc in psutil.process_iter(["pid", "name", "exe"]):
@@ -14767,7 +14767,9 @@ class LlamaCppBackend:
                             exe = proc.info.get("exe")
                             if not exe:
                                 continue
-                            candidates.append((pid, Path(exe).resolve(), _make_psutil_killer(psutil, proc)))
+                            candidates.append(
+                                (pid, Path(exe).resolve(), _make_psutil_killer(psutil, proc))
+                            )
                         except (
                             psutil.NoSuchProcess,
                             psutil.AccessDenied,

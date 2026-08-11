@@ -10455,7 +10455,9 @@ def _resample_mono_linear(arr: "np.ndarray", source_rate: int, target_rate: int)
     return np.interp(target_x, source_x, arr).astype(np.float32)
 
 
-def _fit_transcoded_audio_to_wav_cap(arr: "np.ndarray", sample_rate: int) -> "tuple[np.ndarray, int]":
+def _fit_transcoded_audio_to_wav_cap(
+    arr: "np.ndarray", sample_rate: int
+) -> "tuple[np.ndarray, int]":
     """Downsample only when needed so transcoded WAV stays within the upload cap."""
     if sample_rate <= 0:
         raise ValueError("decoded audio has an invalid sample rate")
@@ -20044,9 +20046,7 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
     return messages, has_image
 
 
-async def _openai_messages_for_gguf_chat_async(
-    payload, is_vision: bool
-) -> tuple[list[dict], bool]:
+async def _openai_messages_for_gguf_chat_async(payload, is_vision: bool) -> tuple[list[dict], bool]:
     if _request_has_image(payload):
         return await asyncio.to_thread(_openai_messages_for_gguf_chat, payload, is_vision)
     return _openai_messages_for_gguf_chat(payload, is_vision)

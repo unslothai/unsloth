@@ -107,9 +107,7 @@ def _fake_procfs(tmp_path: Path, fake: _FakeProc) -> Path:
     entry = root / str(fake.info["pid"])
     entry.mkdir(parents = True)
     # comm sits between the first "(" and the last ")" of the stat line.
-    (entry / "stat").write_bytes(
-        f"{fake.info['pid']} (llama-server) S 1 0 0".encode("utf-8")
-    )
+    (entry / "stat").write_bytes(f"{fake.info['pid']} (llama-server) S 1 0 0".encode("utf-8"))
     (entry / "exe").symlink_to(fake.info["exe"])
     # A non-numeric sibling and a process with a different name must be ignored.
     (root / "self").mkdir()
@@ -142,9 +140,7 @@ def _run_orphan_scan(
         # the signal, since the fixture's pid is not a real process.
         if sys.platform != "linux":
             pytest.skip("the procfs scan only runs on Linux")
-        monkeypatch.setattr(
-            llama_cpp_module, "_PROC_ROOT", str(_fake_procfs(tmp_path, fake))
-        )
+        monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(_fake_procfs(tmp_path, fake)))
 
         def _fake_kill(pid, sig):
             if pid == fake.info["pid"]:
@@ -156,9 +152,7 @@ def _run_orphan_scan(
     else:
         # No /proc means the cross-platform psutil branch, which is what
         # macOS and Windows take.
-        monkeypatch.setattr(
-            llama_cpp_module, "_PROC_ROOT", str(studio_root / "no-such-proc")
-        )
+        monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(studio_root / "no-such-proc"))
         monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
     return LlamaCppBackend._kill_orphaned_servers()
 

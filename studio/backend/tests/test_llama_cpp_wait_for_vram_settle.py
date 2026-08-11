@@ -693,10 +693,10 @@ def test_kill_orphaned_servers_procfs_matches_psutil_selection(tmp_path):
     root = _write_fake_procfs(
         tmp_path,
         [
-            (mypid + 1, "llama-server", str(fake_path)),   # owned orphan
-            (mypid + 2, "llama-server", str(foreign)),     # not ours
-            (mypid + 3, "python3", str(fake_path)),        # wrong name
-            (mypid + 4, "llama-server", None),             # exe unreadable
+            (mypid + 1, "llama-server", str(fake_path)),  # owned orphan
+            (mypid + 2, "llama-server", str(foreign)),  # not ours
+            (mypid + 3, "python3", str(fake_path)),  # wrong name
+            (mypid + 4, "llama-server", None),  # exe unreadable
         ],
     )
 
