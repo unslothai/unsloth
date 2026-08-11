@@ -793,6 +793,35 @@ def test_windows_rocm_slim_still_requires_ggml_runtime(tmp_path, monkeypatch, mi
     )
 
 
+def test_windows_rocm_slim_rejects_decoy_hip_dlls_alone(tmp_path, monkeypatch):
+    # Same loss, but with libomp present so the soname gate cannot do the
+    # rejecting: only naming the ggml module rejects this, which is what the
+    # older *hip*.dll glob could not do.
+    bin_dir = tmp_path / "llama.cpp" / "build" / "bin" / "Release"
+    bin_dir.mkdir(parents = True)
+    for name in (
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "libomp140.x86_64.dll",
+        "amdhip64_7.dll",
+        "hipblas.dll",
+        "libhipblaslt.dll",
+    ):
+        (bin_dir / name).write_bytes(b"x")
+    monkeypatch.setattr(M, "installed_llama_runtime", lambda: (bin_dir, SLIM_LLAMA_TAG, ""))
+    artifact = _windows_slim_manifest(requires_ggml_sonames = WIN_LIBOMP_SONAMES)["artifacts"][0]
+
+    assert (
+        M.slim_pairing_for_artifact(
+            artifact,
+            _host("windows", "x64", has_rocm = True, rocm_gfx = "gfx1150"),
+            "rocm",
+        )
+        is None
+    )
+
+
 MAC_SLIM_ASSET = "whisper-v1.9.1-unsloth.1-macos-arm64-slim.tar.gz"
 
 
