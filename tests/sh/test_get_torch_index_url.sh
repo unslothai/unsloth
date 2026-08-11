@@ -53,6 +53,23 @@ _FAKE_ROCM_DIR=$(mktemp -d)
     echo ""
     sed -n '/^_cap_cuda_family_for_pre_turing()/,/^}/p' "$INSTALL_SH"
     echo ""
+    # ROCm version sources + the highest-wins resolver they feed. Same sync rule
+    # as the gfx helpers above: miss one and the ROCm branch silently returns the
+    # CPU index instead of a rocm one.
+    sed -n '/^_rocm_tag_from_amd_smi()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_rocm_tag_from_version_file()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_rocm_tag_from_hipconfig()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_rocm_tag_from_dpkg()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_rocm_tag_from_rpm()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_highest_rocm_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_detect_rocm_version_tag()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^get_torch_index_url()/,/^}/p' "$INSTALL_SH"
 } | sed -e "s|/usr/bin/nvidia-smi|$_FAKE_SMI_DIR/nvidia-smi-absent|g" \
       -e "s|/opt/rocm|$_FAKE_ROCM_DIR|g" \

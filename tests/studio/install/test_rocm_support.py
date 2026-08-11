@@ -2020,23 +2020,50 @@ class TestInstallShStructure:
             '[ "$_torch_index_pinned" = true ]' in source[summary - 700 : summary]
         ), "the gpu summary must not claim no usable ROCm for a pinned index"
 
+    # The helpers _detect_rocm_version_tag consults, in source order.
+    _ROCM_VERSION_SOURCES = (
+        "_rocm_tag_from_amd_smi",
+        "_rocm_tag_from_version_file",
+        "_rocm_tag_from_hipconfig",
+        "_rocm_tag_from_dpkg",
+        "_rocm_tag_from_rpm",
+    )
+
+    def _rocm_version_detection_script(self, source: str, rocm_prefix: str) -> str:
+        """The version-source helpers plus the resolver and the guarded
+        assignment that get_torch_index_url makes, as a runnable script.
+
+        /opt/rocm is redirected to `rocm_prefix` so the version file is a source
+        the test controls: a real ROCm host would otherwise answer one of the
+        probes and make the assertions machine-dependent."""
+        parts = []
+        for name in (*self._ROCM_VERSION_SOURCES, "_highest_rocm_tag", "_detect_rocm_version_tag"):
+            body = _extract_sh_function_body(source, name)
+            assert body, f"install.sh no longer defines {name}()"
+            parts.append(body)
+        assignment = re.search(
+            r'^        _rocm_tag=\$\(_detect_rocm_version_tag.*?\|\| _rocm_tag=""\n',
+            source,
+            re.S | re.M,
+        )
+        assert assignment, "could not extract the guarded _rocm_tag assignment"
+        parts.append(assignment.group(0))
+        return "\n".join(parts).replace("/opt/rocm", rocm_prefix)
+
     def test_rocm_version_chain_survives_no_source_under_set_e(self):
         """When every ROCm version source is missing (e.g. rocminfo present but
-        rocm-core not installed, so dpkg-query/rpm exit 1), the _rocm_tag ||
-        chain fails as a whole; without the || guard set -e kills the installer
-        BEFORE the actionable no-version WARN it feeds. Executed, not text."""
+        rocm-core not installed, so dpkg-query/rpm exit 1), detection must still
+        return empty AND succeed; otherwise set -e kills the installer BEFORE the
+        actionable no-version WARN it feeds. Executed, not text."""
         shell = shutil.which("bash")
         if not shell:
             pytest.skip("bash needed to execute the version chain")
         sh_path = PACKAGE_ROOT / "install.sh"
         source = sh_path.read_text(encoding = "utf-8")
-        chain = re.search(
-            r'^        _rocm_tag=\$\(\{ command -v amd-smi.*?\|\| _rocm_tag=""\n',
-            source,
-            re.S | re.M,
-        )
-        assert chain, "could not extract the guarded _rocm_tag chain"
         with tempfile.TemporaryDirectory() as d:
+            # Nothing is created under this prefix, so the version file is
+            # missing too: every source comes up empty.
+            script_body = self._rocm_version_detection_script(source, os.path.join(d, "rocm"))
             # Tools exist on PATH but yield nothing usable, like a box with the
             # probe tools installed and no rocm-core package.
             for name in ("amd-smi", "hipconfig", "dpkg-query", "rpm"):
@@ -2045,13 +2072,59 @@ class TestInstallShStructure:
                     f.write("#!/bin/sh\nexit 1\n")
                 os.chmod(p, 0o755)
             script = (
-                "set -euo pipefail\n" + chain.group(0) + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
+                "set -euo pipefail\n" + script_body + '\nprintf "SURVIVED:%s\\n" "$_rocm_tag"\n'
             )
             env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
             r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
-            assert r.returncode == 0, f"version chain aborted under set -e: {r.stderr}"
-            assert r.stdout.startswith("SURVIVED:"), r.stdout
+            assert r.returncode == 0, f"version detection aborted under set -e: {r.stderr}"
+            assert r.stdout.strip() == "SURVIVED:", r.stdout
         assert "rocm" in source.lower()
+
+    def test_rocm_version_detection_takes_the_highest_source(self):
+        """Issue #8402: Debian 13 ships hipconfig 5.7 next to a 6.1 runtime, so
+        stopping at the first source that answered gated a working gfx1100 out to
+        CPU wheels. Every source is read and the highest wins. Executed, not
+        text, and asserted per source position so no single ordering passes by
+        accident."""
+        shell = shutil.which("bash")
+        if not shell:
+            pytest.skip("bash needed to execute the version chain")
+        source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
+        # Each source answers, one of them higher than the rest. Whichever
+        # position holds the 6.4 reading, that is the one that must win.
+        # "version-file" is /opt/rocm/.info/version rather than a PATH tool.
+        outputs = {
+            "amd-smi": "AMDSMI Tool: 25.0.1 | ROCm version: {v}",
+            "version-file": "{v}.1-98",
+            "hipconfig": "{v}.31921-0",
+            "dpkg-query": "1:{v}.4-1",
+            "rpm": "{v}.4-1",
+        }
+        for winner in outputs:
+            with tempfile.TemporaryDirectory() as d:
+                rocm_prefix = os.path.join(d, "rocm")
+                script_body = self._rocm_version_detection_script(source, rocm_prefix)
+                for name, template in outputs.items():
+                    line = template.format(v = "6.4" if name == winner else "5.7")
+                    if name == "version-file":
+                        os.makedirs(os.path.join(rocm_prefix, ".info"), exist_ok = True)
+                        with open(
+                            os.path.join(rocm_prefix, ".info", "version"), "w", encoding = "utf-8"
+                        ) as f:
+                            f.write(line + "\n")
+                        continue
+                    p = os.path.join(d, name)
+                    with open(p, "w", encoding = "utf-8") as f:
+                        f.write(f"#!/bin/sh\necho '{line}'\n")
+                    os.chmod(p, 0o755)
+                script = "set -euo pipefail\n" + script_body + '\nprintf "TAG:%s\\n" "$_rocm_tag"\n'
+                env = dict(os.environ, PATH = d + os.pathsep + os.environ.get("PATH", ""))
+                r = subprocess.run([shell, "-c", script], env = env, capture_output = True, text = True)
+                assert r.returncode == 0, r.stderr
+                assert r.stdout.strip() == "TAG:rocm6.4", (
+                    f"{winner} reported 6.4 while every other source reported 5.7, "
+                    f"but detection resolved {r.stdout.strip()}"
+                )
 
     def test_cuda_precedence(self):
         """ROCm detection runs only when NVIDIA is absent (check runtime ordering in get_torch_index_url)."""
