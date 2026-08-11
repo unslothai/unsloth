@@ -295,7 +295,7 @@ def test_a_write_never_repairs_an_archive_into_an_active_item(gdir):
 def test_an_absent_archived_key_is_not_treated_as_damage(gdir):
     # Unarchiving removes the key, so absent means active and must stay active through a repair.
     _store(gdir).write_text(
-        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400}}}), encoding = "utf-8"
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10**400}}}), encoding = "utf-8"
     )
     flags.set_flags(gdir, "b", pinned = True)
     assert flags.is_archived(flags.read_trusted(gdir), "a") is False
