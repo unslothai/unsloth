@@ -1143,6 +1143,14 @@ class ResearchSupervisor:
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
+            # Research drives its own web/RAG gathering and never reads tool calls back,
+            # so its internal hop must not enter Studio's tool loop. Both opt-outs are
+            # needed: `unsloth run --enable-tools` sets a process-wide policy that
+            # overrides a per-request `enable_tools`, and an omitted `enabled_tools`
+            # resolves to every built-in (python/terminal included), which would let
+            # gathered untrusted page text steer the run into executing tools.
+            "tool_choice": "none",
+            "enabled_tools": [],
             "temperature": inference.get("temperature", 0.2),
         }
         if inference.get("topP") is not None:
