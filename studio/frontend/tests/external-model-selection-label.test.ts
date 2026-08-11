@@ -56,6 +56,28 @@ const connection = (
   ...overrides,
 });
 
+// A connection whose dialog has no manual model-ID box beside the fetched list: every id it
+// can hold came from the catalogue, so the catalogue is a complete record of what it offers.
+const CATALOG_ONLY_ID = "9f1c33d0a7b24e18";
+const CATALOG_ONLY_PICK = `external::${CATALOG_ONLY_ID}::gpt-5.4-mini`;
+
+const catalogOnlyOption = (modelId: string): ExternalModelRef => ({
+  id: `external::${CATALOG_ONLY_ID}::${encodeURIComponent(modelId)}`,
+  providerId: CATALOG_ONLY_ID,
+  providerName: "OpenAI",
+  providerType: "openai",
+});
+
+const catalogOnlyConnection = (
+  overrides: Partial<ExternalConnectionRef> = {},
+): ExternalConnectionRef => ({
+  id: CATALOG_ONLY_ID,
+  name: "OpenAI",
+  providerType: "openai",
+  availableModels: ["gpt-5.4", "gpt-5.4-mini"],
+  ...overrides,
+});
+
 // The premise: the shared helper cannot shorten this id, which is why the picker's
 // fallback printed it verbatim.
 test("the generic display helper leaves an external id untouched", () => {
@@ -63,19 +85,32 @@ test("the generic display helper leaves an external id untouched", () => {
 });
 
 test("a dropped connected model is named, never shown as its raw id", () => {
-  // Fetch Models replaced both lists and kimi-k2.5 is in neither, so the catalogue is
-  // positive evidence that the provider withdrew it.
+  // Fetch Models replaced both lists and gpt-5.4-mini is in neither. Nothing but the
+  // catalogue can put an id in this connection's `models`, so the catalogue is positive
+  // evidence that the provider withdrew it.
+  const missing = missingExternalModel(
+    CATALOG_ONLY_PICK,
+    [catalogOnlyOption("gpt-5.4")],
+    [catalogOnlyConnection({ availableModels: ["gpt-5.4"] })],
+  );
+  assert.deepEqual(missing, {
+    modelName: "gpt-5.4-mini",
+    providerName: "OpenAI",
+    providerType: "openai",
+    state: "dropped",
+  });
+  assert.doesNotMatch(missing?.modelName ?? "", /external::/);
+});
+
+test("the pick from the report is named, never shown as its raw id", () => {
   const missing = missingExternalModel(
     DROPPED_ID,
     [option("llama3.2")],
     [connection({ availableModels: ["llama3.2"] })],
   );
-  assert.deepEqual(missing, {
-    modelName: "kimi-k2.5",
-    providerName: "Ollama",
-    providerType: "ollama",
-    state: "dropped",
-  });
+  assert.equal(missing?.modelName, "kimi-k2.5");
+  assert.equal(missing?.providerName, "Ollama");
+  assert.equal(missing?.providerType, "ollama");
   assert.doesNotMatch(missing?.modelName ?? "", /external::/);
 });
 
@@ -161,19 +196,113 @@ test("an empty cached catalogue is unknown, not proof of a withdrawal", () => {
 
 test("another connection's catalogue does not vouch for this one", () => {
   const missing = missingExternalModel(
-    DROPPED_ID,
-    [option("llama3.2")],
+    CATALOG_ONLY_PICK,
+    [catalogOnlyOption("gpt-5.4")],
     [
-      connection({ availableModels: ["llama3.2"] }),
-      connection({
+      catalogOnlyConnection({ availableModels: ["gpt-5.4"] }),
+      catalogOnlyConnection({
         id: "other",
-        name: "OpenRouter",
-        providerType: "openrouter",
-        availableModels: ["kimi-k2.5"],
+        name: "Azure OpenAI",
+        availableModels: ["gpt-5.4-mini"],
       }),
     ],
   );
   assert.equal(missing?.state, "dropped");
+});
+
+// Ollama, vLLM, llama.cpp and OpenRouter take typed-in model IDs beside the fetched list,
+// and chat-providers-dialog.tsx saves those to `models` only: `modelsToSave` unions the
+// ticked ids with the manual ones, while `availableModels` is written as the fetched
+// catalogue alone. A catalogue that never carried an id cannot report its withdrawal, so
+// deleting the id from the manual box has to read as the user's own edit.
+test("a manual model ID the user deleted is not blamed on the provider", () => {
+  // The state a save leaves behind: llama3.2 stays ticked, the typed-in kimi-k2.5 is gone
+  // from `models`, and the catalogue is untouched because it never held it.
+  assert.deepEqual(
+    missingExternalModel(
+      DROPPED_ID,
+      [option("llama3.2")],
+      [connection({ availableModels: ["llama3.2"] })],
+    ),
+    {
+      modelName: "kimi-k2.5",
+      providerName: "Ollama",
+      providerType: "ollama",
+      state: "disabled",
+    },
+  );
+});
+
+test("no connection that takes manual model IDs reports a withdrawal", () => {
+  for (const providerType of ["ollama", "vllm", "llama_cpp", "custom"]) {
+    assert.equal(
+      missingExternalModel(
+        DROPPED_ID,
+        [option("llama3.2", { providerType })],
+        [connection({ providerType, availableModels: ["llama3.2"] })],
+      )?.state,
+      "disabled",
+      providerType,
+    );
+  }
+});
+
+test("an OpenRouter model list is a shortlist, never proof of a withdrawal", () => {
+  // OpenRouter is curated: the dialog saves `availableModels: []` and the sync fills the
+  // gap from the registry's `default_models`, so the list the picker sees is a handful of
+  // suggestions rather than the 300-odd models the gateway actually serves.
+  assert.equal(
+    missingExternalModel(
+      DROPPED_ID,
+      [option("llama3.2", { providerType: "openrouter" })],
+      [
+        connection({
+          name: "OpenRouter",
+          providerType: "openrouter",
+          availableModels: ["openai/gpt-5.4", "anthropic/claude-sonnet-5"],
+        }),
+      ],
+    )?.state,
+    "disabled",
+  );
+});
+
+test("a catalogue-only connection still reports a real withdrawal", () => {
+  // The other half of the rule: OpenAI has no manual model-ID box, so every id in `models`
+  // came from a fetch and the catalogue's silence is the provider's own answer.
+  assert.equal(
+    missingExternalModel(
+      CATALOG_ONLY_PICK,
+      [catalogOnlyOption("gpt-5.4")],
+      [catalogOnlyConnection({ availableModels: ["gpt-5.4"] })],
+    )?.state,
+    "dropped",
+  );
+  // An id the catalogue still carries is the user's own untick either way.
+  assert.equal(
+    missingExternalModel(
+      CATALOG_ONLY_PICK,
+      [catalogOnlyOption("gpt-5.4")],
+      [catalogOnlyConnection()],
+    )?.state,
+    "disabled",
+  );
+});
+
+test("a connection with no readable type keeps trusting its catalogue", () => {
+  assert.equal(
+    missingExternalModel(
+      CATALOG_ONLY_PICK,
+      [catalogOnlyOption("gpt-5.4")],
+      [
+        catalogOnlyConnection({
+          providerType: undefined,
+          availableModels: ["gpt-5.4"],
+        }),
+      ],
+    )?.state,
+    "dropped",
+  );
 });
 
 test("re-ticking the model clears the label entirely", () => {

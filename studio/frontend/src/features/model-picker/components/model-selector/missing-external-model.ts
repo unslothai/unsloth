@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
-import { parseExternalModelId } from "@/features/chat/external-providers";
+import {
+  allowsManualModelIdsWithCatalog,
+  parseExternalModelId,
+} from "@/features/chat/external-providers";
 
 /** The connection fields the picker carries for every model a connection offers. */
 export interface ExternalModelRef {
@@ -66,11 +69,14 @@ export interface MissingExternalModel {
  * `availableModels`. Since `externalModels` is flat-mapped from `models`, the enabled list
  * alone cannot tell the two apart and naming the provider there accuses it of a withdrawal
  * the user performed. `dropped` is therefore claimed only on positive evidence: a catalogue
- * that was cached, is non-empty, and does not list the model. Anything less, including a
- * connection saved before `availableModels` existed, is reported as `disabled`, whose
- * wording is true whenever the id is absent from `models` and which claims nothing about the
- * provider. A connection that is not in *connections* at all is not a claim we can soften,
- * so it keeps the `dropped` reading it has always had.
+ * that was cached, is non-empty, does not list the model, and could have listed it in the
+ * first place. That last clause rules out the connections whose dialog offers a manual
+ * model-ID box beside the fetched list, since a typed-in ID is saved to `models` only and a
+ * catalogue that never carried it says nothing when the user later deletes it. Anything
+ * less, including a connection saved before `availableModels` existed, is reported as
+ * `disabled`, whose wording is true whenever the id is absent from `models` and which claims
+ * nothing about the provider. A connection that is not in *connections* at all is not a
+ * claim we can soften, so it keeps the `dropped` reading it has always had.
  */
 export function missingExternalModel(
   selected: string | null | undefined,
@@ -92,12 +98,19 @@ export function missingExternalModel(
     (entry) => entry.id === parsed.providerId,
   );
   const catalog = connection?.availableModels;
+  // Ollama, vLLM, llama.cpp and OpenRouter take typed-in model IDs beside the fetched list,
+  // and the dialog saves those to `models` alone, so their catalogue never carried them and
+  // its silence about one is not evidence of anything.
+  const catalogCoversEveryId = !allowsManualModelIdsWithCatalog(
+    connection?.providerType,
+  );
   // `modelId` is decoded and `availableModels` holds raw provider ids, so these compare
   // directly; an empty catalogue is unknown rather than empty, since a connection with no
   // enabled models never gets one written.
   const dropped =
     connection == null ||
-    (catalog != null &&
+    (catalogCoversEveryId &&
+      catalog != null &&
       catalog.length > 0 &&
       !catalog.includes(parsed.modelId));
   if (dropped) {
