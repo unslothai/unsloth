@@ -182,6 +182,18 @@ def _api_payload(path: str, query: dict[str, list[str]], *, full_footprint: bool
     return {}
 
 
+def klein_row(page):
+    """The klein row inside the open picker, and nothing else on the page.
+
+    An unscoped search is not specific enough once a download has been started:
+    the hub download panel labels itself "black-forest-labs/FLUX.2-klein-4B ·
+    Required assets", so a page-wide match returns it first and clicking it
+    leaves the picker where it was. The old exact repo-id text never matched
+    that panel, so scoping only became necessary with the pattern.
+    """
+    return page.locator(".unsloth-model-selector-menu").get_by_text(KLEIN_ROW).first
+
+
 def _open_klein_quant(page) -> None:
     page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
     trigger = page.get_by_role("button", name = "Select image model")
@@ -192,7 +204,7 @@ def _open_klein_quant(page) -> None:
         print(page.locator("body").inner_text()[:4_000])
         raise
     trigger.click()
-    klein = page.get_by_text(KLEIN_ROW).first
+    klein = klein_row(page)
     try:
         klein.wait_for(state = "visible", timeout = 30_000)
     except Exception:
