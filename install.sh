@@ -2104,6 +2104,24 @@ tauri_log "STEP" "Checking system dependencies"
 # a GUI dialog, so `command -v git` is not enough -- only running it tells the truth.
 _has_working_git() {
     command -v git >/dev/null 2>&1 || return 1
+    # Executing the probe is the problem on macOS: /usr/bin/git is a Command Line Tools
+    # shim, so `git --version` against it raises the "install the command line developer
+    # tools" GUI dialog -- the probe firing the dialog it exists to detect. Answer from the
+    # resolved path instead when it is that exact shim and no toolchain is selected.
+    #
+    # Narrow on purpose. Only /usr/bin/git is a shim: a Homebrew, MacPorts or Xcode.app git
+    # earlier on PATH is a real binary and is still probed by executing it, so a Mac with a
+    # working git but no CLT selected keeps working exactly as before. xcode-select -p only
+    # asks which toolchain is selected and never prompts.
+    # $OS is the platform detected above, not a fresh `uname` call: this can run with a
+    # scrubbed PATH where uname is not resolvable, and a failed probe there would silently
+    # fall through to executing the shim. _CLT_GIT_SHIM is the shim path, overridable so
+    # the branch is testable without a /usr/bin write.
+    if [ "${OS:-}" = "macos" ] &&
+       [ "$(command -v git)" = "${_CLT_GIT_SHIM:-/usr/bin/git}" ] &&
+       ! xcode-select -p >/dev/null 2>&1; then
+        return 1
+    fi
     git --version >/dev/null 2>&1
 }
 
@@ -2576,8 +2594,16 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         # uv symlinks bin/python to the base interpreter, so dereference with
         # file -L (lipo already follows the link). Trailing || true keeps the
         # installer alive under set -e when neither tool is present.
-        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
-            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+        #
+        # file -L FIRST, lipo only as the fallback: lipo is a Command Line Tools shim, so
+        # on a Mac without CLT merely running it raises the "install the command line
+        # developer tools" dialog -- 2>/dev/null hides its stderr but not a GUI dialog.
+        # file is base-system and always answers. Both spellings feed the same case below
+        # ("Mach-O 64-bit executable arm64", or "universal binary ... [x86_64] [arm64]",
+        # against lipo's "arm64" / "x86_64 arm64"), so the branch taken is unchanged.
+        # clean-machine-assert.sh:152 already made exactly this swap for its own use.
+        _archs=$(file -L "$VENV_DIR/bin/python" 2>/dev/null \
+            || lipo -archs "$VENV_DIR/bin/python" 2>/dev/null || true)
         case "$_archs" in
             *arm64*)  _VENV_ARCH=arm64 ;;
             *x86_64*) _VENV_ARCH=x86_64 ;;

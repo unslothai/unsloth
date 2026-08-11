@@ -45,7 +45,15 @@ printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run t
 chmod +x "$RESTORE"
 
 # The toolchain we care about: a consumer install must need none of it.
-TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc"
+#
+# The cctools binaries (install_name_tool, lipo, otool, ...) are here for the same reason as
+# clang and git: they live in /Library/Developer/CommandLineTools, so on a Mac without CLT
+# each is a shim whose only observable effect is the "install the command line developer
+# tools" GUI dialog. They were missing, which is why uv's install_name_tool call
+# (astral-sh/uv#14843) and install.sh's lipo probe both shipped green -- untraced in trace
+# mode and unchecked in the absent list.
+TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc
+install_name_tool lipo otool objdump vtool strip nm"
 
 note() { echo "[clean-machine] $*"; }
 

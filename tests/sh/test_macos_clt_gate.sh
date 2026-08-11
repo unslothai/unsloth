@@ -158,6 +158,36 @@ rm -f "$_BIN"/git
 _r="$(PATH="$_BIN" "$_SH" -c ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
 assert_eq "absent git -> no" "no" "$_r"
 
+# On macOS the probe must ANSWER FROM THE PATH, never execute /usr/bin/git: running the
+# CLT shim is what raises the "install the command line developer tools" GUI dialog. The
+# git stub here records execution, so an empty marker file is the proof it stayed unrun.
+echo "=== macOS: the CLT git shim is never executed ==="
+rm -f "$_BIN"/*
+_RAN="$(mktemp -u)"
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 1"
+_mk xcode-select 'exit 1'          # no toolchain selected == a clean Mac
+_r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "clean Mac + shim git -> no" "no" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "executed"
+else
+    assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
+fi
+
+# A real git elsewhere on PATH (Homebrew) must still be probed by executing it, so a Mac
+# with a working git but no CLT selected keeps working exactly as before.
+rm -f "$_RAN"
+_r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM=/usr/bin/git "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "clean Mac + non-shim working git -> probed" "no" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "non-shim git WAS executed" "executed" "executed"
+else
+    assert_eq "non-shim git WAS executed" "executed" "not-executed"
+fi
+
 rm -rf "$_BIN" "$_FN_FILE" "$_HARNESS"
 
 echo ""
