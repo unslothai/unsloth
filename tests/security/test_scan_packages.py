@@ -202,7 +202,7 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     assert findings, "scan_archive returned 0 findings on corrupt wheel"
     corrupted = [f for f in findings if f.check == "archive_corrupted"]
     assert corrupted, (
-        "no archive_corrupted finding; got " f"{[(f.severity, f.check) for f in findings]}"
+        f"no archive_corrupted finding; got {[(f.severity, f.check) for f in findings]}"
     )
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
@@ -368,10 +368,7 @@ def test_an_alias_bound_after_the_call_site_is_still_flagged():
     # alias with its call inside the regex could only search forward from the
     # import, and missed exactly this.
     payload = (
-        "def go():\n"
-        "    b.exec(marshal.loads(BLOB))\n"
-        "mod = __import__('os')\n"
-        "import builtins as b\n"
+        "def go():\n    b.exec(marshal.loads(BLOB))\nmod = __import__('os')\nimport builtins as b\n"
     )
     findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
@@ -382,9 +379,7 @@ def test_a_rebound_alias_is_not_treated_as_the_builtin():
     # `import builtins as m` then `m = load_model()` leaves `m.eval()` an ordinary
     # torch call. Treating every later use of the spelling as the module would
     # reintroduce the false positive this whole rule exists to remove.
-    payload = (
-        "import builtins as m\nplugin = __import__(name)\nm = load_model()\nm.eval()\n"
-    )
+    payload = "import builtins as m\nplugin = __import__(name)\nm = load_model()\nm.eval()\n"
     findings = sp.check_py_file(payload, "pkg/_infer.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
     assert high == [], f"a rebound alias must not read as the builtin: {high}"
@@ -413,6 +408,134 @@ def test_the_real_exec_builtin_is_still_flagged():
     findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
     assert high, "obfuscation plus a real exec() must still be flagged"
+
+
+def test_a_dynamically_imported_builtins_module_is_still_the_builtin():
+    # `__import__('builtins').exec(BLOB)` never spells the module as a name, so a
+    # matcher that wants a literal `builtins` identifier in front of the dot sees
+    # only an anonymous receiver and reads the call as an ordinary `.exec()`
+    # method - a one-line way under the finding, with the obfuscation already in
+    # the same expression.
+    for call in (
+        "__import__('builtins').exec(marshal.loads(BLOB))",
+        "importlib.import_module('builtins').eval(BLOB)",
+    ):
+        payload = f"import marshal, importlib\nmod = __import__('os')\n{call}\n"
+        findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high, f"a dynamically imported builtins must be flagged: {call}"
+
+
+def test_a_comma_separated_import_still_binds_the_builtins_alias():
+    # `import os, builtins as b` binds `b` exactly as `import builtins as b`
+    # does. Requiring `builtins` immediately after `import` drops the alias, and
+    # the later `b.exec(...)` then reads as an ordinary method call.
+    payload = (
+        "import os, builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an alias bound by a comma-separated import must be flagged"
+    assert "b.exec" in "".join(f.evidence for f in high), "the call must be evidence"
+
+
+def test_a_rebinding_written_inside_a_string_is_not_a_rebinding():
+    # Dropping rebound aliases is what keeps `import builtins as m` ... `m =
+    # load_model()` from re-flagging `m.eval()`. Deciding "is this name rebound"
+    # on raw text hands that back to the payload: a string literal is not code,
+    # but a text scan reads the `b = harmless` inside one as an assignment and
+    # discards the live alias. Tokens cannot be fooled - a string is one token.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        'mod = __import__("os")\n'
+        'decoy = """\nb = harmless\n"""\n'
+        "b.exec(marshal.loads(BLOB))\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a decoy assignment inside a string must not drop the alias"
+
+
+def test_whitespace_around_the_attribute_dot_is_not_the_bare_builtin():
+    # `model . eval()` and `model. eval()` are the same call as `model.eval()`.
+    # A fixed-width lookbehind for the dot sees a space instead and reads them as
+    # the bare builtin, which is the false positive this whole rule removes.
+    for call in ("model . eval()", "model. eval()", "model .eval()"):
+        inference = (
+            "def build(mod_path, config):\n"
+            "    module = __import__(mod_path, fromlist=['compute_module_sizes'])\n"
+            "    model = module.AutoModel.from_config(config)\n"
+            f"    {call}\n"
+            "    return model\n"
+        )
+        findings = sp.check_py_file(inference, "pkg/device_map_planner.py", "pkg")
+        high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+        assert high == [], f"`{call}` is an attribute call, not the builtin: {high}"
+
+
+def test_a_method_named_eval_is_a_definition_not_a_call():
+    # `def eval(self, expr):` is a declaration; the parenthesis is its parameter
+    # list. Text cannot tell it from `eval(expr)`, which is how a package that
+    # merely defines an `eval` method (every expression evaluator, every mock)
+    # ends up flagged next to an unrelated dynamic import.
+    library = (
+        "class Interpreter:\n"
+        "    def eval(self, expr):\n"
+        "        return self.ops[expr]\n"
+        "    def exec(self, stmt):\n"
+        "        return self.run(stmt)\n"
+        "mod = __import__('os')\n"
+    )
+    findings = sp.check_py_file(library, "pkg/interp.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"defining eval/exec is not calling the builtin: {high}"
+
+    # The definition must not shadow a real call elsewhere in the same file.
+    armed = library + "import marshal\neval(marshal.loads(BLOB))\n"
+    findings = sp.check_py_file(armed, "pkg/interp.py", "pkg")
+    assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_alias_matching_does_not_grow_with_the_number_of_aliases():
+    # One matcher branch per alias is O(aliases) per character: 3,000 aliases in
+    # 75 KB cost ~0.07 s a search and 15,000 in 370 KB cost ~1.3 s, on members
+    # allowed up to 64 MiB and searched more than once per file. Checking a
+    # candidate identifier against the alias set instead is flat in the count.
+    hostile = "".join(f"import builtins as b{i}\n" for i in range(15_000))
+    start = time.monotonic()
+    assert sp.RE_EXEC_EVAL.search(hostile) is None
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, f"alias matching scales with the alias count: {elapsed:.2f}s"
+
+    # And the alias still resolves when one of those 15,000 names is called.
+    armed = hostile + "b7777.exec(marshal.loads(BLOB))\n"
+    assert sp.RE_EXEC_EVAL.search(armed) is not None
+
+
+def test_unparseable_source_still_reaches_the_regex_fallback():
+    # The scanner reads arbitrary third-party source, including files the
+    # tokenizer rejects outright (inconsistent indentation, a truncated string).
+    # Those never produce a token stream, so the direct forms must still be
+    # caught by the text fallback rather than silently going unscanned.
+    broken = (
+        "import zlib, base64\n"
+        "mod = __import__('os')\n"
+        "def f():\n"
+        "    a = 1\n"
+        "  b = 2\n"
+        "exec(zlib.decompress(BLOB))\n"
+    )
+    assert sp.RE_EXEC_EVAL.search(broken) is not None
+    findings = sp.check_py_file(broken, "pkg/_broken.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "exec() in a file the tokenizer rejects must still be flagged"
+
+    truncated = "import zlib\nmod = __import__('os')\nexec(BLOB)\nx = '''unterminated\n"
+    assert sp.RE_EXEC_EVAL.search(truncated) is not None
 
 
 def test_proc_self_status_read_flags_anti_analysis():
