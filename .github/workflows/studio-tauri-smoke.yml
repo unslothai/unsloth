@@ -328,7 +328,10 @@ jobs:
 
   macos-unit-tests:
     name: Rust unit tests (macos)
-    runs-on: macos-14
+    # Not macos-14: it browns out from 2026-10-05 and is removed 2026-11-02,
+    # which the other macOS workflows here have already moved off. Both are
+    # Apple Silicon, so this job keeps testing the arm64 paths.
+    runs-on: macos-15
     # A cold cache compiles both the debug and the release dependency tree.
     timeout-minutes: 45
     steps:
