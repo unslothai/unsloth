@@ -133,6 +133,26 @@ def is_downloadable_ref(requested: str) -> bool:
     return True
 
 
+def looks_like_gguf_hub_repo_id(repo_id: str) -> bool:
+    """Whether *repo_id* names a GGUF catalog entry, not a LiteLLM/OpenRouter label.
+
+    Namespaced ids without a GGUF suffix are foreign routing labels (``openai/gpt-4o``).
+    ``-GGUF`` and the ``unsloth/`` namespace mark ids clients pick from this server's
+    model list; a mistyped one must 404 instead of being answered by another model.
+    """
+    text = (repo_id or "").strip()
+    if "/" not in text:
+        return False
+    from hub.utils.paths import is_valid_repo_id
+
+    if not is_valid_repo_id(text):
+        return False
+    name = text.rsplit("/", 1)[-1]
+    if name.lower().endswith("-gguf"):
+        return True
+    return text.lower().startswith("unsloth/")
+
+
 def looks_like_quant(variant: Optional[str]) -> bool:
     """Whether a ``:suffix`` names a GGUF quant rather than a foreign tag.
 

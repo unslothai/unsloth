@@ -243,6 +243,32 @@ def test_downloadable(raw):
     assert auto_dl.is_downloadable_ref(raw) is True
 
 
+@pytest.mark.parametrize(
+    "repo_id,expected",
+    [
+        ("unsloth/gemma-4-E2B-it-GGUF", True),
+        ("org/nope-GGUF", True),
+        ("unsloth/typo-vision", True),
+        ("openai/gpt-4o", False),
+        ("anthropic/claude-3.5-sonnet", False),
+        ("meta-llama/llama-3-70b-instruct", False),
+        ("org/Unlisted", False),
+        ("gpt-4", False),
+    ],
+)
+def test_looks_like_gguf_hub_repo_id(repo_id, expected):
+    assert auto_dl.looks_like_gguf_hub_repo_id(repo_id) is expected
+
+
+def test_a_mistyped_gguf_repo_is_refused_while_another_model_is_loaded(monkeypatch):
+    # #8376: a mistyped GGUF catalog id must 404, not be answered by the resident model.
+    loaded = _Loaded("unsloth/A-GGUF", "UD-Q4_K_XL")
+    with pytest.raises(HTTPException) as excinfo:
+        _reject("unsloth/typo-vision-GGUF", loaded, monkeypatch)
+    assert excinfo.value.status_code == 404
+    assert excinfo.value.detail["error"]["code"] == "model_not_found"
+
+
 def test_gguf_variants_skips_companions():
     variants = auto_dl._gguf_variants(_gguf_repo_info().siblings)
     # Companions are not quants of their own...

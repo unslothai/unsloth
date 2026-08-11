@@ -4874,7 +4874,11 @@ async def _reject_unservable_model(
     locally is still a concrete reference. Only runs while something is serving:
     with nothing loaded, :func:`_no_model_loaded_error` already says the right thing.
     """
-    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+    from core.inference.openai_auto_download import (
+        looks_like_gguf_hub_repo_id,
+        looks_like_quant,
+        split_model_ref,
+    )
 
     if (
         not isinstance(requested_model, str)
@@ -4884,6 +4888,7 @@ async def _reject_unservable_model(
         return
     base, variant = split_model_ref(requested_model)
     quantified = looks_like_quant(variant)
+    gguf_hub_repo = looks_like_gguf_hub_repo_id(base)
     from core.inference.local_model_resolver import (
         index_is_built,
         recently_downloaded,
@@ -4958,12 +4963,12 @@ async def _reject_unservable_model(
     except Exception as exc:
         # Can't verify: an explicit quant still proves intent, so refuse; let anything else by.
         logger.debug("unservable-model check failed for %r: %s", requested_model, exc)
-        if not quantified:
+        if not quantified and not gguf_hub_repo:
             return
         downloaded = here = switchable = False
     if still_indexing:
         _raise_still_indexing(requested_model, fastapi_request)
-    if not (quantified or here):
+    if not (quantified or here or gguf_hub_repo):
         return
     if switchable:
         # On disk and switching allowed, so the swap failed: the resident model is wrong weights.
