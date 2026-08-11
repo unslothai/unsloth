@@ -3247,9 +3247,9 @@ def test_the_dspark_pre_download_gate_latches_into_the_launch_accumulator():
         for kw in call.keywords
         if kw.arg == "caps_probe" and isinstance(kw.value, ast.Name)
     }
-    assert passed == {"_launch_caps"}, (
-        "load_model must hand _download_dspark the accumulating probe helper"
-    )
+    assert passed == {
+        "_launch_caps"
+    }, "load_model must hand _download_dspark the accumulating probe helper"
 
 
 def test_the_dspark_gate_uses_the_probe_it_is_given():
@@ -3263,8 +3263,7 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
 
     signature = inspect.signature(LlamaCppBackend._download_dspark)
     assert signature.parameters["caps_probe"].default is None, (
-        "caps_probe must stay optional; _download_dspark has callers that do not "
-        "accumulate"
+        "caps_probe must stay optional; _download_dspark has callers that do not accumulate"
     )
 
     seen = []

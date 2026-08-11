@@ -8046,7 +8046,8 @@ class LlamaCppBackend:
         guess here has to latch like any other, or a load that skipped the sidecar on an
         inconclusive probe looks conclusive once the retry window lapses mid-download.
         """
-        if caps_probe is None: caps_probe = self.probe_server_capabilities
+        if caps_probe is None:
+            caps_probe = self.probe_server_capabilities
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
