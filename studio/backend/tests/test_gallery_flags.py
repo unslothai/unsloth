@@ -308,3 +308,20 @@ def test_archived_false_is_a_shape_we_write_and_stays_trusted(gdir):
     )
     items = flags.read_trusted(gdir)
     assert flags.flags_for(items, "a") == {"pinned": True, "archived": False}
+
+
+def test_a_filesystem_that_cannot_lock_still_completes_the_write(gdir, monkeypatch):
+    # Some network filesystems refuse flock. Acquisition already tolerated that, but the matching
+    # unlock did not, so the store was written and the call still raised, failing a PATCH whose
+    # work had landed (and, through clear(), one that had already deleted files).
+    import fcntl
+
+    def _unsupported(fd, op):
+        raise OSError(45, "Operation not supported")
+
+    monkeypatch.setattr(fcntl, "flock", _unsupported)
+    assert flags.set_flags(gdir, "a", pinned = True) == {"pinned": True, "archived": False}
+    flags.forget(gdir, ["a"])
+    with flags.exclusive(gdir):
+        pass
+    assert flags.read(gdir) == {}

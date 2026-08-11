@@ -157,6 +157,7 @@ def _file_lock(directory: Path):
     except Exception:
         yield
         return
+    locked = False
     try:
         try:
             if os.name == "nt":
@@ -165,18 +166,24 @@ def _file_lock(directory: Path):
             else:
                 import fcntl
                 fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
         except Exception:
             pass  # locking unavailable; the thread lock still applies
         yield
     finally:
+        # Release only what was taken, and never let the release be the thing that fails the call.
+        # A filesystem that cannot lock usually cannot unlock either, and by this point the body
+        # has already written the flags or deleted the media, so raising here reports a failure for
+        # work that landed.
         try:
-            if os.name == "nt":
-                import msvcrt
+            if locked:
                 with contextlib.suppress(Exception):
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 

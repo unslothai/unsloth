@@ -187,12 +187,15 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
   // scroll, another page) leaves that work perfectly usable, and throwing it away is what left
   // rows blank: `requested` outlives the effect, so nothing would ever fetch them again.
   const alive = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set on the way in, not just cleared on the way out: StrictMode runs setup, cleanup, setup in
+    // development, so a flag only cleared by the cleanup would stay false for the rest of the
+    // dialog's life and discard every thumbnail that landed.
+    alive.current = true;
+    return () => {
       alive.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   useEffect(() => {
     let cancelled = false;
     void (async () => {

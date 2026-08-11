@@ -1641,7 +1641,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   useEffect(
     () =>
       subscribeGalleryChanged("images", () => {
-        void resyncWindow(galleryCache.images.length).catch(() => void loadGallery());
+        // Fenced like the unpin resync: a generation or a new page landing while this GET runs
+        // would otherwise be overwritten by a snapshot taken before it.
+        const epoch = stripEpoch.current;
+        void resyncWindow(
+          galleryCache.images.length,
+          () => stripEpoch.current === epoch,
+        ).catch(() => void loadGallery());
       }),
     [loadGallery, resyncWindow],
   );
