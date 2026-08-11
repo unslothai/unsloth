@@ -157,8 +157,9 @@ export {
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
-  reasoningToggleTargetsManualState,
+  reasoningAutoOpensWhileStreaming,
   resolveReasoningOpen,
+  resolveReasoningToggle,
 } from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";

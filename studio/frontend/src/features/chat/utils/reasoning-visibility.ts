@@ -33,13 +33,38 @@ export function resolveReasoningOpen({
   return isStreaming && !dismissedWhileStreaming;
 }
 
-/**
- * With the preference on there is no auto open to dismiss, so a mid stream
- * toggle has to land on the sticky manual flag instead.
- */
-export function reasoningToggleTargetsManualState(
+/** Whether the block opens on its own for this round, so a toggle dismisses it. */
+export function reasoningAutoOpensWhileStreaming(
   isStreaming: boolean,
   collapseByDefault: boolean,
 ): boolean {
-  return collapseByDefault || !isStreaming;
+  return isStreaming && !collapseByDefault;
+}
+
+export interface ReasoningToggleResult {
+  /** Sticky user open. Cleared on close so a preference flip cannot pin it. */
+  manualOpen: boolean;
+  /** Set only when the block auto opens, since that is what gets dismissed. */
+  dismissedWhileStreaming?: boolean;
+  /** Drop the streaming height cap so a hand-opened block shows in full. */
+  releaseStreamingHeight: boolean;
+}
+
+/** Resolves a trigger click into the next open state. */
+export function resolveReasoningToggle(
+  open: boolean,
+  {
+    isStreaming,
+    collapseByDefault,
+  }: Pick<ReasoningOpenStateInput, "isStreaming" | "collapseByDefault">,
+): ReasoningToggleResult {
+  const autoOpens = reasoningAutoOpensWhileStreaming(
+    isStreaming,
+    collapseByDefault,
+  );
+  return {
+    manualOpen: open && !autoOpens,
+    ...(autoOpens ? { dismissedWhileStreaming: !open } : {}),
+    releaseStreamingHeight: open && !autoOpens,
+  };
 }

@@ -12,9 +12,9 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
-  reasoningToggleTargetsManualState,
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
+  resolveReasoningToggle,
   useChatPreferencesStore,
 } from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
@@ -407,18 +407,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (
-        reasoningToggleTargetsManualState(
-          isReasoningStreaming,
-          collapseByDefault,
-        )
-      ) {
-        if (open) {
-          setRetainStreamingHeight(false);
-        }
-        setManualOpen(open);
-      } else {
-        setDismissedWhileStreaming(!open);
+      const next = resolveReasoningToggle(open, {
+        isStreaming: isReasoningStreaming,
+        collapseByDefault,
+      });
+      if (next.releaseStreamingHeight) {
+        setRetainStreamingHeight(false);
+      }
+      setManualOpen(next.manualOpen);
+      if (next.dismissedWhileStreaming !== undefined) {
+        setDismissedWhileStreaming(next.dismissedWhileStreaming);
       }
     },
     [isReasoningStreaming, collapseByDefault],
