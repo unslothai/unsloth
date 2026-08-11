@@ -27,9 +27,14 @@ None of that is visible from `unsloth.__version__` on a GPU host, so it is pinne
 import ast
 import re
 import sys
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from pathlib import Path
 
 import pytest
+
+
+def _raise_not_found(name):
+    raise _PackageNotFoundError(name)
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _VERSION_FILE = _REPO_ROOT / "unsloth" / "_version.py"
@@ -103,29 +108,82 @@ def test_setuptools_resolves_the_version_without_importing_torch():
     )
 
 
-def test_studio_version_fallback_scans_a_file_that_holds_the_literal():
-    # studio/backend/main.py::get_unsloth_version falls back to scanning this file when
-    # the distribution metadata is missing (source checkouts). It matches the line
-    # prefix, so pointing it at a module that only re-exports the name reports "dev".
+def _get_unsloth_version_with_metadata_missing(main_py_path):
+    """Run studio/backend/main.py::get_unsloth_version with the distribution metadata
+    forced absent, which is the source-checkout case its file scan exists for.
+
+    The function body is exec'd rather than imported because importing main.py starts the
+    whole FastAPI backend.
+    """
+    src = _Path_read(main_py_path)
+    start = src.index("def get_unsloth_version()")
+    body = src[start : src.index("\n\n\n", start)]
+    namespace = {
+        "_Path": Path,
+        "PackageNotFoundError": _PackageNotFoundError,
+        "package_version": _raise_not_found,
+        "__file__": str(main_py_path),
+    }
+    exec(compile(body, "main.py", "exec"), namespace)
+    return namespace["get_unsloth_version"]()
+
+
+def _Path_read(p):
+    return Path(p).read_text(encoding = "utf-8")
+
+
+def test_studio_version_fallback_reports_the_real_version_on_a_source_checkout():
+    # get_unsloth_version falls back to scanning the source when distribution metadata is
+    # missing. The scan matches a `__version__ = ` line prefix, so a file that only
+    # re-exports the name yields nothing and Studio silently reports "dev". Driving the
+    # real function against the real tree catches that whatever the scan is pointed at.
+    reported = _get_unsloth_version_with_metadata_missing(
+        _REPO_ROOT / "studio" / "backend" / "main.py"
+    )
+    assert reported == _load_version_module_standalone().__version__, (
+        f"the fallback reported {reported!r}; Studio would show that instead of the "
+        "real version on a source checkout."
+    )
+
+
+def test_the_studio_fallback_survives_a_half_updated_tree(tmp_path):
+    # The fallback is what a source checkout relies on, and a checkout can be half
+    # updated: `unsloth studio update` pulls a repo, and a stale tree can carry a new
+    # main.py beside an old models/_utils.py or the reverse. Either file alone must still
+    # yield a real version rather than "dev".
+    import re as _re
+
     main_py = (_REPO_ROOT / "studio" / "backend" / "main.py").read_text(encoding = "utf-8")
-    match = re.search(
-        r"version_file\s*=\s*_Path\(__file__\)\.resolve\(\)\.parents\[2\]\s*/(.+)", main_py
-    )
-    assert match, "get_unsloth_version's fallback path moved; re-pin it here"
+    start = main_py.index("def get_unsloth_version()")
+    body = main_py[start : main_py.index("\n\n\n", start)]
 
-    parts = re.findall(r"\"([^\"]+)\"", match.group(1))
-    scanned = _REPO_ROOT.joinpath(*parts)
-    assert scanned.exists(), f"the fallback scans {scanned}, which does not exist"
+    def _version_for(layout):
+        root = tmp_path / layout
+        (root / "unsloth" / "models").mkdir(parents = True)
+        (root / "studio" / "backend").mkdir(parents = True)
+        if layout in ("current", "only_version"):
+            (root / "unsloth" / "_version.py").write_text('__version__ = "9.9.9"\n')
+        if layout == "only_utils":
+            (root / "unsloth" / "models" / "_utils.py").write_text('__version__ = "9.9.9"\n')
+        else:
+            (root / "unsloth" / "models" / "_utils.py").write_text(
+                "from .._version import __version__\n"
+            )
+        namespace = {
+            "_Path": Path,
+            "PackageNotFoundError": _PackageNotFoundError,
+            # Force the metadata lookup to miss, which is the source-checkout case.
+            "package_version": _raise_not_found,
+            "__file__": str(root / "studio" / "backend" / "main.py"),
+        }
+        exec(compile(body, "main.py", "exec"), namespace)
+        return namespace["get_unsloth_version"]()
 
-    scraped = None
-    for line in scanned.read_text(encoding = "utf-8").splitlines():
-        if line.startswith("__version__ = "):
-            scraped = line.split("=", 1)[1].strip().strip('"').strip("'")
-            break
-    assert scraped == _load_version_module_standalone().__version__, (
-        f"{scanned.name} has no `__version__ = ` literal for the fallback to find, so "
-        "Studio would report its version as 'dev' on a source checkout."
-    )
+    assert _version_for("current") == "9.9.9"
+    assert _version_for("only_version") == "9.9.9"
+    assert _version_for("only_utils") == "9.9.9"
+    # Neither file carries a literal: reporting "dev" is correct, not a silent wrong number.
+    assert _version_for("neither") == "dev"
 
 
 def test_the_mlx_branch_no_longer_borrows_the_zoo_version():
