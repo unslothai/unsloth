@@ -1,0 +1,201 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# Build the portable AppImage the way release-desktop.yml does, but from the ref
+# under test rather than from a release tag.
+#
+# Why this is separate from release-desktop.yml
+# ---------------------------------------------
+# That workflow's build job checks out `studio_version` -- the release TAG, not the
+# dispatch ref -- so it can only ever build code that has already been tagged. The
+# portable bundle is now the ONLY AppImage the release ships, which means the first
+# time it is built from Debian-family libraries is currently the release itself.
+# This job closes that gap: same runner image, same pinned packager, same script,
+# on the branch.
+#
+# What it actually catches
+# ------------------------
+# The bundle is assembled from whatever the BUILD HOST provides, so a bundle that is
+# correct on one distro can be silently wrong on another. That is not hypothetical:
+# WebKitGTK's compiled-in helper and injected-bundle paths live under
+# $prefix/libexec on nix and Fedora but under the multiarch libdir on Debian and
+# Ubuntu, and a rewrite written against the first layout matched nothing on the
+# second -- without failing, because "no path matched" looked exactly like "nothing
+# needed patching". build-portable-appimage.sh now treats that as fatal, and this
+# job is where that assertion actually meets an Ubuntu library set.
+#
+# No signing, no release, no secrets: it produces an AppImage and proves it is
+# self-contained. That also means it runs on a fork, which the release workflow
+# cannot.
+name: Portable AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: 'Upload the built AppImage as a workflow artifact (~150MB, kept 7 days)'
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      # Deliberately narrow. The closure depends on the bundling script, the crate
+      # that gets bundled, and the packaging config -- not on frontend or backend
+      # changes, which studio-tauri-smoke.yml already covers. A ~25 minute job on
+      # every studio PR would not earn its runner time.
+      - 'studio/src-tauri/linux/**'
+      - 'studio/src-tauri/Cargo.toml'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'studio/src-tauri/tauri.conf.json'
+      - '.github/workflows/portable-appimage-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  portable-appimage:
+    name: Portable AppImage (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Same set as release-desktop.yml. patchelf is not optional here: the script
+      # rewrites RUNPATHs and interpreters and fails closed without it.
+      - name: Linux native deps for Tauri / WebKit2GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          # Save only on main, for the reason studio-tauri-smoke.yml gives: a
+          # PR-scoped cache is restorable only by that PR's own re-runs while still
+          # counting against the shared 10GB budget.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Install pinned Tauri CLI (matches release-desktop.yml)
+        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+          test -f dist/index.html
+
+      # The deb is the payload the AppImage repacks, exactly as in the release.
+      # Signing is irrelevant: nothing here is distributable and no updater
+      # artifact is produced.
+      - name: Build Linux deb
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ''
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          npx --prefix studio tauri build -v --bundles deb \
+            --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Pin AppImage toolchain
+        shell: bash
+        env:
+          # Identical pins to release-desktop.yml. Keep them in step: this job
+          # exists to rehearse that build, and a packager that differs from the
+          # release one would rehearse the wrong thing.
+          APPIMAGETOOL_URL: "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          APPIMAGETOOL_SHA256: "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
+          APPIMAGE_RUNTIME_URL: "https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64"
+          APPIMAGE_RUNTIME_SHA256: "2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d"
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/appimage-tools"
+          mkdir -p "$tools_dir"
+          appimagetool="$tools_dir/appimagetool-x86_64.AppImage"
+          runtime="$tools_dir/runtime-x86_64"
+          curl -fsSL "$APPIMAGETOOL_URL" -o "$appimagetool"
+          curl -fsSL "$APPIMAGE_RUNTIME_URL" -o "$runtime"
+          # Digest before chmod +x, as in release-desktop.yml: never make an
+          # unverified download executable.
+          echo "${APPIMAGETOOL_SHA256}  ${appimagetool}" | sha256sum -c -
+          echo "${APPIMAGE_RUNTIME_SHA256}  ${runtime}" | sha256sum -c -
+          chmod +x "$appimagetool"
+
+      - name: Build the portable AppImage
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb_path="$(find studio/src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)"
+          [ -n "$deb_path" ] || { echo "::error::no deb was produced"; exit 1; }
+          echo "deb: $deb_path"
+          out="$RUNNER_TEMP/UnslothStudio-portable-x86_64.AppImage"
+          studio/src-tauri/linux/build-portable-appimage.sh \
+            "$deb_path" \
+            "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
+            "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
+            "$out"
+          echo "appimage=$out" >> "$GITHUB_OUTPUT"
+          ls -la "$out"
+
+      # The script already asserts the closure internally. This re-checks the
+      # SHIPPED file, because the thing users download is the squashfs image, not
+      # the AppDir the script verified.
+      - name: Verify the shipped AppImage is self-contained
+        shell: bash
+        env:
+          APPIMAGE: ${{ steps.build.outputs.appimage }}
+        run: |
+          set -euo pipefail
+          workdir="$RUNNER_TEMP/extract"
+          mkdir -p "$workdir"
+          (cd "$workdir" && "$APPIMAGE" --appimage-extract >/dev/null)
+          appdir="$workdir/squashfs-root"
+
+          studio/src-tauri/linux/build-portable-appimage.sh --verify-appdir "$appdir"
+
+          # No path may point back at this runner's build tree. Checking the
+          # extracted image catches anything the AppDir pass could not see.
+          if grep -rlI --exclude-dir=proc "$RUNNER_TEMP" "$appdir" 2>/dev/null | head -5 | grep -q .; then
+            echo "::error::the bundle references the build directory"
+            exit 1
+          fi
+
+          # WebKit's two compiled-in paths must have been redirected off the host.
+          for lib in "$appdir"/usr/lib/unsloth/libwebkit2gtk-*.so*; do
+            [ -e "$lib" ] || continue
+            if strings -a "$lib" | grep -qE '^/usr/(lib|libexec)[^ ]*/webkit2gtk-4\.[01]'; then
+              echo "::error::$lib still points at the build host's WebKit directories"
+              strings -a "$lib" | grep -E '/webkit2gtk-4\.[01]' | sort -u
+              exit 1
+            fi
+          done
+          echo "AppImage verified self-contained."
+
+      # Storage is the one Actions resource that is not free on public repos, and
+      # this file is ~150MB. PR runs prove the build still works and keep nothing;
+      # a manual dispatch is how you get a copy to actually launch.
+      - name: Upload the AppImage
+        if: github.event_name == 'workflow_dispatch' && inputs.upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsloth-studio-portable-appimage
+          path: ${{ steps.build.outputs.appimage }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
