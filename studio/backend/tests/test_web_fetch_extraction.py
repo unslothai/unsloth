@@ -783,6 +783,61 @@ def test_fetch_url_raw_dns_pinning_proxy_opt_out(
     assert requested[0].get_header("Host") == "example.com:8443"
 
 
+def test_fetch_url_raw_proxy_scheme_key_case_insensitive(monkeypatch):
+    # A Windows registry ProxyServer value keeps the case it was written in, so
+    # getproxies can return "HTTPS". ProxyHandler lowercases its keys, so an
+    # exact-case test here would disable a proxy that urllib would have used.
+    import email
+    import urllib.request
+
+    import core.inference.tools as tools_mod
+
+    class _FakeResp:
+        headers = email.message_from_string("Content-Type: text/plain\n")
+
+        def __init__(self):
+            self._body = b"ok"
+
+        def read(self, n = -1):
+            body, self._body = self._body, b""
+            return body
+
+    requested = []
+    built = []
+
+    class _FakeOpener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            requested.append(req)
+            return _FakeResp()
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_DNS_PINNING", "1")
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", "203.0.113.7"),
+    )
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"HTTPS": "http://proxy.corp:3128"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda *handlers: built.append(handlers) or _FakeOpener(),
+    )
+
+    err, body, _content_type = tools_mod._fetch_url_raw("https://example.com:8443/page?q=1")
+
+    assert err is None
+    assert body == "ok"
+    assert [req.full_url for req in requested] == ["https://example.com:8443/page?q=1"]
+    assert not [
+        h for h in built[0] if isinstance(h, urllib.request.ProxyHandler) and not h.proxies
+    ]
+
+
 @pytest.mark.parametrize(
     "no_proxy,disable_dns_pinning,expected_url",
     [

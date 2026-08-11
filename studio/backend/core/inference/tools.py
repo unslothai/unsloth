@@ -9842,7 +9842,9 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
     """
     from urllib.request import getproxies, proxy_bypass
 
-    if scheme not in getproxies():
+    # ProxyHandler lowercases every mapping key, and the Windows registry can hand
+    # back "HTTPS=...", so normalize before testing or a proxy-only host goes direct.
+    if scheme not in {key.lower() for key in getproxies()}:
         return False
     try:
         return not proxy_bypass(host)
