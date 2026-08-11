@@ -2087,9 +2087,10 @@ def save_to_gguf(
         # Only when the room is not there, so a user who wants the merge kept
         # keeps it on every machine where the export would have worked anyway.
         _free_merge_if_disk_is_tight(
-            model_directory, gguf_directory, initial_files,
-            n_quants = len([m for m in dict.fromkeys(quantization_method)
-                            if m != first_conversion]),
+            model_directory,
+            gguf_directory,
+            initial_files,
+            n_quants = len([m for m in dict.fromkeys(quantization_method) if m != first_conversion]),
         )
 
         # Deduplicate while keeping order; methods equal to the base conversion already
@@ -3444,7 +3445,10 @@ def _gguf_failure_looks_like_disk(exc, save_directory = None):
 
 
 def _free_merge_if_disk_is_tight(
-    model_directory, gguf_directory, initial_files, n_quants = 1,
+    model_directory,
+    gguf_directory,
+    initial_files,
+    n_quants = 1,
 ):
     """Reclaim the intermediate 16-bit merge when the quants will not fit.
 
@@ -3458,8 +3462,7 @@ def _free_merge_if_disk_is_tight(
     if n_quants < 1 or not model_directory or not os.path.isdir(model_directory):
         return 0
     try:
-        base_bytes = sum(os.path.getsize(f) for f in initial_files
-                         if os.path.isfile(f))
+        base_bytes = sum(os.path.getsize(f) for f in initial_files if os.path.isfile(f))
     except OSError:
         return 0
     if base_bytes <= 0:

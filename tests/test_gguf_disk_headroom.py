@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-GB = 1024 ** 3
+GB = 1024**3
 
 
 @pytest.fixture
@@ -134,8 +134,10 @@ def test_nothing_to_quantize_frees_nothing(tmp_path, monkeypatch, save_mod):
 def test_a_missing_directory_is_not_an_error(tmp_path, monkeypatch, save_mod):
     """It runs to make an export succeed and must never be what fails it."""
     _with_free(monkeypatch, save_mod, 1)
-    assert save_mod._free_merge_if_disk_is_tight(
-        str(tmp_path / "gone"), str(tmp_path), [], n_quants = 1) == 0
+    assert (
+        save_mod._free_merge_if_disk_is_tight(str(tmp_path / "gone"), str(tmp_path), [], n_quants = 1)
+        == 0
+    )
 
 
 def test_an_unreadable_disk_declines_rather_than_deleting(tmp_path, monkeypatch, save_mod):
@@ -163,9 +165,9 @@ def test_the_disk_message_is_not_gated_on_kaggle(save_mod):
     source = _save_to_gguf_source(save_mod)
     disk_branch = source.index("elif _gguf_failure_looks_like_disk")
     build_advice = source.index("make clean && make all -j")
-    assert disk_branch < build_advice, (
-        "the disk explanation must be reached before the rebuild advice"
-    )
+    assert (
+        disk_branch < build_advice
+    ), "the disk explanation must be reached before the rebuild advice"
     assert "not a problem " in source and "with llama.cpp" in source
 
 
