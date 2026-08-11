@@ -2507,26 +2507,32 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
+# Apple Silicon venv: request an arch-explicit arm64 CPython so uv cannot reuse a
+# cached x86_64 (Rosetta) build. torch ships no macOS x86_64 wheels since 2.2.2, so
+# an x86_64 venv makes the torch install unresolvable. The arm64 guard below is kept
+# as a backstop for migrated / pre-existing venvs.
+#
+# only-managed: uv otherwise walks PATH and *executes* every interpreter it finds to
+# read its version. On a Mac with no Command Line Tools /usr/bin/python3 is Apple's
+# xcode_select shim, so that probe pops the "command line developer tools" dialog
+# naming python3, for tools this install never needs.
+#
+# The flag also drops uv's system-interpreter fallback, and an offline host with no
+# cached managed build then has nothing left to resolve. Retry unflagged so that host
+# keeps the install it had before: the dialog is worth removing, a failed install is not.
+_uv_venv_arm64() {  # label
+    run_install_cmd "$1" uv venv "$VENV_DIR" \
+        --python-preference only-managed \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none" \
+    || run_install_cmd "$1 (system Python)" uv venv "$VENV_DIR" \
+        --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+}
+
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
     substep "$VENV_DIR"
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
-        # Apple Silicon: request an arch-explicit arm64 CPython so uv cannot
-        # reuse a cached x86_64 (Rosetta) build. torch ships no macOS x86_64
-        # wheels since 2.2.2, so an x86_64 venv makes the torch install
-        # unresolvable. The arm64 guard below is kept as a backstop for
-        # migrated / pre-existing venvs.
-        #
-        # only-managed: uv otherwise walks PATH and *executes* each interpreter it
-        # finds to read its version, before downloading the build asked for here.
-        # On a Mac with no Command Line Tools, /usr/bin/python3 is Apple's
-        # xcode_select tool shim (byte-identical to /usr/bin/git and /usr/bin/clang),
-        # so that probe pops the "command line developer tools" dialog naming
-        # python3 -- for tools this install never needs. The request is already a
-        # managed build, so this only stops the search, it changes nothing chosen.
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
-            --python-preference only-managed \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "create venv"
     else
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
@@ -2582,9 +2588,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
         _discard_venv_for_recreate "$VENV_DIR"
-        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
-            --python-preference only-managed \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv (arm64)"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2599,9 +2603,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         echo "  Recreating venv with Python 3.12..."
         _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
-            --python-preference only-managed \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        _uv_venv_arm64 "recreate venv"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
