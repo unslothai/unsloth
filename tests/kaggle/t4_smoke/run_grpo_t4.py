@@ -383,6 +383,82 @@ def failures_for(result: dict, args) -> list[str]:
     return failures
 
 
+def make_libcuda_linkable() -> dict:
+    """Let the linker find `-lcuda`, so flashinfer's JIT can link what it built.
+
+    Measured twice on real T4 sessions (kernels unsloth-t4-ci-e2d9ce9b and
+    -916d5986). flashinfer 0.6.6 JIT-compiles its sampling ops on first use.
+    On Kaggle all three .cu files COMPILE cleanly for
+    `-gencode=arch=compute_75,code=sm_75` -- nothing here is a Turing problem
+    -- and then the link dies:
+
+        /usr/bin/ld: cannot find -lcuda
+
+    `-L/usr/local/cuda/lib64/stubs` is already on that command line. The image
+    simply ships no `libcuda.so`: only the runtime `libcuda.so.1`, which is a
+    versioned soname the linker will not resolve `-lcuda` against. Normally
+    the CUDA toolkit's driver STUB fills that gap at build time; this image has
+    the directory and not the file.
+
+    `VLLM_USE_FLASHINFER_SAMPLER=0` was tried first and did not help, which is
+    the useful part: the JIT is not reached only through the sampler, so
+    switching off one consumer is whack-a-mole. Making `-lcuda` resolvable
+    fixes every flashinfer op at once.
+
+    `LIBRARY_PATH` rather than a symlink into /usr/local: gcc and ld search it
+    for `-l`, it needs no root, and it cannot damage the image for anything
+    else in the session. Linking against the real driver rather than a stub is
+    correct here -- the driver is present, which is the whole reason a stub
+    would have been a substitute for it.
+
+    Returns what it did, so the report can say so rather than the next reader
+    having to infer it from an absence of failure.
+    """
+    facts: dict = {"needed": False, "applied": False}
+    try:
+        import ctypes.util
+        import subprocess
+
+        stub_dirs = ["/usr/local/cuda/lib64/stubs", "/usr/local/cuda/compat"]
+        for d in stub_dirs:
+            if os.path.exists(os.path.join(d, "libcuda.so")):
+                facts["already_linkable"] = d
+                return facts
+        facts["needed"] = True
+
+        # Where the real driver lives. ldconfig is authoritative; the ctypes
+        # lookup is the fallback for an image with no ldconfig cache.
+        real = None
+        try:
+            out = subprocess.run(
+                ["/sbin/ldconfig", "-p"], capture_output = True, text = True, timeout = 60
+            ).stdout
+            for line in out.splitlines():
+                if "libcuda.so.1" in line and "=>" in line:
+                    real = line.split("=>")[-1].strip()
+                    break
+        except Exception:
+            real = None
+        if real is None or not os.path.exists(real):
+            found = ctypes.util.find_library("cuda")
+            real = found if found and os.path.exists(found) else None
+        if real is None:
+            facts["error"] = "no libcuda.so.1 on this machine"
+            return facts
+
+        shim = os.path.join(os.environ.get("TMPDIR") or "/tmp", "unsloth_libcuda_shim")
+        os.makedirs(shim, exist_ok = True)
+        link = os.path.join(shim, "libcuda.so")
+        if not os.path.exists(link):
+            os.symlink(real, link)
+        existing = os.environ.get("LIBRARY_PATH", "")
+        os.environ["LIBRARY_PATH"] = f"{shim}:{existing}" if existing else shim
+        facts.update(applied = True, real = real, shim = shim)
+    except Exception as exc:  # noqa: BLE001
+        facts["error"] = f"{type(exc).__name__}: {exc}"
+    return facts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default = DEFAULT_MODEL)
@@ -401,6 +477,11 @@ def main() -> int:
     ap.add_argument("--no-load-in-4bit", dest = "load_in_4bit", action = "store_false")
     ap.add_argument("--probe", action = "store_true", help = "record everything, assert nothing")
     args = ap.parse_args()
+
+    # Before anything imports vLLM: flashinfer JITs on first use and the link
+    # step is what fails on this image. See the function's docstring.
+    libcuda = make_libcuda_linkable()
+    _log(f"libcuda link shim: {libcuda}")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents = True, exist_ok = True)
@@ -429,6 +510,7 @@ def main() -> int:
     )
     report["versions_flat"] = flatten_versions(report["versions"])
     _log("versions " + json.dumps(report["versions_flat"]))
+    report["libcuda_shim"] = libcuda
     report["vllm"] = vllm_facts()
     _log("vllm " + json.dumps(report["vllm"]))
 
@@ -457,7 +539,13 @@ def main() -> int:
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, KeyboardInterrupt):
             raise
-        report["traceback"] = traceback.format_exc()[-6000:]
+        # Head AND tail. The last probe's 6000-char tail was entirely ninja's
+        # own output, so the Python frames that named the caller were the part
+        # that got dropped -- the opposite of what a tail is for.
+        _tb = traceback.format_exc()
+        report["traceback"] = (
+            _tb if len(_tb) <= 12000 else _tb[:6000] + "\n...[middle elided]...\n" + _tb[-6000:]
+        )
         report["engine_built"] = report.get("engine_built", False)
         failures = [f"{type(exc).__name__}: {str(exc)[:600]}"]
         _log("EXCEPTION\n" + report["traceback"])

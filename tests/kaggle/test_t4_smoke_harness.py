@@ -1378,9 +1378,9 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
             carried: set = set()
             for index, cell in enumerate(nb["cells"]):
                 missing, bound = _undefined_names("".join(cell["source"]), carried)
-                assert (
-                    not missing
-                ), f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
+                assert not missing, (
+                    f"{path}/{nb_name} cell {index} reads undefined {sorted(missing)}"
+                )
                 carried = bound
 
 
@@ -2177,3 +2177,142 @@ def test_a_kernel_that_could_not_be_pushed_does_not_lose_the_other(tmp_path):
     assert proc.returncode == 0
     assert "was never pushed" in proc.stdout
     assert "at_capacity" in proc.stdout
+
+
+# ------------------------------------------------- the libcuda link shim
+#
+# flashinfer 0.6.6 JIT-compiles its sampling ops on first use. Two real T4
+# sessions (unsloth-t4-ci-e2d9ce9b, -916d5986) both compiled all three .cu
+# files CLEANLY for sm_75 and then died at the link:
+#
+#   /usr/bin/ld: cannot find -lcuda
+#
+# The image has no `libcuda.so`, only the versioned `libcuda.so.1`, and the
+# linker will not resolve `-lcuda` against a soname. Nothing about that is
+# Turing. `VLLM_USE_FLASHINFER_SAMPLER=0` was tried first and the second
+# session failed identically, which is the useful part: switching off one
+# consumer of the JIT is whack-a-mole, and making `-lcuda` resolvable fixes
+# every flashinfer op at once.
+
+
+def _grpo_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "run_grpo_t4_under_test", SMOKE_DIR / "run_grpo_t4.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_shim_does_nothing_when_the_stub_is_already_there(monkeypatch):
+    """Most images ship it. Touching LIBRARY_PATH anyway would be a change
+    with no reason, on a machine that was already fine."""
+    grpo = _grpo_module()
+    monkeypatch.setattr(grpo.os.path, "exists", lambda p: "stubs" in str(p))
+    monkeypatch.delenv("LIBRARY_PATH", raising = False)
+    facts = grpo.make_libcuda_linkable()
+    assert facts["needed"] is False and facts["applied"] is False
+    assert "LIBRARY_PATH" not in grpo.os.environ
+
+
+def test_the_shim_builds_a_link_when_the_stub_is_missing(monkeypatch, tmp_path):
+    """The measured Kaggle case."""
+    grpo = _grpo_module()
+    driver = tmp_path / "libcuda.so.1"
+    driver.write_bytes(b"")
+
+    real_exists = grpo.os.path.exists
+
+    def exists(path):
+        if "stubs" in str(path) or "compat" in str(path):
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(grpo.os.path, "exists", exists)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.delenv("LIBRARY_PATH", raising = False)
+
+    class Done:
+        stdout = f"\tlibcuda.so.1 (libc6,x86-64) => {driver}\n"
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done())
+
+    facts = grpo.make_libcuda_linkable()
+    assert facts["needed"] is True and facts["applied"] is True, facts
+    from pathlib import Path as _P
+
+    link = _P(facts["shim"]) / "libcuda.so"
+    assert link.is_symlink() and link.resolve() == driver.resolve()
+    assert facts["shim"] in grpo.os.environ["LIBRARY_PATH"]
+
+
+def test_the_shim_keeps_an_existing_library_path(monkeypatch, tmp_path):
+    """Clobbering it would break whatever set it."""
+    grpo = _grpo_module()
+    driver = tmp_path / "libcuda.so.1"
+    driver.write_bytes(b"")
+    real_exists = grpo.os.path.exists
+    monkeypatch.setattr(
+        grpo.os.path,
+        "exists",
+        lambda p: False if ("stubs" in str(p) or "compat" in str(p)) else real_exists(p),
+    )
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setenv("LIBRARY_PATH", "/somewhere/else")
+
+    class Done:
+        stdout = f"\tlibcuda.so.1 (libc6,x86-64) => {driver}\n"
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done())
+
+    grpo.make_libcuda_linkable()
+    assert grpo.os.environ["LIBRARY_PATH"].endswith("/somewhere/else")
+
+
+def test_the_shim_reports_rather_than_raises_when_there_is_no_driver(monkeypatch, tmp_path):
+    """A machine with no driver at all is not a machine this can fix, and a
+    payload that dies here would report nothing about GRPO."""
+    grpo = _grpo_module()
+    monkeypatch.setattr(grpo.os.path, "exists", lambda p: False)
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+    class Done:
+        stdout = ""
+
+    import subprocess as _sp
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done())
+    monkeypatch.setattr("ctypes.util.find_library", lambda name: None)
+
+    facts = grpo.make_libcuda_linkable()
+    assert facts["applied"] is False
+    assert "error" in facts
+
+
+def test_the_payload_applies_the_shim_before_it_touches_vllm():
+    """Ordering is the whole point: flashinfer JITs on first use, and the
+    first use is inside the engine build."""
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    applied = source.index("make_libcuda_linkable()")
+    built = source.index('report["vllm"] = vllm_facts()')
+    assert applied < built
+
+
+def test_what_the_shim_did_reaches_the_report():
+    """Otherwise a future green run cannot be told from one that never needed
+    it, and the next person re-derives all of this."""
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    assert 'report["libcuda_shim"] = libcuda' in source
+
+
+def test_the_traceback_keeps_its_head_as_well_as_its_tail():
+    """The last probe's 6000-char tail was entirely ninja's own output, so the
+    Python frames naming the caller were exactly what got dropped."""
+    source = (SMOKE_DIR / "run_grpo_t4.py").read_text()
+    assert "middle elided" in source
