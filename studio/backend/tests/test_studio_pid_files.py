@@ -931,7 +931,9 @@ def test_an_interrupt_leaves_the_marker_to_a_live_server_thread(tmp_path, monkey
         with pytest.raises(KeyboardInterrupt):
             run.run_server()
 
-        assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != [], "the sibling can no longer see it"
+        assert (
+            list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+        ), "the sibling can no longer see it"
         assert run._OWN_STARTUP_MARKERS != []
     finally:
         stop.set()
