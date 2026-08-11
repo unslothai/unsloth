@@ -14,6 +14,17 @@ export type MonitorFrame = {
   top: number;
   right: number;
   bottom: number;
+  /**
+   * Whether the stack may paint over this box when there is nowhere left to
+   * put itself. Off by default, because the box that started this store is the
+   * Live monitor and its Close button and resize grip have to stay clickable.
+   *
+   * The chat composer opts in. In a short window there is no arrangement that
+   * both dodges it and shows the cards whole, and the two ways to lose are not
+   * equal: a clipped card reads as broken, a card over the composer reads as a
+   * card over the composer and has a dismiss button on it.
+   */
+  coverable?: boolean;
 };
 
 /**
@@ -42,7 +53,8 @@ function sameFrame(a: MonitorFrame | null, b: MonitorFrame | null): boolean {
     a.left === b.left &&
     a.top === b.top &&
     a.right === b.right &&
-    a.bottom === b.bottom
+    a.bottom === b.bottom &&
+    Boolean(a.coverable) === Boolean(b.coverable)
   );
 }
 
@@ -247,6 +259,27 @@ export function stackGeometry(
   neededRoom: number = ASSUMED_STACK_HEIGHT,
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
+  const placed = place(list, viewportWidth, viewportHeight, neededRoom);
+  if (placed.maxHeight >= neededRoom || !list.some((f) => f.coverable)) {
+    return placed;
+  }
+  // Nowhere to put the stack whole while dodging everything. Drop the boxes
+  // that said they may be covered and try again: the stack takes the corner and
+  // paints over the composer, which is what the cards being on top means.
+  // Clipping them instead is what the report was about, and a card sliced off
+  // at the rail's edge looks like it has slid behind the page.
+  const uncoverable = list.filter((f) => !f.coverable);
+  const covering = place(uncoverable, viewportWidth, viewportHeight, neededRoom);
+  return covering.maxHeight > placed.maxHeight ? covering : placed;
+}
+
+/** `stackGeometry` for one set of boxes, all of which must be dodged. */
+function place(
+  list: readonly MonitorFrame[],
+  viewportWidth: number,
+  viewportHeight: number,
+  neededRoom: number,
+): StackGeometry {
   if (list.length === 0) {
     const bottom = stackBottomInset(
       null,

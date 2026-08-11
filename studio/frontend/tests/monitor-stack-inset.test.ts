@@ -380,6 +380,69 @@ test("no measured height leaves the stack overlapping a box", () => {
   }
 });
 
+// A window too short to hold the cards above the composer has no arrangement
+// that both dodges it and shows them whole. Clipping them is what the overlap
+// report was about, and a card sliced off at the rail's edge reads as one that
+// has slid behind the page, so the stack takes the corner and paints over the
+// composer instead. Only for a box that said it may be covered.
+test("a stack that cannot fit above the composer covers it rather than clipping", () => {
+  // 534px tall, the size from the report, with the welcome composer centred.
+  const H = 534;
+  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const needed = 339;
+  const covered = stackGeometry(composer, 921, H, needed);
+  assert.equal(covered.bottom, 16, "the stack left the corner");
+  assert.ok(
+    covered.maxHeight >= needed,
+    `the cards are still clipped: ${covered.maxHeight} < ${needed}`,
+  );
+  // The same box that has to be dodged when dodging it costs nothing.
+  const roomy = stackGeometry(composer, 921, 1200, needed);
+  assert.ok(
+    1200 - roomy.bottom <= composer.top || roomy.maxHeight <= 1200 - 16 - composer.bottom,
+    "a composer that could have been dodged was covered anyway",
+  );
+});
+
+test("a box that never said it may be covered is still never covered", () => {
+  // The Live monitor. Its Close button and resize grip are why this store
+  // exists, so it keeps the old answer even when the stack does not fit.
+  const H = 534;
+  const monitor = { left: 236, top: 300, right: 684, bottom: 420 };
+  const geometry = stackGeometry(monitor, 921, H, 339);
+  const stackTop = H - geometry.bottom - geometry.maxHeight;
+  const clearsAbove = H - geometry.bottom <= monitor.top;
+  const clearsBelow = stackTop >= monitor.bottom;
+  assert.ok(clearsAbove || clearsBelow, "the stack was allowed over the monitor");
+});
+
+// The fallback drops the coverable boxes and places against what is left, so
+// the monitor has to come out of it exactly as it would have on its own. Stated
+// as a comparison rather than an absolute: a window this short cannot always
+// clear a monitor either, and the claim here is that the composer's permission
+// is not inherited, not that the monitor is always dodged.
+test("a coverable composer does not licence covering the monitor beside it", () => {
+  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const monitor = { left: 640, top: 60, right: 905, bottom: 250 };
+  for (const height of [534, 700, 900, 1200]) {
+    for (const needed of [56, 200, 339, 600]) {
+      const alone = stackGeometry(monitor, 921, height, needed);
+      const withComposer = stackGeometry([composer, monitor], 921, height, needed);
+      const clearance = (g: { bottom: number; maxHeight: number }) => ({
+        edge: height - g.bottom,
+        top: height - g.bottom - g.maxHeight,
+      });
+      const a = clearance(alone);
+      const b = clearance(withComposer);
+      const label = `height=${height} needed=${needed}`;
+      assert.ok(
+        b.top >= a.top || b.edge <= monitor.top,
+        `the composer pushed the stack further over the monitor: ${label}`,
+      );
+    }
+  }
+});
+
 // Same rule, applied to the other publisher: a monitor dragged up the screen
 // leaves the corner free, so the stack belongs in it.
 test("a monitor away from the corner no longer lifts the stack", () => {
