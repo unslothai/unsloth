@@ -103,6 +103,18 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
+def _ascii_registry_key(value):
+    """An mlx-vlm registry key lowered within ASCII, or None when it cannot be one.
+
+    `str.casefold` is deliberately avoided: it folds non-ASCII letters onto ASCII
+    ones, so a checkpoint publishing "ſmolvlm" or "Straß" would resolve to a
+    renderer it never named.
+    """
+    if not isinstance(value, str) or not value.isascii():
+        return None
+    return value.lower()
+
+
 def _render_registered_vlm_prompt(
     processor,
     model,
@@ -125,13 +137,20 @@ def _render_registered_vlm_prompt(
         return None
     model_config = getattr(prompt_utils, "MODEL_CONFIG", {})
     if model_type not in model_config:
-        folded = model_type.casefold() if isinstance(model_type, str) else None
-        canonical = next(
-            (key for key in model_config if isinstance(key, str) and key.casefold() == folded),
-            None,
+        # ASCII lowering, not casefold: casefold maps non-ASCII letters onto
+        # ASCII ones ("ſmolvlm" -> "smolvlm", "ß" -> "ss"), which would route a
+        # foreign model type into an unrelated renderer. Registry keys are ASCII.
+        folded = _ascii_registry_key(model_type)
+        matches = (
+            [key for key in model_config
+             if isinstance(key, str) and _ascii_registry_key(key) == folded]
+            if folded is not None else []
         )
-        if canonical is None:
+        # An ambiguous fold is not evidence: stay fail-closed rather than pick
+        # whichever key the registry happened to insert first.
+        if len(matches) != 1:
             return None
+        canonical = matches[0]
         # Preserve the checkpoint's config object. The prompt helper only needs
         # its own canonical routing key, and mutating the loaded model would make
         # later capability and export logic observe a value it never published.

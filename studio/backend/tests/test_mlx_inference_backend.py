@@ -1691,13 +1691,16 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     """The official checkpoint capitalizes its model type while mlx-vlm's
     registry uses lowercase. Studio must reach the registered renderer rather
     than rejecting the checkpoint before the loader's normalization can run."""
-    from unsloth_zoo.mlx.loader import _ensure_vlm_prompt_utils_patched
+    # Real mlx-vlm and Zoo, like the neighbouring renderer contract test. The
+    # bare backend CI ships neither, so skip rather than error there.
+    pytest.importorskip("mlx_vlm.prompt_utils")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
     from core.inference.mlx_inference import _render_registered_vlm_prompt
 
-    _ensure_vlm_prompt_utils_patched()
-    model = SimpleNamespace(
-        config = {"model_type": "NemotronH_Nano_Omni_Reasoning_V3"},
-    )
+    loader._ensure_vlm_prompt_utils_patched()
+    published = "NemotronH_Nano_Omni_Reasoning_V3"
+    config = {"model_type": published}
+    model = SimpleNamespace(config = config)
     messages = [{"role": "user", "content": "Transcribe this audio."}]
 
     plain = _render_registered_vlm_prompt(
@@ -1716,6 +1719,75 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
     )
 
     assert plain and marked and plain != marked
+    # The checkpoint keeps the model type it published: later capability and
+    # export logic must not observe a value the config never carried.
+    assert config["model_type"] == published
+    assert model.config is config
+
+
+@pytest.mark.parametrize(
+    ("published", "resolves"),
+    [
+        ("NemotronH_Nano_Omni_Reasoning_V3", True),   # the real published case
+        ("SMOLVLM", True),                            # ordinary ASCII case shift
+        ("smolvlm", True),                            # already canonical
+        ("ſmolvlm", False),                      # casefold("ſ") == "s"
+        ("smolvlẞ", False),                      # casefold("ẞ") == "ss"
+        ("no_such_renderer_anywhere", False),
+    ],
+)
+def test_mlx_renderer_canonicalization_is_ascii_only(monkeypatch, published, resolves):
+    """Case-insensitive routing must not fold non-ASCII onto an ASCII renderer.
+
+    `str.casefold` maps U+017F LATIN SMALL LETTER LONG S onto "s" and U+1E9E onto
+    "ss", so a checkpoint publishing those would reach a renderer it never named.
+    mlx-vlm's registry keys are ASCII, so the fold is ASCII-only and fail-closed.
+    """
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    rendered = []
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"smolvlm": object(), "nemotronh_nano_omni_reasoning_v3": object()}
+
+    def _apply_chat_template(_processor, config, _messages, **kwargs):
+        rendered.append(config["model_type"])
+        return f"prompt<{config['model_type']}>"
+
+    prompt_utils.apply_chat_template = _apply_chat_template
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": published})
+    out = _render_registered_vlm_prompt(
+        None, model, [{"role": "user", "content": "hi"}], num_images = 0,
+    )
+
+    if resolves:
+        assert out and rendered and rendered[0].isascii() and rendered[0].islower()
+    else:
+        assert out is None and rendered == []
+    # Never mutate what the checkpoint published.
+    assert model.config["model_type"] == published
+
+
+def test_mlx_renderer_refuses_ambiguous_case_insensitive_registry(monkeypatch):
+    """Two keys folding to the same value is not evidence for either one."""
+    from core.inference.mlx_inference import _render_registered_vlm_prompt
+
+    prompt_utils = types.ModuleType("mlx_vlm.prompt_utils")
+    prompt_utils.MODEL_CONFIG = {"dupe_model": object(), "Dupe_Model": object()}
+    prompt_utils.apply_chat_template = lambda *a, **k: "should not be reached"
+    fake = types.ModuleType("mlx_vlm")
+    fake.prompt_utils = prompt_utils
+    monkeypatch.setitem(sys.modules, "mlx_vlm", fake)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
+
+    model = SimpleNamespace(config = {"model_type": "DUPE_MODEL"})
+    assert _render_registered_vlm_prompt(
+        None, model, [{"role": "user", "content": "hi"}], num_images = 0,
+    ) is None
 
 
 def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
