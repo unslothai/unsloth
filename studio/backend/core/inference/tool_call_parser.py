@@ -722,10 +722,9 @@ def strip_tool_markup(
 
 
 # Every strip arm above is anchored on one of these literals, so text containing none of
-# them is returned unchanged. ``StreamingMarkupStripper`` uses that to skip the whole scan,
-# and ``test_refactor_guard.py`` proves the claim by asserting the identity over a fuzz
-# corpus and by checking the prefix-split property. An arm added without its literal here
-# would break that test, not production.
+# them is returned unchanged; ``StreamingMarkupStripper`` uses that to skip the whole scan.
+# ``test_refactor_guard.py`` fuzzes the claim, so an arm added without its literal here
+# breaks that test rather than production.
 _STRIP_SENTINELS = (
     "<tool_call",  # Qwen/Hermes open + GLM, and the <tool_call|> Gemma closer
     "<|tool_call",  # Gemma open, Kimi <|tool_call_begin|> / <|tool_calls_section_begin|>
@@ -741,8 +740,7 @@ _STRIP_SENTINELS = (
     "[/THINK",
     "call",  # markerless Gemma; ``call\s*:`` tolerates whitespace before the colon
 )
-# Confirmed against ``_GEMMA_BARE_TC_RE`` rather than taken at face value: see
-# ``_first_sentinel``.
+# Confirmed against ``_GEMMA_BARE_TC_RE``, not taken at face value: see ``_first_sentinel``.
 _GEMMA_BARE_SENTINEL = "call"
 _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 # Bytes sampled from each end when checking that a buffer continues the previous one.
@@ -833,9 +831,8 @@ def _safe_cut(text: str, first: int) -> int:
     if first <= 0:
         return 0
     if len(text) > _tool_healing._MAX_BRACKET_SCAN_CHARS:
-        # Over that length ``_strip_bracket_tag_calls`` stands down and returns the
-        # segment untouched. Cutting would bring the tail back under the limit and turn
-        # the arm back on, so a segment that has passed it is left whole.
+        # Past this length ``_strip_bracket_tag_calls`` stands down. Cutting would bring
+        # the tail back under the limit and turn the arm back on, so leave it whole.
         return 0
     cut = first
     if text.startswith("[ARGS]", first):
@@ -844,10 +841,9 @@ def _safe_cut(text: str, first: int) -> int:
     cut = text.rfind("\n", 0, cut) + 1
     if "`" in text[:cut] or "~" in text[:cut]:
         return 0
-    # A closer with no opener makes everything before it reasoning, and
-    # ``_think_spans_outside_tool_markup`` decides that from whether offset 0 of the
-    # segment falls inside a call. Trimming the segment moves offset 0, so a cut is only
-    # safe when there is nothing before that closer for it to move onto.
+    # A closer with no opener makes everything before it reasoning, which
+    # ``_think_spans_outside_tool_markup`` decides from offset 0 of the segment. Trimming
+    # moves offset 0, so cut only when there is nothing before that closer.
     close_at = _unmatched_think_closer(text)
     if 0 <= close_at and first < close_at:
         return 0
@@ -899,10 +895,9 @@ class StreamingMarkupStripper:
     ):
         self._enabled_tool_names = enabled_tool_names
         # Whether the last segment gets the end-of-turn arms. The tool-generation loop
-        # wants them (partial markup must never render); the final-answer loop after the
-        # tool budget is spent calls the strip with ``final = False``, which does not.
-        # The incremental machinery is the same either way: fewer arms are anchored on
-        # the same sentinels, and every guard in ``_safe_cut`` stays a superset.
+        # wants them (partial markup must never render); the final-answer loop strips with
+        # ``final = False`` and does not. The incremental machinery is the same either
+        # way: fewer arms on the same sentinels, and ``_safe_cut``'s guards stay a superset.
         self._seg_final = seg_final
         self._reset()
 
@@ -912,20 +907,18 @@ class StreamingMarkupStripper:
         # Settled prefix: text below ``_floor`` is final, and ``_floor_out`` is its output.
         self._floor = 0
         self._floor_out = ""
-        # True while nothing has actually been removed yet, which lets the sentinel-free
-        # path hand back the caller's own string instead of rebuilding it every token.
+        # True while nothing has been removed, which lets the sentinel-free path hand back
+        # the caller's own string instead of rebuilding it every token.
         self._floor_identity = True
-        # Set when markup sits at the very start of the unsettled text and is not a
-        # reasoning block. Nothing can then ever be settled or sliced off, so the
-        # bookkeeping is pure overhead on top of a strip that has to run in full anyway;
-        # this flag skips straight to it, keeping the worst case no slower than before.
+        # Set when non-reasoning markup sits at offset 0 of the unsettled text. Nothing can
+        # then ever settle or be sliced off, so the bookkeeping is pure overhead on a strip
+        # that must run in full anyway; this flag skips to it, so the worst case is no
+        # slower than before.
         self._degenerate = False
-        # Offset of the reasoning opener currently streaming, and how far into its body
-        # the scan has already got.
+        # Offset of the reasoning opener currently streaming, and how far its body is scanned.
         self._open_at = -1
         self._open_scanned = 0
-        # Length and both end samples of the buffer this instance last saw, never the
-        # buffer itself: see ``_note``.
+        # Length and both end samples of the last buffer, never the buffer itself: see ``_note``.
         self._seen_len = -1
         self._seen_head = ""
         self._seen_tail = ""
@@ -954,19 +947,18 @@ class StreamingMarkupStripper:
         else:
             return ""
         body_start = first + len(opener)
-        # Resume inside the body rather than restarting at the opener, overlapping by
-        # enough that a closer or a sentinel split across two appends is still seen.
+        # Resume inside the body, overlapping enough that a closer or sentinel split
+        # across two appends is still seen.
         resume = body_start
         if self._open_at == first and self._open_scanned > body_start:
             resume = max(body_start, self._open_scanned - _SENTINEL_MAX_LEN + 1)
         end = text.find(closer, resume)
         if end < 0:
-            # Still streaming. An unclosed block runs to EOF and is preserved verbatim,
-            # and the text before it is markup-free by construction, so the buffer is
-            # untouched -- as long as nothing else in it needs stripping. Everything
-            # below ``resume`` was checked on an earlier token and cannot change, and a
-            # reasoning body is most of a reasoning model's answer, so restarting at the
-            # opener every token is the same quadratic this class exists to remove.
+            # Still streaming. An unclosed block runs to EOF verbatim and the text before
+            # it is markup-free, so the buffer is untouched unless something else needs
+            # stripping. Scan from ``resume``, not from the opener: everything below it
+            # was checked on an earlier token, and a reasoning body is most of a reasoning
+            # model's answer, so restarting each token is the quadratic this class removes.
             if _first_sentinel(text, resume) >= 0:
                 self._open_at = -1
                 return ""
@@ -1008,9 +1000,8 @@ class StreamingMarkupStripper:
 
     def _full_strip(self, text: str) -> str:
         def _seg(segment: str, is_last: bool) -> str:
-            # Streaming has no separate ``final`` pass: the last segment always gets the
-            # end-of-turn arms so partial markup never renders. This mirrors the closure
-            # llama_cpp.py used to carry.
+            # Streaming has no separate ``final`` pass, so the last segment takes the
+            # end-of-turn arms and partial markup never renders.
             return strip_segment(
                 segment,
                 seg_final = is_last and self._seg_final,
@@ -1043,9 +1034,8 @@ class StreamingMarkupStripper:
         loop at 64k tokens: 1.14s holding the buffer, 0.003s holding these three.
         """
         self._seen_len = len(text)
-        # A buffer at or under the sample size is its own sample, so these two do alias
-        # it there. That is harmless: the copy the alias forces is bounded by the sample
-        # size, and the cost this avoids is proportional to the buffer.
+        # A buffer at or under the sample size aliases itself here. Harmless: the copy
+        # that forces is bounded by the sample size.
         self._seen_head = text[:_EXTENSION_SAMPLE]
         self._seen_tail = text[-_EXTENSION_SAMPLE:]
 
@@ -1067,12 +1057,12 @@ class StreamingMarkupStripper:
 
     def strip(self, text: str) -> str:
         if not self._is_extension(text):
-            # Not an extension of what we saw: the cached prefix no longer applies.
+            # Not an extension: the cached prefix no longer applies.
             self._reset()
 
         if self._degenerate:
-            # With nothing settled the two arms are the same expression, so the check
-            # would be two full-buffer scans that cannot change the answer.
+            # Guarded on ``_floor``: with nothing settled the two arms are the same
+            # expression, so the check would be two scans that cannot change the answer.
             out = (
                 self._floor_out + self._full_strip(text[self._floor :])
                 if self._floor and not self._needs_whole_buffer(text)
@@ -1081,14 +1071,14 @@ class StreamingMarkupStripper:
             self._note(text)
             return out
 
-        # Offsets stay absolute through the scan so the buffer is never sliced just to
-        # look for a sentinel; a slice would be linear per token and put back the cost
-        # this class removes. Loop so several reasoning blocks settle in one call.
+        # Offsets stay absolute so the buffer is never sliced just to look for a sentinel;
+        # a slice is linear per token and puts back the cost this class removes. Loop so
+        # several reasoning blocks can settle in one call.
         while True:
             if self._first < 0:
-                # Resume where the last scan stopped, overlapping just enough that a
-                # sentinel straddling two appends is still found. This is what keeps the
-                # pre-markup phase from rescanning the whole buffer per token.
+                # Resume where the last scan stopped, overlapping just enough to catch a
+                # sentinel straddling two appends. This is what keeps the pre-markup
+                # phase from rescanning the whole buffer per token.
                 resume = self._scanned_upto - _SENTINEL_MAX_LEN + 1
                 found = _first_sentinel(text, resume if resume > self._floor else self._floor)
                 if found < 0:
@@ -1096,11 +1086,10 @@ class StreamingMarkupStripper:
                     return self._unchanged(text)
                 if _is_provisional_call(text, found):
                     # A ``call`` that only qualifies because the buffer ends inside it.
-                    # One more token decides it, so nothing is committed: the scan stops
-                    # here and resumes from the same place next time. Committing it would
-                    # send every later token through the whole-buffer checks below, which
-                    # is the cost this class exists to remove, and the ordinary word
-                    # ``call`` lands on a token boundary often enough to matter.
+                    # One more token decides it, so commit nothing and resume here next
+                    # time. Committing would send every later token through the
+                    # whole-buffer checks below, and the ordinary word ``call`` lands on
+                    # a token boundary often enough to matter.
                     self._scanned_upto = found
                     return self._unchanged(text)
                 self._first = found - self._floor
@@ -1111,17 +1100,15 @@ class StreamingMarkupStripper:
                 break
 
         tail = text[self._floor :]
-        # Markup at offset 0 of the unsettled text: the cut is 0 now and stays 0 as the
-        # buffer grows, and no reasoning block can settle, so skip the bookkeeping from
-        # here on.
+        # Markup at offset 0 of the unsettled text: the cut is 0 and stays 0 as the buffer
+        # grows, and nothing can settle, so skip the bookkeeping from here on.
         self._degenerate = self._first == 0
-        # Recomputed per call rather than cached: the sentinel may have been found before
-        # the run preceding it finished streaming, so re-deriving keeps the cut exact.
+        # Recomputed per call, not cached: the sentinel may have been found before the run
+        # preceding it finished streaming, so re-deriving keeps the cut exact.
         cut = _safe_cut(tail, self._first)
-        # After the cut, not before it: with nothing settled and nothing to trim, the
-        # whole-buffer strip below already is the split one, so the two scans this costs
-        # would decide nothing and an answer with markup near its front would pay them on
-        # every token for the rest of the turn.
+        # After the cut, not before: with nothing settled and nothing to trim, the
+        # whole-buffer strip below already is the split one, so these two scans would
+        # decide nothing and an answer with markup near its front would pay them per token.
         if (cut or self._floor) and self._needs_whole_buffer(text):
             out = self._full_strip(text)
             self._note(text)
@@ -1134,10 +1121,9 @@ class StreamingMarkupStripper:
     def _unchanged(self, text: str) -> str:
         """Result when nothing after the settled prefix needs stripping."""
         self._note(text)
-        # With nothing removed so far the answer is the caller's own string, so hand it
-        # straight back rather than rebuilding it a token at a time. It is returned, not
-        # kept: this is the path a plain prose answer takes on every token, and keeping
-        # it is exactly what would stop the caller growing it in place.
+        # With nothing removed the answer is the caller's own string, so hand it straight
+        # back rather than rebuilding it a token at a time. Returned, not kept: holding a
+        # reference is exactly what would stop the caller growing it in place.
         return text if self._floor_identity else self._floor_out + text[self._floor :]
 
 

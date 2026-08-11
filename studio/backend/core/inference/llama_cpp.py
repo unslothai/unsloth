@@ -15263,15 +15263,13 @@ class LlamaCppBackend:
                 text, final = final, enabled_tool_names = _enabled_names_gate
             )
 
-        # The scan order used to be inlined here, one copy of four. It now lives in the
-        # parser's ``strip_segment``; the stripper wraps it so the accumulated response is
-        # not re-scanned end to end on every content token (that was quadratic in the
-        # response length). Think blocks are preserved verbatim inside it: a rehearsed call
-        # in one must not be deleted.
+        # Wraps the parser's ``strip_segment`` so the accumulated response is not rescanned
+        # end to end on every content token (that was quadratic in the response length).
+        # Think blocks stay verbatim inside it: a rehearsed call in one must not be deleted.
         _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
 
-        # The final-answer loop below has its own buffer and calls the strip with
-        # ``final = False``, so it gets its own instance rather than sharing this one.
+        # The final-answer loop has its own buffer and strips with ``final = False``, so it
+        # needs its own instance rather than sharing the one above.
         _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
 
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:

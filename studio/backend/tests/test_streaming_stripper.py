@@ -193,10 +193,9 @@ def test_scan_is_amortized_not_quadratic():
         stripper = StreamingMarkupStripper(ENABLED)
         return elapsed(stripper.strip, tokens)
 
-    # 4x the tokens. The reference rescans everything, so its cost grows ~16x; the
-    # incremental one resumes its scan and should grow ~4x. Comparing the two growth
-    # ratios rather than asserting an absolute keeps this meaningful on a noisy CI box
-    # while still catching a regression to full rescanning.
+    # 4x the tokens: the reference rescans everything (~16x), the incremental one resumes
+    # (~4x). Comparing growth ratios rather than absolutes keeps this meaningful on a
+    # noisy CI box while still catching a regression to full rescanning.
     reference_growth = elapsed(_reference_strip, long) / max(elapsed(_reference_strip, short), 1e-9)
     incremental_growth = incremental(long) / max(incremental(short), 1e-9)
 
@@ -206,9 +205,8 @@ def test_scan_is_amortized_not_quadratic():
     )
 
 
-# Cases that the corpus and the alphabet fuzz both missed. Each one produced a real
-# divergence from the reference strip before the guard it names was added, so each is
-# recorded here as a literal rather than left to a generator to rediscover.
+# Cases the corpus and the alphabet fuzz both missed. Each produced a real divergence from
+# the reference strip before the guard it names was added, so each is pinned as a literal.
 _MISSED_BY_THE_CORPUS = (
     # ``_GEMMA_BARE_TC_RE`` is ``call\s*:``, so a space or newline before the colon is
     # still a call. Sentinel completeness needs the literal ``call``, not ``call:``.
