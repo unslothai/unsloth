@@ -106,22 +106,17 @@ def _run_install(
     if _env.get("UNSLOTH_ROCM_GFX_ARCH"):
         inferred = _env["UNSLOTH_ROCM_GFX_ARCH"]
 
-    with patch.object(stack_mod, "IS_WINDOWS", False), patch.object(
-        stack_mod, "pip_install_try", return_value = True
-    ) as pip_try, patch.object(stack_mod, "pip_install") as pip, patch.object(
-        stack_mod, "_has_usable_nvidia_gpu", return_value = False
-    ), patch.object(
-        stack_mod, "_has_rocm_gpu", return_value = True
-    ), patch.object(
-        stack_mod, "_infer_linux_amd_gfx_arch", return_value = inferred
-    ), patch.object(
-        stack_mod, "_detect_amd_gfx_codes", side_effect = _fake_detect
-    ), patch.object(
-        stack_mod, "_detect_rocm_version", return_value = rocm_version
-    ), patch.object(
-        stack_mod, "_kfd_gfx_targets", return_value = list(kfd_targets)
-    ), patch.dict(
-        os.environ, _env, clear = False
+    with (
+        patch.object(stack_mod, "IS_WINDOWS", False),
+        patch.object(stack_mod, "pip_install_try", return_value = True) as pip_try,
+        patch.object(stack_mod, "pip_install") as pip,
+        patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+        patch.object(stack_mod, "_has_rocm_gpu", return_value = True),
+        patch.object(stack_mod, "_infer_linux_amd_gfx_arch", return_value = inferred),
+        patch.object(stack_mod, "_detect_amd_gfx_codes", side_effect = _fake_detect),
+        patch.object(stack_mod, "_detect_rocm_version", return_value = rocm_version),
+        patch.object(stack_mod, "_kfd_gfx_targets", return_value = list(kfd_targets)),
+        patch.dict(os.environ, _env, clear = False),
     ):
         # patch.dict cannot REMOVE a key the outer environment happens to set, and
         # every one of these silently decides the outcome: the UNSLOTH_* pair
@@ -174,9 +169,7 @@ class TestSpoofedStrixHaloRouting:
         """`studio update` on the host as the reporter left it: torch is already
         2.9.1+rocm6.3, so has_hip_torch is True and only the Strix reroute can
         fire. It must, or the repair is a no-op and the segfault survives it."""
-        calls = _run_install(
-            torch_probe_stdout = _ROCM63_TORCH, reprobe_devices = ["gfx1151"]
-        )
+        calls = _run_install(torch_probe_stdout = _ROCM63_TORCH, reprobe_devices = ["gfx1151"])
         assert "repo.amd.com/rocm/whl/gfx1151/" in calls, calls
         assert "torch>=2.11.0,<2.12.0" in calls, calls
 
@@ -437,14 +430,16 @@ class TestInstallShParity:
         env = {"FAKE_KFD": kfd}
         if override:
             env["HSA_OVERRIDE_GFX_VERSION"] = override
-        got = _run_sh(
-            f'_hsa_spoofed_physical_gfx "{inferred}" "{probed}" 2>/dev/null', env = env
-        )
+        got = _run_sh(f'_hsa_spoofed_physical_gfx "{inferred}" "{probed}" 2>/dev/null', env = env)
         assert got == expected, why
 
-        with patch.dict(os.environ, env, clear = False), patch.object(
-            stack_mod, "_kfd_gfx_targets", return_value = [c for c in kfd.split("\n") if c]
-        ), patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []):
+        with (
+            patch.dict(os.environ, env, clear = False),
+            patch.object(
+                stack_mod, "_kfd_gfx_targets", return_value = [c for c in kfd.split("\n") if c]
+            ),
+            patch.object(stack_mod, "_detect_amd_gfx_codes", return_value = []),
+        ):
             if not override:
                 os.environ.pop("HSA_OVERRIDE_GFX_VERSION", None)
             py = stack_mod._hsa_spoofed_physical_gfx(inferred, probed.split("\n"))
