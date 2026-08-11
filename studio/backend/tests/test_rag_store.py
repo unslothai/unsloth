@@ -220,8 +220,7 @@ def test_lexical_hides_retired_scope_and_unmapped_linked_document(rag_conn):
 
 
 def test_lexical_results_match_across_both_query_forms(rag_conn):
-    """Same rows, same order, whichever form runs: the fast path is not a shortcut in
-    behaviour, only in work."""
+    """The fast path is a shortcut in work, not in behaviour."""
     for i in range(12):
         _add_doc(
             rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}", [f"alpha bravo {'charlie ' * (i % 4)}"]
@@ -235,9 +234,8 @@ def test_lexical_results_match_across_both_query_forms(rag_conn):
 def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
     """A scope retired between the gate and the FTS read must not reach the read.
 
-    Without one snapshot the gate can decide "nothing is linked, run the plain query"
-    against a database state the read no longer sees, and rows from a scope retired in
-    between take slots the caller then loses at hydration.
+    Otherwise the gate decides "nothing is linked" against a state the read no longer
+    sees, and rows from the retired scope take slots the caller loses at hydration.
     """
     from storage import rag_db
 

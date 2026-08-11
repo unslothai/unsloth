@@ -333,9 +333,8 @@ def _require_scope_owner(
 ) -> None:
     """404 unless the scope's owner still exists.
 
-    ``conn`` lets a caller that is already holding a RAG connection reuse it. Opening
-    one is not free: sqlite-vec loads per connection, so a handler that opens a second
-    one only to read a single row pays that twice for one request.
+    ``conn`` reuses a connection the caller already holds: sqlite-vec loads per
+    connection, so opening a second one to read a single row pays that twice.
     """
     if scope_type == "knowledge_base":
         if conn is not None:
@@ -900,8 +899,7 @@ def folder_job_events(
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    # One connection for the whole request: the ownership check reads a single row, and
-    # opening a second RAG connection for it loads sqlite-vec twice per search.
+    # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
     try:
         if payload.kb_id:

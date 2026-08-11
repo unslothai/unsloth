@@ -300,15 +300,11 @@ def delete_document(
 
 
 def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
-    """Whether anything on this install can be hidden by the linked-folder filters.
+    """Whether anything here can be hidden by the linked-folder filters.
 
-    The two visibility predicates on the retrieval queries exclude a row only when some
-    scope is retired or some document belongs to a folder. With both tables empty they
-    cannot exclude anything, so the plain query returns exactly the same rows, and the
-    plain query is the one SQLite can answer straight out of the FTS index.
-
-    Two `EXISTS` reads of tiny tables, both answered from an index, against a per-matched
-    -row join and two correlated subqueries in the query they gate.
+    They exclude a row only when a scope is retired or a document belongs to a folder, so
+    with both tables empty the plain query returns the same rows out of the FTS index.
+    Two indexed EXISTS reads to skip a per-matched-row join and two subqueries.
     """
     return bool(
         conn.execute(
@@ -328,19 +324,16 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # The gate and the read share ONE snapshot. In WAL a deferred transaction pins the
-    # database at its first read, so a scope retired by another connection in between
-    # cannot land rows in a result the gate already decided to run unfiltered. Skipped
-    # when the caller is already in a transaction: that snapshot is the one to use.
+    # One snapshot for the gate and the read: WAL pins it at the transaction's first
+    # read, so a scope retired in between cannot land rows in a result the gate already
+    # decided to run unfiltered. A caller's own transaction is used instead.
     own_read_txn = not conn.in_transaction
     if own_read_txn:
         conn.execute("BEGIN")
     try:
-        # The filtered form joins chunks and documents and evaluates both subqueries for
-        # every row the FTS match returns, BEFORE the LIMIT, so its cost grows with how
-        # common the query terms are rather than with k. On an install with no linked
-        # folders that work is provably wasted (see linked_folder_rows_exist), which is
-        # the normal case for a knowledge base built from uploads.
+        # The filtered form joins chunks and documents and runs both subqueries for every
+        # matched row BEFORE the LIMIT, so it costs more the commoner the query terms are.
+        # With nothing linked that work is provably wasted (linked_folder_rows_exist).
         if linked_folder_rows_exist(conn):
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
@@ -361,8 +354,7 @@ def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
             )
         rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
     finally:
-        # Read-only either way, but it has to end: an open snapshot keeps the WAL from
-        # being checkpointed for as long as the connection lives.
+        # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
         if own_read_txn:
             conn.commit()
     # bm25() is negative (more negative = better); flip to higher-is-better.
