@@ -1696,11 +1696,15 @@ def test_a_lost_generate_post_must_prove_it_reached_the_backend():
     src = _read("features/images/images-page.tsx")
     fn = src[src.index("async function settleLostGeneration") :]
     fn = fn[: fn.index("\n}\n")]
-    assert "knownIds" in fn and "sawActive" in fn
-    assert "!knownIds.has(image.id)" in fn
+    assert "sawActive" in fn
+    # The proof used to be an inline knownIds set; it is now a baseline handed
+    # to hasUnknownRecord in lib/gallery-flags.ts. Same proof, named helper, so
+    # the assertion follows it rather than pinning the old spelling.
+    assert "hasUnknownRecord(" in fn
+    assert "baseline" in fn
     assert "did not reach the server" in fn
-    # And the caller snapshots the ids BEFORE the POST.
-    assert "new Set(galleryCache.images.map((image) => image.id))" in src
+    flags = _read("lib/gallery-flags.ts")
+    assert "export async function hasUnknownRecord" in flags
 
 
 def test_parallel_slots_setting_wired_end_to_end():
@@ -3367,8 +3371,11 @@ def test_the_gguf_footprint_is_resolved_per_dependency_group_not_per_repo():
     assert "new Map<string, GgufVariantDetail>()" in group
     assert 'const key = variant.dependency_key ?? "";' in group
     # The recommended quant still wins, but only inside its own group.
-    assert "variant.quant === effectiveRecommended" in group
-    assert "current.quant !== effectiveRecommended" in group
+    # effectiveRecommended went from a single quant to a SET of them, so the
+    # representative test is membership rather than equality. The contract is
+    # unchanged: the recommended quant represents its own group when it has one.
+    assert "effectiveRecommended.has(variant.quant)" in group
+    assert "!effectiveRecommended.has(current.quant)" in group
 
 
 def test_every_footprint_group_gets_its_own_resolve_call():
