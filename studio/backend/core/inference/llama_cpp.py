@@ -11158,6 +11158,98 @@ class LlamaCppBackend:
                     explicit_ctx = requested_ctx > 0
                     _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
 
+                    # The two tensor -> layer downgrades that depend on nothing the
+                    # drafter probe below decides run here, BEFORE it: the probe is
+                    # gated on `not tensor_parallel`, and a load that ends up layer-split
+                    # is a load the probe has to answer for (the layer planner reserves
+                    # the Auto drafter and pays for it in context). Both are knowable
+                    # this early -- a recorded abort is a session lookup, and the usable
+                    # GPU count needs only the tensor compute-buffer reserve -- and
+                    # running them first also hands the probe the restored (possibly
+                    # quantized) KV type the layer load will actually use.
+                    def _restore_after_tensor_downgrade():
+                        # Restore the quantized KV + extras tensor dropped (layer
+                        # split supports them), minus --split-mode.
+                        nonlocal cache_type_kv, _cache_type_from_env, extra_args
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
+
+                    # The route fallback retry is tensor-off; keep it multi-GPU.
+                    if preserve_multi_gpu_on_layer:
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+
+                    if tensor_parallel and self._tensor_split_aborts(binary, model_identifier):
+                        # Aborted on tensor for this model this session (#6415); skip
+                        # tensor upfront, layer split serves it.
+                        logger.info(
+                            "Tensor parallelism skipped: this llama.cpp build aborted "
+                            "on --split-mode tensor for this model earlier this "
+                            "session; using layer split across %d GPU(s).",
+                            len(gpus),
+                        )
+                        tensor_parallel = False
+                        # Keep the multi-GPU request (gated on it, not the cache).
+                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+                        _restore_after_tensor_downgrade()
+
+                    # Tensor mode replicates a compute buffer on every GPU, so drop
+                    # GPUs below that reserve from the set up front (gpu_indices
+                    # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
+                    tp_gpus = gpus
+                    # Manual mode owns the layer count and context, so it skips
+                    # the memory-based planner; its toggle still emits
+                    # --split-mode tensor below (split by free VRAM, or by the
+                    # Split ratio if set). auto plans here.
+                    plan_tp = tensor_parallel and gpu_memory_mode != "manual"
+                    if plan_tp:
+                        # Deterministic per-device compute buffer (replicated on
+                        # every device in tensor mode); flat fallback when dims
+                        # are unavailable. _plan_tensor_parallel uses the same.
+                        _tp_reserve_bytes = self._estimate_compute_buffer_bytes(
+                            n_ubatch = _effective_ubatch,
+                            n_parallel = n_parallel,
+                            per_device_tensor = True,
+                        )
+                        reserve_mib = (
+                            _tp_reserve_bytes // (1024 * 1024)
+                            if _tp_reserve_bytes > 0
+                            else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+                        )
+                        # Admit by usable budget (free - (1-frac)*total), not raw
+                        # free: a partly-used big card can clear the reserve on raw
+                        # free yet have no budget left.
+                        tp_gpus = [g for g in gpus if _gpu_usable(g) >= reserve_mib]
+
+                    if plan_tp and len(tp_gpus) < 2:
+                        # Tensor parallelism needs >= 2 usable GPUs. On a single
+                        # GPU --split-mode tensor is a no-op; with 0 GPUs (CPU-only
+                        # or probe failed) it must not reach llama-server; and a
+                        # GPU below the buffer reserve can't participate. Drop the
+                        # flag and fall through to normal layer/CPU allocation.
+                        logger.info(
+                            "Tensor parallelism requested but only %d of %d GPU(s) "
+                            "have enough free VRAM for the compute buffer; "
+                            "ignoring (needs >= 2).",
+                            len(tp_gpus),
+                            len(gpus),
+                        )
+                        tensor_parallel = False
+                        # GPUs below tensor's compute-buffer reserve can still do layer
+                        # split, so keep multi-GPU (mirrors the budget/geometry drops);
+                        # _select_gpus caps unusable cards.
+                        if len(gpus) >= 2:
+                            _layer_min_gpus = max(_layer_min_gpus, len(gpus))
+                        # Layer split supports a quantized KV the tensor attempt
+                        # dropped; restore the original cache type + extras (minus
+                        # --split-mode) so the layer launch re-emits them.
+                        _restore_after_tensor_downgrade()
+
                     # When the target pins on GPU but the drafter's reserve is what tips
                     # it over, Auto drops the drafter: it only buys speed, and paying
                     # for it with a smaller context (or a --fit offload, where decode
@@ -11175,6 +11267,18 @@ class LlamaCppBackend:
                     # per-device tensor buffer with its own context geometry, so these
                     # layer-split numbers are not that load's numbers, and a wrong answer
                     # here costs the user the drafter. TP keeps the behaviour it has.
+                    # `tensor_parallel` here already reflects the two downgrades hoisted
+                    # above (recorded abort, fewer than two usable GPUs), so a request
+                    # that ends up layer-split for either reason IS probed. One
+                    # downgrade still escapes: the pooled tensor weight-budget check
+                    # below, which prices _soft_overhead and therefore _mtp_reserves_gpu
+                    # -- both derived from the _mtp_will_engage this probe may clear.
+                    # Running it first would be circular (dropping the drafter shrinks
+                    # the requirement, so the load could stay on tensor with the drafter
+                    # already gone), so a tensor request that falls back to layer split
+                    # purely because the pooled budget cannot hold weights + MTP reserve
+                    # + per-device buffers keeps today's behaviour: no probe, and the
+                    # layer planner pays for the drafter in context as before.
                     # The gate reads the user's choice, not _mtp_effective, which by
                     # here is the kind Auto resolved and can no longer tell the two apart.
                     if (
@@ -11265,9 +11369,41 @@ class LlamaCppBackend:
                             _foot_wo = (_base_wo + _shared) / (1024 * 1024)
                             if _foot_wo > _budget_wo:
                                 continue
-                            _foot_w = (_probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)) / (
-                                1024 * 1024
-                            )
+                            # The pooled figure hides the compute buffer every device
+                            # replicates: on a heterogeneous split the weakest card can
+                            # be unable to hold the context the pool priced, and the
+                            # placement loop caps to what it does hold. Charging the
+                            # drafter at the uncapped context condemns it at a context
+                            # this load can never reach. Same reserve expression and
+                            # same cap the auto-context loop below applies (_reserve_at
+                            # / _every_gpu_holds_reserve / _cap_ctx_to_per_device_reserve),
+                            # so the two cannot disagree. Auto only: an explicit context
+                            # is honored verbatim, never capped, and overflows to --fit.
+                            if not explicit_ctx:
+                                _usable_wo = [
+                                    _gpu_usable(g, _probe_frac(False)) for g in _subset
+                                ]
+                                _probe_reserve_at = lambda c, _k = _n: (
+                                    (_pipeline_overhead_bytes if _k > 1 else 0)
+                                    + _cc_bytes(c, _k) // _k
+                                )
+                                if not self._every_gpu_holds_reserve(
+                                    _usable_wo, _probe_reserve_at(_ctx_wo)
+                                ):
+                                    _ctx_wo = self._cap_ctx_to_per_device_reserve(
+                                        _ctx_wo, _usable_wo, _probe_reserve_at
+                                    )
+                                    if _ctx_wo <= 0:
+                                        continue
+                                    # Every pooled term shrinks with the context, so this
+                                    # cannot newly fail; re-price rather than lean on it.
+                                    _shared = _kv_bytes(_ctx_wo) + _cc_n(_ctx_wo)
+                                    _foot_wo = (_base_wo + _shared) / (1024 * 1024)
+                                    if _foot_wo > _budget_wo:
+                                        continue
+                            _foot_w = (
+                                _probe_base(True, _n) + _shared + _mtp_bytes(_ctx_wo)
+                            ) / (1024 * 1024)
                             _budget_w = _pool_budget_mib(_subset, _probe_frac(True))
                             if not _target_fits_somewhere:
                                 # The placement this reports on: the first subset that
@@ -11330,89 +11466,6 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
-
-                    def _restore_after_tensor_downgrade():
-                        # Restore the quantized KV + extras tensor dropped (layer
-                        # split supports them), minus --split-mode.
-                        nonlocal cache_type_kv, _cache_type_from_env, extra_args
-                        if _tensor_dropped_cache_type_kv is not None:
-                            cache_type_kv = _tensor_dropped_cache_type_kv
-                            _cache_type_from_env = False
-                        extra_args = strip_split_mode_only(
-                            _tensor_dropped_extra_args
-                            if _tensor_dropped_extra_args is not None
-                            else extra_args
-                        )
-
-                    # The route fallback retry is tensor-off; keep it multi-GPU.
-                    if preserve_multi_gpu_on_layer:
-                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-
-                    if tensor_parallel and self._tensor_split_aborts(binary, model_identifier):
-                        # Aborted on tensor for this model this session (#6415); skip
-                        # tensor upfront, layer split serves it.
-                        logger.info(
-                            "Tensor parallelism skipped: this llama.cpp build aborted "
-                            "on --split-mode tensor for this model earlier this "
-                            "session; using layer split across %d GPU(s).",
-                            len(gpus),
-                        )
-                        tensor_parallel = False
-                        # Keep the multi-GPU request (gated on it, not the cache).
-                        _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-                        _restore_after_tensor_downgrade()
-
-                    # Tensor mode replicates a compute buffer on every GPU, so drop
-                    # GPUs below that reserve from the set up front (gpu_indices
-                    # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
-                    tp_gpus = gpus
-                    # Manual mode owns the layer count and context, so it skips
-                    # the memory-based planner; its toggle still emits
-                    # --split-mode tensor below (split by free VRAM, or by the
-                    # Split ratio if set). auto plans here.
-                    plan_tp = tensor_parallel and gpu_memory_mode != "manual"
-                    if plan_tp:
-                        # Deterministic per-device compute buffer (replicated on
-                        # every device in tensor mode); flat fallback when dims
-                        # are unavailable. _plan_tensor_parallel uses the same.
-                        _tp_reserve_bytes = self._estimate_compute_buffer_bytes(
-                            n_ubatch = _effective_ubatch,
-                            n_parallel = n_parallel,
-                            per_device_tensor = True,
-                        )
-                        reserve_mib = (
-                            _tp_reserve_bytes // (1024 * 1024)
-                            if _tp_reserve_bytes > 0
-                            else self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-                        )
-                        # Admit by usable budget (free - (1-frac)*total), not raw
-                        # free: a partly-used big card can clear the reserve on raw
-                        # free yet have no budget left.
-                        tp_gpus = [g for g in gpus if _gpu_usable(g) >= reserve_mib]
-
-                    if plan_tp and len(tp_gpus) < 2:
-                        # Tensor parallelism needs >= 2 usable GPUs. On a single
-                        # GPU --split-mode tensor is a no-op; with 0 GPUs (CPU-only
-                        # or probe failed) it must not reach llama-server; and a
-                        # GPU below the buffer reserve can't participate. Drop the
-                        # flag and fall through to normal layer/CPU allocation.
-                        logger.info(
-                            "Tensor parallelism requested but only %d of %d GPU(s) "
-                            "have enough free VRAM for the compute buffer; "
-                            "ignoring (needs >= 2).",
-                            len(tp_gpus),
-                            len(gpus),
-                        )
-                        tensor_parallel = False
-                        # GPUs below tensor's compute-buffer reserve can still do layer
-                        # split, so keep multi-GPU (mirrors the budget/geometry drops);
-                        # _select_gpus caps unusable cards.
-                        if len(gpus) >= 2:
-                            _layer_min_gpus = max(_layer_min_gpus, len(gpus))
-                        # Layer split supports a quantized KV the tensor attempt
-                        # dropped; restore the original cache type + extras (minus
-                        # --split-mode) so the layer launch re-emits them.
-                        _restore_after_tensor_downgrade()
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)

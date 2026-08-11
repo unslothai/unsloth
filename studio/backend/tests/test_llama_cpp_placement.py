@@ -582,3 +582,91 @@ def test_tensor_parallel_keeps_its_own_sizing(tmp_path):
 
     assert backend.spec_fallback_reason != "drafter_no_vram"
     assert "--model-draft" in result["cmd"]
+
+
+def test_a_tensor_request_that_aborted_before_is_probed_as_the_layer_load_it_is(tmp_path):
+    """A recorded --split-mode tensor abort downgrades the load to a layer split
+    before anything is planned, and the layer planner does reserve the Auto drafter
+    (paying for it in context). Gating the probe on the REQUESTED tensor flag would
+    hand that load the silent context cut the probe exists to prevent."""
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._tensor_split_aborts = lambda *args, **kwargs: True
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        tensor_parallel = True,
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert "--split-mode" not in cmd
+    assert "--model-draft" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_single_gpu_tensor_request_is_probed_as_the_layer_load_it_is(tmp_path):
+    """Same shape, the commonest cause: tensor parallelism needs >= 2 usable GPUs,
+    so a one-card request is downgraded to a layer split and must be probed."""
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 12.0)
+    backend._tensor_split_aborts = lambda *args, **kwargs: False
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        tensor_parallel = True,
+        n_ctx = 8192,
+    )
+
+    cmd = result["cmd"]
+    assert "--split-mode" not in cmd
+    assert "--model-draft" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_the_probe_prices_the_drafter_at_a_context_the_weakest_card_can_hold(tmp_path):
+    """The compute buffer is replicated on every device of a layer split, so a
+    pooled budget can price a context the smallest card cannot hold; the placement
+    loop catches that with _every_gpu_holds_reserve and caps to what it does hold.
+
+    A probe comparing pooled footprints only condemns the drafter at that
+    unattainable context, even though both fit at the context the real placement
+    must use. The numbers (Auto context, native 8192): the target alone fits on the
+    big card, the pair fits pooled at 8192, but the 1.5 GB card cannot hold the
+    1 GiB pipeline overhead plus its own 8192-token buffer copy, so 5888 is the real
+    ceiling -- and at 5888 the drafter fits.
+    """
+    mib = 1024**2
+    backend, gguf, sidecar = _tight_vram_backend(tmp_path, drafter_gb = 1.0)
+    backend._read_gguf_metadata = lambda _path: setattr(backend, "_context_length", 8192)
+    backend._get_gpu_memory = lambda _binary = None: [
+        (0, 19_588, 19_588),
+        (1, 1_546, 1_546),
+    ]
+    backend._get_gpu_free_memory = lambda _binary = None: [(0, 19_588), (1, 1_546)]
+    # Context-linear, so the per-device reserve (and the drafter) shrink with a cap.
+    backend._compute_buffer_ctx_bytes = lambda n_ctx, *args, **kwargs: n_ctx * 83_886
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *args, **kwargs: ctx * 94_371
+    # Sanity on the geometry the assertions below rest on (MiB).
+    assert 1024 + 8192 * 83_886 / mib > 1_546 * 0.97
+    assert 1024 + 5888 * 83_886 / mib <= 1_546 * 0.97
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "auto",
+        # 0 = Auto context (the branch that caps); the native 8192 above is the target.
+        n_ctx = 0,
+    )
+
+    cmd = result["cmd"]
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
