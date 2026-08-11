@@ -108,18 +108,21 @@ class TestSharedBaseSelection:
 
     @pytest.mark.parametrize("mode", ["missing", "unreadable"])
     def test_an_unusable_file_does_not_take_down_the_install(self, tmp_path, monkeypatch, mode):
-        """This runs before the manifest is dropped, so raising here aborts with a traceback."""
+        """This runs before the manifest is dropped, so raising here aborts with a traceback.
+
+        The unreadable case raises from a patched read rather than chmod(0o000):
+        root ignores the mode bits and Windows does not implement them at all.
+        """
         if mode == "unreadable":
-            req = tmp_path / "base.txt"
-            req.write_text(_EXTRA_PIN, encoding = "utf-8")
-            req.chmod(0o000)
+            (tmp_path / "base.txt").write_text(_EXTRA_PIN, encoding = "utf-8")
+
+            def denied(*_args, **_kwargs):
+                raise PermissionError(13, "Permission denied")
+
+            monkeypatch.setattr(Path, "read_text", denied)
         monkeypatch.setattr(ips, "REQ_ROOT", tmp_path)
         monkeypatch.setattr(ips, "NO_TORCH", False)
-        try:
-            assert ips._shared_base_requirements() is None
-        finally:
-            if mode == "unreadable":
-                req.chmod(0o644)
+        assert ips._shared_base_requirements() is None
 
 
 class TestSharedBasePhase:
