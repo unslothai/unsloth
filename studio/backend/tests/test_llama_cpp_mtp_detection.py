@@ -3100,9 +3100,7 @@ def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
         node.lineno
         for node in ast.walk(load_model)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == commit.value.id for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == commit.value.id for t in node.targets)
     ]
     assert pins, "the pinned local vanished; re-pin this test"
     assert health_waits, "the startup health wait moved; re-pin this test"
