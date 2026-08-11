@@ -877,6 +877,7 @@ class StreamingMarkupStripper:
 
     __slots__ = (
         "_enabled_tool_names",
+        "_seg_final",
         "_scanned_upto",
         "_first",
         "_floor",
@@ -890,8 +891,19 @@ class StreamingMarkupStripper:
         "_seen_tail",
     )
 
-    def __init__(self, enabled_tool_names: Optional[set] = None):
+    def __init__(
+        self,
+        enabled_tool_names: Optional[set] = None,
+        *,
+        seg_final: bool = True,
+    ):
         self._enabled_tool_names = enabled_tool_names
+        # Whether the last segment gets the end-of-turn arms. The tool-generation loop
+        # wants them (partial markup must never render); the final-answer loop after the
+        # tool budget is spent calls the strip with ``final = False``, which does not.
+        # The incremental machinery is the same either way: fewer arms are anchored on
+        # the same sentinels, and every guard in ``_safe_cut`` stays a superset.
+        self._seg_final = seg_final
         self._reset()
 
     def _reset(self):
@@ -1001,7 +1013,7 @@ class StreamingMarkupStripper:
             # llama_cpp.py used to carry.
             return strip_segment(
                 segment,
-                seg_final = is_last,
+                seg_final = is_last and self._seg_final,
                 enabled_tool_names = self._enabled_tool_names,
             )
 

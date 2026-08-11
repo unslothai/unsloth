@@ -838,7 +838,7 @@
         "methods": {
           "__init__": {
             "decorators": [],
-            "signature": "self, enabled_tool_names: Optional[set]=None"
+            "signature": "self, enabled_tool_names: Optional[set]=None, *, seg_final: bool=True"
           },
           "_full_strip": {
             "decorators": [],

@@ -15270,6 +15270,10 @@ class LlamaCppBackend:
         # in one must not be deleted.
         _streaming_stripper = _StreamingMarkupStripper(_enabled_names_gate)
 
+        # The final-answer loop below has its own buffer and calls the strip with
+        # ``final = False``, so it gets its own instance rather than sharing this one.
+        _final_answer_stripper = _StreamingMarkupStripper(_enabled_names_gate, seg_final = False)
+
         def _strip_tool_markup_streaming(text: str, *, force: bool = False) -> str:
             if not (auto_heal_tool_calls or force):
                 return text
@@ -16701,7 +16705,11 @@ class LlamaCppBackend:
                                         cumulative += "</think>"
                                         in_thinking = False
                                     cumulative += token
-                                    cleaned = _strip_tool_markup(cumulative)
+                                    cleaned = (
+                                        _final_answer_stripper.strip(cumulative)
+                                        if auto_heal_tool_calls
+                                        else cumulative
+                                    )
                                     # Emit only when cleaned text grows (monotonic).
                                     if len(cleaned) > len(_last_emitted):
                                         _last_emitted = cleaned

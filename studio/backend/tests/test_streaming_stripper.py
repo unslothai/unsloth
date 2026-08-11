@@ -519,3 +519,57 @@ def test_open_block_resume_does_not_change_the_result(text):
         assert stripper.strip(text[:size]) == _reference_strip(
             text[:size]
         ), f"diverged at {size} for {text!r}"
+
+
+def _reference_strip_non_final(text, enabled_tool_names = ENABLED):
+    """What the final-answer loop asks for: no end-of-turn arms."""
+    from core.inference.tool_call_parser import strip_tool_markup
+    return strip_tool_markup(text, final = False, enabled_tool_names = enabled_tool_names)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Sure.<tool_call>{"name": "get_weather", "arguments": {}}</tool_call>Done.',
+        "call:get_weather{city:Paris} tail",
+        "get_weather[ARGS]",
+        '[TOOL_CALLS]get_weather[ARGS]{"c": 1} after',
+        "<think>r</think>answer",
+        "```\nget_weather[ARGS]{}\n```\n",
+        "prose with no markup at all",
+    ],
+)
+def test_non_final_stripper_matches_the_non_final_strip(text):
+    """The final-answer loop after the tool budget is spent calls the strip with
+    ``final = False``, which leaves the end-of-turn arms off. Sharing the tool loop's
+    instance would silently turn them on, so it gets its own with the flag."""
+    stripper = StreamingMarkupStripper(ENABLED, seg_final = False)
+    for size in range(1, len(text) + 1):
+        assert stripper.strip(text[:size]) == _reference_strip_non_final(
+            text[:size]
+        ), f"diverged at {size} for {text!r}"
+
+
+def test_the_final_answer_loop_is_not_quadratic():
+    """That loop ran the whole strip over the growing buffer on every token.
+
+    It is reached when the tool-iteration budget is exhausted, which is uncommon, but it
+    was the largest single cost left in this file: 50s over a 16k-token answer.
+    """
+    import time
+
+    def elapsed(fn, count):
+        text = ""
+        start = time.perf_counter()
+        for _ in range(count):
+            text += "word "
+            fn(text)
+        return time.perf_counter() - start
+
+    count = 4000
+    before = elapsed(_reference_strip_non_final, count)
+    after = elapsed(StreamingMarkupStripper(ENABLED, seg_final = False).strip, count)
+
+    assert (
+        after < before / 10
+    ), f"final-answer strip cost {after:.4f}s against the full rescan's {before:.4f}s"
