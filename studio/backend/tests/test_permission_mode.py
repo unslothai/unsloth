@@ -3448,7 +3448,7 @@ def test_python_classifier_runs_without_match_ast_nodes():
     )
     env = {**os.environ, "PYTHONPATH": str(backend_root)}
     done = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, env=env, timeout=600
+        [sys.executable, "-c", probe], capture_output = True, text = True, env = env, timeout = 600
     )
     assert done.returncode == 0, done.stderr[-2000:]
     assert "ok" in done.stdout
