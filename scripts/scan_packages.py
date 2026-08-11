@@ -172,6 +172,11 @@ _TOK_IGNORED = frozenset(
 # though it runs at import. requires-python is >=3.9, so the scanner has to
 # handle both; on 3.12+ this flag is False and the extra work never happens.
 _FSTRING_OPAQUE = not hasattr(tokenize, "FSTRING_START")
+# Longest quote first, so `"""` is not read as an empty `""`. A pre-3.12
+# f-string may not reuse the quote style that delimits it, which is what caps
+# how deep one opaque STRING token can nest them.
+_FSTRING_QUOTES = ('"""', "'''", '"', "'")
+_MAX_FSTRING_NESTING = len(_FSTRING_QUOTES)
 
 
 class _Span:
@@ -376,13 +381,23 @@ def _collect_import_bindings(
         items = items[1:-1] if items[-1].string == ")" else items[1:]
     for part in _split_top(items):
         names = [t for t in part if t.type == tokenize.NAME]
-        if not names or names[0].string not in _EXEC_NAMES:
+        if not names:
+            continue
+        imported = names[0].string
+        # `from builtins import __import__ as load` renames the loader itself, so
+        # `load(name).exec(...)` is the same builtin call as `__import__(name).exec(...)`.
+        loader = loaders is not None and imported == "__import__"
+        if not loader and imported not in _EXEC_NAMES:
             continue
         as_at = _name_index(part, "as")
         if as_at is not None and as_at + 1 < len(part):
-            funcs.add(part[as_at + 1].string)
+            local = part[as_at + 1].string
         else:
-            funcs.add(names[0].string)
+            local = imported
+        if loader:
+            loaders.funcs.add(local)
+        else:
+            funcs.add(local)
     return True
 
 
@@ -421,6 +436,22 @@ def _strip_parens(toks: list) -> list:
     return toks
 
 
+def _matching_opener(toks: list, close_at: int) -> "int | None":
+    """The index of the bracket `toks[close_at]` closes, or None if unbalanced."""
+    depth = 0
+    for i in range(close_at, -1, -1):
+        tok = toks[i]
+        if tok.type != tokenize.OP:
+            continue
+        if tok.string in _CLOSERS:
+            depth += 1
+        elif tok.string in _OPENERS:
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
 def _loads_builtins(value: list, loaders: _Loaders) -> bool:
     """Whether `value` plainly evaluates to the `builtins` module.
 
@@ -434,16 +465,21 @@ def _loads_builtins(value: list, loaders: _Loaders) -> bool:
         return False
     if len(value) == 1:
         return value[0].type == tokenize.NAME and value[0].string in _BUILTINS_NAMES
-    if not (
-        value[-1].type == tokenize.OP
-        and value[-1].string == ")"
-        and value[-2].type == tokenize.STRING
-        and _string_body(value[-2].string) == "builtins"
-        and value[-3].type == tokenize.OP
-        and value[-3].string == "("
-    ):
+    if not (value[-1].type == tokenize.OP and value[-1].string == ")"):
         return False
-    call = value[:-3]
+    # The module name is the loader's first argument, not necessarily its only
+    # one: `__import__('builtins', fromlist=[])` and
+    # `import_module('builtins', package=None)` load the same module.
+    open_at = _matching_opener(value, len(value) - 1)
+    if open_at is None:
+        return False
+    args = _split_top(value[open_at + 1 : -1])
+    first = args[0]
+    if len(first) != 1 or first[0].type != tokenize.STRING:
+        return False
+    if _string_body(first[0].string) != "builtins":
+        return False
+    call = value[:open_at]
     if len(call) == 1:
         # `__import__('builtins')`, or `import_module('builtins')` for a name
         # `from importlib import import_module` bound.
@@ -480,20 +516,11 @@ def _assignment_bindings(stmt: list, loaders: _Loaders) -> list:
     if last.type == tokenize.NAME:
         if last.string not in _BUILTINS_NAMES:
             return []
-    elif last.type == tokenize.OP and last.string == ")":
-        # The token the parenthesis closes on: the module's name as a literal
-        # for a loader call, the name itself when parenthesized, or another
-        # parenthesis when both are. `v = compute(0)` is rejected here.
-        inner = stmt[-2]
-        if inner.type == tokenize.STRING:
-            if "builtins" not in inner.string:
-                return []
-        elif inner.type == tokenize.NAME:
-            if inner.string not in _BUILTINS_NAMES:
-                return []
-        elif not (inner.type == tokenize.OP and inner.string == ")"):
-            return []
-    else:
+    elif not (last.type == tokenize.OP and last.string == ")"):
+        # A loader call may carry optional arguments after the module name
+        # (`__import__('builtins', fromlist=[])`), so the closing parenthesis is
+        # all that is fixed about it; the marker pass below is what rejects
+        # `v = compute(0)`, and it allocates nothing either.
         return []
     marker = assign = False
     for tok in stmt:
@@ -595,9 +622,12 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
                 while k < len(stmt) and not (
                     stmt[k].type == tokenize.NAME and stmt[k].string == "in"
                 ):
-                    if stmt[k].type == tokenize.NAME:
-                        rebound.add(stmt[k].string)
                     k += 1
+                # The target binds what an ordinary assignment would: `for a, b
+                # in ...` rebinds both, `for holder.b in ...` rebinds neither -
+                # taking every name in between would let that no-op loop cancel
+                # a live alias.
+                _add_assignment_targets(stmt[j + 1 : k], rebound)
             elif tok.string == "as":  # `with ... as x`, `except ... as x`
                 if j + 1 < len(stmt) and stmt[j + 1].type == tokenize.NAME:
                     rebound.add(stmt[j + 1].string)
@@ -634,7 +664,11 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
 
 
 def _receiver_start(
-    stmt: list, dot_at: int, receivers: frozenset, loaders: frozenset = frozenset()
+    stmt: list,
+    dot_at: int,
+    receivers: frozenset,
+    loaders: frozenset = frozenset(),
+    memo: "dict | None" = None,
 ) -> "tuple":
     """Where the receiver of `stmt[dot_at]` starts, and the alias that made it one.
 
@@ -656,6 +690,13 @@ def _receiver_start(
     None when the module was named outright (`builtins`, `__builtins__`, or the
     string `'builtins'`) - those spellings cannot be rebound out from under the
     call, so only a real alias is a candidate for the rebinding cutoff.
+
+    `memo`, when given, caches the walk per statement. Every `.exec` in
+    `builtins.exec(x).exec(x)...` otherwise restarts the walk over the whole
+    chain to its left, which is quadratic in the number of calls - a 25 KB file
+    of them took 4.3 s, on archive members allowed up to 64 MiB. A walk that
+    reaches a position an earlier one started from is the earlier walk from
+    there on, so it stops and folds in that result instead.
     """
     k = dot_at - 1
     start = None
@@ -663,9 +704,21 @@ def _receiver_start(
     hard = False
     alias = None
     while k >= 0:
+        if memo is not None:
+            cached = memo.get(k)
+            if cached is not None:
+                seen_start, seen_found, seen_hard, seen_alias = cached
+                if seen_start is not None:
+                    start = seen_start
+                found = found or seen_found
+                hard = hard or seen_hard
+                if seen_alias is not None:
+                    alias = seen_alias  # the leftmost spelling is the receiver's
+                break
         tok = stmt[k]
         if tok.type == tokenize.OP:
             if tok.string in _CLOSERS:
+                close_at = k
                 depth = 0
                 while k >= 0:
                     inner = stmt[k]
@@ -688,6 +741,20 @@ def _receiver_start(
                     k -= 1
                 if k < 0:
                     break
+                if (
+                    not found
+                    and stmt[k].string == "("
+                    and close_at + 1 < len(stmt)
+                    and stmt[close_at + 1].type == tokenize.OP
+                    and stmt[close_at + 1].string == "("
+                ):
+                    # `(__import__)(name).exec(...)`: parenthesizing the callable
+                    # does not change what it returns, so the group is a loader
+                    # call whenever its contents name one.
+                    callee = _strip_parens(stmt[k : close_at + 1])
+                    if callee and callee[-1].type == tokenize.NAME and callee[-1].string in loaders:
+                        found = True
+                        hard = True
                 start = k
                 k -= 1
                 continue
@@ -722,6 +789,8 @@ def _receiver_start(
                 continue
             break
         break
+    if memo is not None:
+        memo[dot_at - 1] = (start, found, hard, alias)
     if not found:
         return None, None
     return start, (None if hard else alias)
@@ -760,32 +829,41 @@ class _Aliases:
         self.loaders = frozenset(_DEFAULT_LOADER_FUNCS | (loader_funcs or set()))
 
 
-def _cancel_add(cancel: dict, name: str, at: int, col: int) -> None:
+def _cancel_add(cancel: dict, opened: dict, name: str, at: int, col: int) -> None:
     """Record that `name` stops being the module at offset `at`, indent `col`.
 
-    A rebinding only reaches a call that is at least as deeply indented as it
-    is: `def f(): b = model` cannot change what a module-level `b.exec(...)`
-    below it calls, and neither can a branch body. So the cutoff keeps the
-    indent alongside the offset, and a rebinding that is both later and no
-    shallower than one already recorded is dropped - it can never decide a call
-    the recorded one does not already decide. That keeps the record to one entry
-    per indent level however many times a hostile file rebinds the name.
+    A rebinding only reaches a call inside the block it is written in: `def f():
+    b = model` cannot change what a module-level `b.exec(...)` below it calls,
+    and neither can a sibling function or branch, which is why the record is a
+    span - offset, indent, and the offset the block ends at - rather than a
+    point. `opened` holds the spans whose block is still being read; one already
+    open at this indent or shallower decides every call the new one would, so
+    the record stays at one entry per indent level however many times a hostile
+    file rebinds the name.
     """
-    frontier = cancel.get(name)
-    if frontier is None:
-        cancel[name] = [(at, col)]
-    elif col < frontier[-1][1]:
-        frontier.append((at, col))
+    stack = opened.setdefault(name, [])
+    if stack and stack[-1][1] <= col:
+        return
+    entry = [at, col, None]
+    cancel.setdefault(name, []).append(entry)
+    stack.append(entry)
+
+
+def _cancel_close(opened: dict, at: int, col: int) -> None:
+    """End the spans whose block a statement at `at`, indent `col`, has left."""
+    for stack in opened.values():
+        while stack and stack[-1][1] > col:
+            stack.pop()[2] = at
 
 
 def _is_cancelled(frontier: list, start: int, col: int) -> bool:
-    for at, at_col in frontier:
-        if at <= start and at_col <= col:
+    for at, at_col, end in frontier:
+        if at <= start and at_col <= col and (end is None or start < end):
             return True
     return False
 
 
-def _fstring_code(literal: str, nesting: int = 2) -> "str | None":
+def _fstring_code(literal: str, nesting: int = _MAX_FSTRING_NESTING) -> "str | None":
     """`literal` with everything that is not interpolated expression source blanked.
 
     Only the replacement fields of an f-string are code; the literal text around
@@ -794,13 +872,19 @@ def _fstring_code(literal: str, nesting: int = 2) -> "str | None":
     `f'{v.replace("exec(", "")}'` from reading as a call while
     `f'{exec(payload)}'` still does. A nested f-string is masked in turn, so an
     inner interpolation is not lost with the literal that carries it.
+
+    `nesting` bounds the recursion at the grammar's own ceiling rather than at
+    an arbitrary depth: a pre-3.12 f-string cannot reuse the quote style that
+    delimits it, so one literal can nest at most as deep as there are styles.
+    Stopping any shallower blanks a real call - `f'''{f\"\"\"{f'{f\"{exec(p)}\"}'}\"\"\"}'''`
+    tokenizes as one STRING and compiles fine on 3.11.
     """
     i = 0
     while i < len(literal) and literal[i] not in "\"'":
         i += 1
     if i >= len(literal):
         return None
-    for quote in ('"""', "'''", '"', "'"):
+    for quote in _FSTRING_QUOTES:
         if literal.startswith(quote, i) and literal.endswith(quote):
             if len(literal) >= i + 2 * len(quote):
                 break
@@ -850,7 +934,14 @@ def _fstring_code(literal: str, nesting: int = 2) -> "str | None":
     return "".join(out)
 
 
-def _fstring_spans(tok, aliases: _Aliases, offsets: _Offsets, out: list) -> None:
+def _fstring_spans(
+    tok,
+    aliases: _Aliases,
+    offsets: _Offsets,
+    out: list,
+    positional: bool = False,
+    col: int = 0,
+) -> None:
     """Scan the expressions inside an f-string the tokenizer left opaque.
 
     Below Python 3.12 the whole literal is one STRING token, so the statement
@@ -860,17 +951,32 @@ def _fstring_spans(tok, aliases: _Aliases, offsets: _Offsets, out: list) -> None
     evidence still points at the real line. The fallback refuses a name preceded
     by a dot, so `f'{model.eval()}'` stays clean - the false positive this rule
     exists to remove is not reintroduced inside an f-string.
+
+    The literal sits at a known offset, so it gets the same per-call rebinding
+    cutoff as the statement scan rather than the file-wide `safe_*` sets: a
+    trailing `run = model` must not erase an `f'{run(BLOB)}'` written above it.
     """
     text = tok.string
     if "{" not in text:
         return  # no interpolation: an f-string without a replacement field
-    if "exec" not in text and "eval" not in text and not _mentions_name(text, aliases.safe_funcs):
+    if positional:
+        receivers, funcs, cancel = aliases.live_receivers, aliases.live_funcs, aliases.cancel
+    else:
+        receivers, funcs, cancel = aliases.safe_receivers, aliases.safe_funcs, None
+    if "exec" not in text and "eval" not in text and not _mentions_name(text, funcs):
         return
     code = _fstring_code(text)
     if code is None:
         return
     base = offsets.of(*tok.start)
-    for span in _regex_spans(code, aliases.safe_receivers, aliases.safe_funcs):
+    live = None
+    if cancel:
+
+        def live(name: str, at: int) -> bool:
+            frontier = cancel.get(name)
+            return frontier is None or not _is_cancelled(frontier, base + at, col)
+
+    for span in _regex_spans(code, receivers, funcs, live):
         out.append(_Span(base + span.start(), base + span.end()))
 
 
@@ -882,12 +988,13 @@ def _statement_spans(
     else:
         receivers, funcs, cancel = aliases.safe_receivers, aliases.safe_funcs, None
     last = len(stmt) - 1
+    walked: dict = {}
     for j, tok in enumerate(stmt):
         if tok.type == tokenize.STRING:
             # A prefix is the only thing that can make this an f-string, so the
             # quote test rejects every ordinary literal for one character.
             if _FSTRING_OPAQUE and tok.string[:1] not in "\"'" and _is_fstring(tok.string):
-                _fstring_spans(tok, aliases, offsets, out)
+                _fstring_spans(tok, aliases, offsets, out, positional, stmt[0].start[1])
             continue
         if tok.type != tokenize.NAME or j == last:
             continue
@@ -904,7 +1011,7 @@ def _statement_spans(
             # way; `run` aliases the function, so `obj.run(...)` is not it.
             if not direct:
                 continue
-            at, alias = _receiver_start(stmt, j - 1, receivers, aliases.loaders)
+            at, alias = _receiver_start(stmt, j - 1, receivers, aliases.loaders, walked)
             if at is None:
                 continue
         elif prev is not None and prev.type == tokenize.NAME and prev.string in ("def", "class"):
@@ -1016,10 +1123,16 @@ def _regex_rebindings(text: str) -> set:
     }
 
 
-def _regex_spans(text: str, receivers: frozenset, funcs: frozenset) -> list:
+def _regex_spans(text: str, receivers: frozenset, funcs: frozenset, live = None) -> list:
+    """Spans of every call this text reaches the builtin through.
+
+    `live(name, at)`, when given, decides whether the alias `name` is still the
+    builtin at offset `at`; without it every alias in `receivers` / `funcs` is
+    taken as live, which is what the unparseable-source fallback wants.
+    """
     out = []
     for m in RE_FALLBACK_QUALIFIED.finditer(text):
-        if m.group(1) in receivers:
+        if m.group(1) in receivers and (live is None or live(m.group(1), m.start())):
             out.append(_Span(m.start(), m.end()))
     for m in RE_FALLBACK_STR_RECEIVER.finditer(text):
         out.append(_Span(m.start(), m.end()))
@@ -1032,7 +1145,11 @@ def _regex_spans(text: str, receivers: frozenset, funcs: frozenset) -> list:
         # Only reachable through `from builtins import exec as ...`, so the one
         # scan over every call site in the file is confined to those files.
         for m in RE_FALLBACK_CALL.finditer(text):
-            if m.group(1) in funcs and not _preceded_by_dot(text, m.start()):
+            if (
+                m.group(1) in funcs
+                and not _preceded_by_dot(text, m.start())
+                and (live is None or live(m.group(1), m.start()))
+            ):
                 out.append(_Span(m.start(), m.end()))
     out.sort(key = lambda s: s.start())
     return out
@@ -1236,9 +1353,15 @@ class _ExecEvalPattern:
                 # difference would let the trailing line erase the call above it.
                 offsets = _Offsets(content)
                 rebound: set = set()
+                # The rebindings whose block is still open, so a sibling scope
+                # does not inherit one: `def a(): b = model` stops deciding
+                # anything at the next statement written no deeper than it.
+                opened: dict = {}
                 failed = []
                 for stmt in _statements(content, failed):
                     head = stmt[0]
+                    if opened:
+                        _cancel_close(opened, offsets.of(*head.start), head.start[1])
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         if cancel:
                             # Only once something is cancelled can an import
@@ -1248,6 +1371,7 @@ class _ExecEvalPattern:
                             _collect_import_bindings(stmt, bound, bound, None)
                             for name in bound:
                                 cancel.pop(name, None)
+                                opened.pop(name, None)
                         continue
                     _collect_rebindings(stmt, rebound, candidates)
                     if not rebound:
@@ -1261,13 +1385,14 @@ class _ExecEvalPattern:
                         # statement that does rebind an alias, which is rare.
                         for name in aliased:
                             cancel.pop(name, None)
+                            opened.pop(name, None)
                         rebound.clear()
                         continue
                     at = offsets.of(*head.start)
                     for name in rebound:
                         # Statements arrive in source order, so the first
                         # rebinding seen at a given indent is the earliest one.
-                        _cancel_add(cancel, name, at, head.start[1])
+                        _cancel_add(cancel, opened, name, at, head.start[1])
                     rebound.clear()
                 if failed:
                     # The tokenizer gave up, so there is no reliable order or
@@ -1275,7 +1400,7 @@ class _ExecEvalPattern:
                     # at column 0, which is the whole-file subtraction this path
                     # always did.
                     for name in _regex_rebindings(content) & candidates:
-                        cancel[name] = [(0, 0)]
+                        cancel[name] = [[0, 0, None]]
         matcher = _ExecEvalMatcher(modules, funcs, cancel, content, loaders.funcs)
         self._cached = (content, matcher)
         return matcher
