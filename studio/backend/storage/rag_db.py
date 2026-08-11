@@ -255,6 +255,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    # After the ALTER, which is where the column comes from on an older database. Partial,
+    # so it holds only folder-owned rows: empty on an install with nothing linked, which is
+    # what keeps the lexical fast-path gate an index probe instead of a scan of documents.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_documents_linked_folder "
+        "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
+    )
     ensure_linked_folder_columns(conn)
     conn.commit()
 
