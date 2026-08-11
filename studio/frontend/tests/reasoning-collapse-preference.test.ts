@@ -8,6 +8,7 @@ import {
   reasoningAutoOpensWhileStreaming,
   resolveReasoningOpen,
   resolveReasoningToggle,
+  startsNewReasoningRound,
 } from "../src/features/chat/utils/reasoning-visibility.ts";
 
 // Mirrors the component: toggle results feed straight back into the open state.
@@ -129,6 +130,32 @@ test("closing still works after the preference flips mid stream", () => {
   // The sticky open has to clear here, or the block cannot be collapsed again.
   state = applyToggle(state, false);
   assert.equal(state.manualOpen, false);
+  assert.equal(resolveReasoningOpen(state), false);
+});
+
+test("a round starts only when streaming resumes", () => {
+  assert.equal(startsNewReasoningRound(true, false), true);
+  // Still the same round, so a hand-opened block stays open.
+  assert.equal(startsNewReasoningRound(true, true), false);
+  assert.equal(startsNewReasoningRound(false, true), false);
+  assert.equal(startsNewReasoningRound(false, false), false);
+});
+
+test("regenerating drops the previous round's manual open", () => {
+  // Block opened by hand after the last round finished.
+  let state = {
+    isStreaming: false,
+    collapseByDefault: true,
+    dismissedWhileStreaming: false,
+    manualOpen: true,
+  };
+  assert.equal(resolveReasoningOpen(state), true);
+
+  // Regenerate restarts streaming on the same component instance.
+  const wasStreaming = state.isStreaming;
+  state = { ...state, isStreaming: true };
+  assert.equal(startsNewReasoningRound(state.isStreaming, wasStreaming), true);
+  state = { ...state, manualOpen: false, dismissedWhileStreaming: false };
   assert.equal(resolveReasoningOpen(state), false);
 });
 

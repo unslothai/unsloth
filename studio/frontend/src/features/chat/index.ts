@@ -160,6 +160,7 @@ export {
   reasoningAutoOpensWhileStreaming,
   resolveReasoningOpen,
   resolveReasoningToggle,
+  startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
 export { ResearchMessage } from "./components/research-message";

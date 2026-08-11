@@ -41,6 +41,18 @@ export function reasoningAutoOpensWhileStreaming(
   return isStreaming && !collapseByDefault;
 }
 
+/**
+ * A new round starts when streaming resumes. Regenerate reuses the component,
+ * so last round's open state has to clear in that same render, not in an
+ * effect, or the block paints open before collapsing.
+ */
+export function startsNewReasoningRound(
+  isStreaming: boolean,
+  wasStreaming: boolean,
+): boolean {
+  return isStreaming && !wasStreaming;
+}
+
 export interface ReasoningToggleResult {
   /** Sticky user open. Cleared on close so a preference flip cannot pin it. */
   manualOpen: boolean;

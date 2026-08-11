@@ -15,6 +15,7 @@ import {
   resolveReasoningGroupDuration,
   resolveReasoningOpen,
   resolveReasoningToggle,
+  startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
@@ -376,12 +377,16 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   // Reset per-round open state. manualOpen is sticky and regenerate reuses this
   // instance, so a hand-opened block would stay pinned open and never collapse.
-  useEffect(() => {
-    if (isReasoningStreaming) {
+  // Adjusted during render, not in an effect: React re-runs this component
+  // before committing, so a stale open never reaches the DOM.
+  const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
+  if (wasStreaming !== isReasoningStreaming) {
+    setWasStreaming(isReasoningStreaming);
+    if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setDismissedWhileStreaming(false);
       setManualOpen(false);
     }
-  }, [isReasoningStreaming]);
+  }
 
   // Keep the streaming height cap until the automatic close finishes. Removing
   // it on the completion frame expands long reasoning to its full height before
