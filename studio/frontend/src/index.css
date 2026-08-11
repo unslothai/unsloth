@@ -1285,6 +1285,43 @@ html[data-chat-font] .aui-root {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 	}
+
+	/* Crossfade Images settings into its in-flow action footer. The content eases out
+	   over 24px while the lighter footer tint continues building behind the button. */
+	.panel-scroll-fade-action.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 24px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			#000 0,
+			#000 calc(100% - 24px),
+			transparent 100%
+		);
+	}
+	.panel-scroll-fade-action.is-scrolled:not(.is-bottom-faded) {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade-action.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 24px),
+			transparent 100%
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 24px),
+			transparent 100%
+		);
+	}
 	.panel-scroll-fade.is-bottom-faded {
 		-webkit-mask-image: linear-gradient(
 			to bottom,
