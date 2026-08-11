@@ -348,6 +348,37 @@ def test_the_builtin_reached_through_an_alias_is_still_flagged():
     assert high == [], f"unaliased model.eval() must stay clean: {high}"
 
 
+def test_a_function_alias_call_is_recorded_as_evidence():
+    # `from builtins import exec as run` then `run(payload)` fires the finding,
+    # but the evidence came back empty: the whole-file scan sees the call, while
+    # the per-line pass that renders evidence short-circuits on "does this line
+    # even contain the word exec or eval" - and `run(payload)` contains neither.
+    # An empty `Exec:` means the baseline key binds no payload line at all, so
+    # the payload can be swapped under a reviewed entry without reopening it.
+    payload = (
+        "from builtins import exec as run\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "code = marshal.loads(BLOB)\n"
+        "run(code)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a function-alias call must be flagged"
+    # Read the exec side of the evidence specifically: the obfuscation side names
+    # the marshal line, which would satisfy a whole-string match on its own.
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "run(code)" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # The alias is required at the call site, so an unrelated `run(...)` in a file
+    # that never aliased the builtin stays clean.
+    benign = "import marshal\nmod = __import__('os')\ncode = marshal.loads(BLOB)\nrun(code)\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"`run()` without the alias must stay clean: {high}"
+
+
 def test_a_parenthesized_builtins_module_is_still_the_builtin():
     # `(builtins).exec(...)` is the same call with one pair of parentheses. It
     # reaches neither the qualified branch (the name is not glued to the dot) nor
@@ -383,6 +414,42 @@ def test_a_rebound_alias_is_not_treated_as_the_builtin():
     findings = sp.check_py_file(payload, "pkg/_infer.py", "pkg")
     high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
     assert high == [], f"a rebound alias must not read as the builtin: {high}"
+
+
+def test_a_call_above_the_rebinding_of_its_alias_is_still_flagged():
+    # Dropping a rebound alias for the whole file is order-blind, and one
+    # trailing line then erases every call above it: `import builtins as b` ...
+    # `b.exec(BLOB)` ... `b = harmless` runs the builtin and reads as clean.
+    # Module-level code runs top to bottom, so the rebinding cancels the alias
+    # from where it is written, not from the top of the file.
+    payload = (
+        "import builtins as b\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "code = marshal.loads(BLOB)\n"
+        "b.exec(code)\n"
+        "b = harmless\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "a call above the rebinding of its alias must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "b.exec(code)" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # The cutoff runs the other way too: below the rebinding the name is the
+    # model, so the false positive this whole rule exists to remove stays gone
+    # even when the same file has a real call above it.
+    below = (
+        "import builtins as m\n"
+        "import marshal\n"
+        "mod = __import__('os')\n"
+        "m = load_model()\n"
+        "m.eval()\n"
+    )
+    findings = sp.check_py_file(below, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"a call below the rebinding must stay clean: {high}"
 
 
 def test_alias_matching_stays_linear_on_hostile_source():
@@ -498,6 +565,67 @@ def test_a_method_named_eval_is_a_definition_not_a_call():
     armed = library + "import marshal\neval(marshal.loads(BLOB))\n"
     findings = sp.check_py_file(armed, "pkg/interp.py", "pkg")
     assert [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+
+
+def test_an_exec_inside_an_fstring_is_still_the_builtin():
+    # PEP 701 landed in 3.12; below it `tokenize` returns a whole f-string as one
+    # STRING token, so `f'{exec(marshal.loads(BLOB))}'` is a call the statement
+    # scan cannot see even though the interpolation runs at import. This repo's
+    # requires-python starts at 3.9, so the interpolations have to be adjudicated
+    # on those interpreters too.
+    payload = (
+        "import marshal\n"
+        "code = marshal.loads(BLOB)\n"
+        "x = f'{exec(code)}'\n"
+        "mod = __import__('os')\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_loader.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high, "an exec() inside an f-string must be flagged"
+    exec_ev = [ln for f in high for ln in f.evidence.splitlines() if ln.startswith("Exec: ")]
+    assert exec_ev, f"the finding recorded no exec evidence: {[f.evidence for f in high]}"
+    assert "f'{exec(code)}'" in exec_ev[0], f"the call must be evidence: {exec_ev[0]!r}"
+
+    # And an ordinary `.eval()` interpolated the same way stays clean, so the
+    # f-string route does not smuggle the false positive back in.
+    benign = "import marshal\nmodel = load()\ny = f'{model.eval()}'\nmod = __import__('os')\n"
+    findings = sp.check_py_file(benign, "pkg/_infer.py", "pkg")
+    high = [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
+    assert high == [], f"an interpolated model.eval() must stay clean: {high}"
+
+    # On 3.12+ the tokenizer splits the literal, so the two checks above run
+    # through the ordinary statement scan and say nothing about the pre-3.12
+    # path. Drive that path directly: one opaque STRING token, scanned for the
+    # calls inside it, with the offsets mapped back onto the file.
+    aliases = sp._Aliases({"b"}, set(), {})
+    for literal, expected in (
+        ("f'{exec(marshal.loads(BLOB))}'", "exec("),
+        ('f"pre {b.eval(BLOB)} post"', "b.eval("),
+        ("f'{exec(BLOB)!r:>10}'", "exec("),
+        ("f'{{eval(x)}} {exec(BLOB)}'", "exec("),  # `{{` is an escaped brace
+        ("""f'{f"{exec(BLOB)}"}'""", "exec("),  # nested f-string
+        ('''f"it's {exec(BLOB)}"''', "exec("),  # apostrophe in the literal text
+        ("f'{model.eval()}'", None),
+        ("f'{model . eval()}'", None),
+        ("f'no interpolation, just eval( text'", None),
+        # Only the replacement fields are code. A string nested inside one is
+        # data, and the text around them is not code at all, so neither can
+        # manufacture a call out of the characters `exec(`.
+        ("""f'{v.replace("exec(", "")}'""", None),
+        ("""f'{d["eval("]}'""", None),
+        ("f'literal exec( text {value}'", None),
+    ):
+        line = f"x = {literal}\n"
+        tok = sp.tokenize.TokenInfo(
+            sp.tokenize.STRING, literal, (1, 4), (1, 4 + len(literal)), line
+        )
+        out: list = []
+        sp._fstring_spans(tok, aliases, sp._Offsets(line), out)
+        got = [line[s.start() : s.end()] for s in out]
+        if expected is None:
+            assert got == [], f"{literal} must not read as the builtin: {got}"
+        else:
+            assert got == [expected], f"{literal} must yield {expected!r}: {got}"
 
 
 def test_alias_matching_does_not_grow_with_the_number_of_aliases():

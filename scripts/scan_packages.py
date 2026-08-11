@@ -149,6 +149,12 @@ _TOK_IGNORED = frozenset(
         tokenize.ENCODING,
     )
 )
+# PEP 701 (Python 3.12) made `tokenize` split an f-string into its literal and
+# expression parts. Before that the whole literal arrives as one STRING token,
+# so `f'{exec(payload)}'` carries a call the statement scan cannot see even
+# though it runs at import. requires-python is >=3.9, so the scanner has to
+# handle both; on 3.12+ this flag is False and the extra work never happens.
+_FSTRING_OPAQUE = not hasattr(tokenize, "FSTRING_START")
 
 
 class _Span:
@@ -408,18 +414,26 @@ def _collect_rebindings(stmt: list, rebound: set, candidates: frozenset) -> None
         _add_assignment_targets(group, rebound)
 
 
-def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "int | None":
-    """Index where the receiver of `stmt[dot_at]` starts, if it is `builtins`.
+def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "tuple":
+    """Where the receiver of `stmt[dot_at]` starts, and the alias that made it one.
 
     Walks the primary expression left of the dot - names, subscripts, calls and
     parentheses - and accepts it when it mentions the `builtins` module by name
     or by string. That covers `(builtins).exec`, `b.exec` for an alias `b`, and
     `__import__('builtins').exec`, and rejects `model.eval` regardless of how
     much whitespace sits around the dot, because whitespace is not a token.
+
+    Returns `(start_index, alias)`, or `(None, None)` when the receiver is not
+    `builtins`. `alias` is the local name the receiver was reached through, or
+    None when the module was named outright (`builtins`, `__builtins__`, or the
+    string `'builtins'`) - those spellings cannot be rebound out from under the
+    call, so only a real alias is a candidate for the rebinding cutoff.
     """
     k = dot_at - 1
     start = None
     found = False
+    hard = False
+    alias = None
     while k >= 0:
         tok = stmt[k]
         if tok.type == tokenize.OP:
@@ -436,8 +450,13 @@ def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "int | Non
                                 break
                     elif inner.type == tokenize.NAME and inner.string in receivers:
                         found = True
+                        if inner.string in _BUILTINS_NAMES:
+                            hard = True
+                        else:
+                            alias = inner.string
                     elif inner.type == tokenize.STRING and _string_body(inner.string) == "builtins":
                         found = True
+                        hard = True
                     k -= 1
                 if k < 0:
                     break
@@ -454,22 +473,155 @@ def _receiver_start(stmt: list, dot_at: int, receivers: frozenset) -> "int | Non
                     break  # `return`, `import`, ... - not part of the receiver
                 if tok.string in receivers:
                     found = True
+                    if tok.string in _BUILTINS_NAMES:
+                        hard = True
+                    else:
+                        alias = tok.string
             elif tok.type == tokenize.STRING and _string_body(tok.string) == "builtins":
                 found = True
+                hard = True
             start = k
             k -= 1
             if k >= 0 and stmt[k].type == tokenize.OP and stmt[k].string == ".":
                 continue
             break
         break
-    return start if found else None
+    if not found:
+        return None, None
+    return start, (None if hard else alias)
+
+
+class _Aliases:
+    """The local names one file binds to `builtins`, and where each stops being one.
+
+    `live_*` are every alias the file ever binds; `cancel` maps the ones the file
+    also rebinds to the offset of that rebinding, and `safe_*` are the aliases
+    with no rebinding at all. A call before its alias's rebinding still reaches
+    the builtin - module-level code runs top to bottom - so the cutoff is
+    per-call-site rather than a set difference over the whole file. Scans that
+    have no file offset to compare against (`_extract_evidence` re-searching one
+    line, or the regex fallback, which reports offsets but not the name behind
+    them) use `safe_*` and so stay exactly as conservative as before.
+    """
+
+    __slots__ = ("live_receivers", "live_funcs", "cancel", "safe_receivers", "safe_funcs")
+
+    def __init__(self, modules: set, funcs: set, cancel: dict):
+        self.live_receivers = frozenset(_BUILTINS_NAMES | modules)
+        self.live_funcs = frozenset(funcs)
+        self.cancel = cancel
+        self.safe_receivers = frozenset(self.live_receivers - set(cancel))
+        self.safe_funcs = frozenset(self.live_funcs - set(cancel))
+
+
+def _fstring_code(literal: str, nesting: int = 2) -> "str | None":
+    """`literal` with everything that is not interpolated expression source blanked.
+
+    Only the replacement fields of an f-string are code; the literal text around
+    them is not, and neither is a string nested inside a field. Blanking both -
+    length-preserved, so offsets still point into the file - is what keeps
+    `f'{v.replace("exec(", "")}'` from reading as a call while
+    `f'{exec(payload)}'` still does. A nested f-string is masked in turn, so an
+    inner interpolation is not lost with the literal that carries it.
+    """
+    i = 0
+    while i < len(literal) and literal[i] not in "\"'":
+        i += 1
+    if i >= len(literal):
+        return None
+    for quote in ('"""', "'''", '"', "'"):
+        if literal.startswith(quote, i) and literal.endswith(quote):
+            if len(literal) >= i + 2 * len(quote):
+                break
+    else:
+        return None
+    start = i + len(quote)
+    end = len(literal) - len(quote)
+    out = [" "] * len(literal)
+    depth = 0
+    j = start
+    while j < end:
+        ch = literal[j]
+        if depth == 0:  # literal text: `{{` and `}}` are escaped braces
+            if ch == "{" and not literal.startswith("{{", j):
+                depth = 1
+                j += 1
+            else:
+                j += 2 if ch in "{}" else 1
+            continue
+        if ch in "\"'":
+            # A string inside the expression. Its contents are data, not code -
+            # unless it is itself an f-string, whose fields are code again.
+            at = j
+            while at > start and literal[at - 1].isalpha() and j - at < 3:
+                at -= 1
+            prefix = literal[at:j].lower()
+            closer = ch * 3 if literal.startswith(ch * 3, j) else ch
+            k = literal.find(closer, j + len(closer))
+            if k == -1 or k >= end:
+                break  # unterminated: nothing after it can be trusted as code
+            k += len(closer)
+            if nesting and "f" in prefix and "b" not in prefix:
+                inner = _fstring_code(literal[at:k], nesting - 1)
+                if inner is not None:
+                    out[at:k] = inner
+            j = k
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if not depth:
+                j += 1
+                continue
+        out[j] = ch
+        j += 1
+    return "".join(out)
+
+
+def _fstring_spans(tok, aliases: _Aliases, offsets: _Offsets, out: list) -> None:
+    """Scan the expressions inside an f-string the tokenizer left opaque.
+
+    Below Python 3.12 the whole literal is one STRING token, so the statement
+    scan sees no call inside `f'{exec(marshal.loads(BLOB))}'` even though the
+    interpolation runs at import. Adjudicate the expression source of that one
+    token with the regex fallback and shift the offsets back into the file, so
+    evidence still points at the real line. The fallback refuses a name preceded
+    by a dot, so `f'{model.eval()}'` stays clean - the false positive this rule
+    exists to remove is not reintroduced inside an f-string.
+    """
+    text = tok.string
+    if "{" not in text:
+        return  # no interpolation: an f-string without a replacement field
+    if "exec" not in text and "eval" not in text:
+        for name in aliases.safe_funcs:
+            if name in text:
+                break
+        else:
+            return
+    code = _fstring_code(text)
+    if code is None:
+        return
+    base = offsets.of(*tok.start)
+    for span in _regex_spans(code, aliases.safe_receivers, aliases.safe_funcs):
+        out.append(_Span(base + span.start(), base + span.end()))
 
 
 def _statement_spans(
-    stmt: list, receivers: frozenset, funcs: frozenset, offsets: _Offsets, out: list
+    stmt: list, aliases: _Aliases, offsets: _Offsets, out: list, positional: bool
 ) -> None:
+    if positional:
+        receivers, funcs, cancel = aliases.live_receivers, aliases.live_funcs, aliases.cancel
+    else:
+        receivers, funcs, cancel = aliases.safe_receivers, aliases.safe_funcs, None
     last = len(stmt) - 1
     for j, tok in enumerate(stmt):
+        if tok.type == tokenize.STRING:
+            # A prefix is the only thing that can make this an f-string, so the
+            # quote test rejects every ordinary literal for one character.
+            if _FSTRING_OPAQUE and tok.string[:1] not in "\"'" and _is_fstring(tok.string):
+                _fstring_spans(tok, aliases, offsets, out)
+            continue
         if tok.type != tokenize.NAME or j == last:
             continue
         direct = tok.string in _EXEC_NAMES
@@ -479,12 +631,13 @@ def _statement_spans(
         if nxt.type != tokenize.OP or nxt.string != "(":
             continue
         prev = stmt[j - 1] if j else None
+        alias = None
         if prev is not None and prev.type == tokenize.OP and prev.string == ".":
             # An attribute. Only the builtins module reaches the builtin this
             # way; `run` aliases the function, so `obj.run(...)` is not it.
             if not direct:
                 continue
-            at = _receiver_start(stmt, j - 1, receivers)
+            at, alias = _receiver_start(stmt, j - 1, receivers)
             if at is None:
                 continue
         elif prev is not None and prev.type == tokenize.NAME and prev.string in ("def", "class"):
@@ -495,12 +648,16 @@ def _statement_spans(
             continue
         else:
             at = j
-        out.append(
-            _Span(
-                offsets.of(*stmt[at].start),
-                offsets.of(*nxt.end),
-            )
-        )
+            if not direct:
+                alias = tok.string
+        start = offsets.of(*stmt[at].start)
+        if cancel and alias is not None:
+            limit = cancel.get(alias)
+            if limit is not None and start >= limit:
+                # `import builtins as m` ... `m = load_model()` ... `m.eval()`:
+                # past the rebinding the name is the model, not the module.
+                continue
+        out.append(_Span(start, offsets.of(*nxt.end)))
 
 
 # Fallback, for text the tokenizer will not accept. Deliberately close to the
@@ -592,60 +749,116 @@ class _ExecEvalMatcher:
     tokenize per distinct line.
     """
 
-    __slots__ = ("receivers", "funcs", "pattern", "_memo", "_whole")
+    __slots__ = (
+        "aliases",
+        "receivers",
+        "funcs",
+        "pattern",
+        "bound",
+        "_memo",
+        "_whole",
+        "_lines",
+    )
 
     _MEMO_CAP = 4096
 
-    def __init__(self, modules: set, funcs: set):
-        self.receivers = frozenset(_BUILTINS_NAMES | modules)
-        self.funcs = frozenset(funcs)
+    def __init__(self, modules: set, funcs: set, cancel: "dict | None" = None, bound = None):
+        self.aliases = _Aliases(modules, funcs, cancel or {})
+        self.receivers = self.aliases.live_receivers
+        self.funcs = self.aliases.live_funcs
         self.pattern = _EXEC_EVAL_PATTERN_TEXT
+        # The text the aliases were derived from. Offsets only mean anything
+        # against it, so it is what tells a whole-file search apart from
+        # `_extract_evidence` re-searching one of its lines.
+        self.bound = bound
         self._memo: dict = {}
         # The whole-file result, keyed by identity: check_py_file searches the
         # member, then _extract_evidence iterates the same string.
         self._whole: "tuple[str, list] | None" = None
+        self._lines: "tuple[str, set] | None" = None
 
-    def _spans(self, text: str) -> list:
+    def _spans(self, text: str, positional: bool = True) -> list:
         cached = self._whole
         if cached is not None and cached[0] is text:
             return cached[1]
-        spans = self._scan(text)
-        if "\n" in text:
+        spans = self._scan(text, positional)
+        if text is self.bound or "\n" in text:
             self._whole = (text, spans)
         return spans
 
-    def _scan(self, text: str) -> list:
+    def _scan(self, text: str, positional: bool = True) -> list:
         # Neither route to the builtin can appear without one of these words,
         # and this test is a memchr - it keeps whole-archive scanning off the
-        # tokenizer for the files that have nothing to adjudicate.
+        # tokenizer for the files that have nothing to adjudicate. A function
+        # alias (`from builtins import exec as run`) spells neither at the call
+        # site, so those names have to be part of the test or `run(payload)`
+        # never reaches the tokenizer at all.
         if "exec" not in text and "eval" not in text:
-            return []
+            for name in self.funcs:
+                if name in text:
+                    break
+            else:
+                return []
         failed: list = []
         offsets = _Offsets(text)
         out: list = []
         for stmt in _statements(text, failed):
-            _statement_spans(stmt, self.receivers, self.funcs, offsets, out)
+            _statement_spans(stmt, self.aliases, offsets, out, positional)
         if failed:
             # Tokenizing stopped early. Union with the regex so nothing the old
-            # pass caught is lost, then dedupe on start offset.
+            # pass caught is lost, then dedupe on start offset. The regex
+            # reports offsets but not the alias behind them, so it uses the
+            # aliases with no rebinding at all rather than the per-call cutoff.
             seen = {span.start() for span in out}
-            for span in _regex_spans(text, self.receivers, self.funcs):
+            for span in _regex_spans(text, self.aliases.safe_receivers, self.aliases.safe_funcs):
                 if span.start() not in seen:
                     out.append(span)
             out.sort(key = lambda s: s.start())
         return out
 
     def search(self, text: str):
-        if "\n" in text:
+        if text is self.bound or "\n" in text:
             spans = self._spans(text)
             return spans[0] if spans else None
         hit = self._memo.get(text, False)
         if hit is False:
-            spans = self._spans(text)
+            # One line carries no file offset, so a rebinding cutoff cannot be
+            # applied to it; scan it against the never-rebound aliases only.
+            # `hit_lines` supplies whatever the whole-file pass saw instead.
+            spans = self._spans(text, positional = False)
             hit = spans[0] if spans else None
             if len(self._memo) < self._MEMO_CAP:
                 self._memo[text] = hit
         return hit
+
+    def hit_lines(self, text: str) -> set:
+        """1-based line numbers of `text` holding a call, from the whole-file scan.
+
+        The per-line pass in `_extract_evidence` re-tokenizes each line on its
+        own, and a line can only be adjudicated there if it is self-contained.
+        `from builtins import exec as run` then `run(payload)`, or a call that
+        precedes the rebinding of its alias, are decided by the whole file, so
+        without this their evidence comes back empty and the baseline key binds
+        no payload line at all.
+        """
+        cached = self._lines
+        if cached is not None and cached[0] is text:
+            return cached[1]
+        spans = self._spans(text)
+        rows: set = set()
+        if spans:
+            # Numbered the way `_extract_evidence` indexes its `lines`, which is
+            # `str.splitlines` - that also breaks on "\r" and "\x0c", so counting
+            # "\n"s here would hand back a row that names a different line.
+            starts = []
+            pos = 0
+            for line in text.splitlines(keepends = True):
+                starts.append(pos)
+                pos += len(line)
+            for span in spans:
+                rows.add(bisect.bisect_right(starts, span.start()))
+        self._lines = (text, rows)
+        return rows
 
     def finditer(self, text: str):
         return iter(self._spans(text))
@@ -683,6 +896,7 @@ class _ExecEvalPattern:
             return cached[1]
         modules: set = set()
         funcs: set = set()
+        cancel: dict = {}
         if "builtins" in content:
             failed: list = []
             for stmt in _statements(content, failed):
@@ -698,6 +912,11 @@ class _ExecEvalPattern:
                 # there is nothing for a rebinding to cancel, and every file
                 # that merely mentions `builtins` lands here.
                 candidates = frozenset(modules | funcs)
+                # Where each alias stops being the module, not merely whether it
+                # ever does: `import builtins as b` ... `b.exec(BLOB)` ...
+                # `b = harmless` runs the builtin, and a file-wide set
+                # difference would let the trailing line erase the call above it.
+                offsets = _Offsets(content)
                 rebound: set = set()
                 failed = []
                 for stmt in _statements(content, failed):
@@ -705,11 +924,21 @@ class _ExecEvalPattern:
                     if head.type == tokenize.NAME and head.string in ("import", "from"):
                         continue
                     _collect_rebindings(stmt, rebound, candidates)
+                    if not rebound:
+                        continue
+                    at = offsets.of(*head.start)
+                    for name in rebound:
+                        # Statements arrive in source order, so the first
+                        # rebinding seen is the earliest one.
+                        cancel.setdefault(name, at)
+                    rebound.clear()
                 if failed:
-                    rebound |= _regex_rebindings(content)
-                modules -= rebound
-                funcs -= rebound
-        matcher = _ExecEvalMatcher(modules, funcs)
+                    # The tokenizer gave up, so there is no reliable order to
+                    # compare against; cancel from the top of the file, which is
+                    # the whole-file subtraction this path always did.
+                    for name in _regex_rebindings(content) & candidates:
+                        cancel[name] = 0
+        matcher = _ExecEvalMatcher(modules, funcs, cancel, content)
         self._cached = (content, matcher)
         return matcher
 
@@ -2006,6 +2235,14 @@ def _extract_evidence(
     for_text = getattr(pattern, "for_text", None)
     if for_text is not None:
         pattern = for_text(content)
+    # Some lines can only be adjudicated with the whole file in hand: a call
+    # through a function alias (`run(payload)` for `from builtins import exec as
+    # run`) and a call above the rebinding of its alias both read as ordinary
+    # code on their own. Take the whole-file scan's line numbers as an extra
+    # source alongside the per-line search rather than a replacement for it, so
+    # the evidence an already-flagged file records only ever grows.
+    hit_lines = getattr(pattern, "hit_lines", None)
+    rows = hit_lines(content) if hit_lines is not None else ()
     lines = content.splitlines()
     sl_blanked = [_RE_STR_LITERAL.sub("", ln) for ln in lines]
     ml_blanked = _blank_code_strings(lines)
@@ -2055,7 +2292,7 @@ def _extract_evidence(
         return "\n".join(f"L{start + i}: {_cap_line(ln.rstrip())}" for i, ln in enumerate(span))
 
     for i, line in enumerate(lines, 1):
-        if pattern.search(line):
+        if i in rows or pattern.search(line):
             span = (i, _logical_line_end(sl_blanked, ml_blanked, i))
             if span in seen:
                 continue
