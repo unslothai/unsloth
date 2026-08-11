@@ -219,6 +219,13 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
 
     def _already_walked(entry: Path) -> bool:
         try:
+            # A POSIX symlink is never descended by this walk, so it cannot loop and must not
+            # claim its target's resolved path either: `alias -> data` listed before `data`
+            # would otherwise book the target and prune the real directory, losing whatever is
+            # under it on nothing more than enumeration order. A junction reports False here on
+            # every runtime, which is the case the visited set is for.
+            if entry.is_symlink():
+                return False
             resolved = entry.resolve(strict = True)
         except (OSError, RuntimeError, ValueError):
             return True

@@ -435,9 +435,23 @@ export function TrainingStartOverlay({
             })}
           </AnimatedSpan>
           {datasetStreaming ? (
-            <AnimatedSpan className="mt-3 text-muted-foreground">
-              {t("studio.trainingStart.datasetStreaming")}
-            </AnimatedSpan>
+            <>
+              <AnimatedSpan className="mt-3 text-muted-foreground">
+                {t("studio.trainingStart.datasetStreaming")}
+              </AnimatedSpan>
+              {/* a streamed dataset has no transfer to show, but it is still tokenized and
+                  formatted, and that work took minutes behind a static note. the row carries
+                  the preparation step only, on an empty state, so nothing implies a download. */}
+              {datasetPreparation ? (
+                <AnimatedSpan className="mt-3">
+                  <ResourceRow
+                    label={t("studio.trainingStart.dataset")}
+                    state={EMPTY_DOWNLOAD_STATE}
+                    preparation={datasetPreparation}
+                  />
+                </AnimatedSpan>
+              ) : null}
+            </>
           ) : resourceRowHasContent(datasetDownload, datasetPreparation) ? (
             <AnimatedSpan className="mt-3">
               <ResourceRow

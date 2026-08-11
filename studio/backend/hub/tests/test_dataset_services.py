@@ -259,6 +259,15 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
     data = next((repo_root / "snapshots").iterdir()) / "data"
     (data / "loop").symlink_to(data, target_is_directory = True)
+    # A junction is a reparse point that resolves like a link while reporting `is_symlink()`
+    # False, which is the whole reason the containment test exists. Linux cannot create one,
+    # so the closest faithful fixture is a symlink that answers the way a junction does.
+    real_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda self: False if self.name == "loop" else real_is_symlink(self),
+    )
     depth = 0
 
     def _walk_following_junctions(
@@ -281,6 +290,34 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     monkeypatch.setattr(cache_inventory.os, "walk", _walk_following_junctions)
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
+
+
+def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it(
+    monkeypatch, tmp_path
+):
+    """`alias -> data` listed before `data` must not book the target's resolved path. The walk
+    never descends the alias on POSIX, so booking it pruned the real directory and lost the
+    payload under it -- on nothing but enumeration order."""
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/train.parquet"))
+    snapshot = next((repo_root / "snapshots").iterdir())
+    (snapshot / "alias").symlink_to(snapshot / "data", target_is_directory = True)
+
+    def _walk_alias_first(top, followlinks = False, onerror = None):
+        stack = [Path(top)]
+        while stack:
+            base = stack.pop()
+            names = sorted(entry.name for entry in base.iterdir())
+            dirnames = [name for name in names if (base / name).is_dir()]
+            filenames = [name for name in names if name not in dirnames]
+            yield str(base), dirnames, filenames
+            # POSIX: a symlinked directory is listed but not descended.
+            stack.extend(
+                base / name for name in dirnames if not (base / name).is_symlink()
+            )
+
+    monkeypatch.setattr(cache_inventory.os, "walk", _walk_alias_first)
+
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
 
 
 def test_raw_dataset_cache_has_data_reads_the_suffix_chain_like_the_resolver(monkeypatch, tmp_path):
