@@ -12,6 +12,37 @@ import re
 from typing import Any
 
 PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "openai_codex": {
+        "display_name": "ChatGPT / Codex subscription",
+        "base_url": "https://chatgpt.com/backend-api",
+        "default_models": [
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ],
+
+        "vision_models": [
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_kind": "chatgpt_oauth",
+        "base_url_editable": False,
+        "model_ids_editable": False,
+        "model_list_mode": "curated",
+        "notes": "Personal ChatGPT subscription via the Codex Responses endpoint.",
+    },
+
     "openai": {
         "display_name": "OpenAI",
         "base_url": "https://api.openai.com/v1",
@@ -378,6 +409,9 @@ def list_available_providers() -> list[dict[str, Any]]:
                 "supports_vision": info.get("supports_vision", False),
                 "supports_tool_calling": info.get("supports_tool_calling", False),
                 "model_list_mode": info.get("model_list_mode", "remote"),
+                "auth_kind": info.get("auth_kind", "api_key"),
+                "base_url_editable": info.get("base_url_editable", True),
+                "model_ids_editable": info.get("model_ids_editable", True),
             }
         )
     return result

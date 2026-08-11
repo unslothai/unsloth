@@ -38,6 +38,8 @@ from core.inference.providers import (
 )
 from core.inference.pricing import pricing_snapshot
 from core.inference.external_provider import ExternalProviderClient
+
+from core.inference import openai_codex_auth
 from models.providers import (
     ProviderCreate,
     ProviderCredentialMigration,
@@ -68,11 +70,45 @@ def _provider_response(row: dict) -> ProviderResponse:
             credential_secrets.PROVIDER_API_KEY_KIND,
             row["id"],
         ),
+        auth_kind = (
+            "chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"
+        ),
+        auth_status = (
+            openai_codex_auth.auth_status(row["id"])
+            if row["provider_type"] == "openai_codex"
+            else (
+                "connected"
+                if credential_secrets.has_secret(
+                    credential_secrets.PROVIDER_API_KEY_KIND, row["id"]
+                )
+                else "disconnected"
+            )
+        ),
         models = row.get("models") or [],
         available_models = row.get("available_models") or [],
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
+
+def _validate_provider_auth_contract(
+    info: dict,
+    *,
+    encrypted_api_key: str | None,
+    base_url: str | None,
+    models: list[str] | None,
+    updating: bool,
+    clear_api_key: bool = False,
+) -> None:
+    if info.get("auth_kind") != "chatgpt_oauth":
+        return
+    if encrypted_api_key or clear_api_key:
+        raise HTTPException(status_code = 400, detail = "ChatGPT subscriptions do not use API keys.")
+    if base_url is not None and (not updating or base_url != info["base_url"]):
+        raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
+    if models is not None and (not models or not set(models).issubset(set(info["default_models"]))):
+        raise HTTPException(status_code = 400, detail = "Choose only curated Codex models.")
+
+
 
 
 # ── Public key for API key encryption ─────────────────────────────
@@ -137,6 +173,14 @@ async def create_provider_config(
             f"Use GET /api/providers/registry to see available types.",
         )
 
+    _validate_provider_auth_contract(
+        info,
+        encrypted_api_key = payload.encrypted_api_key,
+        base_url = payload.base_url,
+        models = payload.models,
+        updating = False,
+    )
+
     api_key = resolve_provider_api_key_or_400(None, payload.encrypted_api_key)
     provider_id = uuid.uuid4().hex[:16]
     base_url = payload.base_url or info["base_url"]
@@ -176,6 +220,16 @@ async def update_provider_config(
     existing = providers_db.get_provider(provider_id)
     if not existing:
         raise HTTPException(status_code = 404, detail = "Provider not found")
+
+    existing_info = get_provider_info(existing["provider_type"]) or {}
+    _validate_provider_auth_contract(
+        existing_info,
+        encrypted_api_key = payload.encrypted_api_key,
+        base_url = payload.base_url,
+        models = payload.models,
+        updating = True,
+        clear_api_key = payload.clear_api_key,
+    )
 
     if payload.clear_api_key and payload.encrypted_api_key:
         raise HTTPException(
@@ -265,21 +319,36 @@ async def delete_provider_config(
     """Idempotently delete a saved provider and its installation credential."""
     require_ui_session(via_api_key)
 
+    # Release port 1455 and stop device polling before deleting persistence.
+    # Otherwise a deleted provider can leave an in-memory OAuth flow behind and
+    # the next connection attempt appears to hang while the stale flow owns it.
+    await openai_codex_auth.cancel_provider_flows(provider_id)
+
     # Decryption must not open the auth DB after the generation guard locks it.
     credential_secrets.get_or_create_credential_encryption_key()
     with current_credential_write(credential):
         existing_api_key = credential_secrets.get_provider_api_key(provider_id)
+        existing_oauth = credential_secrets.get_secret(
+            credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id
+        )
         credential_secrets.delete_provider_api_key(provider_id)
+        credential_secrets.delete_secret(credential_secrets.OPENAI_CODEX_OAUTH_KIND, provider_id)
         try:
             providers_db.delete_provider(provider_id)
         except Exception:
-            if existing_api_key:
-                try:
+            try:
+                if existing_api_key:
                     credential_secrets.save_provider_api_key(provider_id, existing_api_key)
-                except Exception:
-                    logger.exception(
-                        "provider.delete_credential_rollback_failed", provider_id = provider_id
+                if existing_oauth:
+                    credential_secrets.upsert_secret(
+                        credential_secrets.OPENAI_CODEX_OAUTH_KIND,
+                        provider_id,
+                        existing_oauth,
                     )
+            except Exception:
+                logger.exception(
+                    "provider.delete_credential_rollback_failed", provider_id = provider_id
+                )
             raise
 
 

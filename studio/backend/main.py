@@ -300,6 +300,8 @@ from routes import (
     mcp_servers_router,
     models_router,
     providers_router,
+
+    openai_codex_auth_router,
     rag_router,
     research_runs_router,
     training_history_router,
@@ -749,6 +751,10 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
     yield
+
+    from core.inference.openai_codex_auth import shutdown_flows
+
+    await shutdown_flows()
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
@@ -1367,6 +1373,9 @@ app.include_router(video_router, prefix = "/api/inference", tags = ["inference"]
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])
 app.include_router(preview_router, prefix = "/p", tags = ["preview"])
 app.include_router(providers_router, prefix = "/api/providers", tags = ["providers"])
+
+app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
+
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])

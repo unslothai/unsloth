@@ -10665,7 +10665,7 @@ def _build_external_messages(
             _native_gemini = _host == "generativelanguage.googleapis.com"
         except Exception:
             _native_gemini = False
-    emit_extra_content = _native_gemini
+    emit_extra_content = _native_gemini or provider_type == "openai_codex"
 
     _SERVER_BUILTIN_TOOL_NAMES = frozenset(
         {"web_search", "web_fetch", "code_execution", "image_generation"}
@@ -10980,6 +10980,201 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = f"Unknown provider type: {provider_type}",
         )
+
+    if provider_type == "openai_codex":
+        from core.inference.openai_codex_auth import (
+            OPENAI_CODEX_API_BASE,
+            CodexAuthError,
+            resolve_access,
+        )
+        from core.inference.openai_codex_client import (
+            CodexTransportError,
+
+            CodexQuotaError,
+            CodexReauthorizationError,
+            OpenAICodexClient,
+        )
+
+        api_key_token = _request_api_key_token(request)
+        if api_key_token and not auth_storage.is_internal_api_key(api_key_token):
+            raise HTTPException(
+                status_code = 403,
+                detail = "ChatGPT subscriptions are available only to Studio UI and internal workflows.",
+            )
+        if not payload.provider_id or payload.encrypted_api_key:
+            raise HTTPException(status_code = 400, detail = "A saved ChatGPT subscription connection is required.")
+        if base_url != OPENAI_CODEX_API_BASE:
+            raise HTTPException(status_code = 400, detail = "ChatGPT subscription routing is fixed.")
+        if payload.stream is not True:
+            raise HTTPException(status_code = 400, detail = "ChatGPT subscription chat requires stream=true.")
+        model = payload.external_model or payload.model
+        from core.inference.providers import get_provider_info as _get_codex_provider_info
+
+        info = _get_codex_provider_info("openai_codex") or {}
+        if model not in info.get("default_models", []):
+            raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
+
+        model_supports_vision = model in info.get("vision_models", [])
+        if not model_supports_vision:
+            for message in payload.messages:
+                if isinstance(message.content, list) and any(
+                    part.type == "image_url" for part in message.content
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = f"{model} does not accept image input.",
+                    )
+        try:
+            access_token, account_id = await resolve_access(payload.provider_id)
+        except CodexAuthError as exc:
+            raise HTTPException(status_code = 401, detail = str(exc)) from exc
+        chat_messages = _build_external_messages(
+            payload.messages,
+            model_supports_vision,
+            provider_type = provider_type,
+            base_url = base_url,
+        )
+        tool_payloads = [
+            tool.model_dump(exclude_none = True) if hasattr(tool, "model_dump") else tool
+            for tool in (payload.tools or [])
+        ]
+
+        studio_tool_payloads: list[dict] = []
+        if _explicit_studio_tool_loop_requested(payload):
+            studio_tool_payloads = await _select_request_tools(
+                payload,
+                tools_on = _effective_enable_tools(payload) is True,
+                mcp_allowed = bool(payload.mcp_enabled),
+            )
+            # The Studio loop owns its schemas. Do not also expose a caller-supplied
+            # catalog: Codex would return calls that this server is not authorized to run.
+            tool_payloads = studio_tool_payloads
+        cancel_event = threading.Event()
+        cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
+
+        async def _codex_stream():
+            client = OpenAICodexClient(access_token, account_id)
+            should_cancel = False
+            with _CANCEL_LOCK:
+                now = time.monotonic()
+                _prune_pending(now)
+                for key in cancel_keys:
+                    _CANCEL_REGISTRY.setdefault(key, set()).add(cancel_event)
+                if payload.cancel_id and _PENDING_CANCELS.pop(payload.cancel_id, None) is not None:
+                    should_cancel = True
+            if should_cancel:
+                cancel_event.set()
+
+
+            async def _watch_disconnect() -> None:
+                while not cancel_event.is_set():
+                    if await request.is_disconnected():
+                        cancel_event.set()
+                        return
+                    await asyncio.sleep(0.1)
+
+            disconnect_task = asyncio.create_task(_watch_disconnect())
+            try:
+                # Closing the upstream response from the client's watcher makes
+                # cancellation immediate even while no SSE line is arriving.
+                if studio_tool_payloads:
+                    from core.inference.openai_codex_tool_loop import (
+                        stream_codex_with_studio_tools,
+                    )
+
+                    generator = stream_codex_with_studio_tools(
+                        client,
+                        provider_id = payload.provider_id,
+                        thread_id = payload.thread_id,
+                        session_id = payload.session_id,
+                        messages = chat_messages,
+                        model = model,
+                        reasoning_effort = payload.reasoning_effort,
+                        tools = studio_tool_payloads,
+                        max_tool_calls = (
+                            payload.max_tool_calls_per_message
+                            if payload.max_tool_calls_per_message is not None
+                            else 25
+                        ),
+                        tool_call_timeout = (
+                            payload.tool_call_timeout
+                            if payload.tool_call_timeout is not None
+                            else 300
+                        ),
+                        permission_mode = payload.permission_mode or "auto",
+                        confirm_tool_calls = _permission_mode_confirm(payload),
+                        bypass_permissions = bool(payload.bypass_permissions),
+                        rag_scope = payload.rag_scope,
+                        cancel_event = cancel_event,
+                    )
+                else:
+                    generator = client.stream(
+                        provider_id = payload.provider_id,
+                        thread_id = payload.thread_id,
+                        messages = chat_messages,
+                        model = model,
+                        max_tokens = _effective_max_tokens(payload),
+                        reasoning_effort = payload.reasoning_effort,
+                        tools = tool_payloads,
+                        tool_choice = payload.tool_choice,
+                        cancel_event = cancel_event,
+                    )
+                async for line in generator:
+                    if cancel_event.is_set() or await request.is_disconnected():
+                        await generator.aclose()
+                        break
+                    yield f"{line}\n\n"
+                yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                raise
+            except CodexReauthorizationError as exc:
+                from core.inference.openai_codex_auth import mark_reauthorization_required
+
+                mark_reauthorization_required(payload.provider_id)
+                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "authentication_error"}}) + "\n\n"
+                yield "data: [DONE]\n\n"
+            except CodexQuotaError as exc:
+                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "rate_limit_error", "metadata": exc.metadata}}) + "\n\n"
+                yield "data: [DONE]\n\n"
+
+            except CodexTransportError as exc:
+                logger.warning(
+                    "openai_codex.stream_failed",
+                    error_type = type(exc).__name__,
+                    status = exc.status,
+                    error = str(exc),
+                )
+                yield "data: " + json.dumps({"error": {"message": str(exc), "type": "upstream_error"}}) + "\n\n"
+                yield "data: [DONE]\n\n"
+
+
+            except Exception as exc:
+                logger.warning(
+                    "openai_codex.stream_failed",
+                    error_type = type(exc).__name__,
+                    status = getattr(exc, "status", None),
+                    error = str(exc),
+                )
+                yield "data: " + json.dumps({"error": {"message": _friendly_error(exc), "type": "server_error"}}) + "\n\n"
+                yield "data: [DONE]\n\n"
+            finally:
+                disconnect_task.cancel()
+                await asyncio.gather(disconnect_task, return_exceptions=True)
+
+                with _CANCEL_LOCK:
+                    for key in cancel_keys:
+                        bucket = _CANCEL_REGISTRY.get(key)
+                        if bucket:
+                            bucket.discard(cancel_event)
+                            if not bucket:
+                                _CANCEL_REGISTRY.pop(key, None)
+                await client.close()
+
+        return StreamingResponse(
+            _codex_stream(), media_type = "text/event-stream",
+            headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
 
     api_key = resolve_provider_api_key_or_400(
         payload.provider_id,
