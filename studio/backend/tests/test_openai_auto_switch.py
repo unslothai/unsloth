@@ -4616,9 +4616,7 @@ def test_chat_mistyped_gguf_repo_404s_before_vision_guard(monkeypatch):
     )
     request = type("_R", (), {"url": type("_U", (), {"path": "/v1/chat/completions"})()})()
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(
-            inference_route.openai_chat_completions(payload, request, "tester")
-        )
+        asyncio.run(inference_route.openai_chat_completions(payload, request, "tester"))
     assert exc.value.status_code == 404
     assert exc.value.detail["error"]["code"] == "model_not_found"
     assert rec.calls == []
