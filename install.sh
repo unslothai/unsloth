@@ -2507,22 +2507,19 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
-# Apple Silicon venv: request an arch-explicit arm64 CPython so uv cannot reuse a
-# cached x86_64 (Rosetta) build. torch ships no macOS x86_64 wheels since 2.2.2, so
-# an x86_64 venv makes the torch install unresolvable. The arm64 guard below is kept
-# as a backstop for migrated / pre-existing venvs.
+# Apple Silicon venv. The arch-explicit arm64 CPython stops uv reusing a cached
+# x86_64 (Rosetta) build: torch ships no macOS x86_64 wheels since 2.2.2, so an
+# x86_64 venv cannot resolve torch. The arm64 guard below backstops older venvs.
 #
-# only-managed: uv otherwise walks PATH and *executes* every interpreter it finds to
-# read its version. On a Mac with no Command Line Tools /usr/bin/python3 is Apple's
-# xcode_select shim, so that probe pops the "command line developer tools" dialog
-# naming python3, for tools this install never needs. Spelled --python-preference
-# rather than its --managed-python alias: identical effect, accepted since uv 0.4.30
-# instead of 0.8.16.
+# only-managed stops uv walking PATH and *executing* every interpreter it finds to
+# read its version. Without CLT, /usr/bin/python3 is Apple's xcode_select shim, so
+# that probe pops the "command line developer tools" dialog for tools this install
+# never needs. Spelled --python-preference, not the --managed-python alias: same
+# effect, accepted since uv 0.4.30 rather than 0.8.16.
 #
-# The flag also drops uv's system-interpreter fallback, so an offline host, or one
-# with UV_PYTHON_DOWNLOADS=never, has nothing left to resolve and the install dies
-# where it used to work. Retry unflagged for them: the dialog is worth removing, a
-# failed install is not.
+# It also drops uv's system-interpreter fallback, so a host that is offline or has
+# UV_PYTHON_DOWNLOADS=never is left with nothing to resolve. Retry unflagged for
+# them: the dialog is worth removing, a failed install is not.
 _uv_venv_arm64() {  # label
     run_install_cmd "$1" uv venv "$VENV_DIR" \
         --python-preference only-managed \
