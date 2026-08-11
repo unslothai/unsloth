@@ -515,9 +515,58 @@ def _config_get(
     field_name,
     default = None,
 ):
-    if isinstance(config, dict):
-        return config.get(field_name, default)
-    return getattr(config, field_name, default)
+    try:
+        if isinstance(config, dict):
+            return config.get(field_name, default)
+        return getattr(config, field_name, default)
+    except Exception:
+        # `getattr` with a default only swallows AttributeError, and a config
+        # can raise something else entirely from `__getattribute__`.
+        #
+        # transformers 5.x heterogeneous configs (Gemma 3n / Gemma 4, anything
+        # with `per_layer_config`) raise AmbiguousGlobalPerLayerAttributeError
+        # on a global read of a per-layer field such as `head_dim`, and that is
+        # not an AttributeError. It reached callers as a hard failure at model
+        # load: `Gemma4_(E2B)_Reinforcement_Learning_Sudoku_Game` died in the
+        # Flash Attention head-dim probe on transformers 5.15.0.
+        #
+        # Every caller of this helper is asking "does this config say X", so a
+        # refusal to answer globally is the same as not saying. The exception
+        # is deliberately not named or imported: it does not exist on the
+        # transformers 4.x versions this still supports, and a config is
+        # third-party code that may raise anything. `_get_per_layer_values`
+        # below is where the per-layer answer actually gets read.
+        return default
+
+
+def _get_per_layer_values(config, field_name):
+    """Per-layer values for `field_name`, on a config that has per-layer ones.
+
+    Empty for a homogeneous config, and empty on transformers 4.x, which has
+    no such concept. Kept separate from `_config_get` because the two answer
+    different questions: one wants a single value and the other wants all of
+    them.
+    """
+    try:
+        per_layer = getattr(config, "per_layer_config", None)
+    except Exception:
+        return []
+    # NOT an isinstance list/tuple check. transformers 5.x hands back a
+    # `_PerLayerConfigView`, which is a `collections.abc.Sequence` over the
+    # per-layer configs and is neither. Iterating is the only thing this needs
+    # from it, and a config is third-party code, so the iteration itself is
+    # guarded rather than the type.
+    if per_layer is None or isinstance(per_layer, (str, bytes)):
+        return []
+    values = []
+    try:
+        for layer_config in per_layer:
+            value = _config_get(layer_config, field_name, None)
+            if value is not None:
+                values.append(value)
+    except Exception:
+        return values
+    return values
 
 
 def _config_set(config, field_name, value):
@@ -576,9 +625,17 @@ def _collect_attention_head_dims(config):
         "local_head_dim",
         "kv_head_dim",
     ):
-        value = _config_get(config, field_name, None)
-        if isinstance(value, int) and value > 0:
-            explicit_head_dims.append(value)
+        # Per-layer first. On a heterogeneous config the global read is the
+        # one that refuses, and taking the default there would leave this
+        # probe with no head dim at all -- which reads as "no reason to
+        # disable Flash Attention" on exactly the models whose layers might
+        # exceed its ceiling. The values are what the probe is for, so read
+        # them where they live.
+        candidates = _get_per_layer_values(config, field_name)
+        candidates.append(_config_get(config, field_name, None))
+        for value in candidates:
+            if isinstance(value, int) and value > 0:
+                explicit_head_dims.append(value)
 
     if len(explicit_head_dims) != 0:
         return explicit_head_dims
@@ -2151,8 +2208,8 @@ if DEVICE_TYPE == "cuda":
                 # Stop Flash Attention from importing!
                 import transformers.utils.import_utils
 
-                transformers.utils.import_utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: (False)
+                transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                    False
                 )
                 import transformers.utils
 
@@ -3809,9 +3866,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert (
-        out_proj.weight.shape == in_emb.weight.shape
-    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    assert out_proj.weight.shape == in_emb.weight.shape, (
+        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    )
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
