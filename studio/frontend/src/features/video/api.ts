@@ -207,6 +207,9 @@ export interface GalleryVideo {
   offload_policy?: string | null;
   // Creation time (ISO 8601 timestamp).
   created_at: string;
+  // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -301,9 +304,30 @@ export interface VideoGalleryPage {
   has_more: boolean;
 }
 
-export async function getVideoGallery(offset = 0, limit = 50): Promise<VideoGalleryPage> {
+/** `archived` picks WHICH shelf to page over: false is the strip, true is the archive. */
+export async function getVideoGallery(
+  offset = 0,
+  limit = 50,
+  archived = false,
+): Promise<VideoGalleryPage> {
   return parseJson(
-    await authFetch(`/api/inference/video/gallery?offset=${offset}&limit=${limit}`),
+    await authFetch(
+      `/api/inference/video/gallery?offset=${offset}&limit=${limit}&archived=${archived}`,
+    ),
+  );
+}
+
+/** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+export async function setGalleryVideoFlags(
+  id: string,
+  flags: { pinned?: boolean; archived?: boolean },
+): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    }),
   );
 }
 

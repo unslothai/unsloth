@@ -988,6 +988,10 @@ export const ru = {
       archivedChats: "Архивные чаты",
       archivedChatsDescription:
         "Просматривайте чаты, отправленные в архив, и управляйте ими.",
+      archivedImages: "Архивные изображения",
+      archivedImagesDescription: "Просмотр и управление изображениями, которые вы архивировали.",
+      archivedVideos: "Архивные видео",
+      archivedVideosDescription: "Просмотр и управление видео, которые вы архивировали.",
       manageAction: "Управлять",
       exportArchivedChats: "Экспорт",
       exportingArchivedChats: "Экспорт…",

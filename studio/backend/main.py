@@ -795,6 +795,12 @@ app = FastAPI(
     version = UNSLOTH_VERSION,
     description = "Backend API for Unsloth UI - Training and Model Management",
     lifespan = lifespan,
+    # Swagger UI and ReDoc are re-registered below on these same paths, against vendored
+    # assets instead of a CDN. FastAPI's built-ins point at cdn.jsdelivr.net, and this origin
+    # holds the auth tokens, so nothing third-party may execute here.
+    docs_url = None,
+    redoc_url = None,
+    swagger_ui_oauth2_redirect_url = None,
 )
 
 # The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
@@ -848,10 +854,11 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
-_DOCS_CDN = "https://cdn.jsdelivr.net"
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
+_DOCS_ASSETS_URL = "/docs-assets"
+_DOCS_ASSETS_DIR = Path(__file__).parent / "assets" / "docs_ui"
 
 
 # /content is Colab's working directory -- more reliable than env vars.
@@ -870,9 +877,11 @@ def _build_csp(script_nonce: "str | None" = None, *, docs: bool = False) -> str:
     worker_src = "worker-src 'self'"
     font_src = "font-src 'self' data:"
     if docs:
-        script_src += f" 'unsafe-inline' {_DOCS_CDN}"
-        # 'unsafe-inline' does not cover ReDoc's Google Fonts sheet, which pulls faces from gstatic.
-        style_src += f" {_DOCS_CDN} {_DOCS_FONT_CSS}"
+        # script-src is deliberately untouched: the docs bundles are served from this origin
+        # and their inline init runs off the nonce. What is left cannot execute script, only
+        # style and lay out the page. ReDoc's Google Fonts sheet pulls faces from gstatic, and
+        # its search index runs in a worker it builds from a blob.
+        style_src += f" {_DOCS_FONT_CSS}"
         font_src += f" {_DOCS_FONT_FILES}"
         worker_src += " blob:"
     if script_nonce:
@@ -959,6 +968,84 @@ class SecurityHeadersMiddleware:
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+
+# Swagger UI and ReDoc, on FastAPI's own paths but served entirely from this origin.
+# FastAPI's built-in pages load ~2.3 MB of JavaScript from cdn.jsdelivr.net and start it with
+# an inline script. localStorage is origin-scoped, not path-scoped, so anything running on
+# /docs can read the Studio tokens session.ts keeps there and call the API as that user. The
+# bundles are vendored under assets/docs_ui (pinned + digest-checked by
+# tests/test_docs_ui_assets.py) and the inline init runs off the same per-response nonce the
+# bootstrap script uses, so script-src stays 'self' and works offline as a bonus.
+import secrets as _secrets_for_docs  # noqa: E402
+from fastapi.openapi.docs import (  # noqa: E402
+    get_redoc_html,
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
+
+# fastapi is unpinned, so match the opening tag by what follows it rather than by the
+# surrounding whitespace and comment: a reflowed template must not 500 the page.
+_SWAGGER_INIT_TAG = _re.compile(r"<script>(?=\s*const ui = SwaggerUIBundle)")
+_OAUTH2_REDIRECT_TAG = _re.compile(r"<script>")
+
+
+def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse:
+    """Hand the page's own inline script a nonce; injected script never gets one."""
+    nonce = _secrets_for_docs.token_urlsafe(16)
+    nonced, replaced = tag.subn(f'<script nonce="{nonce}">', html, count = 1)
+    if not replaced:
+        # Upstream retemplated the page: fail loudly rather than serve a blank one.
+        raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
+    return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+if _DOCS_ASSETS_DIR.is_dir():
+    app.mount(
+        _DOCS_ASSETS_URL,
+        StaticFiles(directory = _DOCS_ASSETS_DIR),
+        name = "docs-assets",
+    )
+
+    def _docs_url(request: Request, path: str) -> str:
+        """Prefix with the mount point, as FastAPI's own docs routes do.
+
+        Behind a path-stripping proxy (or `uvicorn --root-path`) the browser sees the prefix
+        the server never does, so an unprefixed URL escapes the mapping and 404s.
+        """
+        return f"{request.scope.get('root_path', '').rstrip('/')}{path}"
+
+    @app.get("/docs", include_in_schema = False)
+    async def swagger_ui_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        html = get_swagger_ui_html(
+            openapi_url = _docs_url(request, app.openapi_url),
+            title = f"{app.title} - Swagger UI",
+            oauth2_redirect_url = _docs_url(request, "/docs/oauth2-redirect"),
+            swagger_js_url = f"{assets}/swagger-ui-bundle.js",
+            swagger_css_url = f"{assets}/swagger-ui.css",
+            swagger_favicon_url = f"{assets}/favicon-32x32.png",
+        ).body.decode()
+        return _nonced_docs_response(html, tag = _SWAGGER_INIT_TAG)
+
+    @app.get("/docs/oauth2-redirect", include_in_schema = False)
+    async def swagger_ui_redirect():
+        # This page is nothing but an inline script, so it needs the nonce too.
+        html = get_swagger_ui_oauth2_redirect_html().body.decode()
+        return _nonced_docs_response(html, tag = _OAUTH2_REDIRECT_TAG)
+
+    @app.get("/redoc", include_in_schema = False)
+    async def redoc_html(request: Request):
+        assets = _docs_url(request, _DOCS_ASSETS_URL)
+        # ReDoc's bundle carries no inline init, so this one needs no nonce.
+        return HTMLResponse(
+            get_redoc_html(
+                openapi_url = _docs_url(request, app.openapi_url),
+                title = f"{app.title} - ReDoc",
+                redoc_js_url = f"{assets}/redoc.standalone.js",
+                redoc_favicon_url = f"{assets}/favicon-32x32.png",
+            ).body.decode()
+        )
 
 
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.

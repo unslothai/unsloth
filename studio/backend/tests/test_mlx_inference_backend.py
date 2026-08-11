@@ -948,6 +948,92 @@ def test_mlx_text_normalizes_native_reasoning_and_close_releases_lock(monkeypatc
     assert not backend._generation_lock.locked()
 
 
+def test_mlx_text_post_tool_prompt_opens_reasoning_channel(monkeypatch):
+    """Gemma-style templates open the thought channel in the POST-TOOL prompt.
+
+    Generation then emits only the closing marker, so a parser assuming it starts
+    outside reasoning would leak the post-tool reasoning and a raw ``<channel|>``
+    into the visible answer.
+    """
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    post_tool_prompt = (
+        "<|turn>model\n<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    )
+    # Give the pre-fallback render a non-opening tail, so state read from the wrong
+    # prompt fails here.
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "<|turn>model\n",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = post_tool_prompt,
+            reasoning_channel_markers = ("<|channel>thought", "<channel|>"),
+        ),
+        raising = True,
+    )
+
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kw: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kw: None
+
+    class _Resp:
+        def __init__(self, text, tok):
+            self.text = text
+            self.token = tok
+
+    def _stream_generate(_model, _tokenizer, **_kw):
+        yield _Resp("The search says 18C.", 10)
+        yield _Resp("<channel|>", 11)
+        yield _Resp("It is 18C.", 12)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = SimpleNamespace(all_special_tokens = [])
+    backend._is_vlm = False
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "weather?"}],
+            max_new_tokens = 3,
+        )
+    )
+    assert snapshots[-1] == "<think>The search says 18C.</think>It is 18C."
+    assert "<channel|>" not in snapshots[-1]
+    assert all(later.startswith(earlier) for earlier, later in zip(snapshots, snapshots[1:]))
+
+    # The flag survives into the next pass, but the tool result is the trailing turn,
+    # so nothing was resumed and the prompt must still be read.
+    resumed_then_tool = [
+        {"role": "user", "content": "weather?"},
+        {
+            "role": "assistant",
+            "content": "partial",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "web_search"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "18C"},
+    ]
+    assert (
+        list(
+            backend.generate_chat_response(
+                messages = resumed_then_tool,
+                max_new_tokens = 3,
+                continue_final_message = True,
+            )
+        )[-1]
+        == "<think>The search says 18C.</think>It is 18C."
+    )
+
+
 def test_mlx_text_native_metadata_preserves_prefilled_think_snapshots(monkeypatch):
     _install_fake_mlx(monkeypatch)
     from core.inference.mlx_inference import MLXInferenceBackend
@@ -1052,6 +1138,53 @@ def test_mlx_vlm_normalizes_native_reasoning_channels(monkeypatch):
         "<think>vision</think>",
         "<think>vision</think> answer",
     ]
+
+
+def test_mlx_vlm_post_tool_prompt_opens_reasoning_channel(monkeypatch):
+    """The VLM snapshot path must derive channel state from its rendered prompt too."""
+    _install_fake_mlx(monkeypatch)
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    post_tool_prompt = "<|tool_response>response:web_search{}<tool_response|><|channel>thought\n"
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: post_tool_prompt,
+        raising = True,
+    )
+
+    mlx_vlm_pkg = types.ModuleType("mlx_vlm")
+
+    class _Resp:
+        def __init__(self, text, tok):
+            self.text = text
+            self.token = tok
+
+    def _stream_generate(_model, _processor, _prompt, _images, **_kw):
+        yield _Resp("looking at it", 10)
+        yield _Resp("<channel|>", 11)
+        yield _Resp("A cat.", 12)
+
+    mlx_vlm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm_pkg)
+
+    backend = MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = SimpleNamespace())
+    backend._processor = SimpleNamespace(
+        chat_template = "<|channel>thought\n...<channel|>",
+        all_special_tokens = [],
+        apply_chat_template = lambda *_args, **_kwargs: post_tool_prompt,
+    )
+    backend._is_vlm = True
+
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "describe"}],
+            image = object(),
+            max_new_tokens = 3,
+        )
+    )
+    assert snapshots[-1] == "<think>looking at it</think>A cat."
+    assert "<channel|>" not in snapshots[-1]
 
 
 class _FakeLRUPromptCache:

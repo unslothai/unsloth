@@ -112,7 +112,9 @@ export function ReleaseNotesPanel({
 
   return (
     <div
-      className={cn("mt-3 flex min-h-0 flex-col", className)}
+      // Clipped, not just capped: this is the one part of the card allowed to
+      // give up height, so its content must not paint over the buttons below.
+      className={cn("mt-3 flex min-h-0 flex-col overflow-hidden", className)}
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
@@ -176,7 +178,13 @@ function ReleaseNotesSummary({
 
   return (
     <ul
-      className="space-y-1 py-2 pr-1"
+      // Scrolls like the expanded notes: in a short window this list is
+      // taller than its slot, and unscrolled it paints over the buttons.
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-scrollable region
+      tabIndex={0}
+      // Unversioned: the notes are the release's, not the offered version's.
+      aria-label="Release notes summary"
+      className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
       {items.map((item, index) => (

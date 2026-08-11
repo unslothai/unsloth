@@ -202,6 +202,9 @@ export interface GalleryImage {
   controlnet_guidance?: string | null;
   reference_image_count?: number | null;
   created_at: number;
+  // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
+  pinned?: boolean;
+  archived?: boolean;
 }
 
 export interface DiffusionGenerateResponse {
@@ -396,9 +399,26 @@ export interface GalleryPage {
   has_more: boolean;
 }
 
-export async function getGallery(offset = 0, limit = 50): Promise<GalleryPage> {
+/** `archived` picks WHICH shelf to page over: false is the strip, true is the archive. */
+export async function getGallery(offset = 0, limit = 50, archived = false): Promise<GalleryPage> {
   return parseJson(
-    await authFetch(`/api/inference/images/gallery?offset=${offset}&limit=${limit}`),
+    await authFetch(
+      `/api/inference/images/gallery?offset=${offset}&limit=${limit}&archived=${archived}`,
+    ),
+  );
+}
+
+/** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
+export async function setGalleryImageFlags(
+  id: string,
+  flags: { pinned?: boolean; archived?: boolean },
+): Promise<GalleryImage> {
+  return parseJson(
+    await authFetch(`/api/inference/images/gallery/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(flags),
+    }),
   );
 }
 

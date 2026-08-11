@@ -15,12 +15,18 @@ Measured (B200, Z-Image fp8): GPU load peak 12.9 -> 6.3 GB, download 12 -> 6.28 
 bit-identical (LPIPS 0.0). The checkpoint carries the same scheme + ``min_features`` as the
 runtime path, so the result matches quantising on the fly.
 
+torchao's weight subclasses are not safetensors-serializable, so the artifact is a torch.save
+pickle -- read under ``weights_only`` plus the constructor ALLOWLIST below, never as a free one.
+It is a mutable remote file reached by loads that never asked for a scheme (auto resolves an unset
+precision to a hosted checkpoint), so "first-party repo" cannot stand in for that restriction.
+
 Best-effort and lazily imported: a missing / mismatched / unreadable checkpoint returns None
 and the caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 """
 
 from __future__ import annotations
 
+import threading as _threading
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -45,9 +51,238 @@ def prequant_format_for(metadata: Any) -> str:
     return PREQUANT_FORMAT_ROTATED if declares_rotation(metadata) else PREQUANT_FORMAT
 
 
-# Loading ends in ``torch.load(weights_only=False)``, which executes pickle code. A hosted repo checkpoint is first-party;
-# a ``kind == "path"`` can come from a request, so it is unpickled ONLY inside an operator-configured directory ALLOWLIST.
+# A request-supplied ``kind == "path"`` is read ONLY inside an operator-configured directory
+# ALLOWLIST: an arbitrary path is an arbitrary MODEL. Not a code-execution gate -- the load is
+# weights_only either way.
 ALLOW_LOCAL_PREQUANT_PATH_ENV = "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"
+
+# The constructors a pre-quant checkpoint's pickle may name, on top of what ``weights_only``
+# already permits (storages, dtypes, ``_rebuild_*``, ``OrderedDict``, ``torch.device``,
+# ``_get_layout``). Surveyed across every hosted checkpoint Studio resolves (image + video, fp8 +
+# int8, rotated and not) this is the complete set, so the load runs ``weights_only = True`` and a
+# checkpoint naming anything else is refused before one opcode of it executes, hosted or local.
+#
+# Registered under the name the PICKLE records, which for a re-exported class is not the class's
+# own ``__module__`` (``torchao.quantization.Float8Tensor`` really lives in
+# ``...quantize_.workflows.float8.float8_tensor``), so both spellings are listed. Names a given
+# torchao lacks are skipped rather than raised: the set spans every release
+# ``install_python_stack`` pins (0.14, 0.16, 0.17) and an absent class could not have produced a
+# loadable checkpoint here anyway.
+#
+# Adding a scheme means adding its constructors here; forgetting warns and falls back to
+# dense-quantise, never a silent unpickle.
+_PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
+    # int8: AffineQuantizedTensor + its plain layout, wrapped for dynamic activation quant.
+    ("torchao.dtypes.affine_quantized_tensor", "AffineQuantizedTensor"),
+    ("torchao.dtypes.uintx.plain_layout", "PlainAQTTensorImpl"),
+    ("torchao.dtypes.utils", "PlainLayout"),
+    ("torchao.quantization.linear_activation_quantized_tensor", "LinearActivationQuantizedTensor"),
+    ("torchao.quantization.quant_api", "_int8_symm_per_token_reduced_range_quant"),
+    ("torchao.quantization.quant_primitives", "ZeroPointDomain"),
+    ("torchao.quantization.quant_primitives", "MappingType"),
+    # fp8: the newer tensor subclass, its per-row granularity and its kernel/mm options.
+    ("torchao.quantization", "Float8Tensor"),
+    ("torchao.quantization.quantize_.workflows.float8.float8_tensor", "Float8Tensor"),
+    (
+        "torchao.quantization.quantize_.workflows.float8.float8_tensor",
+        "QuantizeTensorToFloat8Kwargs",
+    ),
+    ("torchao.quantization.quantize_.common.kernel_preference", "KernelPreference"),
+    ("torchao.quantization.granularity", "PerRow"),
+    ("torchao.quantization.granularity", "PerTensor"),
+    ("torchao.float8.inference", "Float8MMConfig"),
+    # mxfp8 / nvfp4: no hosted checkpoint uses these, but they are TQ_SCHEMES that
+    # scripts/build_prequant_checkpoint.py bakes, so a LOCAL override can be either. torchao only
+    # registers them on import of the prototype package, which nothing on this path imports.
+    ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
+    ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
+    ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
+    ("torchao.prototype.mx_formats.nvfp4_tensor", "NVFP4Tensor"),
+    ("torchao.prototype.mx_formats.nvfp4_tensor", "QuantizeTensorToNVFP4Kwargs"),
+    # The version string torch.save stamps into the subclass state: not in torch's default set,
+    # and without it every torchao checkpoint refuses to load.
+    ("torch.torch_version", "TorchVersion"),
+)
+
+
+def _prequant_safe_globals() -> list:
+    """``(object, pickled name)`` pairs to register; names this torchao lacks are skipped."""
+    import importlib
+
+    pairs = []
+    for module, name in _PREQUANT_SAFE_GLOBALS:
+        try:
+            obj = getattr(importlib.import_module(module), name)
+        except Exception:  # noqa: BLE001 -- a name this release does not ship is not allowed
+            continue
+        pairs.append((obj, f"{module}.{name}"))
+    return pairs
+
+
+_SAFE_GLOBALS_LOCK = _threading.Lock()
+_SAFE_GLOBALS_REGISTERED: Optional[bool] = None
+# Filled in by the registration: which of the names above this install actually resolved.
+_RESOLVED_SAFE_GLOBALS: set = set()
+
+# What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather
+# than assumed: every hosted repo the family tables list, plus a local bake of each scheme for the
+# two nothing hosts. Only these are required, so dropping an unused name does not fail a scheme.
+_SCHEME_REQUIRED_GLOBALS: dict = {
+    "int8": frozenset(
+        {
+            "torchao.dtypes.affine_quantized_tensor.AffineQuantizedTensor",
+            "torchao.dtypes.uintx.plain_layout.PlainAQTTensorImpl",
+            "torchao.dtypes.utils.PlainLayout",
+            "torchao.quantization.linear_activation_quantized_tensor."
+            "LinearActivationQuantizedTensor",
+            "torchao.quantization.quant_api._int8_symm_per_token_reduced_range_quant",
+            "torchao.quantization.quant_primitives.ZeroPointDomain",
+            "torch.torch_version.TorchVersion",
+        }
+    ),
+    "fp8": frozenset(
+        {
+            # The ALIAS spelling, which is what the fp8 pickles record.
+            "torchao.quantization.Float8Tensor",
+            "torchao.quantization.quantize_.workflows.float8.float8_tensor."
+            "QuantizeTensorToFloat8Kwargs",
+            "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+            "torchao.quantization.granularity.PerRow",
+            "torchao.float8.inference.Float8MMConfig",
+            "torch.torch_version.TorchVersion",
+        }
+    ),
+    "mxfp8": frozenset(
+        {
+            "torchao.prototype.mx_formats.mx_tensor.MXTensor",
+            "torchao.prototype.mx_formats.mx_tensor.QuantizeTensorToMXKwargs",
+            "torchao.prototype.mx_formats.config.ScaleCalculationMode",
+            "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
+        }
+    ),
+    "nvfp4": frozenset(
+        {
+            "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
+            "torchao.prototype.mx_formats.nvfp4_tensor.QuantizeTensorToNVFP4Kwargs",
+        }
+    ),
+}
+
+
+def _tuple_safe_globals_supported() -> bool:
+    """Whether this torch's ``add_safe_globals`` understands ``(object, name)`` pairs (2.6+).
+
+    Asked by VERSION rather than by trying it: 2.4/2.5 accept the pairs silently and only fail
+    later, in ``_get_user_allowed_globals``, which reads ``f.__module__`` off every entry of a
+    PROCESS-WIDE list -- so a tuple left there breaks every other weights_only load in Studio.
+    Nothing is registered unless the answer here is yes."""
+    try:
+        import torch
+        parts = str(torch.__version__).split("+")[0].split(".")
+        return (int(parts[0]), int(parts[1])) >= (2, 6)
+    except Exception:  # noqa: BLE001 -- an unreadable version is not a supported one
+        return False
+
+
+def _register_prequant_safe_globals() -> bool:
+    """Register the allowlist ONCE, process-wide and permanently. True when the load can run.
+
+    Not the ``safe_globals`` context manager, deliberately: it adds on entry and REMOVES on exit
+    against a process-wide table, so two overlapping reads (a download-plan probe beside a load;
+    both arrive on the route's thread pool) let whichever finishes first strip the allowlist out
+    from under the other's ``torch.load``, failing a good checkpoint and dropping it to dense.
+    Adding once and never removing has no such window.
+
+    The widening this costs is small and bounded: other ``weights_only`` loads in the process
+    also accept these torch/torchao tensor constructors, which build tensors and nothing else. A
+    pickle naming ANY global is still refused.
+
+    Registration takes ``(object, name)`` pairs so a re-exported class is registered under the
+    name the pickle records, and that form is version-checked BEFORE anything is registered (see
+    ``_tuple_safe_globals_supported``). Below 2.6 nothing is registered and
+    ``restricted_prequant_load_supported`` tells planning to stop offering pre-quant sources at
+    all. Answered once and memoised, including the failure."""
+    global _SAFE_GLOBALS_REGISTERED
+
+    if _SAFE_GLOBALS_REGISTERED is not None:
+        return _SAFE_GLOBALS_REGISTERED
+    with _SAFE_GLOBALS_LOCK:
+        if _SAFE_GLOBALS_REGISTERED is not None:
+            return _SAFE_GLOBALS_REGISTERED
+        ok = False
+        try:
+            from core._torchao_stub import is_stubbed
+
+            import torch
+
+            add = getattr(torch.serialization, "add_safe_globals", None)
+            # A STUBBED torchao (Windows ROCm) fabricates a class for every name asked of it, so
+            # the allowlist would register fakes and answer yes for an install that cannot
+            # rebuild a single quantized tensor.
+            if add is not None and not is_stubbed("torchao") and _tuple_safe_globals_supported():
+                pairs = _prequant_safe_globals()
+                resolved = {name for _obj, name in pairs}
+                # "Some entries resolved" is not "a checkpoint can be opened". The floor is what
+                # EVERY artifact needs whatever its scheme: the version stamp plus at least one
+                # real torchao tensor class. Per-SCHEME completeness is asked separately, by the
+                # caller that knows which scheme it is about to plan for.
+                if "torch.torch_version.TorchVersion" in resolved and any(
+                    name.startswith("torchao.") for name in resolved
+                ):
+                    add(pairs)
+                    _RESOLVED_SAFE_GLOBALS.update(resolved)
+                    # The same derivation the unpickler runs, so a form this torch cannot express
+                    # fails here rather than under a load a plan was already sized on.
+                    try:
+                        torch._weights_only_unpickler._get_user_allowed_globals()
+                    except AttributeError:  # noqa: BLE001 -- private; absence is not a failure
+                        pass
+                    ok = True
+        except Exception:  # noqa: BLE001 -- no allowlist means no restricted load, never a raise
+            ok = False
+        _SAFE_GLOBALS_REGISTERED = ok
+        return ok
+
+
+def restricted_prequant_load_supported(scheme: Optional[str] = None) -> bool:
+    """Whether this install can read a pre-quant checkpoint, for ``scheme`` when one is named.
+
+    Without the allowlist there is no safe way to open a pre-quant pickle and the loader refuses.
+    Planning has to ask the same question BEFORE it sizes the load: a plan that counts on a 6 GB
+    artifact, drops the dense shards and evicts the resident pipeline has nothing left when the
+    refusal arrives. ``usable_prequant_source`` therefore answers None here, hosted and local
+    alike, which is the same answer the loader will give.
+
+    PER SCHEME, because the schemes do not share constructors and torchao does not retire them
+    together: ``AffineQuantizedTensor`` and its layout carry every int8 checkpoint and are
+    already deprecated upstream (pytorch/ao#2752), so a release that drops them while keeping
+    ``Float8Tensor`` leaves fp8 loadable and int8 not. An unknown or unnamed scheme gets the
+    floor answer the registration itself already checked."""
+    if not _register_prequant_safe_globals():
+        return False
+    required = _SCHEME_REQUIRED_GLOBALS.get((scheme or "").strip().lower())
+    return True if required is None else required <= _RESOLVED_SAFE_GLOBALS
+
+
+def _torch_load_prequant(path: str, **kwargs: Any) -> Any:
+    """``torch.load`` a pre-quant checkpoint under the allowlist above.
+
+    ``weights_only = True`` is the whole point: a pickle that may name any global is remote code
+    execution the moment the artifact is not the one that was published. Everything the format
+    legitimately needs is allowlisted, so the restriction costs nothing and a mutated artifact
+    raises ``UnpicklingError`` into the caller's dense fallback instead of running. A torch that
+    cannot express the allowlist is refused outright, never reopened unrestricted."""
+    import torch
+
+    if not _register_prequant_safe_globals():
+        raise RuntimeError(
+            "this torch cannot register the pre-quant constructor allowlist (needs "
+            "torch.serialization.add_safe_globals with (object, name) support, i.e. >= 2.6), so "
+            "a pre-quant checkpoint cannot be deserialized without allowing arbitrary pickle "
+            "globals"
+        )
+    return torch.load(path, weights_only = True, **kwargs)
+
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
 
@@ -210,9 +445,9 @@ def local_prequant_scheme(path: str) -> Optional[str]:
 
     Cheap despite the file size: ``mmap`` plus ``map_location = "meta"`` maps the storages instead
     of reading them, so only the pickle structure is parsed (~1s on a 34 GB checkpoint). Cached on
-    (path, mtime, size) because the auto ladder asks once per candidate scheme. ``weights_only``
-    has to be False for the torchao subclasses, which is what the loader already does, and the
-    path is allowlisted before we get here, so this opens nothing new."""
+    (path, mtime, size) because the auto ladder asks once per candidate scheme. Read under the
+    same allowlisted ``weights_only`` load the loader uses, so probing a file that turns out not
+    to be a checkpoint cannot execute anything either."""
     import os
 
     try:
@@ -228,8 +463,7 @@ def local_prequant_scheme(path: str) -> Optional[str]:
         return _LOCAL_PREQUANT_SCHEME[key]
     scheme: Optional[str] = None
     try:
-        import torch
-        obj = torch.load(real, map_location = "meta", weights_only = False, mmap = True)
+        obj = _torch_load_prequant(real, map_location = "meta", mmap = True)
         if isinstance(obj, dict) and obj.get("format") in PREQUANT_FORMATS:
             recorded = (obj.get("metadata") or {}).get("scheme")
             scheme = str(recorded) if recorded else None
@@ -256,7 +490,13 @@ def usable_prequant_source(
     The scheme check matters most under ``auto``, which picks a scheme the user never named: an
     int8 override must not read as an available fp8 pre-quant just because the file exists. A
     checkpoint whose scheme cannot be read is treated as not usable, matching every other unknown
-    here, since the loader would reject it too."""
+    here, since the loader would reject it too.
+
+    An install that cannot restrict the load has no usable source AT ALL, hosted included: the
+    loader refuses every checkpoint there, and a plan that had already dropped the dense shards
+    for one would find that out after the eviction."""
+    if not restricted_prequant_load_supported(scheme):
+        return None
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is not None and src.kind == "path":
         if not local_prequant_path_ready(src.location):
@@ -395,15 +635,16 @@ def load_prequantized_transformer(
     artifact.
     """
     try:
-        # weights_only=False executes pickle code, so a local path is unpickled ONLY when allowlisted; the hosted family repo is first-party.
+        # A request-supplied local path names arbitrary WEIGHTS, a different question from the
+        # deserialization one below: allowlisted or not, the file is read weights_only.
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
                 logger,
                 f"{scheme}:path",
                 RuntimeError(
-                    "request-supplied local pre-quant path refused (unpickling an arbitrary "
-                    f"file is unsafe); set {ALLOW_LOCAL_PREQUANT_PATH_ENV} to an allowlisted "
-                    "directory containing trusted checkpoints to permit it",
+                    "request-supplied local pre-quant path refused (loading arbitrary weights "
+                    f"into the served model); set {ALLOW_LOCAL_PREQUANT_PATH_ENV} to an "
+                    "allowlisted directory containing trusted checkpoints to permit it",
                 ),
             )
             return None
@@ -412,10 +653,12 @@ def load_prequantized_transformer(
         if path is None:
             return None
 
-        import torch
-
-        # torchao weight subclasses are not safetensors-serializable, so the checkpoint is a torch.save pickle and weights_only=False rebuilds them. Local paths gated above.
-        ckpt = torch.load(path, weights_only = False, map_location = "cpu")
+        # A torch.save pickle, deserialized under the constructor ALLOWLIST above and never as a
+        # free-running one. First-party hosting is no reason to execute whatever bytes arrive: the
+        # artifact is mutable, fetched over the network, and reached by loads that never asked for
+        # one (auto resolves an unset precision to a hosted checkpoint), so a mutated file must
+        # fail to load rather than run.
+        ckpt = _torch_load_prequant(path, map_location = "cpu")
         if not _validate_checkpoint(
             ckpt, scheme, base, logger, min_features = min_features, fast_accum = fast_accum
         ):
