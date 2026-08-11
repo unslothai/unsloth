@@ -5481,8 +5481,14 @@ class LlamaCppBackend:
             # margin, and report total 0 since that "total" is system RAM.
             unified_ids = LlamaCppBackend._rocm_unified_memory_gpu_ids()
             gpus = []
+            # Windows ROCm's free reading is an over-report on discrete cards too,
+            # not only on the shared pool handled below (#8403). It is capped
+            # against this process's own allocator, so VRAM a resident torch model
+            # holds in the backend process stops being offered to llama.cpp slots.
+            from utils.hardware import trusted_mem_get_info
+
             for ordinal in range(torch.cuda.device_count()):
-                free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
+                free_bytes, total_bytes = trusted_mem_get_info(ordinal)
                 idx = (
                     physical_ids[ordinal]
                     if physical_ids is not None and ordinal < len(physical_ids)
