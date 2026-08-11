@@ -30,11 +30,14 @@ sys.path.insert(0, str(CI_DIR))
 
 # ---------------------------------------------------------------- dataset
 
+
 def test_canary_dataset_targets_the_canary_and_nothing_else():
     """A row whose answer drifted would make the exact-match check vacuous."""
-    rows = [json.loads(line) for line
-            in (SMOKE_DIR / "canary_dataset.jsonl").read_text().splitlines()
-            if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in (SMOKE_DIR / "canary_dataset.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
     assert rows, "canary dataset must not be empty"
     assert all(r["answer"] == "__UNSLOTH__!!!" for r in rows)
     # Distinct questions: identical rows would make the sampler's
@@ -44,12 +47,13 @@ def test_canary_dataset_targets_the_canary_and_nothing_else():
 
 # ------------------------------------------------------------ determinism
 
+
 def test_repeating_sequential_sampler_order_is_a_function_of_the_step():
     from determinism import RepeatingSequentialSampler
 
-    sampler = RepeatingSequentialSampler(dataset_length=3, batch_size=2,
-                                         gradient_accumulation_steps=1,
-                                         max_steps=4)
+    sampler = RepeatingSequentialSampler(
+        dataset_length = 3, batch_size = 2, gradient_accumulation_steps = 1, max_steps = 4
+    )
     assert list(sampler) == [0, 0, 1, 1, 2, 2, 0, 0]
     assert len(sampler) == 8
     # Iterating twice must give the same answer; a generator that consumed
@@ -62,10 +66,8 @@ def test_compare_metrics_treats_matching_nan_as_equal():
     from determinism import compare_metrics
 
     nan = float("nan")
-    a = [{"step": 1, "loss": 1.0, "grad_norm": nan},
-         {"step": 2, "loss": 0.5, "grad_norm": 3.0}]
-    b = [{"step": 1, "loss": 1.0, "grad_norm": nan},
-         {"step": 2, "loss": 0.5, "grad_norm": 3.0}]
+    a = [{"step": 1, "loss": 1.0, "grad_norm": nan}, {"step": 2, "loss": 0.5, "grad_norm": 3.0}]
+    b = [{"step": 1, "loss": 1.0, "grad_norm": nan}, {"step": 2, "loss": 0.5, "grad_norm": 3.0}]
     result = compare_metrics(a, b)
     assert result["identical"] is True
     assert result["first_diff_step"] is None
@@ -101,9 +103,9 @@ def test_compare_metrics_flags_a_length_mismatch():
 
 # ------------------------------------------------------------------- gate
 
+
 def test_sampling_rate_is_close_to_the_requested_percent():
     from gate import sampled_in
-
     hits = sum(sampled_in(str(i), 10)[0] for i in range(20000))
     assert 0.08 < hits / 20000 < 0.12, hits
 
@@ -111,17 +113,16 @@ def test_sampling_rate_is_close_to_the_requested_percent():
 def test_sampling_is_stable_for_a_given_run_id():
     """A re-run must not reroll, or 10% becomes a floor rather than a rate."""
     from gate import sampled_in
-
     assert sampled_in("123456", 10) == sampled_in("123456", 10)
 
 
 def test_sampling_at_zero_percent_never_fires():
     from gate import sampled_in
-
     assert not any(sampled_in(str(i), 0)[0] for i in range(500))
 
 
 # ------------------------------------------------------ gate: in-flight scan
+
 
 class _FakeKernel:
     def __init__(self, ref, last_run_time):
@@ -139,35 +140,43 @@ class _FakeApi:
     which kernels were actually status-checked so a test can assert that the
     walk stopped where it claims to."""
 
-    def __init__(self, kernels, statuses=None, unreadable=()):
+    def __init__(
+        self,
+        kernels,
+        statuses = None,
+        unreadable = (),
+    ):
         self.kernels = list(kernels)
         self.statuses = statuses or {}
         self.unreadable = set(unreadable)
         self.checked = []
 
-    def kernels_list(self, mine=False, page=1, page_size=20, sort_by=None):
+    def kernels_list(
+        self,
+        mine = False,
+        page = 1,
+        page_size = 20,
+        sort_by = None,
+    ):
         assert mine and sort_by == "dateRun"
         start = (page - 1) * page_size
-        return self.kernels[start:start + page_size]
+        return self.kernels[start : start + page_size]
 
     def kernels_status(self, ref):
         self.checked.append(ref)
         if ref in self.unreadable:
             raise RuntimeError("500")
-        return _FakeStatus(
-            f"KernelWorkerStatus.{self.statuses.get(ref, 'COMPLETE')}")
+        return _FakeStatus(f"KernelWorkerStatus.{self.statuses.get(ref, 'COMPLETE')}")
 
 
 def _now():
     from datetime import datetime
-
     return datetime(2026, 8, 11, 12, 0, 0)
 
 
 def _ago(hours):
     from datetime import timedelta
-
-    return _now() - timedelta(hours=hours)
+    return _now() - timedelta(hours = hours)
 
 
 def test_survey_finds_a_running_kernel_hidden_behind_newer_finished_ones():
@@ -180,12 +189,11 @@ def test_survey_finds_a_running_kernel_hidden_behind_newer_finished_ones():
     """
     from gate import concurrency_verdict, survey_kernels
 
-    kernels = [_FakeKernel(f"u/done{i}", _ago(0.5 + i * 0.01))
-               for i in range(40)]
+    kernels = [_FakeKernel(f"u/done{i}", _ago(0.5 + i * 0.01)) for i in range(40)]
     kernels.append(_FakeKernel("u/old-runner", _ago(3)))
-    api = _FakeApi(kernels, statuses={"u/old-runner": "RUNNING"})
+    api = _FakeApi(kernels, statuses = {"u/old-runner": "RUNNING"})
 
-    survey = survey_kernels(api, now=_now())
+    survey = survey_kernels(api, now = _now())
     assert survey["busy"] == ["u/old-runner (RUNNING)"]
     assert survey["complete"] is True
     clear, why = concurrency_verdict(survey)
@@ -196,13 +204,15 @@ def test_survey_stops_at_the_session_ceiling_rather_than_walking_the_account():
     """Nothing older than a session can last is looked at, and the walk ends."""
     from gate import LOOKBACK_HOURS, survey_kernels
 
-    kernels = [_FakeKernel("u/recent", _ago(1)),
-               _FakeKernel("u/edge", _ago(LOOKBACK_HOURS - 0.1)),
-               _FakeKernel("u/stale", _ago(LOOKBACK_HOURS + 0.1)),
-               _FakeKernel("u/ancient", _ago(24 * 30))]
-    api = _FakeApi(kernels, statuses={"u/ancient": "RUNNING"})
+    kernels = [
+        _FakeKernel("u/recent", _ago(1)),
+        _FakeKernel("u/edge", _ago(LOOKBACK_HOURS - 0.1)),
+        _FakeKernel("u/stale", _ago(LOOKBACK_HOURS + 0.1)),
+        _FakeKernel("u/ancient", _ago(24 * 30)),
+    ]
+    api = _FakeApi(kernels, statuses = {"u/ancient": "RUNNING"})
 
-    survey = survey_kernels(api, now=_now())
+    survey = survey_kernels(api, now = _now())
     assert api.checked == ["u/recent", "u/edge"]
     assert survey["surveyed"] == 2
     assert survey["complete"] is True
@@ -216,19 +226,20 @@ def test_survey_handles_timezone_aware_timestamps():
 
     from gate import survey_kernels
 
-    aware = _ago(1).replace(tzinfo=timezone.utc)
-    api = _FakeApi([_FakeKernel("u/a", aware)], statuses={"u/a": "RUNNING"})
-    survey = survey_kernels(api, now=_now())
+    aware = _ago(1).replace(tzinfo = timezone.utc)
+    api = _FakeApi([_FakeKernel("u/a", aware)], statuses = {"u/a": "RUNNING"})
+    survey = survey_kernels(api, now = _now())
     assert survey["busy"] == ["u/a (RUNNING)"]
 
 
 def test_a_kernel_with_no_timestamp_is_checked_but_does_not_end_the_walk():
     from gate import survey_kernels
 
-    api = _FakeApi([_FakeKernel("u/undated", None),
-                    _FakeKernel("u/recent", _ago(1))],
-                   statuses={"u/recent": "QUEUED"})
-    survey = survey_kernels(api, now=_now())
+    api = _FakeApi(
+        [_FakeKernel("u/undated", None), _FakeKernel("u/recent", _ago(1))],
+        statuses = {"u/recent": "QUEUED"},
+    )
+    survey = survey_kernels(api, now = _now())
     assert api.checked == ["u/undated", "u/recent"]
     assert survey["busy"] == ["u/recent (QUEUED)"]
 
@@ -238,7 +249,7 @@ def test_a_survey_that_ran_out_of_pages_is_not_read_as_an_idle_account():
 
     kernels = [_FakeKernel(f"u/k{i}", _ago(1)) for i in range(1000)]
     api = _FakeApi(kernels)
-    survey = survey_kernels(api, now=_now(), page_size=10, max_pages=3)
+    survey = survey_kernels(api, now = _now(), page_size = 10, max_pages = 3)
     assert survey["surveyed"] == 30
     assert survey["complete"] is False
     clear, why = concurrency_verdict(survey)
@@ -248,9 +259,10 @@ def test_a_survey_that_ran_out_of_pages_is_not_read_as_an_idle_account():
 def test_statuses_that_all_come_back_unreadable_are_not_read_as_idle():
     from gate import concurrency_verdict, survey_kernels
 
-    api = _FakeApi([_FakeKernel("u/a", _ago(1)), _FakeKernel("u/b", _ago(2))],
-                   unreadable=("u/a", "u/b"))
-    survey = survey_kernels(api, now=_now())
+    api = _FakeApi(
+        [_FakeKernel("u/a", _ago(1)), _FakeKernel("u/b", _ago(2))], unreadable = ("u/a", "u/b")
+    )
+    survey = survey_kernels(api, now = _now())
     assert survey["unreadable"] == 2 and survey["busy"] == []
     clear, why = concurrency_verdict(survey)
     assert clear is False and "unknown" in why
@@ -260,10 +272,10 @@ def test_some_unreadable_statuses_do_not_block_a_readable_idle_account():
     """Deleted kernels 404 routinely; that must not wedge the gate shut."""
     from gate import concurrency_verdict, survey_kernels
 
-    api = _FakeApi([_FakeKernel("u/gone", _ago(1)),
-                    _FakeKernel("u/done", _ago(2))],
-                   unreadable=("u/gone",))
-    survey = survey_kernels(api, now=_now())
+    api = _FakeApi(
+        [_FakeKernel("u/gone", _ago(1)), _FakeKernel("u/done", _ago(2))], unreadable = ("u/gone",)
+    )
+    survey = survey_kernels(api, now = _now())
     assert concurrency_verdict(survey) == (True, "")
 
 
@@ -277,8 +289,13 @@ def test_standing_down_while_the_account_is_busy_is_the_default():
     from gate import ALLOWED_IN_FLIGHT_KERNELS, concurrency_verdict
 
     assert ALLOWED_IN_FLIGHT_KERNELS == 0
-    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
-              "unreadable": 0, "window_hours": 13.0}
+    survey = {
+        "busy": ["u/a (RUNNING)"],
+        "complete": True,
+        "surveyed": 1,
+        "unreadable": 0,
+        "window_hours": 13.0,
+    }
     clear, why = concurrency_verdict(survey)
     assert clear is False
     assert "1 kernel(s) in flight" in why and "tolerates 0" in why
@@ -289,8 +306,13 @@ def test_the_in_flight_tolerance_is_a_knob_and_not_a_constant():
     a policy rather than an accident of the implementation."""
     from gate import concurrency_verdict
 
-    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
-              "unreadable": 0, "window_hours": 13.0}
+    survey = {
+        "busy": ["u/a (RUNNING)"],
+        "complete": True,
+        "surveyed": 1,
+        "unreadable": 0,
+        "window_hours": 13.0,
+    }
     assert concurrency_verdict(survey, 1) == (True, "")
     assert concurrency_verdict(survey, 0)[0] is False
 
@@ -299,10 +321,13 @@ def test_the_tolerance_can_never_be_raised_to_the_account_cap():
     """Leaving no headroom races anything that starts after the survey."""
     from gate import MAX_CONCURRENT_GPU_KERNELS, concurrency_verdict
 
-    survey = {"busy": [f"u/k{i} (RUNNING)" for i in
-                       range(MAX_CONCURRENT_GPU_KERNELS)],
-              "complete": True, "surveyed": 2, "unreadable": 0,
-              "window_hours": 13.0}
+    survey = {
+        "busy": [f"u/k{i} (RUNNING)" for i in range(MAX_CONCURRENT_GPU_KERNELS)],
+        "complete": True,
+        "surveyed": 2,
+        "unreadable": 0,
+        "window_hours": 13.0,
+    }
     clear, why = concurrency_verdict(survey, MAX_CONCURRENT_GPU_KERNELS)
     assert clear is False and "Standing down" in why
 
@@ -310,7 +335,7 @@ def test_the_tolerance_can_never_be_raised_to_the_account_cap():
 def test_an_account_with_no_kernels_at_all_is_clear():
     from gate import concurrency_verdict, survey_kernels
 
-    survey = survey_kernels(_FakeApi([]), now=_now())
+    survey = survey_kernels(_FakeApi([]), now = _now())
     assert survey["complete"] is True
     assert concurrency_verdict(survey) == (True, "")
 
@@ -321,26 +346,41 @@ def test_an_account_with_no_kernels_at_all_is_clear():
 # is the designed outcome for most invocations, and a workflow that went red
 # on it would be ignored by the time it was ever right.
 
+
 def _run_gate(monkeypatch, tmp_path, *extra):
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(sys, "argv",
-                        ["gate.py", "--budget-hours", "1",
-                         "--reserve-hours", "20", "--percent", "10",
-                         "--run-id", "12345", *extra])
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "gate.py",
+            "--budget-hours",
+            "1",
+            "--reserve-hours",
+            "20",
+            "--percent",
+            "10",
+            "--run-id",
+            "12345",
+            *extra,
+        ],
+    )
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
     import gate
 
     code = gate.main()
     outputs = dict(
-        line.split("=", 1) for line in
-        (tmp_path / "out.txt").read_text().splitlines() if "=" in line)
+        line.split("=", 1)
+        for line in (tmp_path / "out.txt").read_text().splitlines()
+        if "=" in line
+    )
     return code, outputs
 
 
 def test_a_missing_token_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     """What a fork pull request gets: no secret, and nothing red."""
-    monkeypatch.delenv("KAGGLE_API_TOKEN", raising=False)
+    monkeypatch.delenv("KAGGLE_API_TOKEN", raising = False)
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
     assert code == 0
     assert outputs["should_run"] == "false"
@@ -352,8 +392,7 @@ def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     import gate
 
     monkeypatch.setenv("KAGGLE_API_TOKEN", "not-a-real-token")
-    monkeypatch.setattr(gate, "kaggle_client",
-                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(gate, "kaggle_client", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     code, outputs = _run_gate(monkeypatch, tmp_path, "--force", "true")
     assert code == 0
     assert outputs["should_run"] == "false"
@@ -362,8 +401,7 @@ def test_a_gate_error_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     assert "not-a-real-token" not in (tmp_path / "out.txt").read_text()
 
 
-def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch,
-                                                         tmp_path):
+def test_an_unsampled_invocation_is_a_skip_not_a_failure(monkeypatch, tmp_path):
     from gate import sampled_in
 
     unlucky = next(str(i) for i in range(1000) if not sampled_in(str(i), 10)[0])
@@ -381,6 +419,7 @@ def test_a_rerun_of_the_same_run_id_does_not_reroll(monkeypatch, tmp_path):
 
 # ----------------------------------------------------------- reference band
 
+
 def _write_reference(path: Path, metrics: list[dict], max_steps: int) -> Path:
     """A reference file shaped the way a captured one is.
 
@@ -388,8 +427,7 @@ def _write_reference(path: Path, metrics: list[dict], max_steps: int) -> Path:
     compare against a file that does not carry it, so a helper that omitted
     it would make every test below a test of that refusal instead.
     """
-    path.write_text(json.dumps({"metrics": metrics,
-                                "config": {"max_steps": max_steps}}))
+    path.write_text(json.dumps({"metrics": metrics, "config": {"max_steps": max_steps}}))
     return path
 
 
@@ -397,15 +435,14 @@ def _write_reference(path: Path, metrics: list[dict], max_steps: int) -> Path:
     ("observed", "expected_status"),
     [(1.00, "ok"), (1.05, "ok"), (1.50, "out_of_band")],
 )
-def test_reference_band_accepts_drift_and_rejects_a_real_move(
-        tmp_path, observed, expected_status):
+def test_reference_band_accepts_drift_and_rejects_a_real_move(tmp_path, observed, expected_status):
     sys.path.insert(0, str(SMOKE_DIR))
     from run_t4_smoke import check_reference
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 1.0}], max_steps=1)
-    verdict = check_reference([{"step": 1, "loss": observed}], ref,
-                              rel_tol=0.10, abs_floor=0.05, max_steps=1)
+    ref = _write_reference(tmp_path / "ref.json", [{"step": 1, "loss": 1.0}], max_steps = 1)
+    verdict = check_reference(
+        [{"step": 1, "loss": observed}], ref, rel_tol = 0.10, abs_floor = 0.05, max_steps = 1
+    )
     assert verdict["status"] == expected_status
 
 
@@ -414,12 +451,12 @@ def test_reference_band_absolute_floor_tolerates_near_zero_losses(tmp_path):
     sys.path.insert(0, str(SMOKE_DIR))
     from run_t4_smoke import check_reference
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 10, "loss": 0.0001}], max_steps=10)
+    ref = _write_reference(tmp_path / "ref.json", [{"step": 10, "loss": 0.0001}], max_steps = 10)
     # 0.002 absolute against a 0.0001 reference is a 1900% relative move,
     # but it is noise. The 0.05 floor is what stops it firing.
-    verdict = check_reference([{"step": 10, "loss": 0.002}], ref,
-                              rel_tol=0.10, abs_floor=0.05, max_steps=10)
+    verdict = check_reference(
+        [{"step": 10, "loss": 0.002}], ref, rel_tol = 0.10, abs_floor = 0.05, max_steps = 10
+    )
     assert verdict["status"] == "ok"
 
 
@@ -427,9 +464,9 @@ def test_reference_absent_is_not_a_failure():
     sys.path.insert(0, str(SMOKE_DIR))
     from run_t4_smoke import check_reference
 
-    verdict = check_reference([{"step": 1, "loss": 1.0}],
-                              Path("/nonexistent/ref.json"), 0.1, 0.05,
-                              max_steps=3)
+    verdict = check_reference(
+        [{"step": 1, "loss": 1.0}], Path("/nonexistent/ref.json"), 0.1, 0.05, max_steps = 3
+    )
     assert verdict["status"] == "absent"
 
 
@@ -441,13 +478,14 @@ def test_reference_absent_is_not_a_failure():
 # is all front, and step 4 of a 10-step trace is not a step a 3-step run
 # ever takes. These prove it fails, loudly, rather than sliding past.
 
+
 def test_a_reference_from_a_different_step_count_is_refused(tmp_path):
     from run_t4_smoke import check_reference, reference_failures
 
     ten = [{"step": i, "loss": 10.0 - i} for i in range(1, 11)]
-    ref = _write_reference(tmp_path / "ref.json", ten, max_steps=10)
+    ref = _write_reference(tmp_path / "ref.json", ten, max_steps = 10)
 
-    verdict = check_reference(ten, ref, 0.10, 0.05, max_steps=3)
+    verdict = check_reference(ten, ref, 0.10, 0.05, max_steps = 3)
     assert verdict["status"] == "step_count_mismatch"
     assert verdict["reference_max_steps"] == 10
     assert verdict["observed_max_steps"] == 3
@@ -470,9 +508,9 @@ def test_a_step_count_mismatch_is_refused_even_when_the_numbers_agree(tmp_path):
     from run_t4_smoke import check_reference, reference_failures
 
     metrics = [{"step": 1, "loss": 10.0, "grad_norm": 5.0}]
-    ref = _write_reference(tmp_path / "ref.json", metrics, max_steps=10)
+    ref = _write_reference(tmp_path / "ref.json", metrics, max_steps = 10)
 
-    verdict = check_reference(metrics, ref, 0.10, 0.05, max_steps=3)
+    verdict = check_reference(metrics, ref, 0.10, 0.05, max_steps = 3)
     assert verdict["status"] == "step_count_mismatch"
     assert reference_failures(verdict, 0.10)
     # No reassuring numbers may be produced from a comparison that was
@@ -483,28 +521,23 @@ def test_a_step_count_mismatch_is_refused_even_when_the_numbers_agree(tmp_path):
 
 
 def test_a_reference_that_does_not_say_its_step_count_is_refused(tmp_path):
-    """"It does not say" is not "it matches"."""
+    """ "It does not say" is not "it matches"."""
     from run_t4_smoke import check_reference, reference_failures
 
     ref = tmp_path / "ref.json"
     ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}]}))
-    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
-                              max_steps=3)
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05, max_steps = 3)
     assert verdict["status"] == "reference_step_count_unknown"
     assert reference_failures(verdict, 0.10)
 
 
-@pytest.mark.parametrize("config", [{"max_steps": "three"}, {"max_steps": None},
-                                    {}, "not-a-dict"])
-def test_an_unreadable_step_count_is_refused_rather_than_assumed(tmp_path,
-                                                                 config):
+@pytest.mark.parametrize("config", [{"max_steps": "three"}, {"max_steps": None}, {}, "not-a-dict"])
+def test_an_unreadable_step_count_is_refused_rather_than_assumed(tmp_path, config):
     from run_t4_smoke import check_reference, reference_failures
 
     ref = tmp_path / "ref.json"
-    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}],
-                               "config": config}))
-    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
-                              max_steps=3)
+    ref.write_text(json.dumps({"metrics": [{"step": 1, "loss": 1.0}], "config": config}))
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05, max_steps = 3)
     assert verdict["status"] == "reference_step_count_unknown"
     assert reference_failures(verdict, 0.10)
 
@@ -513,17 +546,26 @@ def test_a_matching_step_count_still_compares_the_numbers(tmp_path):
     """The guard must not become a way to pass without being checked."""
     from run_t4_smoke import check_reference, reference_failures
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 10.0},
-                            {"step": 2, "loss": 1.0},
-                            {"step": 3, "loss": 0.5}], max_steps=3)
-    good = check_reference([{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0},
-                            {"step": 3, "loss": 0.5}], ref, 0.10, 0.05,
-                           max_steps=3)
+    ref = _write_reference(
+        tmp_path / "ref.json",
+        [{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0}, {"step": 3, "loss": 0.5}],
+        max_steps = 3,
+    )
+    good = check_reference(
+        [{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0}, {"step": 3, "loss": 0.5}],
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+    )
     assert good["status"] == "ok" and reference_failures(good, 0.10) == []
-    bad = check_reference([{"step": 1, "loss": 10.0}, {"step": 2, "loss": 4.0},
-                           {"step": 3, "loss": 0.5}], ref, 0.10, 0.05,
-                          max_steps=3)
+    bad = check_reference(
+        [{"step": 1, "loss": 10.0}, {"step": 2, "loss": 4.0}, {"step": 3, "loss": 0.5}],
+        ref,
+        0.10,
+        0.05,
+        max_steps = 3,
+    )
     assert bad["status"] == "out_of_band" and reference_failures(bad, 0.10)
 
 
@@ -563,17 +605,15 @@ def test_the_workflow_step_count_and_the_payload_default_agree():
 
     from run_t4_smoke import main  # noqa: F401  (import proves it loads)
 
-    workflow = (REPO_ROOT / ".github" / "workflows"
-                / "kaggle-t4-notebook-ci.yml").read_text()
+    workflow = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text()
     dispatch_default = re.search(
-        r"max_steps:\s*\n\s*description:.*\n\s*type: string\n\s*default: '(\d+)'",
-        workflow).group(1)
-    fallback = re.search(r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}",
-                         workflow).group(1)
-    payload = re.search(r'"--max-steps", type=int, default=(\d+)',
-                        (SMOKE_DIR / "run_t4_smoke.py").read_text()).group(1)
-    assert dispatch_default == fallback == payload, (
-        dispatch_default, fallback, payload)
+        r"max_steps:\s*\n\s*description:.*\n\s*type: string\n\s*default: '(\d+)'", workflow
+    ).group(1)
+    fallback = re.search(r"--max-steps \$\{\{ inputs\.max_steps \|\| (\d+) \}\}", workflow).group(1)
+    payload = re.search(
+        r'"--max-steps", type=int, default=(\d+)', (SMOKE_DIR / "run_t4_smoke.py").read_text()
+    ).group(1)
+    assert dispatch_default == fallback == payload, (dispatch_default, fallback, payload)
 
 
 # ------------------------------------------- the band check, proved to fail
@@ -591,8 +631,13 @@ def _committed_reference() -> dict:
     return json.loads(COMMITTED_REFERENCE.read_text())
 
 
-def _perturb(metrics: list[dict], index: int, field: str,
-             abs_floor: float = 0.05, factor: float = 0.5) -> list[dict]:
+def _perturb(
+    metrics: list[dict],
+    index: int,
+    field: str,
+    abs_floor: float = 0.05,
+    factor: float = 0.5,
+) -> list[dict]:
     """Move one value by half a band-width more than the band allows.
 
     Scaled by the same max(|value|, abs_floor) the check uses, so the
@@ -612,7 +657,6 @@ def _committed_steps() -> int:
     for a reason that is not a regression.
     """
     from run_t4_smoke import reference_step_count
-
     return reference_step_count(_committed_reference())
 
 
@@ -621,8 +665,9 @@ def test_the_committed_reference_matches_itself(tmp_path):
     from run_t4_smoke import check_reference, reference_failures
 
     metrics = _committed_reference()["metrics"]
-    verdict = check_reference(metrics, COMMITTED_REFERENCE, 0.10, 0.05,
-                              max_steps=_committed_steps())
+    verdict = check_reference(
+        metrics, COMMITTED_REFERENCE, 0.10, 0.05, max_steps = _committed_steps()
+    )
     assert verdict["status"] == "ok", verdict["deviations"]
     assert reference_failures(verdict, 0.10) == []
 
@@ -641,12 +686,12 @@ def test_perturbing_the_committed_reference_turns_the_check_red():
                 continue
             checked += 1
             moved = _perturb(metrics, i, field)
-            verdict = check_reference(moved, COMMITTED_REFERENCE, 0.10, 0.05,
-                                      max_steps=steps)
+            verdict = check_reference(moved, COMMITTED_REFERENCE, 0.10, 0.05, max_steps = steps)
             assert verdict["status"] == "out_of_band", (i, field, verdict)
             assert reference_failures(verdict, 0.10), (i, field)
-            assert any(d["step"] == entry["step"] and d["field"] == field
-                       for d in verdict["deviations"]), verdict["deviations"]
+            assert any(
+                d["step"] == entry["step"] and d["field"] == field for d in verdict["deviations"]
+            ), verdict["deviations"]
     assert checked, "the committed reference carried no numeric values"
 
 
@@ -663,8 +708,12 @@ def test_whether_the_absolute_floor_is_reached_at_all(tmp_path):
 
     metrics = _committed_reference()["metrics"]
     steps = _committed_steps()
-    values = [abs(float(m[f])) for m in metrics for f in ("loss", "grad_norm")
-              if m.get(f) is not None and float(m[f]) == float(m[f])]
+    values = [
+        abs(float(m[f]))
+        for m in metrics
+        for f in ("loss", "grad_norm")
+        if m.get(f) is not None and float(m[f]) == float(m[f])
+    ]
     smallest = min(values)
     floored = [v for v in values if v < 0.05]
 
@@ -680,10 +729,10 @@ def test_whether_the_absolute_floor_is_reached_at_all(tmp_path):
                 if metrics[index].get(field) is None:
                     continue
                 moved = _perturb(metrics, index, field)
-                assert (check_reference(moved, ref, 0.10, 0.05,
-                                        max_steps=steps)["status"]
-                        == check_reference(moved, ref, 0.10, 0.0,
-                                           max_steps=steps)["status"])
+                assert (
+                    check_reference(moved, ref, 0.10, 0.05, max_steps = steps)["status"]
+                    == check_reference(moved, ref, 0.10, 0.0, max_steps = steps)["status"]
+                )
     else:
         # The floor engages. Then it must be what keeps a small absolute
         # drift at those steps in band, and removing it must fail them.
@@ -693,22 +742,20 @@ def test_whether_the_absolute_floor_is_reached_at_all(tmp_path):
             value = entry.get("loss")
             if value is not None and value == value and abs(value) < 0.05:
                 entry["loss"] = value + 0.004
-        assert check_reference(drifted, ref, 0.10, 0.05,
-                               max_steps=steps)["status"] == "ok"
-        assert check_reference(drifted, ref, 0.10, 0.0,
-                               max_steps=steps)["status"] == "out_of_band"
+        assert check_reference(drifted, ref, 0.10, 0.05, max_steps = steps)["status"] == "ok"
+        assert check_reference(drifted, ref, 0.10, 0.0, max_steps = steps)["status"] == "out_of_band"
 
 
 def test_band_failure_reaches_the_failure_list(tmp_path):
     """out_of_band must propagate to what turns the job red, not just report."""
     from run_t4_smoke import check_reference, reference_failures
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 10.0},
-                            {"step": 2, "loss": 1.0}], max_steps=2)
-    verdict = check_reference([{"step": 1, "loss": 10.0},
-                               {"step": 2, "loss": 4.0}], ref, 0.10, 0.05,
-                              max_steps=2)
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0}], max_steps = 2
+    )
+    verdict = check_reference(
+        [{"step": 1, "loss": 10.0}, {"step": 2, "loss": 4.0}], ref, 0.10, 0.05, max_steps = 2
+    )
     assert verdict["status"] == "out_of_band"
     failures = reference_failures(verdict, 0.10)
     assert len(failures) == 1 and "outside +/-10%" in failures[0]
@@ -723,11 +770,10 @@ def test_a_length_mismatch_is_a_failure_too(tmp_path):
     """
     from run_t4_smoke import check_reference, reference_failures
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 1.0}], max_steps=2)
-    verdict = check_reference([{"step": 1, "loss": 1.0},
-                               {"step": 2, "loss": 1.0}], ref, 0.10, 0.05,
-                              max_steps=2)
+    ref = _write_reference(tmp_path / "ref.json", [{"step": 1, "loss": 1.0}], max_steps = 2)
+    verdict = check_reference(
+        [{"step": 1, "loss": 1.0}, {"step": 2, "loss": 1.0}], ref, 0.10, 0.05, max_steps = 2
+    )
     assert verdict["status"] == "length_mismatch"
     assert reference_failures(verdict, 0.10)
 
@@ -737,11 +783,12 @@ def test_matching_nan_grad_norms_are_within_band(tmp_path):
     from run_t4_smoke import check_reference
 
     nan = float("nan")
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 10.0, "grad_norm": nan}],
-                           max_steps=1)
-    verdict = check_reference([{"step": 1, "loss": 10.0, "grad_norm": nan}],
-                              ref, 0.10, 0.05, max_steps=1)
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 10.0, "grad_norm": nan}], max_steps = 1
+    )
+    verdict = check_reference(
+        [{"step": 1, "loss": 10.0, "grad_norm": nan}], ref, 0.10, 0.05, max_steps = 1
+    )
     assert verdict["status"] == "ok"
 
 
@@ -757,12 +804,12 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 
     nan = float("nan")
     ref_value, obs_value = (5.0, nan) if swap else (nan, 5.0)
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 10.0,
-                             "grad_norm": ref_value}], max_steps=1)
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 10.0, "grad_norm": ref_value}], max_steps = 1
+    )
     verdict = check_reference(
-        [{"step": 1, "loss": 10.0, "grad_norm": obs_value}], ref, 0.10, 0.05,
-        max_steps=1)
+        [{"step": 1, "loss": 10.0, "grad_norm": obs_value}], ref, 0.10, 0.05, max_steps = 1
+    )
     assert verdict["status"] == "out_of_band"
     assert verdict["deviations"][0]["field"] == "grad_norm"
 
@@ -770,11 +817,10 @@ def test_a_moved_scaler_skip_pattern_is_out_of_band(tmp_path, swap):
 def test_a_field_that_stopped_being_logged_is_out_of_band(tmp_path):
     from run_t4_smoke import check_reference
 
-    ref = _write_reference(tmp_path / "ref.json",
-                           [{"step": 1, "loss": 1.0, "grad_norm": 3.0}],
-                           max_steps=1)
-    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05,
-                              max_steps=1)
+    ref = _write_reference(
+        tmp_path / "ref.json", [{"step": 1, "loss": 1.0, "grad_norm": 3.0}], max_steps = 1
+    )
+    verdict = check_reference([{"step": 1, "loss": 1.0}], ref, 0.10, 0.05, max_steps = 1)
     assert verdict["status"] == "out_of_band"
 
 
@@ -787,21 +833,24 @@ def test_a_field_that_stopped_being_logged_is_out_of_band(tmp_path):
 # still succeeds (finite loss, adapter saves, generation produces text), so
 # nothing else in the harness notices.
 
+
 def test_a_run_whose_every_step_was_skipped_is_a_failure():
     from run_t4_smoke import optimisation_failures
 
     nan = float("nan")
     failures = optimisation_failures(
-        [{"step": 1, "loss": 10.3, "grad_norm": nan},
-         {"step": 2, "loss": 10.5, "grad_norm": nan},
-         {"step": 3, "loss": 9.9, "grad_norm": nan}])
+        [
+            {"step": 1, "loss": 10.3, "grad_norm": nan},
+            {"step": 2, "loss": 10.5, "grad_norm": nan},
+            {"step": 3, "loss": 9.9, "grad_norm": nan},
+        ]
+    )
     assert any("skipped every one of the 3 steps" in f for f in failures)
 
 
 def test_the_committed_reference_trajectory_would_have_passed():
     """The same check against real data, so it is not merely strict."""
     from run_t4_smoke import optimisation_failures
-
     assert optimisation_failures(_committed_reference()["metrics"]) == []
 
 
@@ -809,8 +858,7 @@ def test_a_trainer_that_stops_logging_grad_norm_is_not_called_a_skip():
     """Silence is not evidence of a skipped step."""
     from run_t4_smoke import optimisation_failures
 
-    failures = optimisation_failures([{"step": 1, "loss": 10.0},
-                                      {"step": 2, "loss": 1.0}])
+    failures = optimisation_failures([{"step": 1, "loss": 10.0}, {"step": 2, "loss": 1.0}])
     assert failures == []
 
 
@@ -819,27 +867,38 @@ def test_one_applied_step_is_enough_for_the_skip_check():
 
     nan = float("nan")
     failures = optimisation_failures(
-        [{"step": 1, "loss": 10.0, "grad_norm": nan},
-         {"step": 2, "loss": 1.0, "grad_norm": 42.0}])
+        [{"step": 1, "loss": 10.0, "grad_norm": nan}, {"step": 2, "loss": 1.0, "grad_norm": 42.0}]
+    )
     assert not any("skipped every" in f for f in failures)
 
 
 @pytest.mark.parametrize(
     ("metrics", "expected"),
-    [([{"step": 1, "loss": float("nan"), "grad_norm": 1.0}], "non-finite"),
-     ([{"step": 1, "loss": 1.0, "grad_norm": 1.0},
-       {"step": 2, "loss": 2.0, "grad_norm": 1.0}], "did not decrease")],
+    [
+        ([{"step": 1, "loss": float("nan"), "grad_norm": 1.0}], "non-finite"),
+        (
+            [
+                {"step": 1, "loss": 1.0, "grad_norm": 1.0},
+                {"step": 2, "loss": 2.0, "grad_norm": 1.0},
+            ],
+            "did not decrease",
+        ),
+    ],
 )
 def test_the_other_optimisation_checks_still_fire(metrics, expected):
     from run_t4_smoke import optimisation_failures
-
     assert any(expected in f for f in optimisation_failures(metrics))
 
 
 # ------------------------------------------------- the fp16 loss-scale pin
 
+
 class _FakeScaler:
-    def __init__(self, init_scale=65536.0, enabled=True):
+    def __init__(
+        self,
+        init_scale = 65536.0,
+        enabled = True,
+    ):
         self._init_scale = init_scale
         self._enabled = enabled
 
@@ -865,11 +924,14 @@ def test_the_loss_scale_pin_lowers_the_starting_scale():
     assert scaler.get_scale() == 2048.0
 
 
-@pytest.mark.parametrize("trainer", [
-    _FakeTrainer(None),
-    _FakeTrainer(_FakeScaler(enabled=False)),
-    _FakeTrainer(object()),
-])
+@pytest.mark.parametrize(
+    "trainer",
+    [
+        _FakeTrainer(None),
+        _FakeTrainer(_FakeScaler(enabled = False)),
+        _FakeTrainer(object()),
+    ],
+)
 def test_the_loss_scale_pin_is_never_fatal(trainer):
     """A transformers release that moves the scaler must cost a footnote in
     the report, not a Kaggle session."""
@@ -898,16 +960,20 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
     import ast
 
     tree = ast.parse((SMOKE_DIR / "run_t4_smoke.py").read_text())
-    functions = {n.name: n for n in ast.walk(tree)
-                 if isinstance(n, ast.FunctionDef)}
+    functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
-    read = {node.attr for node in ast.walk(functions["train_once"])
-            if isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name) and node.value.id == "args"}
-    forwarded = {c.value.lstrip("-").replace("-", "_")
-                 for c in ast.walk(functions["main"])
-                 if isinstance(c, ast.Constant) and isinstance(c.value, str)
-                 and c.value.startswith("--")}
+    read = {
+        node.attr
+        for node in ast.walk(functions["train_once"])
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "args"
+    }
+    forwarded = {
+        c.value.lstrip("-").replace("-", "_")
+        for c in ast.walk(functions["main"])
+        if isinstance(c, ast.Constant) and isinstance(c.value, str) and c.value.startswith("--")
+    }
 
     # outdir is passed separately, per cycle, and must not be forwarded
     # verbatim: each cycle gets its own directory.
@@ -918,13 +984,27 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
+
 def test_built_kernel_is_valid_notebook_json_with_gpu_requested(tmp_path):
     out = tmp_path / "kernel.ipynb"
     subprocess.run(
-        [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(SMOKE_DIR), "--out", str(out),
-         "--count", "2", "--unsloth-ref", "main", "--zoo-ref", "main"],
-        check=True, capture_output=True)
+        [
+            sys.executable,
+            str(CI_DIR / "build_kernel.py"),
+            "--payload-dir",
+            str(SMOKE_DIR),
+            "--out",
+            str(out),
+            "--count",
+            "2",
+            "--unsloth-ref",
+            "main",
+            "--zoo-ref",
+            "main",
+        ],
+        check = True,
+        capture_output = True,
+    )
     nb = json.loads(out.read_text())
     assert nb["nbformat"] == 4
     assert nb["metadata"]["accelerator"] == "GPU"
@@ -935,8 +1015,12 @@ def test_built_kernel_is_valid_notebook_json_with_gpu_requested(tmp_path):
     # The token must never be capable of reaching the kernel: nothing in the
     # notebook may reference a credential environment variable.
     blob = out.read_text()
-    for forbidden in ("KAGGLE_API_TOKEN", "KAGGLE_KEY", "KAGGLE_USERNAME",
-                      "KAGGLE_ACCESS_TOKEN_GH"):
+    for forbidden in (
+        "KAGGLE_API_TOKEN",
+        "KAGGLE_KEY",
+        "KAGGLE_USERNAME",
+        "KAGGLE_ACCESS_TOKEN_GH",
+    ):
         assert forbidden not in blob, f"{forbidden} leaked into the kernel"
 
 
@@ -944,23 +1028,46 @@ def test_built_kernel_pins_one_gpu_per_payload_and_isolates_installs(tmp_path):
     """The three details that previous sweeps proved are load-bearing."""
     out = tmp_path / "kernel.ipynb"
     subprocess.run(
-        [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(SMOKE_DIR), "--out", str(out), "--count", "2"],
-        check=True, capture_output=True)
-    source = "".join("".join(c["source"]) for c in
-                     json.loads(out.read_text())["cells"])
+        [
+            sys.executable,
+            str(CI_DIR / "build_kernel.py"),
+            "--payload-dir",
+            str(SMOKE_DIR),
+            "--out",
+            str(out),
+            "--count",
+            "2",
+        ],
+        check = True,
+        capture_output = True,
+    )
+    source = "".join("".join(c["source"]) for c in json.loads(out.read_text())["cells"])
     assert 'env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)' in source
     assert "--seed" in source and "--system-site-packages" in source
     assert 'env["UV_SYSTEM_PYTHON"] = "0"' in source
 
 
-def _build(tmp_path, *extra, payload_dir: Path = SMOKE_DIR) -> dict:
+def _build(
+    tmp_path,
+    *extra,
+    payload_dir: Path = SMOKE_DIR,
+) -> dict:
     out = tmp_path / "kernel.ipynb"
     subprocess.run(
-        [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(payload_dir), "--out", str(out), "--count", "2",
-         *extra],
-        check=True, capture_output=True)
+        [
+            sys.executable,
+            str(CI_DIR / "build_kernel.py"),
+            "--payload-dir",
+            str(payload_dir),
+            "--out",
+            str(out),
+            "--count",
+            "2",
+            *extra,
+        ],
+        check = True,
+        capture_output = True,
+    )
     return json.loads(out.read_text())
 
 
@@ -968,10 +1075,18 @@ def _build(tmp_path, *extra, payload_dir: Path = SMOKE_DIR) -> dict:
 # passes. Tested verbatim rather than approximated: the SyntaxError that cost
 # a Kaggle session lived only on the --reference branch, which is the branch
 # the workflow always takes and the one no local build had ever exercised.
-WORKFLOW_ARGS = ("--unsloth-ref", "main", "--zoo-ref", "main",
-                 "--reference", "t4_qwen2.5-0.5b.json",
-                 "--smoke-args", "--max-steps 3",
-                 "--per-run-timeout", "2100")
+WORKFLOW_ARGS = (
+    "--unsloth-ref",
+    "main",
+    "--zoo-ref",
+    "main",
+    "--reference",
+    "t4_qwen2.5-0.5b.json",
+    "--smoke-args",
+    "--max-steps 3",
+    "--per-run-timeout",
+    "2100",
+)
 
 
 def _payload_dir(tmp_path, name: str, *, with_reference: bool) -> Path:
@@ -988,17 +1103,24 @@ def _payload_dir(tmp_path, name: str, *, with_reference: bool) -> Path:
     import shutil
 
     dest = tmp_path / name
-    shutil.copytree(SMOKE_DIR, dest,
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(SMOKE_DIR, dest, ignore = shutil.ignore_patterns("__pycache__"))
     refs = dest / "references"
-    refs.mkdir(exist_ok=True)
+    refs.mkdir(exist_ok = True)
     for stale in refs.glob("*.json"):
         stale.unlink()
     if with_reference:
-        (refs / "t4_qwen2.5-0.5b.json").write_text(json.dumps({
-            "metrics": [{"step": 1, "loss": 10.3, "grad_norm": float("nan")},
-                        {"step": 2, "loss": 0.14, "grad_norm": 13.8}],
-            "environment": {"gpu_name": "Tesla T4"}}, indent=2))
+        (refs / "t4_qwen2.5-0.5b.json").write_text(
+            json.dumps(
+                {
+                    "metrics": [
+                        {"step": 1, "loss": 10.3, "grad_norm": float("nan")},
+                        {"step": 2, "loss": 0.14, "grad_norm": 13.8},
+                    ],
+                    "environment": {"gpu_name": "Tesla T4"},
+                },
+                indent = 2,
+            )
+        )
     return dest
 
 
@@ -1010,8 +1132,10 @@ def _payload_notebooks(driver: dict) -> dict:
 
     source = "".join(driver["cells"][0]["source"])
     blob = re.search(r"^PAYLOADS = (\{.*?\})$", source, re.M | re.S).group(1)
-    return {name: json.loads(gzip.decompress(base64.b64decode(data)))
-            for name, data in json.loads(blob).items()}
+    return {
+        name: json.loads(gzip.decompress(base64.b64decode(data)))
+        for name, data in json.loads(blob).items()
+    }
 
 
 def _every_generated_cell(driver: dict):
@@ -1036,13 +1160,17 @@ def _build_all_paths(tmp_path):
         # before a green T4 run supplied one, and what it does again for any
         # configuration that has no reference yet.
         "workflow-reference-absent": _build(
-            tmp_path / "b", *WORKFLOW_ARGS,
-            payload_dir=_payload_dir(tmp_path, "empty", with_reference=False)),
+            tmp_path / "b",
+            *WORKFLOW_ARGS,
+            payload_dir = _payload_dir(tmp_path, "empty", with_reference = False),
+        ),
         # --reference named and present: the reference is carried inline as a
         # fourth file, under a key with a directory separator in it.
         "workflow-reference-present": _build(
-            tmp_path / "c", *WORKFLOW_ARGS,
-            payload_dir=_payload_dir(tmp_path, "full", with_reference=True)),
+            tmp_path / "c",
+            *WORKFLOW_ARGS,
+            payload_dir = _payload_dir(tmp_path, "full", with_reference = True),
+        ),
     }
 
 
@@ -1085,10 +1213,8 @@ def _undefined_names(source: str, already_bound: set[str]) -> tuple[set, set]:
     read: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
-            (bound if isinstance(node.ctx, (ast.Store, ast.Del))
-             else read).add(node.id)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                               ast.ClassDef)):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del)) else read).add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(node.name)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for alias in node.names:
@@ -1112,20 +1238,17 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
     how a notebook actually runs.
     """
     for path, driver in _build_all_paths(tmp_path).items():
-        for nb_name, nb in {"driver": driver,
-                            **_payload_notebooks(driver)}.items():
+        for nb_name, nb in {"driver": driver, **_payload_notebooks(driver)}.items():
             carried: set[str] = set()
             for index, cell in enumerate(nb["cells"]):
-                missing, bound = _undefined_names("".join(cell["source"]),
-                                                  carried)
+                missing, bound = _undefined_names("".join(cell["source"]), carried)
                 assert not missing, (
-                    f"{path}/{nb_name} cell {index} reads undefined "
-                    f"{sorted(missing)}")
+                    f"{path}/{nb_name} cell {index} reads undefined " f"{sorted(missing)}"
+                )
                 carried = bound
 
 
-def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
-        tmp_path):
+def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(tmp_path):
     """Decode the carried blobs the way the kernel will, and compare.
 
     The payload sources reach the T4 only as gzip+base64 inside a generated
@@ -1137,22 +1260,23 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
     import gzip
     import re
 
-    payload_dir = _payload_dir(tmp_path, "full", with_reference=True)
-    driver = _build(tmp_path / "c", *WORKFLOW_ARGS, payload_dir=payload_dir)
+    payload_dir = _payload_dir(tmp_path, "full", with_reference = True)
+    driver = _build(tmp_path / "c", *WORKFLOW_ARGS, payload_dir = payload_dir)
     payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
     materialise = "".join(payload["cells"][2]["source"])
     blob = re.search(r"^FILES = (\{.*?\})$", materialise, re.M | re.S).group(1)
     files = json.loads(blob)
-    assert set(files) == {"run_t4_smoke.py", "determinism.py",
-                          "canary_dataset.jsonl",
-                          "references/t4_qwen2.5-0.5b.json"}, sorted(files)
+    assert set(files) == {
+        "run_t4_smoke.py",
+        "determinism.py",
+        "canary_dataset.jsonl",
+        "references/t4_qwen2.5-0.5b.json",
+    }, sorted(files)
     for name, data in files.items():
-        assert gzip.decompress(base64.b64decode(data)) == \
-            (payload_dir / name).read_bytes(), name
+        assert gzip.decompress(base64.b64decode(data)) == (payload_dir / name).read_bytes(), name
 
 
-def test_the_reference_path_the_payload_builds_is_the_one_that_is_shipped(
-        tmp_path):
+def test_the_reference_path_the_payload_builds_is_the_one_that_is_shipped(tmp_path):
     """The runtime path must be assembled from ROOT, not left as a literal.
 
     The first version emitted a doubled-brace "{ROOT}/references/..." inside
@@ -1163,8 +1287,9 @@ def test_the_reference_path_the_payload_builds_is_the_one_that_is_shipped(
     driver = _build(tmp_path, "--reference", "t4_qwen2.5-0.5b.json")
     payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
     run_cell = "".join(payload["cells"][-1]["source"])
-    assert ('cmd += ["--reference", str(ROOT / "references" / '
-            '"t4_qwen2.5-0.5b.json")]') in run_cell
+    assert (
+        'cmd += ["--reference", str(ROOT / "references" / "t4_qwen2.5-0.5b.json")]'
+    ) in run_cell
     assert "{ROOT}" not in run_cell
 
 
@@ -1186,8 +1311,9 @@ def test_the_dependency_probe_imports_unsloth_before_unsloth_zoo(tmp_path):
 
 # --------------------------------------------------------------- workflow
 
-WORKFLOW = (Path(__file__).resolve().parents[2] / ".github" / "workflows"
-            / "kaggle-t4-notebook-ci.yml")
+WORKFLOW = (
+    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml"
+)
 
 
 def _workflow() -> dict:
@@ -1211,8 +1337,7 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
     """A cancelled runner cannot stop the kernel it already pushed."""
     wf = _workflow()
     assert wf["concurrency"]["cancel-in-progress"] is False
-    assert (wf["jobs"]["t4-smoke"]["concurrency"]["cancel-in-progress"]
-            is False)
+    assert wf["jobs"]["t4-smoke"]["concurrency"]["cancel-in-progress"] is False
 
 
 def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
@@ -1228,8 +1353,8 @@ def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
     """Cancelling it orphans a Kaggle kernel that then bills to its ceiling."""
     preempt = json.loads(
-        (Path(__file__).resolve().parents[2] / ".github"
-         / "ci-preempt.json").read_text())
+        (Path(__file__).resolve().parents[2] / ".github" / "ci-preempt.json").read_text()
+    )
     assert WORKFLOW.name in preempt["never"]
     for machines in preempt["heavy"].values():
         assert WORKFLOW.name not in machines
@@ -1237,21 +1362,30 @@ def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
 
 # ----------------------------------------------------------------- report
 
+
 @pytest.mark.parametrize(
     ("verdict", "expected_exit"),
     [("pass", 0), ("partial", 0), ("infra", 0), ("fail", 1)],
 )
-def test_only_a_real_assertion_failure_turns_the_job_red(
-        tmp_path, verdict, expected_exit):
+def test_only_a_real_assertion_failure_turns_the_job_red(tmp_path, verdict, expected_exit):
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    (evidence / "launch_result.json").write_text(json.dumps({
-        "verdict": verdict, "reason": "test", "slug": "u/s",
-        "kernel_state": "COMPLETE", "reports": []}))
+    (evidence / "launch_result.json").write_text(
+        json.dumps(
+            {
+                "verdict": verdict,
+                "reason": "test",
+                "slug": "u/s",
+                "kernel_state": "COMPLETE",
+                "reports": [],
+            }
+        )
+    )
     proc = subprocess.run(
-        [sys.executable, str(CI_DIR / "report.py"),
-         "--evidence", str(evidence), "--expect", "2"],
-        capture_output=True, text=True)
+        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence), "--expect", "2"],
+        capture_output = True,
+        text = True,
+    )
     assert proc.returncode == expected_exit, proc.stdout
 
 
@@ -1264,18 +1398,32 @@ def test_a_kernel_that_reported_nothing_still_names_its_cause(tmp_path):
     """
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    (evidence / "launch_result.json").write_text(json.dumps({
-        "verdict": "infra", "reason": "no payload report", "slug": "u/s",
-        "kernel_state": "COMPLETE", "reports": []}))
-    (evidence / "kernel.log").write_text(json.dumps([
-        {"stream_name": "stdout", "time": 1.0, "data": "KAGGLE_T4_CI_DRIVER start\n"},
-        {"stream_name": "stdout", "time": 2.0, "data": "SyntaxError: invalid "},
-        {"stream_name": "stdout", "time": 2.1, "data": "syntax\n"},
-        {"stream_name": "stdout", "time": 3.0, "data": "unrelated chatter\n"},
-    ]))
+    (evidence / "launch_result.json").write_text(
+        json.dumps(
+            {
+                "verdict": "infra",
+                "reason": "no payload report",
+                "slug": "u/s",
+                "kernel_state": "COMPLETE",
+                "reports": [],
+            }
+        )
+    )
+    (evidence / "kernel.log").write_text(
+        json.dumps(
+            [
+                {"stream_name": "stdout", "time": 1.0, "data": "KAGGLE_T4_CI_DRIVER start\n"},
+                {"stream_name": "stdout", "time": 2.0, "data": "SyntaxError: invalid "},
+                {"stream_name": "stdout", "time": 2.1, "data": "syntax\n"},
+                {"stream_name": "stdout", "time": 3.0, "data": "unrelated chatter\n"},
+            ]
+        )
+    )
     proc = subprocess.run(
-        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence),
-         "--expect", "2"], capture_output=True, text=True)
+        [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence), "--expect", "2"],
+        capture_output = True,
+        text = True,
+    )
     assert proc.returncode == 0
     assert "SyntaxError: invalid syntax" in proc.stdout
     assert "unrelated chatter" not in proc.stdout
@@ -1286,15 +1434,26 @@ def test_the_summary_states_a_refused_reference_rather_than_an_empty_list():
     sys.path.insert(0, str(CI_DIR))
     from report import render
 
-    text = "\n".join(render({
-        "label": "gpu0", "model": "m", "metrics": [],
-        "config": {"max_steps": 3, "init_loss_scale": 2048.0},
-        "reference_check": {
-            "status": "step_count_mismatch", "deviations": [],
-            "reference_max_steps": 10, "observed_max_steps": 3,
-            "note": "captured at max_steps=10 and this run is 3 steps"},
-        "failures": ["refusing to band-check against a reference that is "
-                     "not for this run"]}))
+    text = "\n".join(
+        render(
+            {
+                "label": "gpu0",
+                "model": "m",
+                "metrics": [],
+                "config": {"max_steps": 3, "init_loss_scale": 2048.0},
+                "reference_check": {
+                    "status": "step_count_mismatch",
+                    "deviations": [],
+                    "reference_max_steps": 10,
+                    "observed_max_steps": 3,
+                    "note": "captured at max_steps=10 and this run is 3 steps",
+                },
+                "failures": [
+                    "refusing to band-check against a reference that is not for this run"
+                ],
+            }
+        )
+    )
     assert "step_count_mismatch" in text
     assert "captured at max_steps=10" in text
     assert "max_steps `3`" in text
@@ -1304,13 +1463,28 @@ def test_the_summary_says_when_the_loss_scale_pin_did_not_apply():
     sys.path.insert(0, str(CI_DIR))
     from report import render
 
-    text = "\n".join(render({
-        "label": "gpu0", "model": "m", "metrics": [],
-        "config": {"max_steps": 3, "init_loss_scale": 2048.0},
-        "runs": [{"run_index": 0, "generated": "x", "canary_found": True,
-                  "loss_scale": {"applied": False,
-                                 "reason": "trainer.accelerator.scaler is absent"}}],
-        "failures": []}))
+    text = "\n".join(
+        render(
+            {
+                "label": "gpu0",
+                "model": "m",
+                "metrics": [],
+                "config": {"max_steps": 3, "init_loss_scale": 2048.0},
+                "runs": [
+                    {
+                        "run_index": 0,
+                        "generated": "x",
+                        "canary_found": True,
+                        "loss_scale": {
+                            "applied": False,
+                            "reason": "trainer.accelerator.scaler is absent",
+                        },
+                    }
+                ],
+                "failures": [],
+            }
+        )
+    )
     assert "did NOT apply" in text and "scaler is absent" in text
 
 
@@ -1330,6 +1504,8 @@ def test_missing_launch_result_is_reported_but_not_red(tmp_path):
     evidence.mkdir()
     proc = subprocess.run(
         [sys.executable, str(CI_DIR / "report.py"), "--evidence", str(evidence)],
-        capture_output=True, text=True)
+        capture_output = True,
+        text = True,
+    )
     assert proc.returncode == 0
     assert "NOT RUN" in proc.stdout or "did not run" in proc.stdout
