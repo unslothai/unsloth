@@ -1213,16 +1213,20 @@ async def add_scan_folder_endpoint(
     body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Register a new directory to scan for local models."""
-    from storage.studio_db import add_scan_folder
+    from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder = add_scan_folder(body.path)
+        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         # Forward the curated, path-free validation message.
         rejection_message = str(e)
         raise HTTPException(status_code = 400, detail = rejection_message)
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return folder
 
 
@@ -1233,8 +1237,13 @@ async def remove_scan_folder_endpoint(
     """Remove a registered custom scan folder."""
     from storage.studio_db import remove_scan_folder
 
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = await asyncio.to_thread(remove_scan_folder, folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        await asyncio.to_thread(invalidate_index)
+        warm_index_soon()
     return {"ok": True}
 
 
@@ -2837,7 +2846,7 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     unlinking the resident model's snapshot and blob. Deliberately loose: a false match only
     refuses a delete, a false miss loses weights.
     """
-    from hub.utils.gguf import bare_quant_alias
+    from hub.utils.gguf import bare_quant_alias, is_qualified_gguf_variant_key
 
     left = (a or "").strip().lower()
     right = (b or "").strip().lower()
@@ -2846,7 +2855,11 @@ def _variant_names_same_checkpoint(a: Optional[str], b: Optional[str]) -> bool:
     if left == right:
         return True
     for key, bare in ((left, right), (right, left)):
-        if "/" in key and "/" not in bare and bare_quant_alias(key).lower() == bare:
+        if (
+            is_qualified_gguf_variant_key(key)
+            and not is_qualified_gguf_variant_key(bare)
+            and bare_quant_alias(key).lower() == bare
+        ):
             return True
     return False
 
@@ -3787,19 +3800,22 @@ def _main_variant_rank(rel_path: str, want: str) -> Optional[int]:
 
     *want* is the request VERBATIM: the bare-quant folding is applied per comparison, because
     doing it once up front strips a qualified key's own path punctuation and folds ``exp-a/`` into
-    ``expa/``. Both spellings have to resolve -- a stored pin predates the qualified keys -- but
-    they cannot rank equally. In a repo holding several checkpoints at one quant the bare label
-    names every one of them, so a request for the repo-root ``Q6_K`` matched the qualified
-    files too and then took whichever sorted first. Exact keys are used alone whenever any
-    exist, and the label is the fallback for the rows that have no qualified spelling.
+    ``expa/``. Directory-qualified keys keep their legacy bare spelling, since stored pins predate
+    them. Root-level H3 stems do not: a bare quant names both FL2VA and Ref2VA, and picking the
+    first file would load a different task. Exact keys are used alone whenever any exist, and the
+    label is the fallback for rows with no root-stem identity.
     """
+    from hub.utils.gguf import is_qualified_gguf_variant_key
     from utils.models.model_config import _gguf_variant_key
 
     label = _main_variant_gguf_label(rel_path)
     if label is None:
         return None
-    if _variant_keys_match(_gguf_variant_key(rel_path), want):
+    key = _gguf_variant_key(rel_path)
+    if _variant_keys_match(key, want):
         return 0
+    if is_qualified_gguf_variant_key(key) and "/" not in key.replace("\\", "/"):
+        return None
     return 1 if _normalized_quant_label(label) == _normalized_quant_label(want) else None
 
 
@@ -3812,7 +3828,9 @@ def _variant_keys_match(key: str, want: str) -> bool:
     key keeps its punctuation and compares case-insensitively; the legacy folding applies to the
     bare aliases it was written for.
     """
-    if "/" in key or "/" in want:
+    from hub.utils.gguf import is_qualified_gguf_variant_key
+
+    if is_qualified_gguf_variant_key(key) or is_qualified_gguf_variant_key(want):
         return key.strip().lower() == want.strip().lower()
     return _normalized_quant_label(key) == _normalized_quant_label(want)
 

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import glob
 import importlib
 import io
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -86,16 +84,18 @@ class TestUvSafePath:
         assert ips._uv_safe_path(p) == p
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
-    def test_posix_space_path_returns_spacefree_copy(self, tmp_path):
+    def test_posix_space_path_preserves_relative_requirements(self, tmp_path):
         src = tmp_path / "Open Source" / "constraints.txt"
         src.parent.mkdir(parents = True)
-        src.write_text("torch>=2.6\n")
+        src.write_text("-r child.txt\n")
+        (src.parent / "child.txt").write_text("torch>=2.6\n")
 
         out = ips._uv_safe_path(str(src))
 
         assert " " not in out, f"uv-safe path still has a space: {out!r}"
         assert out != str(src)
-        assert Path(out).read_text() == "torch>=2.6\n"
+        assert Path(out).read_text() == "-r child.txt\n"
+        assert (Path(out).parent / "child.txt").read_text() == "torch>=2.6\n"
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_posix_missing_file_falls_back_to_original(self):
@@ -121,24 +121,23 @@ class TestUvSafePathHardening:
         assert uvps.uv_safe_path(str(src)) == str(src)
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
-    def test_no_temp_dir_leak_on_copy_failure(self, tmp_path, monkeypatch):
-        """A copyfile failure after mkdtemp must not orphan the temp dir."""
+    def test_alias_failure_falls_back_to_a_copy(self, tmp_path, monkeypatch):
+        """A symlink failure must still hand uv a space-free path, and not orphan the dir."""
         from backend.utils import uv_path_safety as uvps
 
         src = tmp_path / "Open Source" / "constraints.txt"
         src.parent.mkdir(parents = True)
         src.write_text("idna\n")
-        pattern = os.path.join(tempfile.gettempdir(), "unsloth_uv_*")
-        before = set(glob.glob(pattern))
 
         def boom(*a, **k):
             raise OSError("boom")
 
-        monkeypatch.setattr(uvps.shutil, "copyfile", boom)
+        monkeypatch.setattr(uvps.os, "symlink", boom)
         out = uvps.uv_safe_path(str(src))
 
-        assert out == str(src)
-        assert set(glob.glob(pattern)) == before
+        assert " " not in out
+        assert Path(out).read_text() == "idna\n"
+        assert str(Path(out).parent) in uvps._UV_SAFE_PATH_TMPDIRS
 
     @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
     def test_cleanup_removes_and_clears_registry(self, tmp_path):
@@ -149,7 +148,7 @@ class TestUvSafePathHardening:
         src.parent.mkdir(parents = True)
         src.write_text("idna\n")
         out = uvps.uv_safe_path(str(src))
-        tmp_dir = Path(out).parent
+        tmp_dir = Path(out).parents[1]
         assert tmp_dir.is_dir() and str(tmp_dir) in uvps._UV_SAFE_PATH_TMPDIRS
 
         uvps._cleanup_uv_safe_path_tmpdirs()
@@ -516,9 +515,9 @@ class TestProgressLineNotes:
 class TestBuildPipCmdUpgradeIntent:
     """pip has no --upgrade-package, so uv's flag must be translated, not dropped.
 
-    Dropping it made the fallback a no-op on the update path: `studio update`
-    passes --upgrade-package unsloth with a base.txt listing a bare unsloth, so
-    pip found it satisfied, installed nothing, and the update reported success.
+    Dropping it made the fallback a no-op on the update path: pip saw the named
+    distributions as already satisfied, installed nothing, and the update
+    reported success.
     """
 
     def test_update_path_keeps_the_upgrade_intent(self):
