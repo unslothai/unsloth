@@ -434,6 +434,10 @@ def slim_pairing_for_artifact(
         # The shared Windows manifest lists libomp only because the cpu bundle's
         # ggml links against it; a GPU bundle neither ships nor imports it, so
         # requiring it there only mis-rejects. link_ggml_runtime still wires it.
+        # This drops libomp140.aarch64.dll as readily as the x64 name, which is
+        # safe only while llama publishes no Windows arm64 GPU bundle: that slice
+        # is clang-built and its ggml really does need LLVM OpenMP (see
+        # SLIM_GGML_LIBRARY_GLOBS). Re-check this gate before adding one.
         required_sonames = [
             name
             for name in required_sonames

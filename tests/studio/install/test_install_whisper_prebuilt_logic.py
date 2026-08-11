@@ -706,6 +706,10 @@ WIN_GPU_BUNDLES = [
     ("rocm", "ggml-hip.dll", {"has_rocm": True, "rocm_gfx": "gfx1150"}),
     ("cuda", "ggml-cuda.dll", {"has_usable_nvidia": True}),
     ("vulkan", "ggml-vulkan.dll", {}),
+    # The cpu backend on a GPU bundle: the exemption keys on what the paired bin
+    # dir holds, not on the request, and that bundle's ggml-cpu.dll has no libomp
+    # to find either, so this must pair outright rather than via a cpu retry.
+    ("cpu", "ggml-hip.dll", {}),
 ]
 
 
