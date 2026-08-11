@@ -4,6 +4,7 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import { isServerShuttingDown } from "@/lib/server-shutdown";
 import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
@@ -108,7 +109,7 @@ export function useLoadedModels(
     // Keyed on recording, not showing: a closed card keeps polling so a load
     // started outside this tab, which raises no lifecycle event at all, still
     // brings it back.
-    if (!track) return;
+    if (!track || isServerShuttingDown()) return;
     if (inFlightRef.current) {
       // Remember the ask instead of dropping it: the refresh an eject queues
       // collides with the poll it has to correct more often than not.
@@ -190,7 +191,7 @@ export function useLoadedModels(
     if (!track) return;
     refresh();
     const timer = window.setInterval(() => {
-      if (document.hidden) return;
+      if (document.hidden || isServerShuttingDown()) return;
       refresh();
     }, POLL_INTERVAL_MS);
     // Pick up a load or unload done in another tab.

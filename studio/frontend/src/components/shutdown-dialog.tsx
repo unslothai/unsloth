@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { markServerShuttingDown } from "@/lib/server-shutdown";
 import { toastError } from "@/shared/toast";
 import { useState } from "react";
 import {
@@ -33,6 +34,7 @@ export function ShutdownDialog({
 
   const handleStop = async () => {
     setStopping(true);
+    markServerShuttingDown();
     let accepted = false;
     try {
       const res = await authFetch("/api/shutdown", { method: "POST" });

@@ -10,6 +10,7 @@ import type {
   ApiMonitorEntry,
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
+import { isServerShuttingDown } from "@/lib/server-shutdown";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearMonitor } from "./clear-monitor";
 import { type MonitorStats, computeStats } from "./stats";
@@ -117,6 +118,9 @@ export function useApiMonitor({
     let timer: number | undefined;
 
     function poll(): void {
+      if (isServerShuttingDown()) {
+        return;
+      }
       getApiMonitor()
         .then((next) => {
           if (cancelled) return;
@@ -124,11 +128,11 @@ export function useApiMonitor({
           setError(null);
         })
         .catch((err: unknown) => {
-          if (cancelled) return;
+          if (cancelled || isServerShuttingDown()) return;
           setError(err instanceof Error ? err.message : "Monitor unavailable");
         })
         .finally(() => {
-          if (cancelled) return;
+          if (cancelled || isServerShuttingDown()) return;
           setLoading(false);
           timer = window.setTimeout(poll, intervalMs);
         });

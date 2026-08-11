@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { isServerShuttingDown } from "@/lib/server-shutdown";
 import {
   type BackendModelDetails,
   type GgufVariantDetail,
@@ -1036,6 +1037,7 @@ export function AgentsTab() {
   useEffect(() => {
     let cancelled = false;
     const sync = () => {
+      if (isServerShuttingDown()) return;
       const seq = ++statusSeq.current;
       getInferenceStatus()
         .then((status) => {

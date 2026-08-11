@@ -10,6 +10,7 @@ import {
   useFloatingPanelOrderStore,
   useFloatingPanelZIndex,
 } from "@/lib/floating-panel-order";
+import { isServerShuttingDown } from "@/lib/server-shutdown";
 import { cn } from "@/lib/utils";
 import {
   ArrowExpand01Icon,
@@ -157,6 +158,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
 
     function poll(): void {
+      if (isServerShuttingDown()) {
+        return;
+      }
       // A hidden tab has nobody to show the panel to.
       if (document.hidden) {
         schedule();
@@ -168,10 +172,10 @@ export function ApiMonitorOverlay(): ReactElement | null {
         })
         .catch(() => {
           // An unreachable server is the full page's story to tell.
-          if (!cancelled) setData(null);
+          if (!cancelled && !isServerShuttingDown()) setData(null);
         })
         .finally(() => {
-          if (!cancelled) schedule();
+          if (!cancelled && !isServerShuttingDown()) schedule();
         });
     }
 

@@ -13,6 +13,7 @@ import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatApiErrorBody } from "@/lib/format-fastapi-error";
+import { throwIfServerShuttingDown } from "@/lib/server-shutdown";
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import type {
   MessageRecord,
@@ -169,16 +170,19 @@ export async function listLoras(
 export async function getInferenceStatus(
   signal?: AbortSignal,
 ): Promise<InferenceStatusResponse> {
+  throwIfServerShuttingDown();
   const response = await authFetch("/api/inference/status", { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
 export async function getApiMonitor(): Promise<ApiMonitorResponse> {
+  throwIfServerShuttingDown();
   const response = await authFetch("/api/inference/monitor");
   return parseJsonOrThrow<ApiMonitorResponse>(response);
 }
 
 export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+  throwIfServerShuttingDown();
   const response = await authFetch(
     `/api/inference/monitor/${encodeURIComponent(id)}`,
   );
