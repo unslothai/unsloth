@@ -205,12 +205,12 @@ def test_forget_locked_does_not_deadlock_inside_exclusive(gdir):
 @pytest.mark.parametrize(
     "pinned_at",
     [
-        10 ** 400,        # JSON ints are unbounded; this overflows float()
-        -(10 ** 400),
+        10**400,  # JSON ints are unbounded; this overflows float()
+        -(10**400),
         float("nan"),
         float("inf"),
-        "2026-01-01",     # wrong type entirely
-        True,             # bool is an int subclass, but not a timestamp
+        "2026-01-01",  # wrong type entirely
+        True,  # bool is an int subclass, but not a timestamp
     ],
 )
 def test_an_unusable_pin_time_reads_as_unpinned_instead_of_raising(gdir, pinned_at):
@@ -225,7 +225,7 @@ def test_an_unusable_pin_time_reads_as_unpinned_instead_of_raising(gdir, pinned_
 
 def test_an_unusable_pin_time_does_not_hide_the_archived_flag(gdir):
     _store(gdir).write_text(
-        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10 ** 400, "archived": True}}}),
+        json.dumps({"version": 1, "items": {"a": {"pinned_at": 10**400, "archived": True}}}),
         encoding = "utf-8",
     )
     assert flags.is_archived(flags.read(gdir), "a") is True
