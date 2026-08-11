@@ -717,6 +717,7 @@ _commit_studio_venv_replacement() {
 
 _cleanup_install_temporaries() {
     [ -n "${_UV_OVERRIDE_TMPDIR:-}" ] && rm -rf "$_UV_OVERRIDE_TMPDIR" 2>/dev/null || true
+    [ -n "${_UV_INSTALL_NAME_TOOL_SHIM_DIR:-}" ] && rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
     [ -n "${_UNSLOTH_TORCH_OVERRIDES:-}" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES" 2>/dev/null || true
 }
 
@@ -740,8 +741,10 @@ _on_install_signal() {
     exit "$_signal_status"
 }
 # Empty so an inherited value never reaches the trap's rm; only temp paths this
-# script creates below (spaced-path dir, torch-trio overrides) are removed.
+# script creates below (spaced-path dir, uv install_name_tool guard, torch-trio
+# overrides) are removed.
 _UV_OVERRIDE_TMPDIR=""
+_UV_INSTALL_NAME_TOOL_SHIM_DIR=""
 _UNSLOTH_TORCH_OVERRIDES=""
 trap _on_install_exit EXIT
 trap '_on_install_signal 129' HUP
@@ -2507,6 +2510,72 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
+# uv unconditionally invokes install_name_tool after downloading managed CPython on
+# macOS. On a consumer Mac without developer tools, Apple's /usr/bin shim opens the
+# Command Line Tools installer even though uv treats patch failure as a warning. There
+# is no supported uv opt-out yet (https://github.com/astral-sh/uv/issues/14893).
+#
+# Do not execute install_name_tool or xcrun to probe it: either probe can launch the
+# same dialog. A selected standalone CLT and full Xcode have stable on-disk locations.
+_macos_has_selected_install_name_tool() {
+    _uvv_developer_dir=$(xcode-select -p 2>/dev/null) || return 1
+    [ -n "$_uvv_developer_dir" ] && [ -d "$_uvv_developer_dir" ] || return 1
+
+    # DEVELOPER_DIR may select a custom path or symlink, so do not require Apple's
+    # standard directory names. Reject only candidates that are the base-system
+    # /usr/bin dialog shim itself; comparing file identity does not execute the tool.
+    for _uvv_tool in \
+        "$_uvv_developer_dir/usr/bin/install_name_tool" \
+        "$_uvv_developer_dir/Toolchains/XcodeDefault.xctoolchain/usr/bin/install_name_tool"; do
+        [ -x "$_uvv_tool" ] || continue
+        if [ -e /usr/bin/install_name_tool ] \
+           && [ "$_uvv_tool" -ef /usr/bin/install_name_tool ] 2>/dev/null; then
+            continue
+        fi
+        return 0
+    done
+    return 1
+}
+
+# Run one uv venv command with its argv unchanged. If no real selected macOS tool is
+# present, put a non-success shim ahead of /usr/bin only for uv's process. Returning
+# nonzero is intentional: uv must retain its warning path rather than being told that
+# an unpatched dylib was successfully modified.
+_run_uv_venv() {  # label, uv-venv args...
+    _uvv_label="$1"
+    shift
+    if [ "$OS" != "macos" ] || _macos_has_selected_install_name_tool; then
+        run_install_cmd "$_uvv_label" uv venv "$@"
+        return $?
+    fi
+
+    _UV_INSTALL_NAME_TOOL_SHIM_DIR=$(mktemp -d \
+        "${TMPDIR:-/tmp}/unsloth-uv-install-name-tool.XXXXXX") || {
+        echo "ERROR: could not create the temporary macOS uv guard." >&2
+        tauri_stream_log stderr "ERROR_OUTPUT" "$_uvv_label failed (temporary guard)"
+        return 1
+    }
+    if ! printf '%s\n' '#!/bin/sh' 'exit 1' \
+            > "$_UV_INSTALL_NAME_TOOL_SHIM_DIR/install_name_tool" \
+       || ! chmod +x "$_UV_INSTALL_NAME_TOOL_SHIM_DIR/install_name_tool"; then
+        echo "ERROR: could not prepare the temporary macOS uv guard." >&2
+        rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+        _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+        tauri_stream_log stderr "ERROR_OUTPUT" "$_uvv_label failed (temporary guard)"
+        return 1
+    fi
+
+    if run_install_cmd "$_uvv_label" env \
+        PATH="$_UV_INSTALL_NAME_TOOL_SHIM_DIR:$PATH" uv venv "$@"; then
+        _uvv_status=0
+    else
+        _uvv_status=$?
+    fi
+    rm -rf "$_UV_INSTALL_NAME_TOOL_SHIM_DIR" 2>/dev/null || true
+    _UV_INSTALL_NAME_TOOL_SHIM_DIR=""
+    return "$_uvv_status"
+}
+
 # Apple Silicon venv. The arch-explicit arm64 CPython stops uv reusing a cached
 # x86_64 (Rosetta) build: torch ships no macOS x86_64 wheels since 2.2.2, so an
 # x86_64 venv cannot resolve torch. The arm64 guard below backstops older venvs.
@@ -2521,10 +2590,10 @@ fi
 # UV_PYTHON_DOWNLOADS=never is left with nothing to resolve. Retry unflagged for
 # them: the dialog is worth removing, a failed install is not.
 _uv_venv_arm64() {  # label
-    run_install_cmd "$1" uv venv "$VENV_DIR" \
+    _run_uv_venv "$1" "$VENV_DIR" \
         --python-preference only-managed \
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none" \
-    || run_install_cmd "$1 (system Python)" uv venv "$VENV_DIR" \
+    || _run_uv_venv "$1 (system Python)" "$VENV_DIR" \
         --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
 }
 
@@ -2534,7 +2603,7 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
     if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ] && [ -z "$_USER_PYTHON" ]; then
         _uv_venv_arm64 "create venv"
     else
-        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+        _run_uv_venv "create venv" "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
     fi
 fi
@@ -2620,7 +2689,7 @@ if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
         echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv..."
         _discard_venv_for_recreate "$VENV_DIR"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+        _run_uv_venv "recreate venv" "$VENV_DIR" \
             --python "$(_python_request "$PYTHON_VERSION")"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
