@@ -216,7 +216,14 @@ jobs:
           set -u
           export DEBIAN_FRONTEND=noninteractive
           apt-get update -qq >/dev/null
-          apt-get install -y -qq gcc libcurl3-gnutls libgl1 libegl1 libglx-mesa0 >/dev/null
+          # The bundle deliberately ships no glibc, GL/EGL/DRM, X11/Wayland or C++
+          # runtime, so a bare container cannot load it. Install that host side here:
+          # without it the preload below fails on a MISSING library rather than on the
+          # version conflict it exists to detect.
+          apt-get install -y -qq gcc libcurl3-gnutls libgl1 libegl1 libglx-mesa0 \
+            libwayland-server0 libwayland-client0 libwayland-egl1 libwayland-cursor0 \
+            libx11-6 libxext6 libxrandr2 libxi6 libxcursor1 libxfixes3 libxrender1 \
+            libxcomposite1 libxdamage1 libxinerama1 libxcb1 libdrm2 libgbm1 >/dev/null
           cat > /tmp/probe.c <<'C'
           #include <dlfcn.h>
           #include <stdio.h>
@@ -261,7 +268,14 @@ jobs:
             # This one IS gated: it is what the app does.
             printf '%-22s after bundled WebKit: ' "$lib"
             out=$(/tmp/probe "$p" "$webkit"); echo "$out"
-            case "$out" in FAILED\ *) rc=1 ;; esac
+            case "$out" in
+              # A host library this container simply does not have is an environment
+              # gap, not a finding: the bundle ships none of the host boundary, so
+              # gating on it would fail the build for a missing apt package.
+              *"FAILED to preload"*"cannot open shared object file"*)
+                echo "    (skipped: the container lacks a host-boundary library)" ;;
+              FAILED*) rc=1 ;;
+            esac
           done
           exit $rc
           SH
