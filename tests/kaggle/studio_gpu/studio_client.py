@@ -121,11 +121,27 @@ class Studio:
         *,
         username: str = "unsloth",
     ) -> None:
-        """Exchange the bootstrap password for a bearer token.
+        """Exchange the bootstrap password for a bearer token, retiring it if Studio insists.
 
-        The password reaches this function and Studio and goes nowhere else.
-        It is never returned, stored on the instance, or included in an error
-        message: a StudioError from here is raised with the status code only.
+        A bootstrap account is created with ``must_change_password`` set, and
+        ``get_current_subject`` turns that into
+
+            HTTP 403 {"detail": "Password change required"}
+
+        on every route except the password-change one. Logging in therefore
+        yields a token that authenticates and can do nothing: the first
+        hardware run of this payload reached ``POST /api/inference/load`` and
+        ``POST /api/train/start`` and got 403 from both, so inference, tool
+        calling, training and export were all unmeasured while the login step
+        itself reported success. The token is only useful once the change is
+        done, so it is done here rather than left for each caller to discover.
+
+        The replacement is random per run and is never returned or stored:
+        nothing needs it again, since ``/api/auth/change-password`` answers with
+        a fresh ``Token`` and that is what the rest of the run carries.
+
+        The passwords reach this function and Studio and go nowhere else. A
+        StudioError from here is raised with the status code only.
         """
         status, payload = self.post(
             "/api/auth/login",
@@ -137,6 +153,25 @@ class Studio:
         token = payload.get("access_token")
         if not token:
             raise StudioError("login returned no access_token")
+        self.token = str(token)
+        if payload.get("must_change_password"):
+            self._retire_bootstrap_password(password)
+
+    def _retire_bootstrap_password(self, current_password: str) -> None:
+        """Replace the bootstrap password so the session can reach the real routes."""
+        import secrets
+
+        # token_urlsafe never yields whitespace, which change-password rejects,
+        # and never collides with the bootstrap value it has to differ from.
+        status, payload = self.post(
+            "/api/auth/change-password",
+            {"current_password": current_password, "new_password": secrets.token_urlsafe(24)},
+        )
+        if status != 200 or not isinstance(payload, dict):
+            raise StudioError(f"forced password change failed with HTTP {status}")
+        token = payload.get("access_token")
+        if not token:
+            raise StudioError("forced password change returned no access_token")
         self.token = str(token)
 
 

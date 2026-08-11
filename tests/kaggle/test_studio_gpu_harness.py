@@ -948,3 +948,72 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
     report = _load("studio_ci_report_2", CI_DIR / "report.py")
     monkeypatch.setattr(report, "_SHARED", tmp_path / "gone.py")
     assert report._load_shared() is None
+
+
+# ------------------------------------------------- the forced password change
+
+
+class _RecordingStudio(studio_client.Studio):
+    """A Studio whose HTTP layer is a script, so login can be driven off-box."""
+
+    def __init__(self, responses):
+        super().__init__(base_url = "http://127.0.0.1:0")
+        self._responses = list(responses)
+        self.calls = []
+
+    def request(self, method, path, body = None, **kw):
+        self.calls.append((method, path, body, kw.get("auth", True)))
+        return self._responses.pop(0)
+
+
+def _login_ok(must_change):
+    return (200, {"access_token": "bootstrap-token", "must_change_password": must_change})
+
+
+def test_login_retires_a_bootstrap_password_studio_says_must_change():
+    """The failure this exists for: the first hardware run authenticated fine and
+    then got 403 "Password change required" from /api/inference/load and
+    /api/train/start, so inference, tool calling, training and export were all
+    unmeasured behind a login step that reported success."""
+    studio = _RecordingStudio([
+        _login_ok(True),
+        (200, {"access_token": "post-change-token"}),
+    ])
+    studio.login("bootstrap-secret")
+
+    assert [c[1] for c in studio.calls] == ["/api/auth/login", "/api/auth/change-password"]
+    # The session carries the token the change minted, not the one that cannot act.
+    assert studio.token == "post-change-token"
+
+    change_body = studio.calls[1][2]
+    assert change_body["current_password"] == "bootstrap-secret"
+    assert change_body["new_password"] != "bootstrap-secret", "the route rejects an unchanged password"
+    assert not any(ch.isspace() for ch in change_body["new_password"]), "the route rejects whitespace"
+    # Authenticated, or change-password 401s rather than 403s.
+    assert studio.calls[1][3] is True
+
+
+def test_login_leaves_a_password_alone_when_studio_does_not_ask():
+    """An account already past the gate must not have its password rotated as a
+    side effect of logging in."""
+    studio = _RecordingStudio([_login_ok(False)])
+    studio.login("already-changed")
+    assert [c[1] for c in studio.calls] == ["/api/auth/login"]
+    assert studio.token == "bootstrap-token"
+
+
+def test_a_refused_password_change_is_raised_rather_than_carried_on_with():
+    """Continuing with a token that cannot act is how the first run produced four
+    unmeasured assertions and no explanation."""
+    studio = _RecordingStudio([_login_ok(True), (400, {"detail": "nope"})])
+    with pytest.raises(studio_client.StudioError) as excinfo:
+        studio.login("bootstrap-secret")
+    assert "400" in str(excinfo.value)
+    assert "bootstrap-secret" not in str(excinfo.value), "no credential in the error"
+
+
+def test_a_password_change_without_a_token_is_refused():
+    studio = _RecordingStudio([_login_ok(True), (200, {"detail": "ok"})])
+    with pytest.raises(studio_client.StudioError) as excinfo:
+        studio.login("bootstrap-secret")
+    assert "no access_token" in str(excinfo.value)
