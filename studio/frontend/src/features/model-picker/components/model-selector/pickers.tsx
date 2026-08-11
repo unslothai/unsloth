@@ -1428,10 +1428,8 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, totalBudgetGb, budgetKnown, getGgufFit]);
-  // Every workflow's recommendation, flattened. Only for readers with no row to
-  // ask about, like the footprint representative below; a ROW asks its own
-  // group, since two groups recommending different quants would otherwise light
-  // both rows in both groups.
+  // Flattened, for readers with no row to ask about (the footprint representative
+  // below). A ROW asks its own group, or it lights the other group's pick too.
   const effectiveRecommended = useMemo(
     () => new Set(effectiveRecommendedByGroup.values()),
     [effectiveRecommendedByGroup],
@@ -1684,10 +1682,8 @@ function GgufVariantExpander({
         );
         const showGroupHeading =
           group?.title != null && group.variants[0]?.filename === v.filename;
-        // This row's OWN workflow recommendation. Matching on the quant alone
-        // would also light the other workflow's pick, and only holds today
-        // because the backend keys an H3 quant by its file; a row knows its
-        // group, so it should not depend on that.
+        // Its own group's pick. Matching on the quant alone happens to work only
+        // because an H3 key is unique per file, which is the backend's rule.
         const isRecommended =
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
@@ -2167,8 +2163,8 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
 function localPathTooltip(
   name: string,
   path: string,
-  // A row standing for ONE checkpoint says which, since the path does not: an
-  // H3 repo holds a keyframe and a reference partition in the same directory.
+  // Which checkpoint, since the path cannot say: an H3 repo holds its keyframe
+  // and reference partitions in one directory.
   detail?: string,
 ): ReactNode {
   return (

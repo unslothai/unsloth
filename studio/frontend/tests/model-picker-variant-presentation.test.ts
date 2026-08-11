@@ -173,13 +173,13 @@ test("each workflow uses the nearest-size fallback for different quant names", (
 });
 
 test("an H3 quant chip is the quant alone, because the column is capped", () => {
-  // 7.2em fits UD-Q4_K_XL and no more, so the whole file stem clips to nonsense.
+  // The column fits UD-Q4_K_XL and no more.
   assert.equal(ggufQuantChipLabel("minimax_h3_fl2va_pruned-Q4_K_M"), "Q4_K_M");
   assert.equal(
     ggufQuantChipLabel("minimax_h3_ref2va-UD-Q3_K_XL"),
     "UD-Q3_K_XL",
   );
-  // The same key with its suffix still on, and a shard counter, read alike.
+  // A suffix still on, and a shard counter, read alike.
   assert.equal(
     ggufQuantChipLabel("minimax_h3_ref2va_pruned-Q4_K_M.gguf"),
     "Q4_K_M",
@@ -214,8 +214,7 @@ test("an ordinary quant key is left exactly as it is", () => {
 });
 
 test("the picker label is unchanged by the key-shaped parse", () => {
-  // The filename path still wins: adding the optional suffix to the pattern must
-  // not change what a ROW reads, which is the quant alone under its heading.
+  // The optional suffix must not change what a ROW reads under its heading.
   const pruned = variant("minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf", 9);
   assert.equal(
     ggufVariantPickerLabel(pruned, {

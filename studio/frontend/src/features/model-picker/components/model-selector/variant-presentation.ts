@@ -15,18 +15,15 @@ export type GgufVariantPresentationGroup<T extends PresentableGgufVariant> = {
   variants: T[];
 };
 
-// The `.gguf` is optional because a variant KEY is read with the same parser as
-// a filename: the backend keys an H3 checkpoint by its own path
-// (`_unknown_gguf_variant_key`), so a quant reads `minimax_h3_fl2va_pruned-Q4_K_M`
-// with no suffix. The quant group is lazy so the optional suffix wins when it is
-// there.
+// `.gguf` optional: an H3 quant KEY is the file stem the backend keyed it by
+// (`_unknown_gguf_variant_key`), so the same parser reads both. Lazy quant group
+// so the suffix wins when present.
 const H3_FILENAME = /^minimax_h3_(fl2va|ref2va)(?:_pruned)?-(.+?)(?:\.gguf)?$/i;
 const GGUF_SHARD_SUFFIX = /-\d{5}-of-\d{5}$/i;
 const PATH_SEPARATOR = /[\\/]/;
 
-// What each workflow is called where no section heading names it. Deliberately
-// the backend's own wording in `_apply_gguf_display_labels`, so one checkpoint
-// does not read two ways across the Hub card and a row's tooltip.
+// The backend's own wording (`_apply_gguf_display_labels`), so the Hub card and a
+// row's tooltip name one checkpoint the same way.
 const H3_WORKFLOW_LABEL = {
   "text-frames": "Text & frames",
   "reference-media": "References",
@@ -58,20 +55,14 @@ function h3Presentation(
   return h3PresentationFor(variant.filename);
 }
 
-/** A GGUF quant KEY as the row's mono chip.
- *
- *  The quant alone, because the chip's column is capped at 7.2em -- wide enough
- *  for `UD-Q4_K_XL` and no wider, by design, so the meta columns line up down the
- *  list. An H3 key is a whole file stem, so left alone the chip reads
- *  `minimax_h3_fl2va_pruned-Q4_K_M` and clips to nonsense; the workflow and build
- *  it also carries go to `ggufQuantDetailLabel` and the row's tooltip, which has
- *  the room. Anything that is already just a quant is returned untouched. */
+/** A GGUF quant KEY as the row's mono chip: the quant alone, since that column is
+ *  capped at 7.2em and an H3 key is a whole file stem that clips to nonsense. The
+ *  workflow and build go to `ggufQuantDetailLabel`. Other quants pass through. */
 export function ggufQuantChipLabel(quant: string): string {
   return h3PresentationFor(quant)?.quantLabel ?? quant;
 }
 
-/** The same key in full, for a tooltip: which workflow the checkpoint drives and
- *  which build it is. The backend's wording, so the Hub card and this row agree. */
+/** The same key in full, for a tooltip with room for it: workflow and build. */
 export function ggufQuantDetailLabel(quant: string): string {
   const h3 = h3PresentationFor(quant);
   if (!h3) {
