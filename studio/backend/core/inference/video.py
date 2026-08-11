@@ -667,6 +667,7 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
     try:
         from utils.hardware import trusted_mem_get_info
+
         # Windows ROCm over-reports free (#8403); pinning the denoiser on that
         # reading is how a card that is already full still looks roomy.
         return int(trusted_mem_get_info()[0])
@@ -4770,9 +4771,7 @@ class VideoBackend:
                         # hard refusal, so cap it against the allocator (#8403).
                         from utils.hardware import trusted_mem_get_info
 
-                        free_bytes, _ = trusted_mem_get_info(
-                            device_obj, module = device_module
-                        )
+                        free_bytes, _ = trusted_mem_get_info(device_obj, module = device_module)
                         reserved_bytes = (
                             device_module.memory_reserved(device_obj)
                             if hasattr(device_module, "memory_reserved")

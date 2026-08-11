@@ -41,7 +41,13 @@ MiB = 1024**2
 GiB = 1024**3
 
 
-def _fake_torch(total_bytes, *, free_bytes, reserved_bytes = 0, allocated_bytes = None):
+def _fake_torch(
+    total_bytes,
+    *,
+    free_bytes,
+    reserved_bytes = 0,
+    allocated_bytes = None,
+):
     """A torch whose driver free reading and allocator accounting can disagree.
 
     ``mem_get_info`` takes no argument here because ``_cuda_memory`` calls it that

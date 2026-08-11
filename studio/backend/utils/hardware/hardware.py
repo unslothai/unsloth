@@ -1103,16 +1103,12 @@ def trusted_mem_get_info(device: Any = None, *, module: Any = None) -> tuple[int
     import torch
 
     mod = module if module is not None else torch.cuda
-    free_bytes, total_bytes = (
-        mod.mem_get_info() if device is None else mod.mem_get_info(device)
-    )
+    free_bytes, total_bytes = mod.mem_get_info() if device is None else mod.mem_get_info(device)
     free_bytes, total_bytes = int(free_bytes), int(total_bytes)
     if not rocm_windows_free_is_untrusted():
         return free_bytes, total_bytes
     try:
-        reserved = int(
-            mod.memory_reserved() if device is None else mod.memory_reserved(device)
-        )
+        reserved = int(mod.memory_reserved() if device is None else mod.memory_reserved(device))
     except Exception as e:
         # No allocator accounting to cap against: the driver figure is all there is.
         logger.debug("memory_reserved probe failed while capping free VRAM: %s", e)
