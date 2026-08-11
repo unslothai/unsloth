@@ -3896,8 +3896,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             _hit = (
                 isinstance(_v, ast.Attribute)
                 and (
-                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                    or _v.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES or _v.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
                 )
             ) or (isinstance(_v, ast.Name) and _v.id in _loader_class_names)
             if _hit:
