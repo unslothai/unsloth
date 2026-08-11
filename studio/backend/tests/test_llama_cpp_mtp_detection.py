@@ -3016,12 +3016,17 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
         for node in ast.walk(ast.parse(inspect.getsource(mod)))
         if isinstance(node, ast.FunctionDef) and node.name == "load_model"
     )
+    # In-load probes go through the accumulating _launch_caps helper, so count both it
+    # and any direct call.
     probe_calls = [
         node.lineno
         for node in ast.walk(load_model)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "probe_server_capabilities"
+        and (
+            (isinstance(node.func, ast.Attribute)
+             and node.func.attr == "probe_server_capabilities")
+            or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
+        )
     ]
     diffusion_return = max(
         node.lineno
@@ -3042,10 +3047,24 @@ def test_a_diffusion_load_never_pays_for_the_capability_probe():
         if isinstance(branch, ast.If)
         for node in ast.walk(branch)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "probe_server_capabilities"
+        and (
+            (isinstance(node.func, ast.Attribute)
+             and node.func.attr == "probe_server_capabilities")
+            or (isinstance(node.func, ast.Name) and node.func.id == "_launch_caps")
+        )
     }
-    unconditional = [ln for ln in probe_calls if ln < diffusion_return and ln not in guarded]
+    helper_body = {
+        node.lineno
+        for fn in ast.walk(load_model)
+        if isinstance(fn, ast.FunctionDef) and fn.name == "_launch_caps"
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+    }
+    unconditional = [
+        ln
+        for ln in probe_calls
+        if ln < diffusion_return and ln not in guarded and ln not in helper_body
+    ]
     assert unconditional == [], (
         f"unguarded probe calls above the diffusion return: {unconditional}; a diffusion "
         "load must not pay for a capability it never consumes"
@@ -3108,3 +3127,71 @@ def test_the_marker_comes_from_the_launch_snapshot_not_a_probe_after_startup():
         "the capability snapshot is pinned after the startup wait, so a slow load can "
         "still record a probe that is not the one the server was launched with"
     )
+
+
+def test_a_later_successful_probe_cannot_erase_an_earlier_degrading_one():
+    """The launch's capability decisions are spread across the whole load, and the retry
+    window is 30s. The slot clamp runs before an HF download; the command is built after
+    it. Sampling one probe lets a later success erase the fact that an earlier one already
+    clamped the slots, so the marker has to accumulate.
+
+    Exercised on the accumulator itself: driving load_model would need a real download.
+    """
+    import ast
+    import inspect
+
+    from core.inference import llama_cpp as mod
+
+    load_model = next(
+        node
+        for node in ast.walk(ast.parse(inspect.getsource(mod)))
+        if isinstance(node, ast.FunctionDef) and node.name == "load_model"
+    )
+    helper = next(
+        (node for node in ast.walk(load_model)
+         if isinstance(node, ast.FunctionDef) and node.name == "_launch_caps"),
+        None,
+    )
+    assert helper is not None, "the accumulating probe helper vanished; re-pin this test"
+
+    # It must only ever latch True, never assign the raw probe result.
+    assigns = [
+        node
+        for node in ast.walk(helper)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive"
+                for t in node.targets)
+    ]
+    assert assigns, "the helper no longer records the probe state"
+    for node in assigns:
+        assert isinstance(node.value, ast.Constant) and node.value.value is True, (
+            "the helper assigns the probe result directly; a later conclusive probe would "
+            "then erase an earlier degrading one"
+        )
+
+    # And nothing outside it may overwrite the accumulator mid-load.
+    outside = [
+        node.lineno
+        for node in ast.walk(load_model)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_launch_probe_inconclusive"
+                for t in node.targets)
+        and not (helper.lineno <= node.lineno <= (helper.end_lineno or helper.lineno))
+    ]
+    assert len(outside) == 1, (
+        f"expected only the initialisation outside the helper, found {outside}"
+    )
+
+
+def test_the_accumulator_latches_across_probes():
+    """Behavioural check of the same property, on a stand-in with the helper's shape."""
+    state = {"inconclusive": False}
+
+    def launch_caps(caps):
+        if caps.get("mtp_probe_inconclusive"):
+            state["inconclusive"] = True
+        return caps
+
+    launch_caps({"mtp_probe_inconclusive": True})    # slot clamp, probe timed out
+    launch_caps({"mtp_probe_inconclusive": False})   # command build, probe recovered
+    assert state["inconclusive"] is True, "a later success must not erase the earlier guess"

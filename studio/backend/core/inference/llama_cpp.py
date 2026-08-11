@@ -9489,6 +9489,21 @@ class LlamaCppBackend:
             # Resolve llama-server now but defer a not-found error: a block-diffusion
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
+
+            # Every capability answer that shapes this launch, remembering whether any of
+            # them was a guess rather than a read. Accumulated rather than sampled: the
+            # decisions are spread across the whole load (the slot clamp before an HF
+            # download, the command build after it), the retry window is 30s, and a long
+            # download or startup between two of them means a later successful probe would
+            # otherwise erase the fact that an earlier one had already degraded the launch.
+            _launch_probe_inconclusive = False
+
+            def _launch_caps(bin_path):
+                nonlocal _launch_probe_inconclusive
+                caps = self.probe_server_capabilities(bin_path)
+                if caps.get("mtp_probe_inconclusive"):
+                    _launch_probe_inconclusive = True
+                return caps
             is_vulkan_backend = self._is_vulkan_backend(binary)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -9504,7 +9519,7 @@ class LlamaCppBackend:
             if (
                 n_parallel > 1
                 and binary
-                and not self.probe_server_capabilities(binary).get("supports_kv_unified")
+                and not _launch_caps(binary).get("supports_kv_unified")
             ):
                 logger.warning(
                     "llama-server at %s has no --kv-unified, so %d parallel slots would "
@@ -9697,7 +9712,7 @@ class LlamaCppBackend:
                 and not _extra_args_set_spec_type(extra_args)
             ):
                 try:
-                    if self.probe_server_capabilities(binary).get("supports_dspark"):
+                    if _launch_caps(binary).get("supports_dspark"):
                         _spec_canon = "dspark"
                         logger.info("Auto: DSpark sidecar available, using draft-dspark.")
                 except Exception as exc:
@@ -9767,7 +9782,7 @@ class LlamaCppBackend:
                 # same message remote validation already shows.
                 raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
-            server_caps = self.probe_server_capabilities(binary)
+            server_caps = _launch_caps(binary)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -10178,7 +10193,7 @@ class LlamaCppBackend:
                     _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
-                            _fit_caps = self.probe_server_capabilities(binary) or {}
+                            _fit_caps = _launch_caps(binary) or {}
                             _mtp_binary_ok = bool(
                                 _fit_caps.get("supports_dspark")
                                 if _mtp_effective == "dspark"
@@ -11099,13 +11114,7 @@ class LlamaCppBackend:
                 if n_ubatch is not None:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
-                server_caps = self.probe_server_capabilities(binary)
-                # Pin whether THIS launch's capabilities were guessed rather than read.
-                # Taken from the snapshot that built the command, because the retry window
-                # can expire many times over during the startup health wait below (up to
-                # 600s), and a fresh probe at commit time would describe a server that is
-                # not the one now running.
-                _launch_probe_inconclusive = bool(server_caps.get("mtp_probe_inconclusive"))
+                server_caps = _launch_caps(binary)
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
