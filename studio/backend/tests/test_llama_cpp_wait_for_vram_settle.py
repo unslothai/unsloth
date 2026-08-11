@@ -345,8 +345,8 @@ def test_helper_is_static_method_callable_off_class():
 # ---------------------------------------------------------------------------
 
 
-# Hiding /proc selects the cross-platform psutil branch, which is the one
-# macOS and Windows take. The procfs branch is covered separately below.
+# Hiding /proc selects the psutil branch (what macOS and Windows take); the procfs
+# branch is covered separately below.
 _NO_PROCFS = "/unsloth-test-no-such-proc-root"
 
 

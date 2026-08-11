@@ -34,10 +34,8 @@ import httpx  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-# Sibling tests install lightweight httpx stubs via sys.modules.setdefault.
-# When collected together, our `httpx` may be such a stub lacking `get`. Add
-# the missing attributes so production code finds a working `httpx.get` and
-# the standard exception types regardless of collection order.
+# Sibling tests install lightweight httpx stubs, so when collected together our `httpx`
+# may be a stub lacking `get`. Fill in the gaps so collection order does not matter.
 if not hasattr(httpx, "get"):
     httpx.get = None  # placeholder; every test below monkeypatches it
 for _exc_name in (

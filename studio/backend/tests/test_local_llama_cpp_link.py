@@ -136,8 +136,8 @@ def _run_orphan_scan(
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
 
     if scan == "procfs":
-        # Linux reads /proc directly. Point it at a fixture tree and intercept
-        # the signal, since the fixture's pid is not a real process.
+        # Linux reads /proc directly. Point it at a fixture tree and intercept the
+        # signal, since the fixture's pid is not a real process.
         if sys.platform != "linux":
             pytest.skip("the procfs scan only runs on Linux")
         monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(_fake_procfs(tmp_path, fake)))
@@ -150,8 +150,7 @@ def _run_orphan_scan(
 
         monkeypatch.setattr(os, "kill", _fake_kill)
     else:
-        # No /proc means the cross-platform psutil branch, which is what
-        # macOS and Windows take.
+        # No /proc means the psutil branch, which is what macOS and Windows take.
         monkeypatch.setattr(llama_cpp_module, "_PROC_ROOT", str(studio_root / "no-such-proc"))
         monkeypatch.setattr(psutil, "process_iter", lambda attrs = None: iter([fake]))
     return LlamaCppBackend._kill_orphaned_servers()
@@ -175,8 +174,8 @@ def test_orphan_cleanup_spares_local_link_tree(tmp_path: Path, monkeypatch, scan
 
 @pytest.mark.parametrize("scan", ["psutil", "procfs"])
 def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch, scan) -> None:
-    # Control: a real (non-link) managed root still gets its orphan reaped, so
-    # the spare-the-link test above is meaningful (not a no-op).
+    # Control: a real (non-link) managed root still gets its orphan reaped, so the
+    # spare-the-link test above is not a no-op.
     studio_root = tmp_path / "studio-home"
     bin_dir = studio_root / "llama.cpp" / _server_subpath().parent
     bin_dir.mkdir(parents = True)

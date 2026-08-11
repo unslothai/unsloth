@@ -3251,8 +3251,7 @@ class CountAborted(Exception):
     """A token count stood down mid-flight because its answer stopped mattering."""
 
 
-# Root of the process filesystem. A module-level name so tests can point the
-# orphan sweep at a fixture tree instead of the live system.
+# Module level so tests can point the orphan sweep at a fixture tree.
 _PROC_ROOT = "/proc"
 
 
@@ -3439,8 +3438,8 @@ class LlamaCppBackend:
         self._mtp_runtime_fallback_active = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
-        # Wakes the health probe on subprocess readiness/exit so a ready or
-        # crashed server is not hidden behind the 500 ms fallback poll.
+        # Wakes the health probe on subprocess readiness/exit, so a ready or crashed
+        # server is not hidden behind the 500 ms fallback poll.
         self._health_probe_event = threading.Event()
         # llama-server tee log (see _drain_stdout / _kill_process).
         self._llama_log_fh = None
@@ -7007,9 +7006,8 @@ class LlamaCppBackend:
                 line = line.rstrip()
                 if line:
                     self._stdout_lines.append(line)
-                    # Older and newer llama.cpp builds use these two forms.
-                    # Restrict wakeups to readiness lines: waking for every
-                    # tensor-load log can turn startup into a health-probe spin.
+                    # Two forms across llama.cpp builds. Only readiness lines wake the
+                    # probe: waking on every tensor-load log spins startup.
                     line_lower = line.lower()
                     if "server is listening" in line_lower or "model loaded" in line_lower:
                         health_probe_event = getattr(self, "_health_probe_event", None)
@@ -14659,9 +14657,9 @@ class LlamaCppBackend:
             my_pid = os.getpid()
 
             # -- Enumerate candidate processes ---------------------------------
-            # Produces (pid, resolved binary, kill callable) for every process
-            # whose name looks like a llama-server. Ownership, orphan and kill
-            # handling is shared below so all three enumeration paths agree.
+            # (pid, resolved binary, kill callable) per llama-server-looking process.
+            # Ownership, orphan and kill handling is shared below so all three
+            # enumeration paths agree.
             candidates = []
 
             def _looks_like_server(name):
@@ -14677,17 +14675,16 @@ class LlamaCppBackend:
 
                 return _kill
 
-            # /proc exists on Linux only. Tests point _PROC_ROOT elsewhere to
-            # drive either enumeration path deterministically, and a missing
-            # /proc falls back to psutil rather than finding nothing.
+            # /proc is Linux only, and a missing one falls back to psutil rather
+            # than finding nothing. Tests point _PROC_ROOT elsewhere to drive
+            # either path deterministically.
             proc_root = _PROC_ROOT
             if sys.platform == "linux" and os.path.isdir(proc_root):
-                # psutil.process_iter(["pid", "name", "exe"]) reads
-                # /proc/<pid>/stat several times per process, and resolves exe
-                # for every one, before the name rejects almost all of them.
-                # This sweep runs on every backend start and on every temporary
-                # LlamaCppBackend(), so read comm once and resolve exe only for
-                # the handful of names that match.
+                # psutil.process_iter(["pid", "name", "exe"]) reads /proc/<pid>/stat
+                # several times per process and resolves exe for every one, before
+                # the name rejects almost all of them. This sweep runs on every
+                # backend start and every temporary LlamaCppBackend(), so read comm
+                # once and resolve exe only for the names that match.
                 def _proc_exe(proc_dir):
                     try:
                         target = os.readlink(f"{proc_dir}/exe")
@@ -14695,10 +14692,10 @@ class LlamaCppBackend:
                         return None
                     if not target:
                         return None
-                    # The kernel appends " (deleted)" once the binary has been
-                    # replaced or removed, which is exactly what an orphan left
-                    # behind by an upgrade looks like. psutil strips the marker,
-                    # so strip it here too or such an orphan stops being ours.
+                    # The kernel appends " (deleted)" once the binary is replaced or
+                    # removed, which is what an upgrade's orphan looks like. psutil
+                    # strips the marker, so strip it here too or that orphan stops
+                    # being recognised as ours.
                     if target.endswith(" (deleted)") and not os.path.exists(target):
                         target = target[: -len(" (deleted)")]
                     try:
@@ -14726,8 +14723,8 @@ class LlamaCppBackend:
                         if left < 0 or right <= left:
                             continue
                         # comm is truncated to 15 bytes, which still leaves the
-                        # 12-byte "llama-server" prefix intact, so this matches
-                        # the same set of names psutil reports.
+                        # 12-byte "llama-server" prefix intact, so this selects the
+                        # same names psutil reports.
                         name = stat_line[left + 1 : right].decode("utf-8", "replace")
                         if not _looks_like_server(name):
                             continue
@@ -14777,9 +14774,8 @@ class LlamaCppBackend:
                         ):
                             pass
                 else:
-                    # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -------
-                    # Unreachable while the Linux branch above exists; kept so
-                    # the psutil-less path stays correct if that changes.
+                    # Fallback: unreachable while the Linux branch above exists;
+                    # kept so the psutil-less path stays correct if that changes.
                     return killed
 
             # -- Ownership check, orphan check, kill ---------------------------
@@ -14791,8 +14787,8 @@ class LlamaCppBackend:
                 if not is_ours:
                     continue
 
-                # A live parent means a running Unsloth (or the user's shell)
-                # still owns it -- not an orphan.
+                # A live parent means a running Unsloth (or the user's shell) still
+                # owns it, so it is not an orphan.
                 if LlamaCppBackend._pid_parent_is_alive(pid):
                     continue
 
@@ -15288,8 +15284,8 @@ class LlamaCppBackend:
             health_probe_event = self._health_probe_event = threading.Event()
 
         while time.monotonic() < deadline:
-            # Clear before probing so output produced during the request
-            # stays latched for the fallback wait below.
+            # Cleared before probing so output during the request stays latched for
+            # the fallback wait below.
             health_probe_event.clear()
             # Process crashed?
             if self._process.poll() is not None:
