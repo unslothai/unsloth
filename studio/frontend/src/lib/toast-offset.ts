@@ -3,8 +3,10 @@
 
 const EDGE_OFFSET = 12;
 const MOBILE_EDGE_OFFSET = 16;
-const CHAT_TOP_OFFSET = 52;
+const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
+
+const HEADER_ROUTES = new Set(["/chat", "/images", "/video"]);
 
 export type ToastOffset = {
   top: number;
@@ -19,18 +21,26 @@ export type ToastOffsets = {
 export function getToastOffsets(
   pathname: string,
   isDesktopApp: boolean,
+  usesCustomTitlebar: boolean,
 ): ToastOffsets {
-  const isChatRoute = pathname === "/chat" || pathname.startsWith("/chat/");
-  const titlebarOffset = isDesktopApp ? DESKTOP_TITLEBAR_HEIGHT : 0;
+  const hasPageHeader =
+    HEADER_ROUTES.has(pathname) || pathname.startsWith("/chat/");
+  const titlebarOffset =
+    isDesktopApp && (!hasPageHeader || usesCustomTitlebar)
+      ? DESKTOP_TITLEBAR_HEIGHT
+      : 0;
+  const defaultTopOffset = hasPageHeader ? HEADER_TOP_OFFSET : EDGE_OFFSET;
+  const mobileTopOffset = hasPageHeader
+    ? HEADER_TOP_OFFSET
+    : MOBILE_EDGE_OFFSET;
 
   return {
     default: {
-      top: (isChatRoute ? CHAT_TOP_OFFSET : EDGE_OFFSET) + titlebarOffset,
+      top: defaultTopOffset + titlebarOffset,
       right: EDGE_OFFSET,
     },
     mobile: {
-      top:
-        (isChatRoute ? CHAT_TOP_OFFSET : MOBILE_EDGE_OFFSET) + titlebarOffset,
+      top: mobileTopOffset + titlebarOffset,
       right: MOBILE_EDGE_OFFSET,
     },
   };
