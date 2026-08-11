@@ -236,7 +236,7 @@ def boot(
     show: bool = True,
 ) -> None:
     """Reload with a known localStorage, then wait for the card to settle."""
-    page.goto(BASE, wait_until = "domcontentloaded")
+    page.goto(BASE + "/hub", wait_until = "domcontentloaded")
     # The indicator ships off, so every check that wants the card has to switch
     # it on. Pass show = False to exercise the default.
     seeded = dict(seed or {})
@@ -356,6 +356,46 @@ def run(page, state: Runtime) -> None:
     text = card_text(page)
     check("chat row names its quant", "Q4_K_M" in text)
     check("dictation row is distinguished", "Dictation" in text)
+
+    # Keep the visual regression focused on the reported chat-model card. The
+    # dictation runtime above is deliberately synthetic coverage for the
+    # multi-runtime list and should not imply that STT is always resident.
+    state.stt = json.loads(json.dumps(NOTHING_STT))
+    boot(page, state)
+    page.wait_for_selector(CARD, timeout = 30_000)
+    check(
+        "visual fixture contains only the chat runtime",
+        len(rows(page)) == 1,
+        str(rows(page)),
+    )
+
+    # Chat already owns model selection and eject controls. The persistent
+    # global card only repeats those controls and adds noise to the conversation
+    # surface, so it is hidden for both a new chat and a selected thread. Keep a
+    # stable screenshot for before/after visual review.
+    layout_viewport = {"width": 1920, "height": 411}
+    page.set_viewport_size(layout_viewport)
+    page.goto(BASE + "/chat", wait_until = "domcontentloaded")
+    page.wait_for_timeout(1500)
+    check(
+        "new chat hides the redundant loaded-models card",
+        page.locator(CARD).count() == 0,
+    )
+    page.screenshot(
+        path = str(ART / f"chat-active-1920x411-{PLAYWRIGHT_BROWSER}.png")
+    )
+    page.goto(
+        BASE + "/chat?thread=loaded-models-regression",
+        wait_until = "domcontentloaded",
+    )
+    page.wait_for_timeout(500)
+    check(
+        "selected chat hides the redundant loaded-models card",
+        page.locator(CARD).count() == 0,
+    )
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto(BASE + "/hub", wait_until = "domcontentloaded")
+    page.wait_for_selector(CARD, timeout = 30_000)
 
     # The card mounts from the root, so it must survive a route change.
     for route in ("/hub", "/train", "/images"):

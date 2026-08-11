@@ -209,3 +209,18 @@ test("recording follows the route and auth gate, but not the dismissal", () => {
   // And dismissal stays out of it, or a closed card could never reopen itself.
   assert.doesNotMatch(call, /dismissed/);
 });
+
+test("chat hides the redundant global card", () => {
+  const indicator = readFileSync(
+    new URL(
+      "../src/features/loaded-models/loaded-models-indicator.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    indicator,
+    /const HIDDEN_ROUTES = new Set\(\[[\s\S]*?"\/chat"/,
+    "chat already has model selection and eject controls",
+  );
+});
