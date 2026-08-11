@@ -227,9 +227,7 @@ def main() -> None:
             reduced_motion = "reduce",
             color_scheme = "dark",
         )
-        context.add_init_script(
-            "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
-        )
+        context.add_init_script("localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');")
 
         def route_request(route: Route) -> None:
             parsed = urlparse(route.request.url)
