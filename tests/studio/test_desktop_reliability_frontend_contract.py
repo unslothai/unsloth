@@ -785,6 +785,11 @@ def test_image_page_structural_panes_share_the_container_breakpoint():
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
     assert "@[50rem]:w-[408px]" in section
     assert "md:flex-row" not in section
+    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
+    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
+    # -action mask, which is why the two are asserted together -- the small padding is
+    # only correct while the fade is there to dissolve the last control into the footer.
+    assert "panel-scroll-fade-action" in section
     assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
     assert "border-t border-foreground/10 px-10 py-3" in section
