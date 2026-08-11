@@ -1483,16 +1483,13 @@ export function DiffusionTrainPanel({
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pr-5 sm:pr-8 @[50rem]:flex-row @[50rem]:overflow-hidden">
       {/* Left: configure. The 408px rail and container breakpoint match Create and the shared header. */}
-      <div className="relative flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full min-w-0 shrink-0 flex-col border-b border-border/60 pl-10 @[50rem]:w-[408px] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0">
         {/* Keep the former row-level top inset inside the pane so the divider reaches the header. */}
         <div
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            // pb-20 at every width: the floating Start training button below is absolutely
-            // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
-            // phone padding puts it on top of the Adapter name field.
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade-action flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-[42px] @[50rem]:overflow-y-auto",
             settingsFadeClass,
           )}
         >
@@ -1826,12 +1823,13 @@ export function DiffusionTrainPanel({
           </div>
 
         </div>
-        {/* Floats over the settings, as Create's Generate does.
+        {/* In its own footer, as Create's Generate is. The scroll mask provides the fade,
+            so the footer stays unpainted to avoid dark-mode banding.
             Stop lives in the run card next to the live stats. */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+        <div className="relative z-10 flex shrink-0 justify-center pt-0.5 pb-4 pl-8 pr-8">
           <Button
             type="button"
-            className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+            className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             onClick={onStart}
             disabled={starting || uploading || running || familyUntrainable}
           >
