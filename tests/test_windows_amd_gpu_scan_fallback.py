@@ -431,6 +431,76 @@ def test_a_user_override_is_the_escape_hatch_under_a_mask(tmp_path):
     assert out["arch"] == "gfx1010"
 
 
+# ── runtime: install.ps1 picks the adapter setup would keep ───────────────────────────────────
+
+
+def _installer_scan_block() -> str:
+    """install.ps1's own `if (-not $HasROCm)` WMI fallback plus the name table it feeds."""
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    start = src.index("        if (-not $HasROCm) {\n            try {\n                # ConfigManagerErrorCode")
+    end = src.index("        # Capture ROCm version for wheel selection", start)
+    return src[start:end]
+
+
+def _run_installer_scan(tmp_path: Path, adapters: list[tuple[str, int]]) -> dict:
+    items = ", ".join(
+        f"[pscustomobject]@{{ Name = '{name}'; ConfigManagerErrorCode = {code} }}"
+        for name, code in adapters
+    )
+    script = tmp_path / "installer_scan.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"function Get-WmiObject {{ param([Parameter(ValueFromRemainingArguments = $true)]$Rest) @({items}) }}",
+                "function substep { param($a, $b) }",
+                "$HasROCm = $false",
+                "$ROCmGpuLabel = $null",
+                "$ROCmGfxArch = $null",
+                _installer_scan_block(),
+                "@{ label = $ROCmGpuLabel; arch = $ROCmGfxArch } | ConvertTo-Json -Compress",
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    proc = subprocess.run(
+        [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)},
+    )
+    assert proc.returncode == 0, f"installer scan failed:\n{proc.stdout}\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+@requires_pwsh
+def test_the_installer_skips_a_disabled_adapter(tmp_path):
+    """A disabled Radeon listed first used to win here, and a mapped arch installs ROCm wheels
+    right there, so the dead card got the wheels and the live unsupported one went to nothing.
+    Setup filters this adapter out, so forwarding its arch also made the two disagree."""
+    out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 22), ("AMD Radeon RX 5700 XT", 0)])
+    assert out["label"] == "AMD Radeon RX 5700 XT"
+    assert out["arch"] is None, "the active card is unsupported, so this host belongs on CPU"
+
+
+@requires_pwsh
+def test_the_installer_keeps_a_parked_adapter_when_it_is_the_only_one(tmp_path):
+    """Same fallback setup makes: code 45 is routine on a muxless laptop, and with no healthy
+    peer there is nothing to prefer."""
+    out = _run_installer_scan(tmp_path, [("AMD Radeon RX 9070 XT", 45)])
+    assert out["arch"] == "gfx1201"
+
+
+@requires_pwsh
+def test_the_installer_and_setup_agree_on_which_adapter_is_active(tmp_path):
+    """The handoff is only sound because both scans start from the same healthy set."""
+    adapters = [("AMD Radeon RX 9070 XT", 22), (_RADEON, 0)]
+    setup = _run(tmp_path, adapters)
+    assert setup["labels"] == [_RADEON], "setup discards the disabled card"
+    assert _run_installer_scan(tmp_path, adapters)["arch"] == setup["arch"] == "gfx1151"
+
+
 # ── runtime: install.ps1 leaves the caller's environment as it found it ───────────────────────
 
 

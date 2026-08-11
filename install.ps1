@@ -3303,9 +3303,19 @@ exit 0
         }
         if (-not $HasROCm) {
             try {
-                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match "AMD|Radeon" } |
-                    Select-Object -First 1
+                # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
+                # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
+                # that is not the active one, and since a mapped arch installs ROCm wheels right
+                # here, a disabled Radeon listed ahead of a healthy one bought wheels for the
+                # dead card while the live one went unserved.
+                # If the filter leaves none, keep the full list: code 45 ("not connected") is
+                # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
+                # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
+                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyAdapters = @($amdAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
         }
