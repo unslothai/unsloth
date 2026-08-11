@@ -12,6 +12,9 @@
  * NVIDIA's Nemotron/Minitron/Mistral-NeMo before meta-llama/mistralai, and
  * DeepSeek-R1-Distill- before Qwen/meta-llama. Repo names are case-sensitive -
  * match the publisher's exact casing (e.g. `phi-` for v1/v2 vs `Phi-` for v3+).
+ *
+ * When the repo name matches nothing (unsloth/Muse-Glimmer-30B-GGUF), the
+ * `base_model:` owner decides: meta-models/Muse-Glimmer-30B -> Meta.
  */
 
 /**
@@ -51,6 +54,11 @@ export interface ProviderLogo {
 	 * (`gemma` -> `diffusiongemma-`, `gemma-3n`, not `gemmafy`). Use stems unique to one provider.
 	 */
 	stems?: readonly string[];
+	/**
+	 * Hub orgs publishing this provider, matched in full and case-insensitively
+	 * (never a prefix - `metavoice` is not Meta). Only used on a `base_model:` owner.
+	 */
+	owners?: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
@@ -75,6 +83,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"OpenCodeReasoning",
 			"Cosmos-"
 		],
+		owners: ["nvidia"],
 	},
 
 	// `DeepSeek-R1-Distill-*` must beat Qwen/meta-llama on the suffix family.
@@ -91,6 +100,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"deepseek-llm-",
 			"deepseek-coder-",
 		],
+		owners: ["deepseek-ai"],
 	},
 
 	{
@@ -109,6 +119,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"phi-2",
 			"phi-",
 		],
+		owners: ["microsoft"],
 	},
 
 	// The broad `Qwen` prefix catches Qwen1.5/2/2.5/3/future versions without explicit entries.
@@ -119,6 +130,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "original",
 		background: "white",
 		prefixes: ["Qwen", "QwQ-", "QVQ-"],
+		owners: ["Qwen"],
 	},
 
 	{
@@ -129,6 +141,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		background: "transparent",
 		fit: "cover",
 		prefixes: ["Kimi-", "Moonlight-"],
+		owners: ["moonshotai"],
 	},
 
 	// Z.ai (THUDM successor).
@@ -140,6 +153,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		background: "transparent",
 		fit: "cover",
 		prefixes: ["GLM-", "glm-", "chatglm", "codegeex"],
+		owners: ["zai-org", "THUDM"],
 	},
 
 	{
@@ -149,6 +163,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "mono-black",
 		background: "white",
 		prefixes: ["grok-"],
+		owners: ["xai-org"],
 	},
 
 	{
@@ -158,6 +173,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "original",
 		background: "white",
 		prefixes: ["MiniMax-"],
+		owners: ["MiniMaxAI", "MiniMax-AI"],
 	},
 
 	// SmolLM family lives under HuggingFaceTB.
@@ -168,6 +184,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "original",
 		background: "white",
 		prefixes: ["SmolLM"],
+		owners: ["HuggingFaceTB"],
 	},
 
 	{
@@ -178,6 +195,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		background: "transparent",
 		fit: "cover",
 		prefixes: ["granite-", "granitelib-"],
+		owners: ["ibm-granite", "ibm"],
 	},
 
 	{
@@ -187,6 +205,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "original",
 		background: "white",
 		prefixes: ["c4ai-command", "aya-"],
+		owners: ["CohereLabs", "CohereForAI"],
 	},
 
 	{
@@ -196,6 +215,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "mono-theme",
 		background: "transparent",
 		prefixes: ["gpt-oss-"],
+		owners: ["openai"],
 	},
 
 	{
@@ -223,6 +243,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"bert-",
 		],
 		stems: ["gemma"],
+		owners: ["google", "google-bert", "google-t5", "google-deepmind"],
 	},
 
 	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
@@ -233,6 +254,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		treatment: "original",
 		background: "white",
 		prefixes: ["Mistral-", "Mixtral-", "Codestral-", "Pixtral-", "Devstral-", "Ministral-", "Voxtral-", "Magistral-"],
+		owners: ["mistralai", "mistral-community"],
 	},
 
 	// Last among Llama-prefix providers so NVIDIA's Llama-3.x-Nemotron/Minitron match first.
@@ -251,6 +273,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"llama-",
 			"meta-"
 		],
+		owners: ["meta-llama", "meta", "meta-models", "facebook", "facebookresearch"],
 	},
 ];
 
@@ -283,6 +306,36 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	return null;
 }
 
+/** Hub org -> its provider, or null. Full-string, case-insensitive. */
+export function matchProviderLogoByOwner(owner: string): ProviderLogo | null {
+	const needle = owner.trim().toLowerCase();
+	if (!needle) return null;
+	for (const provider of PROVIDER_LOGOS) {
+		if (provider.owners?.some((org) => org.toLowerCase() === needle)) {
+			return provider;
+		}
+	}
+	return null;
+}
+
+/**
+ * Provider behind a `base_model:` id, or null. Owner wins: it is the publisher of
+ * record, and resolves even when the base repo name matches nothing. A bare id
+ * with no owner is read as a repo name.
+ */
+export function providerLogoFromBaseModel(
+	baseModelId: string | null | undefined,
+): ProviderLogo | null {
+	const id = baseModelId?.trim();
+	if (!id) return null;
+	const slash = id.indexOf("/");
+	if (slash === -1) return matchProviderLogo(id);
+	return (
+		matchProviderLogoByOwner(id.slice(0, slash)) ??
+		matchProviderLogo(id.slice(slash + 1))
+	);
+}
+
 // Owners whose avatars get swapped for the matched provider's logo.
 const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
 
@@ -297,11 +350,17 @@ export function isProviderRelabeledOwner(
 /**
  * Provider logo to render in place of the owner's profile picture, or null.
  * Only owners in RELABELED_OWNERS are eligible.
+ *
+ * The repo name wins, so a re-upload keeps the mark it is named after
+ * (DeepSeek-R1-Distill-Llama-8B is DeepSeek's, not Meta's). `baseModelId` is the
+ * fallback for names that match nothing.
  */
 export function resolveOwnerProviderLogo(
 	owner: string | null | undefined,
 	repoName: string | null | undefined,
+	baseModelId?: string | null,
 ): ProviderLogo | null {
-	if (!isProviderRelabeledOwner(owner) || !repoName) return null;
-	return matchProviderLogo(repoName);
+	if (!isProviderRelabeledOwner(owner)) return null;
+	const named = repoName ? matchProviderLogo(repoName) : null;
+	return named ?? providerLogoFromBaseModel(baseModelId);
 }

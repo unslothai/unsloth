@@ -21,6 +21,7 @@ import {
   ggufVariantDisplayLabel,
   useHfTokenStore,
 } from "@/features/hub";
+import { detectBaseModel } from "../lib/model-capabilities";
 import { modelIdsMatch } from "../lib/model-identity";
 import {
   ModelRowMenu,
@@ -476,6 +477,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
+          baseModel={row.result.baseModel}
           className="size-8 rounded-[11px]"
           remote={false}
         />
@@ -537,6 +539,16 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
     </CatalogRow>
   );
 });
+
+/** `base_model:` id for a row: local rows prefer the adapter config, cached rows the tags. */
+function inventoryRowBaseModel(
+  row: CachedInventoryRow | LocalInventoryRow,
+): string | null {
+  if (row.kind === "local") {
+    return row.baseModelHubId ?? row.baseModel ?? detectBaseModel(row.tags);
+  }
+  return detectBaseModel(row.tags);
+}
 
 function cachedRowActive(
   row: CachedInventoryRow,
@@ -621,6 +633,7 @@ export const InventoryRow = memo(function InventoryRow({
       ? cachedRowActive(row, activeCheckpoint, activeGgufVariant)
       : localRowActive(row, activeCheckpoint, activeGgufVariant);
   const title = row.kind === "cache" ? row.repo : row.title;
+  const rowBaseModel = inventoryRowBaseModel(row);
 
   const subLabel = row.owner;
   const trailing =
@@ -839,6 +852,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
+            baseModel={rowBaseModel}
             className="size-8 shrink-0 rounded-[9px] text-ui-12"
             remote={false}
           />
@@ -911,6 +925,7 @@ export const InventoryRow = memo(function InventoryRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
+            baseModel={rowBaseModel}
             className="size-9 rounded-[12px]"
             remote={false}
           />

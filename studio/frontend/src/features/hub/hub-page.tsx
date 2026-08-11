@@ -848,7 +848,8 @@ export function ModelsPage() {
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
         // Feed shows logo'd models, plus iconless ones above the likes threshold.
         (!isFeedMode ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
+          resolveOwnerProviderLogo(row.owner, row.repo, row.result.baseModel) !==
+            null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         matchesFormat(
           detectResultFormat(row.result),

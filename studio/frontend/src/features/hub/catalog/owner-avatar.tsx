@@ -52,6 +52,7 @@ function avatarImageRetryDelay(failures: number): number {
 export function OwnerAvatar({
   owner,
   repoName,
+  baseModel,
   size = "md",
   className,
   remote = true,
@@ -63,6 +64,8 @@ export function OwnerAvatar({
    * (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
    */
   repoName?: string;
+  /** `base_model:` id, when known. Names the provider when `repoName` matches nothing. */
+  baseModel?: string | null;
   size?: AvatarSize;
   className?: string;
   /**
@@ -72,7 +75,7 @@ export function OwnerAvatar({
    */
   remote?: boolean;
 }) {
-  const providerLogo = resolveOwnerProviderLogo(owner, repoName);
+  const providerLogo = resolveOwnerProviderLogo(owner, repoName, baseModel);
   if (providerLogo) {
     return (
       <ProviderLogoTile
@@ -105,8 +108,9 @@ export function OwnerAvatar({
 export function useAvatarImageUrl(
   owner: string,
   repoName?: string,
+  baseModel?: string | null,
 ): string | null {
-  const provider = resolveOwnerProviderLogo(owner, repoName);
+  const provider = resolveOwnerProviderLogo(owner, repoName, baseModel);
   const isUnsloth = isUnslothOwner(owner);
   const remoteUrl = useHfOwnerAvatar(
     owner.trim() || "?",

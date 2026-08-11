@@ -261,7 +261,7 @@ export const ModelCard = memo(function ModelCard({
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
   });
-  const iconUrl = useAvatarImageUrl(row.owner, row.repo);
+  const iconUrl = useAvatarImageUrl(row.owner, row.repo, row.result.baseModel);
   const dominant = useDominantColor(iconUrl);
   const cardAccentStyle = useMemo(
     () => ({
@@ -283,6 +283,7 @@ export const ModelCard = memo(function ModelCard({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
+          baseModel={row.result.baseModel}
           className="size-11 shrink-0 rounded-[14px] text-ui-17 ring-1 ring-white/10"
           remote={false}
         />

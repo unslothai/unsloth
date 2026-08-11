@@ -595,6 +595,7 @@ export const ModelInspector = memo(function ModelInspector({
           <OwnerAvatar
             owner={model.owner}
             repoName={model.title}
+            baseModel={model.baseModelHubId ?? model.baseModel}
             className="size-[60px] rounded-[18px] text-ui-19"
           />
           <div className="min-w-0 flex-1">

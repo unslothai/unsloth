@@ -642,6 +642,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
+        baseModel={row.result.baseModel}
         className="size-[52px] shrink-0 rounded-[16px] text-ui-16 ring-1 ring-black/5 dark:ring-white/10"
         remote={false}
       />
@@ -761,6 +762,7 @@ export const ResultGridRow = memo(function ResultGridRow({
           <OwnerAvatar
             owner={row.owner}
             repoName={row.repo}
+            baseModel={row.result.baseModel}
             className="size-9 shrink-0 rounded-[12px] text-ui-13 ring-1 ring-black/5 dark:ring-white/10"
             remote={false}
           />
@@ -883,6 +885,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
+        baseModel={row.result.baseModel}
         className="size-8 shrink-0 rounded-[9px] text-ui-12"
         remote={false}
       />
