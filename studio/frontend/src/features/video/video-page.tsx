@@ -22,7 +22,9 @@ import {
   applyPin,
   fetchNextPage,
   nextSelectedId,
+  pinnedOrder,
   removeGalleryItem,
+  restorePinOrder,
   serializeById,
   sortGalleryItems,
   subscribeGalleryChanged,
@@ -1418,6 +1420,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
   const handleTogglePin = useCallback(
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.videos.length;
+      // The pinned order as it stands BEFORE the click, so a failed unpin can put the clip back
+      // where it was instead of at the front of the pins.
+      const orderBefore = pinnedOrder(galleryCache.videos);
       pinIntent.current.set(id, pinned);
       stripEpoch.current += 1;
       const epoch = stripEpoch.current;
@@ -1441,7 +1446,11 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
           pinIntent.current.delete(id);
           stripEpoch.current += 1;
           setVideos((prev) => {
-            const next = applyPin(prev, id, !pinned);
+            // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
+            // old position among the pins, which applyPin cannot do (it means "freshly pinned").
+            const next = pinned
+              ? applyPin(prev, id, false)
+              : restorePinOrder(prev, id, orderBefore);
             galleryCache.videos = next;
             return next;
           });

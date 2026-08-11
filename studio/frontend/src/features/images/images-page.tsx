@@ -72,9 +72,12 @@ import {
   applyPin,
   fetchNextPage,
   hasUnknownRecord,
+  mergeGenerated,
   newRecordProbeBaseline,
   nextSelectedId,
+  pinnedOrder,
   removeGalleryItem,
+  restorePinOrder,
   serializeById,
   sortGalleryItems,
   subscribeGalleryChanged,
@@ -1690,6 +1693,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const handleTogglePin = useCallback(
     async (id: string, pinned: boolean) => {
       const loadedCount = galleryCache.images.length;
+      // The pinned order as it stands BEFORE the click, so a failed unpin can put the image back
+      // where it was instead of at the front of the pins.
+      const orderBefore = pinnedOrder(galleryCache.images);
       pinIntent.current.set(id, pinned);
       stripEpoch.current += 1;
       const epoch = stripEpoch.current;
@@ -1713,7 +1719,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           pinIntent.current.delete(id);
           stripEpoch.current += 1;
           setImages((prev) => {
-            const next = applyPin(prev, id, !pinned);
+            // A failed pin simply goes back to unpinned; a failed unpin has to be restored to its
+            // old position among the pins, which applyPin cannot do (it means "freshly pinned").
+            const next = pinned
+              ? applyPin(prev, id, false)
+              : restorePinOrder(prev, id, orderBefore);
             galleryCache.images = next;
             return next;
           });
@@ -3119,7 +3129,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         // unpinned, so the server puts it after the pinned group, and a bare prepend would show it
         // ahead of pins until the next reload.
         stripEpoch.current += 1;
-        setImages((prev) => sortGalleryItems([...res.images, ...prev]));
+        // Deduplicated: a resync in flight can fetch the saved record before this response
+        // arrives, and prepending it again would duplicate a React key and inflate the offset the
+        // next page is asked for, skipping a record.
+        setImages((prev) => mergeGenerated(prev, res.images));
         res.images.forEach((image) => knownIds.add(image.id));
         if (res.images[0]) setSelectedId(res.images[0].id);
         res.images.forEach((image) => void ensureSrc(image));

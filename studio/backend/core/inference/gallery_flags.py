@@ -242,6 +242,23 @@ def read(directory: Path) -> dict[str, dict[str, Any]]:
     return {k: v for k, v in items.items() if isinstance(v, dict)}
 
 
+def is_trusted(directory: Path) -> bool:
+    """Whether the store can be believed about what is NOT flagged."""
+    with _lock:
+        return _load(directory)[1]
+
+
+def reset_locked(directory: Path) -> None:
+    """Replace the store with an empty, trusted one. For a caller already inside ``exclusive()``.
+
+    Only ``clear(include_archived = True)`` does this, and only once it has removed every image we
+    own. That is the way out of an unreadable store: the taint exists to protect files from a
+    delete that cannot prove them active, and after this there are no such files left. Without the
+    reset the escape hatch is not one, since the corrupt file survives the wipe and every later
+    clear still refuses, including for media generated afterwards."""
+    _save(directory, _empty())
+
+
 def read_trusted(directory: Path) -> dict[str, dict[str, Any]]:
     """``read``, but raises FlagsUnavailable instead of pretending nothing is flagged. For callers
     that delete based on a flag, where guessing "not archived" destroys the archive."""

@@ -666,3 +666,16 @@ def test_clear_all_still_works_with_an_unreadable_store():
     (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
     assert gallery.clear(include_archived = True) == 1
     assert gallery.video_path(record["id"]) is None
+
+
+def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
+    # Same escape hatch as the image gallery: a corrupt store surviving the wipe would leave every
+    # later default clear refusing, for clips generated long afterwards.
+    _save_with_mtime("a", 100.0)
+    _save_with_mtime("b", 200.0)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        '{"version": 1, "items": {"a": {"archi', encoding = "utf-8"
+    )
+    assert gallery.clear(include_archived = True) == 2
+    _save_with_mtime("c", 300.0)
+    assert gallery.clear() == 1

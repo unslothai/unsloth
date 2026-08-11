@@ -284,5 +284,11 @@ def clear(include_archived: bool = False) -> int:
                 cleared.append(path.stem)
             except OSError:
                 continue
-        gallery_flags.forget_locked(directory, cleared)
+        # An unreadable store has nothing left to protect once every image we own is gone, so this
+        # is where the escape hatch actually escapes: replace it, or the corrupt file survives the
+        # wipe and every later default clear still refuses, new media included.
+        if include_archived and not gallery_flags.is_trusted(directory):
+            gallery_flags.reset_locked(directory)
+        else:
+            gallery_flags.forget_locked(directory, cleared)
     return removed

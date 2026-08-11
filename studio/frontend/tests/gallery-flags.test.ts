@@ -9,9 +9,12 @@ import {
   applyPin,
   fetchNextPage,
   hasUnknownRecord,
+  mergeGenerated,
   newRecordProbeBaseline,
   nextSelectedId,
+  pinnedOrder,
   removeGalleryItem,
+  restorePinOrder,
   serializeById,
   sortGalleryItems,
 } from "../src/lib/gallery-flags.ts";
@@ -342,4 +345,34 @@ test("a page fetch gives up rather than spinning when the shelf keeps moving", a
   );
   assert.equal(result, null);
   assert.equal(calls, PAGE_MAX_ATTEMPTS);
+});
+
+test("a failed unpin puts the image back where it was, not at the front of the pins", () => {
+  // The pinned group is ordered by pin TIME, which the client never learns, so the rollback has to
+  // replay the order it saw rather than recompute one. applyPin(..., true) means "freshly pinned"
+  // and would promote this image to the head.
+  const before = [item("first", 1, true), item("second", 2, true), item("third", 3, true)];
+  const order = pinnedOrder(before);
+  const optimistic = applyPin(before, "third", false);
+  assert.deepEqual(ids(optimistic), ["first", "second", "third"]);
+  assert.deepEqual(ids(restorePinOrder(optimistic, "third", order)), ["first", "second", "third"]);
+  assert.deepEqual(ids(applyPin(optimistic, "third", true)), ["third", "first", "second"]);
+});
+
+test("a rollback leaves an image pinned during the request at the front", () => {
+  // Absent from the snapshot means pinned since, and the newest pin leads.
+  const before = [item("a", 1, true), item("b", 2, true)];
+  const order = pinnedOrder(before);
+  const withNewPin = applyPin([...before, item("c", 3)], "c", true);
+  assert.deepEqual(ids(restorePinOrder(withNewPin, "a", order)), ["c", "a", "b"]);
+});
+
+test("a finished generation does not duplicate a record a resync already loaded", () => {
+  const fresh = item("new", 9);
+  const alreadyLoaded = [fresh, item("old", 1)];
+  const merged = mergeGenerated(alreadyLoaded, [fresh]);
+  assert.deepEqual(ids(merged), ["new", "old"]);
+  assert.equal(merged.length, 2);
+  // And it still merges a record nothing had seen.
+  assert.deepEqual(ids(mergeGenerated([item("old", 1)], [fresh])), ["new", "old"]);
 });

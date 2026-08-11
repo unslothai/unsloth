@@ -420,6 +420,21 @@ def test_a_repair_of_an_illegible_store_never_makes_the_archive_deletable():
     assert gallery.clear(include_archived = True) == 2
 
 
+def test_clear_all_replaces_an_unreadable_store_so_the_gallery_recovers():
+    # The escape hatch has to actually escape. include_archived spares nothing, so once it has run
+    # there is no file left for the taint to protect -- and leaving the corrupt store behind meant
+    # every later default clear still refused, including for media generated afterwards.
+    _save_with_mtime("a", 100.0)
+    _save_with_mtime("b", 200.0)
+    (gallery.gallery_dir() / ".flags.json").write_text(
+        '{"version": 1, "items": {"a": {"archi', encoding = "utf-8"
+    )
+    assert gallery.clear(include_archived = True) == 2
+    later = _save_with_mtime("c", 300.0)
+    assert gallery.clear() == 1
+    assert gallery.image_path(later["id"]) is None
+
+
 def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archived():
     # clear() decides from a flag snapshot and then unlinks. Without a shared lock an archive
     # landing in that window returned success for a file the same clear went on to delete.

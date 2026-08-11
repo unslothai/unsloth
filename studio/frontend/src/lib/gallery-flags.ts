@@ -85,6 +85,41 @@ export function applyPin<T extends FlaggableItem>(items: T[], id: string, pinned
   return sortGalleryItems(next, pinned ? id : undefined);
 }
 
+/** The pinned ids in their current order, to hand back to `restorePinOrder` on a failed unpin. */
+export function pinnedOrder<T extends FlaggableItem>(items: T[]): string[] {
+  return items.filter((i) => i.pinned).map((i) => i.id);
+}
+
+/**
+ * Undo a failed unpin, putting the item back where it WAS rather than at the front.
+ *
+ * `applyPin(..., true)` is the wrong rollback: it means "freshly pinned", so it promotes the item
+ * to the head of the pinned group, and an item that had been third by pin time comes back first.
+ * The server's order never changed, so the strip would sit wrong until a refetch.
+ *
+ * `order` is the pinned ids as they stood before the click. An id missing from it was pinned while
+ * this request was in flight; `indexOf` scores those -1, which is exactly right, since the newest
+ * pin leads. Ties keep their arrival order, which is the server's.
+ */
+export function restorePinOrder<T extends FlaggableItem>(
+  items: T[],
+  id: string,
+  order: readonly string[],
+): T[] {
+  const next = items.map((i) => (i.id === id ? { ...i, pinned: true } : i));
+  const pinned = next.filter((i) => i.pinned);
+  const rest = next.filter((i) => !i.pinned);
+  rest.sort(newestFirst);
+  pinned.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  return [...pinned, ...rest];
+}
+
+/** Prepend a finished run's records, dropping any a concurrent load already brought in. */
+export function mergeGenerated<T extends FlaggableItem>(items: T[], fresh: T[]): T[] {
+  const known = new Set(items.map((i) => i.id));
+  return sortGalleryItems([...fresh.filter((i) => !known.has(i.id)), ...items]);
+}
+
 /** Pages to walk looking for the newest unpinned record, so an absurd pin count cannot turn a
  * recovery probe into a full gallery scan. One page is normally enough. */
 export const NEW_RECORD_PROBE_MAX_PAGES = 5;
