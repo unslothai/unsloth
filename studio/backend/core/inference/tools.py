@@ -2522,69 +2522,34 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
     }
 )
 # Loaders that can execute code embedded in the data they deserialize; gated by
-# receiver module (torch.load, joblib.load) since bare `load` is too common.
-# yaml is here for PyYAML's non-safe loaders: yaml.load(s, Loader=yaml.Loader) /
-# yaml.unsafe_load(s) construct arbitrary Python objects from tags
-# (!!python/object/apply:os.system), so the call the AST sees is harmless while
-# the payload is data. yaml.safe_load stays auto-approved: it cannot do this and
-# is the common way to read a config file.
+# receiver module (torch.load, yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
-# Loader functions on those modules: `load`/`load_all` carry PyYAML's Loader=
-# form, the `unsafe_*` names are its explicit unsafe helpers, and `full_*` build
-# the FullLoader that was an RCE before PyYAML 5.4 (pyyaml is declared unpinned).
-_AUTO_UNSAFE_PY_LOAD_FUNCS = frozenset(
-    {"load", "load_all", "unsafe_load", "unsafe_load_all", "full_load", "full_load_all"}
-)
-# The same deserialize one level down: yaml.Loader(s).get_data() constructs the
-# tagged objects without going through yaml.load, and subclassing one of these
-# (the documented way to extend PyYAML) inherits that.
-_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset(
+# The load entry points on those modules. yaml.load runs whatever its Loader=
+# builds, and !!python/object/apply in the data is a call, so it asks like the
+# pickle-backed ones do. yaml.safe_load is untouched.
+_AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
+# Loader classes: the same deserialize one level down (yaml.Loader(s).get_data())
+# and what a custom loader subclasses. Ordinary words, so matched by receiver.
+_AUTO_UNSAFE_PY_LOAD_CLASSES = frozenset({"Loader", "Constructor"})
+# Names no other library uses, so they are matched wherever they appear rather
+# than by receiver: an alias, a subclass, a loop, a helper or a factory all name
+# one of these somewhere, and following the value through every binding form is
+# a game without an end.
+_AUTO_UNSAFE_YAML_LOADERS = frozenset(
     {
-        "Loader",
+        "unsafe_load",
+        "unsafe_load_all",
+        "full_load",
+        "full_load_all",
         "UnsafeLoader",
-        "CLoader",
         "CUnsafeLoader",
         "FullLoader",
         "CFullLoader",
-        # yaml.constructor.Constructor().construct_document(yaml.compose(s)) is
-        # the loader's own object-building half, reachable without a Loader.
-        "Constructor",
+        "CLoader",
         "UnsafeConstructor",
         "FullConstructor",
     }
 )
-# Only PyYAML gives Loader= its meaning, so the exemption below is scoped to it:
-# torch.load(f, Loader=yaml.SafeLoader) must stay gated.
-_AUTO_YAML_MODULES = frozenset({"yaml"})
-# PyYAML's own submodules, the only attribute hop the safe-loader exemption
-# follows (yaml.loader.SafeLoader is real; yaml.anything_else.SafeLoader is not).
-_AUTO_YAML_SUBMODULES = frozenset({"loader", "cyaml", "constructor"})
-# Structural pattern matching is 3.10+, and this package supports 3.9, so the
-# node classes are resolved defensively. An empty tuple makes isinstance False.
-_AST_MATCH_CAPTURE = tuple(
-    n for n in (getattr(ast, "MatchAs", None), getattr(ast, "MatchStar", None)) if n
-)
-_AST_MATCH_MAPPING = tuple(n for n in (getattr(ast, "MatchMapping", None),) if n)
-_AUTO_UNSAFE_PY_LOAD_ATTRS = _AUTO_UNSAFE_PY_LOAD_FUNCS | _AUTO_UNSAFE_PY_LOAD_CLASSES
-# Loaders with no safe way to call them. load/load_all are excluded because
-# Loader= decides those. For the rest there is nothing to inspect: naming one
-# is enough to ask, whatever expression later binds or invokes it. That is
-# what makes this terminate instead of chasing each way to launder a value.
-_AUTO_ALWAYS_UNSAFE_LOAD_ATTRS = (
-    _AUTO_UNSAFE_PY_LOAD_FUNCS - {"load", "load_all"}
-) | _AUTO_UNSAFE_PY_LOAD_CLASSES
-# The subset nothing but PyYAML uses. These are matched on any receiver, so a
-# module reached indirectly (y = get_yaml(); y.unsafe_load(s)) is still caught
-# without tracing where the module came from. The generic "Loader" and
-# "Constructor" keep the receiver check, since other libraries use those words.
-_AUTO_YAML_ONLY_LOADERS = _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS - {"Loader", "Constructor"}
-# Loader classes that cannot construct arbitrary callables in any PyYAML
-# version, so yaml.load(s, Loader=SafeLoader) is a safe read. FullLoader is
-# absent on purpose: it was an RCE before PyYAML 5.4 (CVE-2020-14343).
-_AUTO_SAFE_PY_LOAD_CLASSES = frozenset({"SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader"})
-# The shorthand for the same read. Safe on their own, but a constructor
-# registered on SafeLoader makes the payload's tags pick a callback here too.
-_AUTO_SAFE_PY_LOAD_FUNCS = frozenset({"safe_load", "safe_load_all"})
 # Writer methods that persist to disk without going through open() (numpy.save,
 # Image.save, plt.savefig, DataFrame.to_csv, json.dump). Gated as method calls
 # only, so a bare attribute reference is not mistaken for a write.
@@ -3587,37 +3552,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to os/posix (import os as o), so o.open(...) is still
     # recognized as the low-level create/write that os.open is.
     os_aliases = {"os", "posix"}
-    # Module names bound to a code-executing loader (import torch as t), so
+    # Module names bound to a pickle-backed loader (import torch as t), so
     # t.load(...) is still gated as a code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
-    # The PyYAML subset of the above, and of the bare load-function names, so
-    # the Loader= exemption cannot reach torch.load / joblib.load.
-    yaml_module_aliases = set(_AUTO_YAML_MODULES)
-    yaml_func_aliases: "set[str]" = set()
-    # Names bound to such a loader directly (from yaml import unsafe_load [as u];
-    # ld = yaml.load), so calling the bare name is gated like the attribute call.
-    # The class aliases stay separate: only the load functions take a Loader=
-    # keyword, so only they can earn the safe-loader exemption below.
-    load_func_aliases: "set[str]" = set()
-    load_class_aliases: "set[str]" = set()
-    always_unsafe_aliases: "set[str]" = set()
-    # Loaders bound onto an attribute (holder.load = yaml.unsafe_load), like
-    # attr_open_aliases does for open, and the same for the module itself
-    # (box.loader_module = yaml), which is then a loader receiver.
-    attr_load_aliases: "set[str]" = set()
-    # The subset of those that are PyYAML load/load_all, which Loader= can exempt.
-    attr_yaml_load_aliases: "set[str]" = set()
-    attr_load_module_aliases: "set[str]" = set()
-    # Names bound to yaml.safe_load / safe_load_all, gated only once a registered
-    # constructor makes even that read tag-directed.
-    safe_func_aliases: "set[str]" = set()
-    attr_safe_func_aliases: "set[str]" = set()
-    # Names bound to a literal container that holds a forwardable callable
-    # (packed = (yaml.load, s)), so run(*packed) is still seen as an escape.
-    packed_callable_names: "set[str]" = set()
-    # Names bound to a loader class that cannot execute code (from yaml import
-    # SafeLoader), so yaml.load(s, Loader=SafeLoader) is recognized as a safe read.
-    safe_loader_aliases: "set[str]" = set()
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup
     # aliased through it (rm = g(os, "remove"); rm("f")) still fails closed.
     getattr_aliases = {"getattr"}
@@ -3709,126 +3646,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             )
         return False
 
-    def _rebindable(name: str, allowed_assigns: int = 0) -> bool:
-        # Whether anything in the snippet could point this name somewhere else:
-        # more assignments than the binding we are trusting, or a loop / with /
-        # comprehension / walrus / def / class target.
-        return (
-            assign_counts.get(name, 0) > allowed_assigns
-            or import_counts.get(name, 0) > 1
-            or name in rebindable_names
-        )
-
-    def _is_load_module(node) -> bool:
-        # The receiver of a loader: a tracked module name, a submodule path under
-        # one (yaml.loader.Loader, so the chain is walked to its root), or the
-        # module parked on an attribute (box.loader_module = yaml).
-        while isinstance(node, ast.Attribute):
-            if node.attr in attr_load_module_aliases:
-                return True
-            node = node.value
-        return isinstance(node, ast.Name) and node.id in load_module_aliases
-
-    def _is_yaml_module(node) -> bool:
-        # The PyYAML half of _is_load_module, for the Loader= exemption only.
-        while isinstance(node, ast.Attribute):
-            node = node.value
-        return isinstance(node, ast.Name) and node.id in yaml_module_aliases
-
-    def _is_loader_attr(node) -> bool:
-        # yaml.unsafe_load / yl.CLoader / torch.load: a loader reached through a
-        # tracked module, so json.load and a same-named local method are not it.
-        return (
-            isinstance(node, ast.Attribute)
-            and node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-            and _is_load_module(node.value)
-        )
-
-    def _is_safe_loader(node) -> bool:
-        # The Loader= value is statically one of the loaders that cannot build
-        # arbitrary callables. Anything else (absent, dynamic, rebound) is not.
-        if registers_constructor or patches_loader:
-            return False
-        if isinstance(node, ast.Attribute):
-            # setattr can point yaml.SafeLoader at anything without ever being an
-            # assignment target, so its presence withdraws the exemption.
-            if isinstance(node.value, ast.Attribute):
-                # yaml.loader.SafeLoader is PyYAML's own path; yaml.box.SafeLoader
-                # is whatever the snippet parked there.
-                if node.value.attr not in _AUTO_YAML_SUBMODULES:
-                    return False
-                _root = node.value.value
-            else:
-                _root = node.value
-            return (
-                node.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                and node.attr not in assigned_attr_names
-                and not uses_setattr
-                and isinstance(_root, ast.Name)
-                and _root.id in yaml_module_aliases
-                # item 1: an alias the snippet rebinds is not PyYAML any more
-                and not _rebindable(_root.id)
-            )
-        # Membership already encodes the rebinding rule: a name only enters
-        # safe_loader_aliases if nothing can point it elsewhere later.
-        return isinstance(node, ast.Name) and node.id in safe_loader_aliases
-
-    def _loads_safely(call) -> bool:
-        # yaml.load(s, Loader=SafeLoader) reads data only. Fails closed on a
-        # missing/positional/dynamic loader and on a **kwargs splat.
-        if _has_kwarg_splat(call):
-            return False
-        return any(kw.arg == "Loader" and _is_safe_loader(kw.value) for kw in call.keywords or [])
-
-    def _flat_binds(target, value):
-        # Pair a destructuring target with its value through any nesting:
-        # [[loader]] = [[yaml.unsafe_load]] binds loader like a flat one does.
-        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
-            if len(target.elts) != len(value.elts):
-                return
-            for t_el, v_el in zip(target.elts, value.elts):
-                yield from _flat_binds(t_el, v_el)
-        elif isinstance(target, ast.Name):
-            yield target, value
-
-    def _holds_write_callable(arg) -> bool:
-        # A callable handed over directly, or packed into a literal container the
-        # helper unpacks itself: run((yaml.unsafe_load, payload)).
-        if isinstance(arg, (ast.Tuple, ast.List, ast.Set)):
-            return any(_holds_write_callable(e) for e in arg.elts)
-        if isinstance(arg, ast.Dict):
-            return any(_holds_write_callable(v) for v in arg.values)
-        if isinstance(arg, ast.Name) and arg.id in packed_callable_names:
-            return True
-        if isinstance(arg, ast.Subscript):
-            # run((yaml,)[0]) hands over the element, so look inside.
-            return _holds_write_callable(arg.value)
-        return _passed_write_callable(arg)
-
-    def _forwards_callable(call) -> bool:
-        # Whether a call hands a concrete write/loader callable to a helper,
-        # including the ones an unpacking hides: run(*(yaml.load, s)),
-        # run(**{"fn": yaml.load}) and the same containers bound to a name first.
-        for arg in call.args:
-            if isinstance(arg, ast.Starred):
-                if isinstance(arg.value, (ast.Tuple, ast.List, ast.Set)):
-                    if any(_passed_write_callable(e) for e in arg.value.elts):
-                        return True
-                elif isinstance(arg.value, ast.Name) and arg.value.id in packed_callable_names:
-                    return True
-            elif _holds_write_callable(arg):
-                return True
-        for kw in call.keywords:
-            if kw.arg is None:
-                if isinstance(kw.value, ast.Dict):
-                    if any(_passed_write_callable(v) for v in kw.value.values):
-                        return True
-                elif isinstance(kw.value, ast.Name) and kw.value.id in packed_callable_names:
-                    return True
-            elif _holds_write_callable(kw.value):
-                return True
-        return False
-
     def _passed_write_callable(arg) -> bool:
         # A concrete write callable handed as an argument to another call: a
         # name bound to open / a writer / an archive constructor, or an
@@ -3839,30 +3656,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # merely passed or printed (print(getattr(o, 'name'))).
         if isinstance(arg, ast.Name):
             return (
-                arg.id in open_aliases
-                or arg.id in writer_aliases
-                or arg.id in archive_ctor_aliases
-                or arg.id in load_func_aliases
-                or arg.id in load_class_aliases
-                # the module itself: def run(mod): mod.unsafe_load(s); run(yaml)
-                or arg.id in load_module_aliases
-                or (
-                    (registers_constructor or uses_setattr or patches_loader)
-                    and (arg.id in safe_func_aliases or arg.id in safe_loader_aliases)
-                )
+                arg.id in open_aliases or arg.id in writer_aliases or arg.id in archive_ctor_aliases
             )
         if isinstance(arg, ast.Attribute):
-            # A loader is receiver-matched (yaml.load, torch.load) so a helper
-            # handed the harmless json.load is unaffected.
-            if _is_loader_attr(arg):
-                return True
-            # Once a constructor is registered the safe reader is a way in too.
-            if (
-                (registers_constructor or uses_setattr or patches_loader)
-                and (arg.attr in _AUTO_SAFE_PY_LOAD_FUNCS or arg.attr in _AUTO_SAFE_PY_LOAD_CLASSES)
-                and _is_load_module(arg.value)
-            ):
-                return True
             return (
                 arg.attr == "open"
                 or arg.attr in _AUTO_UNSAFE_PY_ATTRS
@@ -3877,47 +3673,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # otherwise mask the earlier sensitive value and auto-approve. Count every
     # binding target up front and poison multiply-bound names to the escape
     # sentinel so any path folded from them fails closed (asks) instead.
-    # Names that refer to a loader class, by import or by simple assignment.
-    # Built before the scans below, which ask whether a receiver is one.
-    _loader_class_names: "set[str]" = set()
-    for _n in ast.walk(tree):
-        if isinstance(_n, (ast.Import, ast.ImportFrom)):
-            for _al in _n.names:
-                if (
-                    _al.name in _AUTO_SAFE_PY_LOAD_CLASSES
-                    or _al.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
-                ):
-                    _loader_class_names.add(_al.asname or _al.name)
-    for _ in range(2):
-        for _n in ast.walk(tree):
-            if not isinstance(_n, (ast.Assign, ast.AnnAssign)):
-                continue
-            _v = getattr(_n, "value", None)
-            _hit = (
-                isinstance(_v, ast.Attribute)
-                and (
-                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES or _v.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
-                )
-            ) or (isinstance(_v, ast.Name) and _v.id in _loader_class_names)
-            if _hit:
-                _tg = _n.targets if isinstance(_n, ast.Assign) else [_n.target]
-                _loader_class_names.update(t.id for t in _tg if isinstance(t, ast.Name))
-
     assign_counts: "dict[str, int]" = {}
-    # Attribute names assigned anywhere, so a rebound loader class
-    # (yaml.SafeLoader = yaml.Loader) cannot buy the safe-loader exemption below.
-    assigned_attr_names: "set[str]" = set()
-    # Imports bind names without appearing in assign_counts, so a name imported
-    # twice (from yaml import SafeLoader; from other import SafeLoader) is not
-    # necessarily the one we trusted.
-    import_counts: "dict[str, int]" = {}
-    for _n in ast.walk(tree):
-        if isinstance(_n, (ast.Import, ast.ImportFrom)):
-            for _al in _n.names:
-                _bound = _al.asname or _al.name.split(".")[0]
-                import_counts[_bound] = import_counts.get(_bound, 0) + 1
-    # Set when a safe loader class has one of its own methods replaced.
-    patches_loader = False
     for node in ast.walk(tree):
         binding_targets = []
         if isinstance(node, ast.Assign):
@@ -3928,773 +3684,322 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             for sub in ast.walk(target):
                 if isinstance(sub, ast.Name):
                     assign_counts[sub.id] = assign_counts.get(sub.id, 0) + 1
-                elif isinstance(sub, ast.Attribute):
-                    assigned_attr_names.add(sub.attr)
-                    # yaml.SafeLoader.construct_scalar = cb patches the loader
-                    # itself, which is a registration by another name.
-                    _recv = sub.value
-                    while isinstance(_recv, ast.Attribute):
-                        if _recv.attr in _AUTO_SAFE_PY_LOAD_CLASSES:
-                            patches_loader = True
-                        _recv = _recv.value
-                    # SL = yaml.SafeLoader; SL.construct_scalar = cb
-                    if isinstance(_recv, ast.Name) and _recv.id in _loader_class_names:
-                        patches_loader = True
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
-    # A registered constructor is a callback the YAML tags choose, so a loader
-    # that has one is no longer the stock safe loader and loses the exemption.
-    # Naming any of these at all is enough. A registration can be spelled as a
-    # call, an alias (reg = SafeLoader.add_constructor) or a direct write to the
-    # registry, and chasing each spelling is a losing game; snippets that mention
-    # them are rare, so the exemption simply steps aside.
-    # Names that are PyYAML's own: mentioning one is a registration, whatever
-    # shape it takes (a call, an alias, a metaclass declaration).
-    _register_names = {
-        "add_constructor",
-        "add_multi_constructor",
-        "yaml_constructors",
-        "yaml_multi_constructors",
-        # yaml.YAMLObject's metaclass registers the class's from_yaml against
-        # whatever yaml_loader names, so the registration has no call site.
-        "YAMLObject",
-    }
-    # These two only carry registration meaning inside a YAMLObject subclass;
-    # a module-level def from_yaml(path) is ordinary config-loading code.
-    _yamlobject_member_names = frozenset({"yaml_loader", "from_yaml"})
-    for _n in ast.walk(tree):
-        if isinstance(_n, ast.ImportFrom):
-            for _al in _n.names:
-                if _al.name in _register_names:
-                    _register_names.add(_al.asname or _al.name)
-    # Generic ways to read or write an attribute by name. These say nothing on
-    # their own -- getattr(config, "name") beside a safe_load is ordinary code --
-    # so they only count when aimed at a loader.
-    _dynamic_access_names = frozenset(
-        {
-            "getattr",
-            "setattr",
-            "vars",
-            "__getattribute__",
-            "__getattr__",
-            "__setattr__",
-            # operator.attrgetter("yaml_constructors")(SafeLoader) is getattr
-            # with the two halves written apart.
-            "attrgetter",
-        }
-    )
-
-    _loader_import_aliases: "set[str]" = set()
-    _safe_reader_aliases: "set[str]" = set()
-    for _n in ast.walk(tree):
-        if isinstance(_n, (ast.Import, ast.ImportFrom)):
-            _root_mod = (_n.module or "") if isinstance(_n, ast.ImportFrom) else ""
-            for _al in _n.names:
-                if _al.name in _AUTO_SAFE_PY_LOAD_CLASSES or _al.name in _AUTO_UNSAFE_PY_LOAD_ATTRS:
-                    _loader_import_aliases.add(_al.asname or _al.name)
-                elif _al.name in _AUTO_SAFE_PY_LOAD_FUNCS:
-                    _safe_reader_aliases.add(_al.asname or _al.name)
-                    _loader_import_aliases.add(_al.asname or _al.name)
-                elif _root_mod.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                    _loader_import_aliases.add(_al.asname or _al.name)
-                elif _al.name.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                    _loader_import_aliases.add(_al.asname or _al.name.split(".")[0])
-
-    for _pass in range(2):
-        for _n in ast.walk(tree):
-            if not isinstance(_n, (ast.Assign, ast.AnnAssign)) or not isinstance(
-                getattr(_n, "value", None), (ast.Attribute, ast.Name)
-            ):
-                continue
-            _v = _n.value
-            _is_loader_val = (
-                isinstance(_v, ast.Attribute)
-                and (
-                    _v.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                    or _v.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                    or _v.attr in _AUTO_SAFE_PY_LOAD_FUNCS
-                )
-            ) or (isinstance(_v, ast.Name) and _v.id in _loader_import_aliases)
-            if _is_loader_val:
-                _tgts = _n.targets if isinstance(_n, ast.Assign) else [_n.target]
-                for _t in _tgts:
-                    if isinstance(_t, ast.Name):
-                        _loader_import_aliases.add(_t.id)
-
-    def _mentions_loader_literal(node) -> bool:
-        # A loader named anywhere in this expression, by module, class or
-        # function. Literal names only, so this holds before aliases are known.
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Attribute) and (
-                sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                or sub.attr in _AUTO_SAFE_PY_LOAD_FUNCS
-            ):
-                return True
-            # A bare module name is not a loader: getattr(yaml.Dumper, ...) is
-            # reflection on an unrelated class. The loaders on it are matched
-            # above, and getattr(yaml, "unsafe_load")(s) is already a call on a
-            # call result, which fails closed on its own.
-            if isinstance(sub, ast.Name) and (
-                sub.id in _AUTO_SAFE_PY_LOAD_CLASSES
-                or sub.id in _AUTO_UNSAFE_PY_LOAD_CLASSES
-                # from yaml import SafeLoader as SL
-                or sub.id in _loader_class_names
-            ):
-                return True
-        return False
-
-    def _is_loader_registration(node) -> bool:
-        if isinstance(node, ast.Attribute):
-            if node.attr in _register_names:
-                return True
-            # SafeLoader.__dict__ / SafeLoader.__getattribute__ reach the registry
-            # only when the receiver is a loader.
-            if node.attr in _dynamic_access_names or node.attr == "__dict__":
-                return _mentions_loader_literal(node.value)
-            return False
-        if isinstance(node, ast.Name):
-            return node.id in _register_names
-        if isinstance(node, ast.Call):
-            func = node.func
-            _name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if _name in _dynamic_access_names:
-                if any(_mentions_loader_literal(a) for a in node.args):
-                    return True
-                # attrgetter("yaml_constructors") names the registry directly.
-                return any(
-                    isinstance(a, ast.Constant) and a.value in _register_names for a in node.args
-                )
-        return False
-
-    def _rebinds_safe_reader(node) -> bool:
-        # yaml.safe_load = os.system, or the same through a bare alias: the name
-        # the exemption trusts no longer holds the function it trusted.
-        targets = []
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
-            targets = [node.target]
-        for t in targets:
-            # The symbol being written, not the path it hangs off: patching
-            # yaml.Dumper.ignore_aliases says nothing about safe_load.
-            if isinstance(t, ast.Attribute) and t.attr in _AUTO_SAFE_PY_LOAD_FUNCS:
-                return True
-            if isinstance(t, ast.Name) and (
-                t.id in _AUTO_SAFE_PY_LOAD_FUNCS or t.id in _safe_reader_aliases
-            ):
-                return True
-        return False
-
-    def _declares_yamlobject_member(node) -> bool:
-        # class T(yaml.YAMLObject): yaml_loader = ...; from_yaml = ...
-        if not isinstance(node, ast.ClassDef):
-            return False
-        if not any(_mentions_loader_literal(b) or _base_is_yamlobject(b) for b in node.bases):
-            return False
-        for stmt in node.body:
-            names = []
-            if isinstance(stmt, ast.Assign):
-                names = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
-            elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-                names = [stmt.target.id]
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                names = [stmt.name]
-            if any(n in _yamlobject_member_names for n in names):
-                return True
-        return False
-
-    def _base_is_yamlobject(base) -> bool:
-        if isinstance(base, ast.Attribute):
-            return base.attr == "YAMLObject"
-        return isinstance(base, ast.Name) and base.id == "YAMLObject"
-
-    registers_constructor = any(
-        _is_loader_registration(n) or _rebinds_safe_reader(n) or _declares_yamlobject_member(n)
-        for n in ast.walk(tree)
-    )
-    # Kept separate only because the messages below distinguish them; both mean
-    # the loader may not be the stock one any more.
-    uses_setattr = registers_constructor
-    # Binding forms that assign_counts does not see (for x in ..., with ... as x,
-    # a comprehension target, a walrus). A safe-loader alias touched by one of
-    # these could point anywhere, so it never earns the exemption.
-    rebindable_names: "set[str]" = set()
     for node in ast.walk(tree):
-        _rebound = []
-        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-            _rebound = [node.target]
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            _rebound = [i.optional_vars for i in node.items if i.optional_vars is not None]
-        elif isinstance(node, ast.NamedExpr):
-            _rebound = [node.target]
-        elif _AST_MATCH_CAPTURE and isinstance(node, _AST_MATCH_CAPTURE):
-            # case SafeLoader: binds the subject to that name (3.10+).
-            if node.name:
-                rebindable_names.add(node.name)
-        elif _AST_MATCH_MAPPING and isinstance(node, _AST_MATCH_MAPPING) and node.rest:
-            rebindable_names.add(node.rest)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            rebindable_names.add(node.name)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            # A parameter shadows an outer name inside the body, so an imported
-            # SafeLoader is not necessarily the class the exemption assumes.
-            _args = node.args
-            for _p in (
-                _args.posonlyargs
-                + _args.args
-                + _args.kwonlyargs
-                + ([_args.vararg] if _args.vararg else [])
-                + ([_args.kwarg] if _args.kwarg else [])
-            ):
-                rebindable_names.add(_p.arg)
-        for target in _rebound:
-            for sub in ast.walk(target):
-                if isinstance(sub, ast.Name):
-                    rebindable_names.add(sub.id)
-    # A seeded module name the snippet itself binds (class yaml: ...) is not the
-    # package we assumed, so it stops being a trusted receiver.
-    _import_shadowed = set(_AUTO_UNSAFE_PY_LOAD_MODULES & (rebindable_names | set(assign_counts)))
-    for _n in ast.walk(tree):
-        # import custom_loaders as yaml binds the name to something else entirely.
-        if isinstance(_n, ast.Import):
-            for _al in _n.names:
-                _bound = _al.asname or _al.name.split(".")[0]
-                if _bound in _AUTO_UNSAFE_PY_LOAD_MODULES and _al.name.split(".")[0] != _bound:
-                    _import_shadowed.add(_bound)
-        elif isinstance(_n, ast.ImportFrom):
-            for _al in _n.names:
-                _bound = _al.asname or _al.name
-                if _bound in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                    _import_shadowed.add(_bound)
-    for _shadowed in _import_shadowed:
-        load_module_aliases.discard(_shadowed)
-        yaml_module_aliases.discard(_shadowed)
-    # Alias discovery is order-sensitive: f = g is only recognized once g is
-    # known, and ast.walk visits a function body after a later def that binds
-    # the source. Repeat the pass until nothing new is learned (the sets only
-    # grow, so this terminates; the cap is belt and braces).
-    _alias_sets = (
-        open_aliases,
-        attr_open_aliases,
-        builtins_aliases,
-        dynamic_aliases,
-        code_exec_aliases,
-        path_ctor_aliases,
-        pathjoin_aliases,
-        writer_aliases,
-        os_aliases,
-        load_module_aliases,
-        yaml_module_aliases,
-        yaml_func_aliases,
-        load_func_aliases,
-        load_class_aliases,
-        attr_load_aliases,
-        attr_load_module_aliases,
-        safe_loader_aliases,
-        safe_func_aliases,
-        attr_safe_func_aliases,
-        packed_callable_names,
-        getattr_aliases,
-        partial_aliases,
-        archive_ctor_aliases,
-        operator_aliases,
-        methodcaller_aliases,
-        basicconfig_aliases,
-        fileinput_aliases,
-        invoker_aliases,
-    )
-    # 25 is far past any real chain (each pass resolves one more link); a
-    # snippet that still has not settled is too tangled to classify, so it asks.
-    _alias_converged = False
-    for _alias_pass in range(25):
-        _sizes = [len(s) for s in _alias_sets] + [len(literal_str_vars)]
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    builtins_aliases.add(alias.asname or "builtins")
+                elif alias.name in ("os", "posix"):
+                    os_aliases.add(alias.asname or alias.name)
+                elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name == "operator":
+                    operator_aliases.add(alias.asname or "operator")
+                elif alias.name == "fileinput":
+                    fileinput_aliases.add(alias.asname or "fileinput")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "operator":
                 for alias in node.names:
-                    if alias.name == "builtins":
-                        builtins_aliases.add(alias.asname or "builtins")
-                    elif alias.name in ("os", "posix"):
-                        os_aliases.add(alias.asname or alias.name)
-                    elif alias.name.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                        # import yaml.loader as yl binds the submodule, which carries
-                        # the loader classes too (yl.Loader); a dotted import without
-                        # an asname binds the root package.
-                        load_module_aliases.add(alias.asname or alias.name.split(".")[0])
-                        if alias.name.split(".")[0] in _AUTO_YAML_MODULES:
-                            yaml_module_aliases.add(alias.asname or alias.name.split(".")[0])
-                    elif alias.name == "operator":
-                        operator_aliases.add(alias.asname or "operator")
-                    elif alias.name == "fileinput":
-                        fileinput_aliases.add(alias.asname or "fileinput")
-            elif isinstance(node, ast.ImportFrom):
-                if node.module == "operator":
-                    for alias in node.names:
-                        if alias.name == "methodcaller":
-                            methodcaller_aliases.add(alias.asname or "methodcaller")
-                if node.module == "logging":
-                    for alias in node.names:
-                        if alias.name == "basicConfig":
-                            basicconfig_aliases.add(alias.asname or "basicConfig")
-                if node.module == "builtins":
-                    for alias in node.names:
-                        if alias.name == "open":
-                            open_aliases.add(alias.asname or "open")
-                        elif alias.name in code_exec_aliases:
-                            code_exec_aliases.add(alias.asname or alias.name)
-                if node.module in _OPEN_ALIAS_MODULES:
-                    for alias in node.names:
-                        if alias.name == "open":
-                            # gzip/bz2/lzma open(file, mode) writes on "w"/"a"/"x",
-                            # mode in the 2nd arg like builtin open.
-                            open_aliases.add(alias.asname or "open")
-                if node.module == "pathlib":
-                    for alias in node.names:
-                        if alias.name in _PATH_CTORS:
-                            path_ctor_aliases.add(alias.asname or alias.name)
-                if node.module in ("os.path", "posixpath", "ntpath"):
-                    for alias in node.names:
-                        if alias.name == "join":
-                            pathjoin_aliases.add(alias.asname or "join")
-                if node.module == "functools":
-                    for alias in node.names:
-                        if alias.name == "partial":
-                            partial_aliases.add(alias.asname or "partial")
-                if node.module in _ARCHIVE_CTOR_MODULES:
-                    _ctor = _ARCHIVE_CTOR_MODULES[node.module]
-                    for alias in node.names:
-                        if alias.name == _ctor:
-                            archive_ctor_aliases.add(alias.asname or _ctor)
-                if node.module and node.module.split(".")[0] in _AUTO_UNSAFE_PY_LOAD_MODULES:
-                    for alias in node.names:
-                        if alias.name in _AUTO_UNSAFE_PY_LOAD_FUNCS:
-                            load_func_aliases.add(alias.asname or alias.name)
-                            if alias.name in _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS:
-                                always_unsafe_aliases.add(alias.asname or alias.name)
-                            if node.module.split(".")[0] in _AUTO_YAML_MODULES:
-                                yaml_func_aliases.add(alias.asname or alias.name)
-                        elif alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES:
-                            load_class_aliases.add(alias.asname or alias.name)
-                            always_unsafe_aliases.add(alias.asname or alias.name)
-                        # from yaml.loader import SafeLoader is the documented safe
-                        # spelling; record it so Loader=SafeLoader stays auto-approved.
-                        # An import is not an assignment, so any later binding of the
-                        # name could point it at an unsafe loader: skip those.
-                        elif alias.name in _AUTO_SAFE_PY_LOAD_FUNCS:
-                            safe_func_aliases.add(alias.asname or alias.name)
-                        elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES and not _rebindable(
-                            alias.asname or alias.name
-                        ):
-                            safe_loader_aliases.add(alias.asname or alias.name)
-                        elif alias.name in _AUTO_YAML_SUBMODULES:
-                            # from yaml import loader as yl: a submodule that
-                            # carries the loaders. Other members (__version__,
-                            # YAMLError) are values, not receivers.
-                            load_module_aliases.add(alias.asname or alias.name)
-                            if node.module.split(".")[0] in _AUTO_YAML_MODULES:
-                                yaml_module_aliases.add(alias.asname or alias.name)
+                    if alias.name == "methodcaller":
+                        methodcaller_aliases.add(alias.asname or "methodcaller")
+            if node.module == "logging":
                 for alias in node.names:
-                    if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
-                        writer_aliases.add(alias.asname or alias.name)
-                    # from itertools import starmap as sm / from functools import
-                    # reduce as r: an aliased higher-order invoker.
-                    if alias.name in _HIGHER_ORDER_INVOKERS:
-                        invoker_aliases.add(alias.asname or alias.name)
+                    if alias.name == "basicConfig":
+                        basicconfig_aliases.add(alias.asname or "basicConfig")
+            if node.module == "builtins":
+                for alias in node.names:
+                    if alias.name == "open":
+                        open_aliases.add(alias.asname or "open")
+                    elif alias.name in code_exec_aliases:
+                        code_exec_aliases.add(alias.asname or alias.name)
+            if node.module in _OPEN_ALIAS_MODULES:
+                for alias in node.names:
+                    if alias.name == "open":
+                        # gzip/bz2/lzma open(file, mode) writes on "w"/"a"/"x",
+                        # mode in the 2nd arg like builtin open.
+                        open_aliases.add(alias.asname or "open")
+            if node.module == "pathlib":
+                for alias in node.names:
+                    if alias.name in _PATH_CTORS:
+                        path_ctor_aliases.add(alias.asname or alias.name)
+            if node.module in ("os.path", "posixpath", "ntpath"):
+                for alias in node.names:
+                    if alias.name == "join":
+                        pathjoin_aliases.add(alias.asname or "join")
+            if node.module == "functools":
+                for alias in node.names:
+                    if alias.name == "partial":
+                        partial_aliases.add(alias.asname or "partial")
+            if node.module in _ARCHIVE_CTOR_MODULES:
+                _ctor = _ARCHIVE_CTOR_MODULES[node.module]
+                for alias in node.names:
+                    if alias.name == _ctor:
+                        archive_ctor_aliases.add(alias.asname or _ctor)
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                    writer_aliases.add(alias.asname or alias.name)
+                # from itertools import starmap as sm / from functools import
+                # reduce as r: an aliased higher-order invoker.
+                if alias.name in _HIGHER_ORDER_INVOKERS:
+                    invoker_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            value = node.value
+            # AnnAssign (f: object = open) has a single target, no destructuring.
+            if isinstance(node, ast.AnnAssign):
+                assign_targets = [node.target]
+            else:
+                assign_targets = node.targets
+            targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
+            attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if isinstance(value, ast.Name) and value.id in open_aliases:
+                open_aliases.update(targets)
+                attr_open_aliases.update(attr_targets)  # box.f = open
+            elif isinstance(value, ast.Name) and value.id in getattr_aliases:
+                getattr_aliases.update(targets)  # g = getattr
+            elif isinstance(value, ast.Name) and value.id in partial_aliases:
+                partial_aliases.update(targets)  # p = partial
+            elif isinstance(value, ast.Name) and value.id in writer_aliases:
+                writer_aliases.update(targets)  # s = save (numpy save alias)
+            elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
+                archive_ctor_aliases.update(targets)  # z = ZipFile
+            elif isinstance(value, ast.Name) and value.id in invoker_aliases:
+                invoker_aliases.update(targets)  # m = map
+            elif isinstance(value, ast.Name) and value.id in path_ctor_aliases:
+                path_ctor_aliases.update(targets)  # P = Path
+            elif isinstance(value, ast.Name) and value.id in pathjoin_aliases:
+                pathjoin_aliases.update(targets)  # j = join
+            elif isinstance(value, ast.Attribute) and value.attr == "join":
+                pathjoin_aliases.update(targets)  # j = os.path.join
+            elif isinstance(value, ast.Attribute) and value.attr in _PATH_CTORS:
+                path_ctor_aliases.update(targets)  # P = pathlib.Path
             elif (
-                isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
-                and node.value is not None
+                isinstance(value, ast.Attribute)
+                and value.attr == "open"
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
             ):
-                value = node.value
-                # AnnAssign (f: object = open) and a walrus have a single
-                # target, no destructuring.
-                if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
-                    assign_targets = [node.target]
-                else:
-                    assign_targets = node.targets
-                targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
-                attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
-                if isinstance(value, (ast.IfExp, ast.BoolOp)):
-                    # loader = yaml.unsafe_load if flag else yaml.safe_load: only one
-                    # branch runs and the flag is not ours to evaluate, so bind the
-                    # loader branch if there is one.
-                    _branches = (
-                        [value.body, value.orelse]
-                        if isinstance(value, ast.IfExp)
-                        else list(value.values)
+                open_aliases.update(targets)  # f = builtins.open
+            elif (
+                isinstance(value, ast.Attribute)
+                and value.attr in code_exec_aliases
+                and isinstance(value.value, ast.Name)
+                and value.value.id in builtins_aliases
+            ):
+                code_exec_aliases.update(targets)  # e = builtins.eval
+            elif isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                writer_aliases.update(targets)  # s = np.save
+            elif isinstance(value, ast.Attribute) and value.attr == "open":
+                # A captured .open bound method (p = Path('out').open) opens a file
+                # on any call; its mode position varies (Path.open mode is 1st arg,
+                # builtin open's is 2nd), so fail closed on the call rather than
+                # guess the write mode.
+                dynamic_aliases.update(targets)  # p = Path('out').open; p('w')
+            elif isinstance(value, ast.Attribute) and value.attr in _ARCHIVE_CTOR_NAMES:
+                archive_ctor_aliases.update(targets)  # z = zipfile.ZipFile
+            elif isinstance(value, ast.Subscript):
+                dynamic_aliases.update(targets)  # f = globals()["open"]
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in getattr_aliases
+            ):
+                dynamic_aliases.update(targets)  # rm = getattr(os, "remove") / g(...)
+            elif (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Attribute)
+                and value.func.attr in ("get", "pop", "setdefault")
+                and _is_dynamic_namespace(value.func.value)
+            ):
+                # f = __builtins__.__dict__.get("open") / globals().get("open"):
+                # a namespace lookup can return open/eval, so poison like getattr.
+                dynamic_aliases.update(targets)
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in partial_aliases)
+                    or (isinstance(value.func, ast.Attribute) and value.func.attr == "partial")
+                )
+                and value.args
+                and _wraps_write_callable(value.args[0])
+            ):
+                dynamic_aliases.update(targets)  # w = partial(open, mode="w")
+            elif (
+                isinstance(value, ast.Call)
+                and (
+                    (isinstance(value.func, ast.Name) and value.func.id in methodcaller_aliases)
+                    or (
+                        isinstance(value.func, ast.Attribute)
+                        and value.func.attr == "methodcaller"
+                        and isinstance(value.func.value, ast.Name)
+                        and value.func.value.id in operator_aliases
                     )
-                    for _b in _branches:
-                        if _is_loader_attr(_b) or (
-                            isinstance(_b, ast.Name)
-                            and (_b.id in load_func_aliases or _b.id in load_class_aliases)
-                        ):
-                            value = _b
-                            break
-                if isinstance(value, ast.Name) and value.id in open_aliases:
-                    open_aliases.update(targets)
-                    attr_open_aliases.update(attr_targets)  # box.f = open
-                elif isinstance(value, ast.Name) and value.id in getattr_aliases:
-                    getattr_aliases.update(targets)  # g = getattr
-                elif isinstance(value, ast.Name) and value.id in partial_aliases:
-                    partial_aliases.update(targets)  # p = partial
-                elif isinstance(value, ast.Name) and value.id in writer_aliases:
-                    writer_aliases.update(targets)  # s = save (numpy save alias)
-                elif isinstance(value, ast.Name) and value.id in load_func_aliases:
-                    load_func_aliases.update(targets)  # u = unsafe_load
-                    attr_load_aliases.update(attr_targets)  # holder.loader = u
-                elif isinstance(value, ast.Name) and value.id in load_class_aliases:
-                    load_class_aliases.update(targets)  # U = UnsafeLoader
-                    attr_load_aliases.update(attr_targets)
-                elif isinstance(value, ast.Name) and value.id in load_module_aliases:
-                    load_module_aliases.update(targets)  # c = yaml; c.load(...)
-                    attr_load_module_aliases.update(attr_targets)  # box.mod = yaml
-                    if value.id in yaml_module_aliases:
-                        yaml_module_aliases.update(targets)
-                elif (
-                    isinstance(value, ast.Attribute)
-                    and value.attr not in _AUTO_UNSAFE_PY_LOAD_ATTRS
-                    and value.attr not in _AUTO_SAFE_PY_LOAD_CLASSES
-                    and value.attr not in _AUTO_SAFE_PY_LOAD_FUNCS
-                    and _is_load_module(value)
-                ):
-                    # yl = yaml.loader: a submodule of a tracked package is a
-                    # receiver in its own right, unlike the loaders it carries.
-                    load_module_aliases.update(targets)
-                    attr_load_module_aliases.update(attr_targets)
-                    if _is_yaml_module(value):
-                        yaml_module_aliases.update(targets)
-                elif _is_loader_attr(value):
-                    # ld = yaml.load / L = yaml.Loader, on a name or an attribute
-                    # (holder.ld = yaml.unsafe_load), which is called like the module
-                    # attribute it was taken from.
-                    if value.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
-                        load_func_aliases.update(targets)
-                        if _is_yaml_module(value.value):
-                            yaml_func_aliases.update(targets)  # f = yaml.load
-                            if value.attr in ("load", "load_all"):
-                                attr_yaml_load_aliases.update(attr_targets)
-                    else:
-                        load_class_aliases.update(targets)
-                    attr_load_aliases.update(attr_targets)
-                elif isinstance(value, ast.Name) and value.id in archive_ctor_aliases:
-                    archive_ctor_aliases.update(targets)  # z = ZipFile
-                elif isinstance(value, ast.Name) and value.id in invoker_aliases:
-                    invoker_aliases.update(targets)  # m = map
-                elif isinstance(value, ast.Name) and value.id in path_ctor_aliases:
-                    path_ctor_aliases.update(targets)  # P = Path
-                elif isinstance(value, ast.Name) and value.id in pathjoin_aliases:
-                    pathjoin_aliases.update(targets)  # j = join
-                elif isinstance(value, ast.Attribute) and value.attr == "join":
-                    pathjoin_aliases.update(targets)  # j = os.path.join
-                elif isinstance(value, ast.Attribute) and value.attr in _PATH_CTORS:
-                    path_ctor_aliases.update(targets)  # P = pathlib.Path
-                elif (
-                    isinstance(value, ast.Attribute)
-                    and value.attr == "open"
-                    and isinstance(value.value, ast.Name)
-                    and value.value.id in builtins_aliases
-                ):
-                    open_aliases.update(targets)  # f = builtins.open
-                elif (
-                    isinstance(value, ast.Attribute)
-                    and value.attr in code_exec_aliases
-                    and isinstance(value.value, ast.Name)
-                    and value.value.id in builtins_aliases
-                ):
-                    code_exec_aliases.update(targets)  # e = builtins.eval
-                elif (
-                    isinstance(value, ast.Attribute) and value.attr in _AUTO_UNSAFE_PY_WRITE_METHODS
-                ):
-                    writer_aliases.update(targets)  # s = np.save
-                elif isinstance(value, ast.Attribute) and value.attr == "open":
-                    # A captured .open bound method (p = Path('out').open) opens a file
-                    # on any call; its mode position varies (Path.open mode is 1st arg,
-                    # builtin open's is 2nd), so fail closed on the call rather than
-                    # guess the write mode.
-                    dynamic_aliases.update(targets)  # p = Path('out').open; p('w')
-                elif isinstance(value, ast.Attribute) and value.attr in _ARCHIVE_CTOR_NAMES:
-                    archive_ctor_aliases.update(targets)  # z = zipfile.ZipFile
-                elif isinstance(value, ast.Subscript):
-                    dynamic_aliases.update(targets)  # f = globals()["open"]
-                elif (
-                    isinstance(value, ast.Call)
-                    and isinstance(value.func, ast.Name)
-                    and value.func.id in getattr_aliases
-                ):
-                    dynamic_aliases.update(targets)  # rm = getattr(os, "remove") / g(...)
-                elif (
-                    isinstance(value, ast.Call)
-                    and isinstance(value.func, ast.Attribute)
-                    and value.func.attr in ("get", "pop", "setdefault")
-                    and _is_dynamic_namespace(value.func.value)
-                ):
-                    # f = __builtins__.__dict__.get("open") / globals().get("open"):
-                    # a namespace lookup can return open/eval, so poison like getattr.
-                    dynamic_aliases.update(targets)
-                elif (
-                    isinstance(value, ast.Call)
-                    and (
-                        (isinstance(value.func, ast.Name) and value.func.id in partial_aliases)
-                        or (isinstance(value.func, ast.Attribute) and value.func.attr == "partial")
-                    )
-                    and value.args
-                    and _wraps_write_callable(value.args[0])
-                ):
-                    dynamic_aliases.update(targets)  # w = partial(open, mode="w")
-                elif (
-                    isinstance(value, ast.Call)
-                    and (
-                        (isinstance(value.func, ast.Name) and value.func.id in methodcaller_aliases)
-                        or (
-                            isinstance(value.func, ast.Attribute)
-                            and value.func.attr == "methodcaller"
-                            and isinstance(value.func.value, ast.Name)
-                            and value.func.value.id in operator_aliases
-                        )
-                    )
-                    and _methodcaller_writes(value)
-                ):
-                    dynamic_aliases.update(targets)  # w = methodcaller("write_text", ...)
-                elif isinstance(value, ast.Constant) and isinstance(value.value, str):
-                    # base = '/etc' -> resolve base in a later folded path. A name
-                    # bound more than once is poisoned (\x02) so it fails closed.
+                )
+                and _methodcaller_writes(value)
+            ):
+                dynamic_aliases.update(targets)  # w = methodcaller("write_text", ...)
+            elif isinstance(value, ast.Constant) and isinstance(value.value, str):
+                # base = '/etc' -> resolve base in a later folded path. A name
+                # bound more than once is poisoned (\x02) so it fails closed.
+                for t in targets:
+                    literal_str_vars[t] = "\x02" if t in multi_assigned_names else value.value
+            elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
+                # fully-literal folded path so a later reuse (p / 'passwd') folds.
+                folded = _folded_path(value, literal_str_vars, path_ctor_aliases, pathjoin_aliases)
+                if folded is not None and "\x00" not in folded and "\x02" not in folded:
                     for t in targets:
-                        literal_str_vars[t] = "\x02" if t in multi_assigned_names else value.value
-                elif isinstance(value, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
-                    # p = Path('/etc'); q = p; r = os.path.join('/etc','x'): record a
-                    # fully-literal folded path so a later reuse (p / 'passwd') folds.
-                    folded = _folded_path(
-                        value, literal_str_vars, path_ctor_aliases, pathjoin_aliases
-                    )
-                    if folded is not None and "\x00" not in folded and "\x02" not in folded:
-                        for t in targets:
-                            literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
-                if isinstance(value, (ast.Tuple, ast.List, ast.Set, ast.Dict)):
-                    # packed = (yaml.load, s); run(*packed) forwards the loader just
-                    # like the inline literal does, so remember the container name.
-                    if _holds_write_callable(value):
-                        packed_callable_names.update(targets)
-                elif isinstance(value, ast.Name) and value.id in packed_callable_names:
-                    packed_callable_names.update(targets)  # q = p; run(*q)
-                if (
-                    isinstance(value, ast.Attribute)
-                    and value.attr in _AUTO_SAFE_PY_LOAD_FUNCS
-                    and _is_load_module(value.value)
-                ) or (isinstance(value, ast.Name) and value.id in safe_func_aliases):
-                    safe_func_aliases.update(targets)  # f = yaml.safe_load
-                    attr_safe_func_aliases.update(attr_targets)  # holder.fn = yaml.safe_load
-                if _is_safe_loader(value):
-                    # Safe = yaml.SafeLoader factors out a provably safe read, so keep
-                    # the exemption, but only for a name bound exactly once here.
-                    safe_loader_aliases.update(
-                        t for t in targets if assign_counts.get(t) == 1 and not _rebindable(t, 1)
-                    )
-                if isinstance(value, (ast.Tuple, ast.List)):
-                    # Destructuring binds each element like a single assignment, so an
-                    # aliased callable (f, _ = (open, print)) AND a string / path
-                    # literal (base, leaf = ('/etc', 'passwd')) both propagate; without
-                    # the latter a path folded from base/leaf would miss the sensitive
-                    # target and auto-approve.
-                    for target in assign_targets:
-                        if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
-                            value.elts
-                        ):
-                            for tgt_el, val_el in _flat_binds(target, value):
-                                tid = tgt_el.id
-                                if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
-                                    open_aliases.add(tid)
-                                elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
-                                    getattr_aliases.add(tid)
-                                elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
-                                    partial_aliases.add(tid)
-                                elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
-                                    writer_aliases.add(tid)  # s, _ = (save, 1)
-                                elif (
-                                    isinstance(val_el, ast.Name)
-                                    and val_el.id in archive_ctor_aliases
-                                ):
-                                    archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
-                                elif (
-                                    isinstance(val_el, ast.Name) and val_el.id in load_func_aliases
-                                ):
-                                    load_func_aliases.add(tid)  # ld, _ = (unsafe_load, 1)
-                                elif (
-                                    isinstance(val_el, ast.Name) and val_el.id in load_class_aliases
-                                ):
-                                    load_class_aliases.add(tid)  # L, _ = (UnsafeLoader, 1)
-                                elif _is_loader_attr(val_el):
-                                    if val_el.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
-                                        load_func_aliases.add(tid)  # ld, _ = (yaml.load, 1)
-                                    else:
-                                        load_class_aliases.add(tid)  # L, _ = (yaml.Loader, 1)
-                                elif isinstance(val_el, ast.Constant) and isinstance(
-                                    val_el.value, str
+                        literal_str_vars[t] = "\x02" if t in multi_assigned_names else folded
+            elif isinstance(value, (ast.Tuple, ast.List)):
+                # Destructuring binds each element like a single assignment, so an
+                # aliased callable (f, _ = (open, print)) AND a string / path
+                # literal (base, leaf = ('/etc', 'passwd')) both propagate; without
+                # the latter a path folded from base/leaf would miss the sensitive
+                # target and auto-approve.
+                for target in assign_targets:
+                    if isinstance(target, (ast.Tuple, ast.List)) and len(target.elts) == len(
+                        value.elts
+                    ):
+                        for tgt_el, val_el in zip(target.elts, value.elts):
+                            if not isinstance(tgt_el, ast.Name):
+                                continue
+                            tid = tgt_el.id
+                            if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
+                                open_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
+                                getattr_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in partial_aliases:
+                                partial_aliases.add(tid)
+                            elif isinstance(val_el, ast.Name) and val_el.id in writer_aliases:
+                                writer_aliases.add(tid)  # s, _ = (save, 1)
+                            elif isinstance(val_el, ast.Name) and val_el.id in archive_ctor_aliases:
+                                archive_ctor_aliases.add(tid)  # z, _ = (ZipFile, 1)
+                            elif isinstance(val_el, ast.Constant) and isinstance(val_el.value, str):
+                                literal_str_vars[tid] = (
+                                    "\x02" if tid in multi_assigned_names else val_el.value
+                                )
+                            elif isinstance(val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)):
+                                folded = _folded_path(
+                                    val_el, literal_str_vars, path_ctor_aliases, pathjoin_aliases
+                                )
+                                if (
+                                    folded is not None
+                                    and "\x00" not in folded
+                                    and "\x02" not in folded
                                 ):
                                     literal_str_vars[tid] = (
-                                        "\x02" if tid in multi_assigned_names else val_el.value
+                                        "\x02" if tid in multi_assigned_names else folded
                                     )
-                                elif isinstance(
-                                    val_el, (ast.Call, ast.BinOp, ast.Name, ast.JoinedStr)
-                                ):
-                                    folded = _folded_path(
-                                        val_el,
-                                        literal_str_vars,
-                                        path_ctor_aliases,
-                                        pathjoin_aliases,
-                                    )
-                                    if (
-                                        folded is not None
-                                        and "\x00" not in folded
-                                        and "\x02" not in folded
-                                    ):
-                                        literal_str_vars[tid] = (
-                                            "\x02" if tid in multi_assigned_names else folded
-                                        )
-            elif isinstance(node, ast.ClassDef):
-                # Subclassing a loader is the documented way to extend PyYAML, and the
-                # subclass keeps the base's ability to construct Python objects, so
-                # class L(yaml.Loader) makes L a loader too.
-                for base in node.bases:
-                    if _is_loader_attr(base) or (
-                        isinstance(base, ast.Name)
-                        and (base.id in load_class_aliases or base.id in load_func_aliases)
-                    ):
-                        load_class_aliases.add(node.name)
-                # A loader in the class body is reached as an attribute of the class
-                # (class H: loader = yaml.unsafe_load, then H.loader(payload)), so the
-                # bare target name here is really an attribute binding.
-                for stmt in node.body:
-                    if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
-                        continue
-                    _val = stmt.value
-                    _tgts = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
-                    if _val is None:
-                        continue
-                    _names = [t.id for t in _tgts if isinstance(t, ast.Name)]
-                    if _is_loader_attr(_val) or (
-                        isinstance(_val, ast.Name)
-                        and (_val.id in load_func_aliases or _val.id in load_class_aliases)
-                    ):
-                        attr_load_aliases.update(_names)
-                    elif isinstance(_val, ast.Name) and _val.id in load_module_aliases:
-                        attr_load_module_aliases.update(_names)  # class H: mod = yaml
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                # A callable captured as a parameter default (def f(o=open): o('x','w'))
-                # binds that parameter to the same alias set, so a later call through
-                # the parameter is still gated. defaults align to the tail of
-                # posonlyargs+args; kw_defaults align 1:1 with kwonlyargs (None = none).
-                _a = node.args
-                _defaulted = list(
-                    zip(
-                        (_a.posonlyargs + _a.args)[
-                            len(_a.posonlyargs) + len(_a.args) - len(_a.defaults) :
-                        ],
-                        _a.defaults,
-                    )
-                ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
-                for _param, _default in _defaulted:
-                    if isinstance(_default, ast.Name):
-                        _did = _default.id
-                        if _did in open_aliases:
-                            open_aliases.add(_param.arg)
-                        elif _did in writer_aliases:
-                            writer_aliases.add(_param.arg)
-                        elif _did in archive_ctor_aliases:
-                            archive_ctor_aliases.add(_param.arg)
-                        elif _did in getattr_aliases:
-                            getattr_aliases.add(_param.arg)
-                        elif _did in partial_aliases:
-                            partial_aliases.add(_param.arg)
-                        elif _did in code_exec_aliases:
-                            code_exec_aliases.add(_param.arg)
-                        elif _did in dynamic_aliases:
-                            dynamic_aliases.add(_param.arg)
-                        elif _did in load_func_aliases:
-                            load_func_aliases.add(_param.arg)
-                        elif _did in load_class_aliases:
-                            load_class_aliases.add(_param.arg)
-                        elif _did in load_module_aliases:
-                            load_module_aliases.add(_param.arg)  # def run(y=yaml)
-                            if _did in yaml_module_aliases:
-                                yaml_module_aliases.add(_param.arg)
-                    elif _is_loader_attr(_default):
-                        # def run(loader=yaml.unsafe_load): loader(payload)
-                        if _default.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
-                            load_func_aliases.add(_param.arg)
-                        else:
-                            load_class_aliases.add(_param.arg)
-                    elif isinstance(_default, ast.Attribute):
-                        # An attribute writer / archive ctor / captured .open used as
-                        # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
-                        # def f(o=Path('x').open)) binds the parameter like the
-                        # equivalent assignment; a benign attribute (np.mean) does not.
-                        if _default.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
-                            writer_aliases.add(_param.arg)
-                        elif _default.attr in _ARCHIVE_CTOR_NAMES:
-                            archive_ctor_aliases.add(_param.arg)
-                        elif _default.attr == "open":
-                            dynamic_aliases.add(_param.arg)
-                    elif (
-                        isinstance(_default, ast.Call)
-                        and (
-                            (
-                                isinstance(_default.func, ast.Name)
-                                and _default.func.id in partial_aliases
-                            )
-                            or (
-                                isinstance(_default.func, ast.Attribute)
-                                and _default.func.attr == "partial"
-                            )
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            # A callable captured as a parameter default (def f(o=open): o('x','w'))
+            # binds that parameter to the same alias set, so a later call through
+            # the parameter is still gated. defaults align to the tail of
+            # posonlyargs+args; kw_defaults align 1:1 with kwonlyargs (None = none).
+            _a = node.args
+            _defaulted = list(
+                zip(
+                    (_a.posonlyargs + _a.args)[
+                        len(_a.posonlyargs) + len(_a.args) - len(_a.defaults) :
+                    ],
+                    _a.defaults,
+                )
+            ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
+            for _param, _default in _defaulted:
+                if isinstance(_default, ast.Name):
+                    _did = _default.id
+                    if _did in open_aliases:
+                        open_aliases.add(_param.arg)
+                    elif _did in writer_aliases:
+                        writer_aliases.add(_param.arg)
+                    elif _did in archive_ctor_aliases:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _did in getattr_aliases:
+                        getattr_aliases.add(_param.arg)
+                    elif _did in partial_aliases:
+                        partial_aliases.add(_param.arg)
+                    elif _did in code_exec_aliases:
+                        code_exec_aliases.add(_param.arg)
+                    elif _did in dynamic_aliases:
+                        dynamic_aliases.add(_param.arg)
+                elif isinstance(_default, ast.Attribute):
+                    # An attribute writer / archive ctor / captured .open used as
+                    # a default (def f(s=np.save), def f(z=zipfile.ZipFile),
+                    # def f(o=Path('x').open)) binds the parameter like the
+                    # equivalent assignment; a benign attribute (np.mean) does not.
+                    if _default.attr in _AUTO_UNSAFE_PY_WRITE_METHODS:
+                        writer_aliases.add(_param.arg)
+                    elif _default.attr in _ARCHIVE_CTOR_NAMES:
+                        archive_ctor_aliases.add(_param.arg)
+                    elif _default.attr == "open":
+                        dynamic_aliases.add(_param.arg)
+                elif (
+                    isinstance(_default, ast.Call)
+                    and (
+                        (
+                            isinstance(_default.func, ast.Name)
+                            and _default.func.id in partial_aliases
                         )
-                        and _default.args
-                        and _wraps_write_callable(_default.args[0])
-                    ):
-                        dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
-        if _sizes == [len(s) for s in _alias_sets] + [len(literal_str_vars)]:
-            _alias_converged = True
-            break
-    if not _alias_converged:
-        return True
-    # A loader returned from a function escapes this analysis entirely (the
-    # caller's name for it is unknowable here), so returning one asks. Capturing
-    # it in a local, which stays visible, is unaffected.
+                        or (
+                            isinstance(_default.func, ast.Attribute)
+                            and _default.func.attr == "partial"
+                        )
+                    )
+                    and _default.args
+                    and _wraps_write_callable(_default.args[0])
+                ):
+                    dynamic_aliases.add(_param.arg)  # def f(w=partial(open, mode="w"))
+    # Naming a code-executing loader asks, wherever the name appears. Presence
+    # rather than dataflow: a loader can be aliased, subclassed, packed into a
+    # container, returned from a helper or picked by a conditional, and following
+    # it through all of those is a game without an end. A safe read names none of
+    # these, so yaml.safe_load and json.load are unaffected.
+    _module_names = set(_AUTO_UNSAFE_PY_LOAD_MODULES)  # receivers: yaml.load
+    _bare_names = set(_AUTO_UNSAFE_YAML_LOADERS)  # loaders named on their own
+    _imported_modules = set()  # only the module itself, for the return rule
     for node in ast.walk(tree):
-        _escaped = None
-        if isinstance(node, ast.Return) and node.value is not None:
-            _escaped = node.value
-        elif isinstance(node, ast.Lambda):
-            _escaped = node.body
-        if _escaped is not None:
-            # The value handed back, not every name in the expression that
-            # computes it: return yaml.safe_load(path) returns data, not a loader.
-            _returned = (
-                list(_escaped.elts)
-                if isinstance(_escaped, (ast.Tuple, ast.List, ast.Set))
-                else [_escaped]
-            )
-            for sub in _returned:
-                if isinstance(sub, ast.Attribute) and (
-                    sub.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or sub.attr in _AUTO_SAFE_PY_LOAD_CLASSES
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _root = alias.name.split(".")[0]
+                if _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    _imported_modules.add(alias.asname or _root)
+        elif isinstance(node, ast.ImportFrom):
+            _root = (node.module or "").split(".")[0]
+            for alias in node.names:
+                if alias.name in _AUTO_UNSAFE_YAML_LOADERS or (
+                    _root in _AUTO_UNSAFE_PY_LOAD_MODULES
+                    and (
+                        alias.name in _AUTO_UNSAFE_PY_LOAD_ATTRS
+                        or alias.name in _AUTO_UNSAFE_PY_LOAD_CLASSES
+                    )
                 ):
-                    return True
-                # Handing back the module is handing back every loader on it.
-                if isinstance(sub, ast.Name) and (
-                    sub.id in _AUTO_UNSAFE_PY_LOAD_MODULES or sub.id in _loader_class_names
-                ):
-                    return True
-    # Naming an always-unsafe loader anywhere asks, no matter what expression
-    # binds, forwards or invokes it (a decorator, a factory return, a loop, a
-    # starred base, a rebound alias). The safe reads never mention these names.
+                    _bare_names.add(alias.asname or alias.name)
+                elif _root in _AUTO_UNSAFE_PY_LOAD_MODULES:
+                    # from yaml import loader as yl, so yl.Loader still reads as one.
+                    _module_names.add(alias.asname or alias.name)
+    _module_names |= _imported_modules
+
+    def _loader_receiver(node) -> bool:
+        # yaml, a submodule of it (yaml.loader.Loader), or an import alias.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in _module_names
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute):
-            if node.attr in _AUTO_YAML_ONLY_LOADERS:
+            if node.attr in _AUTO_UNSAFE_YAML_LOADERS:
                 return True
-            if node.attr in _AUTO_ALWAYS_UNSAFE_LOAD_ATTRS and _is_load_module(node.value):
+            if (
+                node.attr in _AUTO_UNSAFE_PY_LOAD_ATTRS or node.attr in _AUTO_UNSAFE_PY_LOAD_CLASSES
+            ) and _loader_receiver(node.value):
                 return True
-            # yaml.__dict__["Loader"] reads the module's namespace by name, which
-            # no ordinary config read does.
-            if node.attr == "__dict__" and _is_load_module(node.value):
-                return True
-        elif isinstance(node, ast.Name) and node.id in always_unsafe_aliases:
+        elif isinstance(node, ast.Name) and node.id in _bare_names:
             return True
+        # Handing the module out of a function hands out every loader on it, and
+        # the caller's name for it cannot be seen from here.
+        elif isinstance(node, (ast.Return, ast.Lambda)):
+            _out = node.value if isinstance(node, ast.Return) else node.body
+            if isinstance(_out, ast.Name) and _out.id in _imported_modules:
+                return True
     try:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -4763,21 +4068,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # instead of looking like a harmless ".__call__" attribute call.
                 if isinstance(func, ast.Attribute) and func.attr == "__call__":
                     func = func.value
-                # The callee can be an expression rather than a name:
-                # (yaml.unsafe_load if flag else yaml.safe_load)(s) and
-                # (ld := yaml.unsafe_load)(s) both call a loader. Unwrap to the
-                # loader branch so the checks below see it.
-                if isinstance(func, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
-                    if isinstance(func, ast.NamedExpr):
-                        _cands = [func.value]
-                    elif isinstance(func, ast.IfExp):
-                        _cands = [func.body, func.orelse]
-                    else:
-                        _cands = list(func.values)
-                    for _c in _cands:
-                        if _passed_write_callable(_c):
-                            func = _c
-                            break
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
                 # A concrete write callable (open/writer/archive-ctor alias, or a
@@ -4787,7 +4077,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # branches below gate, but through a user-defined helper
                 # (def run(fn): fn('o','w').write('x'); run(open)). A benign
                 # callable argument (run(len)) is unaffected.
-                if _forwards_callable(node):
+                if any(_passed_write_callable(a) for a in node.args) or any(
+                    _passed_write_callable(kw.value) for kw in node.keywords
+                ):
                     return True
                 if isinstance(func, ast.Name):
                     if func.id in dynamic_aliases:
@@ -4796,19 +4088,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         return True
                     # A writer imported as a bare name (from numpy import save).
                     if func.id in writer_aliases:
-                        return True
-                    # A code-executing loader bound to a bare name
-                    # (from yaml import unsafe_load; ld = yaml.load). Only the
-                    # load functions honour Loader=, so a class alias never does.
-                    if func.id in load_class_aliases:
-                        return True
-                    if (registers_constructor or uses_setattr or patches_loader) and (
-                        func.id in safe_func_aliases or func.id in safe_loader_aliases
-                    ):
-                        return True
-                    if func.id in load_func_aliases and not (
-                        func.id in yaml_func_aliases and _loads_safely(node)
-                    ):
                         return True
                     # A bare archive constructor (from zipfile import ZipFile)
                     # takes the mode as its 2nd arg like open, so ZipFile(x, "w")
@@ -4866,29 +4145,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         and func.value.id in os_aliases
                     ):
                         return True
-                    # yaml.safe_load is a safe read until a constructor has been
-                    # registered, which puts a callback behind the payload's tags.
+                    # A pickle-backed loader (torch.load, joblib.load) can execute
+                    # code embedded in the file it deserializes.
                     if (
-                        (registers_constructor or uses_setattr or patches_loader)
-                        and (
-                            func.attr in _AUTO_SAFE_PY_LOAD_FUNCS
-                            or func.attr in _AUTO_SAFE_PY_LOAD_CLASSES
-                        )
-                        and _is_load_module(func.value)
-                    ):
-                        return True
-                    # A safe-load helper captured on an attribute, once tainted.
-                    if (
-                        registers_constructor or uses_setattr or patches_loader
-                    ) and func.attr in attr_safe_func_aliases:
-                        return True
-                    # A code-executing loader (torch.load, joblib.load,
-                    # yaml.load/unsafe_load) runs code embedded in the data it
-                    # deserializes, unless an explicit safe Loader= rules it out.
-                    if _is_loader_attr(func) and not (
-                        func.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS
-                        and _is_yaml_module(func.value)
-                        and _loads_safely(node)
+                        func.attr == "load"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in load_module_aliases
                     ):
                         return True
                     if func.attr == "open" and _attr_open_writes(node):
@@ -4897,11 +4159,6 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # writes on 'w'/'a'/'x' like the builtin, so gate the attr name.
                     if func.attr in attr_open_aliases and _builtin_open_writes(node):
                         return True
-                    # A loader parked on an attribute (holder.load = yaml.load).
-                    # A yaml load/load_all keeps its Loader= exemption there too.
-                    if func.attr in attr_load_aliases:
-                        if not (func.attr in attr_yaml_load_aliases and _loads_safely(node)):
-                            return True
                     # ZipFile/TarFile/GzipFile/BZ2File/LZMAFile take the mode as
                     # the 2nd arg (like builtin open), so ZipFile(name, "w") writes
                     # but ZipFile(name) reads.
