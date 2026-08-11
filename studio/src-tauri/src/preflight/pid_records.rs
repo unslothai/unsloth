@@ -14,8 +14,24 @@ use std::path::Path;
 /// per-port write is best effort, and the OS reuses pids. So each recorded pid
 /// is then attributed by the executable it is actually running, which is the
 /// part that decides.
+#[cfg(test)]
+pub(super) static TEST_RECORD_ROOT: std::sync::Mutex<Option<std::path::PathBuf>> =
+    std::sync::Mutex::new(None);
+
+/// Where the server writes its records. Overridable in tests so the end to end
+/// case can be driven without touching the real studio home.
+fn record_root() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Ok(guard) = TEST_RECORD_ROOT.lock() {
+        if let Some(root) = guard.clone() {
+            return root;
+        }
+    }
+    crate::diagnostics::studio_dir()
+}
+
 pub(super) fn live_backend_pid_on_port(port: u16) -> Option<u32> {
-    let root = crate::diagnostics::studio_dir();
+    let root = record_root();
     let shared = crate::process_identity::shared_interpreters_in(&root);
     let probe = Probe {
         is_live: &|pid| crate::desktop_backend_owner::pid_is_not_dead(pid),
@@ -285,5 +301,159 @@ mod tests {
             live_backend_pid_in(&home.path().join("absent"), 8888, &live(&ours)),
             None
         );
+    }
+}
+
+/// Real processes and real files, driven through `live_backend_pid_on_port`
+/// rather than the injected probe above: these are the cases the injected tests
+/// cannot vouch for, because the thing under test is what the OS reports.
+#[cfg(test)]
+mod system_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::{Child, Command};
+
+    /// Serialises the record-root override, which is process-wide.
+    static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct RecordRoot {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        dir: PathBuf,
+        written: Vec<PathBuf>,
+    }
+
+    impl RecordRoot {
+        /// Rooted at our own executable's directory, so this process attributes
+        /// as a backend of that tree exactly the way a real one does.
+        fn at_our_own_tree() -> Self {
+            let guard = ROOT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+            *TEST_RECORD_ROOT.lock().unwrap() = Some(dir.clone());
+            Self {
+                _guard: guard,
+                dir,
+                written: Vec::new(),
+            }
+        }
+
+        fn record(&mut self, name: &str, body: &str) {
+            let path = self.dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            self.written.push(path);
+        }
+    }
+
+    impl Drop for RecordRoot {
+        fn drop(&mut self) {
+            for path in &self.written {
+                let _ = std::fs::remove_file(path);
+            }
+            *TEST_RECORD_ROOT.lock().unwrap() = None;
+        }
+    }
+
+    /// A live process that is definitely not running out of our tree.
+    fn spawn_foreign() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd.exe");
+            c.args(["/c", "ping", "-n", "60", "127.0.0.1"]);
+            c
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut c = Command::new("sleep");
+            c.arg("60");
+            c
+        };
+        command.spawn().expect("a foreign process should start")
+    }
+
+    /// The reported case reproduced end to end: a backend of this install is
+    /// recorded on the port, and the repair has to refuse.
+    #[test]
+    fn a_recorded_live_backend_of_this_install_is_found() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let me = std::process::id();
+        root.record(&format!("studio-8888-{me}.pid"), "");
+
+        assert_eq!(live_backend_pid_on_port(8888), Some(me));
+    }
+
+    /// The other half of it: the port answers, but nothing local claims it, so
+    /// the repair proceeds. This is the SSH forward from the report.
+    #[test]
+    fn an_unrecorded_port_finds_nothing() {
+        let _root = RecordRoot::at_our_own_tree();
+
+        assert_eq!(live_backend_pid_on_port(8890), None);
+    }
+
+    #[test]
+    fn a_record_for_a_process_that_exited_is_ignored() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let mut child = spawn_foreign();
+        let pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        root.record(&format!("studio-8891-{pid}.pid"), "");
+
+        assert_eq!(live_backend_pid_on_port(8891), None);
+    }
+
+    /// A live process that is not a backend of ours must not veto a repair,
+    /// which is what a stale record with a reused pid looks like.
+    #[test]
+    fn a_record_pointing_at_a_foreign_live_process_is_ignored() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let mut child = spawn_foreign();
+        root.record(&format!("studio-8892-{}.pid", child.id()), "");
+
+        let found = live_backend_pid_on_port(8892);
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn a_legacy_record_naming_this_install_is_found() {
+        let mut root = RecordRoot::at_our_own_tree();
+        let me = std::process::id();
+        root.record("studio.pid", &me.to_string());
+
+        assert_eq!(live_backend_pid_on_port(8893), Some(me));
+    }
+
+    /// uv symlinks the venv interpreter at a base one outside the tree, so the
+    /// OS reports the base binary as the image. Reproduced with a real symlink
+    /// and a real process: the record must still be able to block. Unix only,
+    /// because a Windows venv holds a real python.exe and cannot hit this.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_interpreter_does_not_look_like_a_foreign_process() {
+        let tree = tempfile::tempdir().unwrap();
+        let bin = tree.path().join("unsloth_studio").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mut child = spawn_foreign();
+        let foreign_exe = std::fs::read_link(format!("/proc/{}/exe", child.id()))
+            .or_else(|_| which_foreign())
+            .unwrap();
+        std::os::unix::fs::symlink(&foreign_exe, bin.join("python")).unwrap();
+
+        let shared = crate::process_identity::shared_interpreters_in(tree.path());
+        let verdict = crate::process_identity::runs_from(child.id(), tree.path(), &shared);
+        // Same process, without the venv link in play, is plainly foreign.
+        let without_link = crate::process_identity::runs_from(child.id(), tree.path(), &[]);
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        assert_eq!(verdict, None, "a symlinked venv interpreter proves nothing");
+        assert_eq!(without_link, Some(false));
+    }
+
+    #[cfg(unix)]
+    fn which_foreign() -> std::io::Result<PathBuf> {
+        std::fs::canonicalize("/bin/sleep").or_else(|_| std::fs::canonicalize("/usr/bin/sleep"))
     }
 }

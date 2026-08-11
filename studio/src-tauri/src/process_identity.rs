@@ -17,12 +17,14 @@ pub(crate) fn executable_path(pid: u32) -> Option<PathBuf> {
 /// and the venv case below.
 ///
 /// `shared_interpreters` are executables that a process inside the tree may be
-/// running without the tree appearing anywhere in its image path. uv builds a
-/// venv whose `bin/python` is a symlink to the base interpreter, which
-/// `install.sh` relies on, and both `/proc/{pid}/exe` and `proc_pidpath` report
-/// the resolved target. Seeing that binary is therefore no proof either way, so
-/// it answers None rather than false: guessing false would let a repair rewrite
-/// the venv underneath a live backend, which is the failure this guards.
+/// running without the tree appearing anywhere in its image path. On unix uv
+/// symlinks `bin/python` at the base interpreter, which `install.sh` relies on,
+/// and both `/proc/{pid}/exe` and `proc_pidpath` report the resolved target. On
+/// Windows uv's `Scripts/python.exe` is a trampoline that spawns the base
+/// interpreter as a child, so the image is the base one there too. Seeing that
+/// binary is therefore no proof either way, so it answers None rather than
+/// false: guessing false would let a repair rewrite the venv underneath a live
+/// backend, which is the failure this guards.
 pub(crate) fn runs_from(pid: u32, tree: &Path, shared_interpreters: &[PathBuf]) -> Option<bool> {
     // argv[0] keeps the path as invoked, so it still names the venv where the
     // image path no longer does. Positive evidence only: a process can be given
@@ -51,9 +53,10 @@ fn is_same_path(left: &Path, right: &Path) -> bool {
 
 /// The command line's argv[0] for `pid`.
 ///
-/// Linux only. macOS needs a KERN_PROCARGS2 sysctl, and Windows reads the
-/// remote PEB; neither is implemented, and neither needs to be, because a
-/// Windows venv holds a real `python.exe` rather than a symlink.
+/// Linux only. macOS needs a KERN_PROCARGS2 sysctl and Windows reads the
+/// remote PEB, neither of which is implemented. On those two a backend started
+/// through a venv is therefore indeterminate rather than positively ours, which
+/// still blocks on a record naming the port.
 #[cfg(target_os = "linux")]
 fn first_argument(pid: u32) -> Option<PathBuf> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
@@ -77,17 +80,70 @@ fn first_argument(_pid: u32) -> Option<PathBuf> {
 /// that does not resolve is dropped, since nothing can be running it.
 pub(crate) fn shared_interpreters_in(tree: &Path) -> Vec<PathBuf> {
     let mut resolved = Vec::new();
-    for venv in ["unsloth_studio", ".venv"] {
-        for (dir, name) in [("bin", "python"), ("Scripts", "python.exe")] {
-            let candidate = tree.join(venv).join(dir).join(name);
-            if let Ok(target) = std::fs::canonicalize(&candidate) {
-                if !resolved.contains(&target) {
-                    resolved.push(target);
-                }
+    let mut add = |candidate: PathBuf| {
+        if let Ok(target) = std::fs::canonicalize(&candidate) {
+            if !resolved.contains(&target) {
+                resolved.push(target);
             }
+        }
+    };
+    for venv in ["unsloth_studio", ".venv"] {
+        let venv = tree.join(venv);
+        for (dir, name) in [("bin", "python"), ("Scripts", "python.exe")] {
+            add(venv.join(dir).join(name));
+        }
+        for base in base_interpreters_of(&venv) {
+            add(base);
         }
     }
     resolved
+}
+
+/// The base interpreters a venv defers to, from its `pyvenv.cfg`.
+///
+/// Needed for more than tidiness on Windows: uv puts a trampoline exe at
+/// `Scripts/python.exe` which spawns the base interpreter as a CHILD process,
+/// so the backend's image path is the base one and the venv path appears
+/// nowhere in it. Canonicalizing the trampoline yields the trampoline, so
+/// without this the running backend would look like a foreign process on the
+/// one platform where argv[0] is not read.
+fn base_interpreters_of(venv: &Path) -> Vec<PathBuf> {
+    let Ok(config) = std::fs::read_to_string(venv.join("pyvenv.cfg")) else {
+        return Vec::new();
+    };
+    let mut home = None;
+    let mut version = None;
+    for line in config.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key.trim() {
+            // The documented key: the directory holding the interpreter this
+            // venv was built from.
+            "home" => home = Some(PathBuf::from(value.trim())),
+            "version_info" => {
+                let mut parts = value.trim().split('.');
+                if let (Some(major), Some(minor)) = (parts.next(), parts.next()) {
+                    version = Some(format!("{major}.{minor}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    let mut names = vec![
+        "python.exe".to_string(),
+        "python3.exe".to_string(),
+        "python".to_string(),
+        "python3".to_string(),
+    ];
+    if let Some(version) = version {
+        names.push(format!("python{version}"));
+        names.push(format!("python{version}.exe"));
+    }
+    names.into_iter().map(|name| home.join(name)).collect()
 }
 
 fn path_is_within(path: &Path, tree: &Path) -> bool {
@@ -224,6 +280,41 @@ mod tests {
             ),
             Some(false)
         );
+    }
+
+    /// uv's Windows trampoline spawns the base interpreter as a child, so the
+    /// venv path is absent from the running image and pyvenv.cfg is the only
+    /// thing tying the two together.
+    #[test]
+    fn the_base_interpreter_from_pyvenv_cfg_is_listed() {
+        let tree = tempfile::tempdir().unwrap();
+        let venv = tree.path().join("unsloth_studio");
+        let base = tree.path().join("base");
+        std::fs::create_dir_all(&venv).unwrap();
+        std::fs::create_dir_all(&base).unwrap();
+        let interpreter = base.join(if cfg!(windows) { "python.exe" } else { "python3.13" });
+        std::fs::write(&interpreter, "").unwrap();
+        std::fs::write(
+            venv.join("pyvenv.cfg"),
+            format!(
+                "home = {}\nimplementation = CPython\nversion_info = 3.13.12\n",
+                base.display()
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            shared_interpreters_in(tree.path()),
+            vec![std::fs::canonicalize(&interpreter).unwrap()]
+        );
+    }
+
+    #[test]
+    fn a_venv_without_a_config_lists_nothing_extra() {
+        let tree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tree.path().join("unsloth_studio")).unwrap();
+
+        assert!(shared_interpreters_in(tree.path()).is_empty());
     }
 
     #[test]
