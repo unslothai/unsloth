@@ -1011,7 +1011,8 @@ def _is_importable_isolated(import_name: str) -> bool:
     return result.returncode == 0
 
 
-def _uninstall_package(pypi_name: str, display_name: str) -> None:
+def _uninstall_package(pypi_name: str, display_name: str) -> bool:
+    """Remove a distribution. True iff it is gone afterwards."""
     if shutil.which("uv"):
         cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
     else:
@@ -1027,6 +1028,27 @@ def _uninstall_package(pypi_name: str, display_name: str) -> None:
     )
     if result.returncode != 0:
         logger.warning("Could not remove the rejected %s install:\n%s", display_name, result.stdout)
+        return False
+    return True
+
+
+def _reject_install(event_queue: Any, pypi_name: str, display_name: str, reason: str) -> None:
+    """Discard an install that will not import, and say which state we ended in.
+
+    Every rejection goes through here. Leaving the distribution in place is not the same as
+    never having installed it: unsloth/models/_utils.py gates on package METADATA and then
+    imports the native module in process, so a wheel the isolated probe could not survive
+    would be loaded anyway and take the training process with it.
+    """
+    logger.warning("%s %s", display_name, reason)
+    if _uninstall_package(pypi_name, display_name):
+        _send_status(event_queue, f"{display_name} is not usable on this GPU; removed it")
+    else:
+        _send_status(
+            event_queue,
+            f"{display_name} is not usable on this GPU and could not be removed; "
+            f"uninstall {pypi_name} manually before training",
+        )
 
 
 def _install_package_wheel_first(
@@ -1127,6 +1149,9 @@ def _install_package_wheel_first(
         # distribution as already satisfying the spec and do nothing. --force-reinstall is
         # not the answer either, since both scope it to the whole resolved transaction,
         # which for flash-attn means torch and the running CUDA stack.
+        #
+        # Not fatal if it fails: the fallback then no-ops on "already satisfied", the probe
+        # below rejects it, and _reject_install reports the state we actually ended in.
         _uninstall_package(pypi_name, display_name)
 
     _send_status(event_queue, pypi_status_message)
@@ -1252,8 +1277,7 @@ def _install_package_wheel_first(
     # rc=0 is not proof again here: pip/uv exit 0 on "Requirement already satisfied" without
     # installing anything, so a rejected wheel would otherwise be reported as a success.
     if not _is_importable_isolated(import_name):
-        logger.warning("%s installed from PyPI but is not importable", display_name)
-        _send_status(event_queue, f"{display_name} is installed but not usable on this GPU")
+        _reject_install(event_queue, pypi_name, display_name, "installed from PyPI but will not import")
         return False
 
     if is_hip:

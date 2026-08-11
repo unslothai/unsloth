@@ -275,7 +275,46 @@ def test_runtime_flash_attn_rejected_wheel_is_not_reported_installed(monkeypatch
     )
 
     assert installed is False
-    assert "flash-attn is installed but not usable on this GPU" in statuses
+    # and it is removed, not left where _package_available would advertise it.
+    assert "flash-attn is not usable on this GPU; removed it" in statuses
+
+
+@linux_only
+def test_runtime_flash_attn_says_so_when_the_rejected_install_cannot_be_removed(monkeypatch):
+    """A distribution still on disk is not the same state as never having installed one."""
+    statuses: list[str] = []
+
+    monkeypatch.delenv(worker._FLASH_ATTN_SKIP_ENV, raising = False)
+    monkeypatch.setattr(builtins, "__import__", _missing_flash_attn_import())
+    monkeypatch.setattr(worker, "_is_importable_isolated", lambda name: False)
+    monkeypatch.setattr(worker, "flash_attn_wheel_url", lambda env: None)
+    monkeypatch.setattr(worker, "url_exists", lambda url: False)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        worker,
+        "_send_status",
+        lambda queue, message: statuses.append(message),
+    )
+    # Install exits 0; every uninstall attempt fails (read-only or locked site-packages).
+    monkeypatch.setattr(
+        worker._sp,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 1 if "uninstall" in cmd else 0, ""
+        ),
+    )
+
+    installed = worker._install_package_wheel_first(
+        event_queue = [],
+        import_name = "flash_attn",
+        display_name = "flash-attn",
+        pypi_name = "flash-attn",
+        pypi_spec = "flash-attn",
+    )
+
+    assert installed is False
+    assert any("could not be removed" in s for s in statuses), statuses
+    assert not any("removed it" in s for s in statuses), statuses
 
 
 @linux_only
