@@ -156,3 +156,171 @@ def test_kb_delete_rolls_back_when_document_cleanup_fails(rag_conn, monkeypatch)
         "doc1",
         "doc2",
     ]
+
+
+def _link_folder(
+    conn,
+    folder_id,
+    scope,
+    path = "/tmp/linked",
+):
+    conn.execute(
+        "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
+        "auto_sync, status, created_at, updated_at) "
+        "VALUES(?,?,?,?,?,?,1,'idle','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')",
+        (folder_id, "knowledge_base", scope.removeprefix("kb_"), scope, path, "linked"),
+    )
+    conn.commit()
+
+
+def test_lexical_fast_path_only_while_no_folder_rows_exist(rag_conn):
+    """The plain FTS query is used exactly when the filters could not exclude anything."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    assert store.linked_folder_rows_exist(rag_conn) is False
+
+    _link_folder(rag_conn, "f1", "kb_a")
+    assert store.linked_folder_rows_exist(rag_conn) is True
+
+    rag_conn.execute("DELETE FROM linked_folders")
+    rag_conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert store.linked_folder_rows_exist(rag_conn) is True
+
+
+def test_lexical_hides_retired_scope_and_unmapped_linked_document(rag_conn):
+    """The filters still apply once a folder row exists, fast path or not."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    _add_doc(rag_conn, "kb_a", "d2", "d2.txt", "h2", ["alpha delta echo"])
+    _link_folder(rag_conn, "f1", "kb_a")
+    # d2 belongs to a folder but has no mapping row yet, so it is not searchable.
+    rag_conn.execute("UPDATE documents SET linked_folder_id='f1' WHERE id='d2'")
+    rag_conn.commit()
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
+
+    rag_conn.execute(
+        "INSERT INTO linked_folder_files(folder_id, relative_path, size_bytes, mtime_ns, "
+        "document_id, synced_at) VALUES('f1', 'd2.txt', 1, 1, 'd2', "
+        "'2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert sorted(cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)) == [
+        "d1:0",
+        "d2:0",
+    ]
+
+    rag_conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def test_lexical_results_match_across_both_query_forms(rag_conn):
+    """The fast path is a shortcut in work, not in behaviour."""
+    for i in range(12):
+        _add_doc(
+            rag_conn, "kb_a", f"d{i}", f"d{i}.txt", f"h{i}", [f"alpha bravo {'charlie ' * (i % 4)}"]
+        )
+    fast = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
+    _link_folder(rag_conn, "f1", "kb_b")  # another scope, so nothing is excluded
+    filtered = store.search_lexical(rag_conn, "kb_a", "alpha bravo", 5)
+    assert fast == filtered
+
+
+def test_lexical_gate_and_read_share_one_snapshot(rag_conn, monkeypatch):
+    """A scope retired between the gate and the FTS read must not reach the read.
+
+    Otherwise the gate decides against a state the read no longer sees, and rows from the
+    retired scope take slots the caller loses at hydration.
+    """
+    from storage import rag_db
+
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    observed = {}
+    real = store.linked_folder_rows_exist
+
+    def retire_midway(conn):
+        observed["gate"] = real(conn)
+        writer = rag_db.get_connection()
+        try:
+            writer.execute(
+                "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+                "VALUES('kb_a', '2026-01-01T00:00:00+00:00')"
+            )
+            writer.commit()
+        finally:
+            writer.close()
+        observed["after_commit"] = real(conn)
+        return observed["gate"]
+
+    monkeypatch.setattr(store, "linked_folder_rows_exist", retire_midway)
+    hits = store.search_lexical(rag_conn, "kb_a", "alpha", 10)
+
+    assert observed["gate"] is False
+    # Same connection, same call, after another connection committed the retirement.
+    assert observed["after_commit"] is False
+    assert [cid for cid, _ in hits] == ["d1:0"]
+    # The snapshot is released, so the next call sees the retirement and hides the row.
+    monkeypatch.setattr(store, "linked_folder_rows_exist", real)
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def test_lexical_reuses_a_transaction_the_caller_already_opened(rag_conn):
+    """A caller holding a transaction keeps its own snapshot, and keeps it open."""
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    rag_conn.execute("BEGIN")
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
+    assert rag_conn.in_transaction
+    rag_conn.commit()
+
+
+def test_gate_ignores_a_purged_tombstone(rag_conn):
+    """Deleting a knowledge base must not disable the fast path for good.
+
+    delete_retired_scope keeps the tombstone and only stamps purged_at, so a gate that
+    counted it would take the filtered query forever after the first ordinary delete.
+    """
+    _add_doc(rag_conn, "kb_a", "d1", "d1.txt", "h1", ["alpha bravo charlie"])
+    rag_conn.execute(
+        "INSERT INTO linked_folder_retired_scopes(scope, retired_at) "
+        "VALUES('kb_gone', '2026-01-01T00:00:00+00:00')"
+    )
+    rag_conn.commit()
+    assert store.linked_folder_rows_exist(rag_conn) is True
+
+    rag_conn.execute(
+        "UPDATE linked_folder_retired_scopes SET purged_at='2026-01-01T00:00:01+00:00'"
+    )
+    rag_conn.commit()
+    assert store.linked_folder_rows_exist(rag_conn) is False
+    assert [cid for cid, _ in store.search_lexical(rag_conn, "kb_a", "alpha", 10)] == ["d1:0"]
+
+
+def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
+    """An orphan left by a crash before _install_mapping stays hidden after unlink.
+
+    Unlink collects only mapped documents, so the folder row goes and this one does not;
+    the gate has to see the document itself or unlinked content becomes searchable.
+    """
+    _link_folder(rag_conn, "f1", "kb_a")
+    store.create_document(
+        rag_conn,
+        scope = "kb_a",
+        filename = "secret.md",
+        sha256 = "h1",
+        document_id = "orphan",
+        linked_folder_id = "f1",
+    )
+    store.add_chunks(
+        rag_conn, "kb_a", "orphan", [_chunk("alpha bravo secret")], [embed("alpha bravo")]
+    )
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+    rag_conn.execute("DELETE FROM linked_folders WHERE id='f1'")
+    rag_conn.commit()
+    assert store.linked_folder_rows_exist(rag_conn) is True
+    assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
