@@ -961,7 +961,13 @@ class _RecordingStudio(studio_client.Studio):
         self._responses = list(responses)
         self.calls = []
 
-    def request(self, method, path, body = None, **kw):
+    def request(
+        self,
+        method,
+        path,
+        body = None,
+        **kw,
+    ):
         self.calls.append((method, path, body, kw.get("auth", True)))
         return self._responses.pop(0)
 
@@ -975,10 +981,12 @@ def test_login_retires_a_bootstrap_password_studio_says_must_change():
     then got 403 "Password change required" from /api/inference/load and
     /api/train/start, so inference, tool calling, training and export were all
     unmeasured behind a login step that reported success."""
-    studio = _RecordingStudio([
-        _login_ok(True),
-        (200, {"access_token": "post-change-token"}),
-    ])
+    studio = _RecordingStudio(
+        [
+            _login_ok(True),
+            (200, {"access_token": "post-change-token"}),
+        ]
+    )
     studio.login("bootstrap-secret")
 
     assert [c[1] for c in studio.calls] == ["/api/auth/login", "/api/auth/change-password"]
@@ -987,8 +995,12 @@ def test_login_retires_a_bootstrap_password_studio_says_must_change():
 
     change_body = studio.calls[1][2]
     assert change_body["current_password"] == "bootstrap-secret"
-    assert change_body["new_password"] != "bootstrap-secret", "the route rejects an unchanged password"
-    assert not any(ch.isspace() for ch in change_body["new_password"]), "the route rejects whitespace"
+    assert (
+        change_body["new_password"] != "bootstrap-secret"
+    ), "the route rejects an unchanged password"
+    assert not any(
+        ch.isspace() for ch in change_body["new_password"]
+    ), "the route rejects whitespace"
     # Authenticated, or change-password 401s rather than 403s.
     assert studio.calls[1][3] is True
 
