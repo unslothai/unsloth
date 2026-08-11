@@ -2441,7 +2441,12 @@ if (-not $HasNvidiaSmi) {
             }
             # Only the WMI path carries more than one name; other callers left a single
             # synthesized label, so default to it.
-            $gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }
+            # @() wraps the WHOLE if, not each branch: a one-element branch unrolls on its way
+            # out, leaving a bare String on a single-adapter host, and $gpuNames[$nameIdx] then
+            # indexes the NAME and yields "A". Nothing maps, and the $nameArches[0] rescue below
+            # is skipped under a visible-device mask, so a pinned single-GPU host inferred no
+            # arch at all -- the same "gpu none" the WMI scan above used to report.
+            $gpuNames = @(if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) })
             # Index over the ADAPTER list, not the inferred arches: an unrecognised name
             # drops out below, and indexing the shortened list would name the wrong card.
             $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
@@ -2468,6 +2473,23 @@ if (-not $HasNvidiaSmi) {
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
             }
         }
+    }
+    # 3. Last resort: the arch install.ps1 resolved a second ago. Last because everything above
+    #    is mask- and shadowing-aware and the installer's scan is not, so this fills a gap rather
+    #    than deposing a better answer. Without it, a scan that answers there but not here expects
+    #    cpu torch against the ROCm wheels just placed, calls the venv stale, and loops forever.
+    #    Private, never UNSLOTH_ROCM_GFX_ARCH: nested installers read that as an operator
+    #    override, and this value is inferred, not chosen by anyone.
+    #    Skipped under a visible-device mask, matching the inference above, which leaves
+    #    $pickedName unset rather than borrowing a peer's arch when pinned. The installer's scan
+    #    ignores the masks, so its answer is the FIRST adapter, not the selected one, and taking
+    #    it would install for a GPU the mask hides from the runtime entirely. A host that wants
+    #    an arch named under a mask sets UNSLOTH_ROCM_GFX_ARCH, which still wins above.
+    if (-not $script:ROCmGfxArch -and $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -and
+        -not (Test-VisibleDevicesPinned)) {
+        $script:ROCmGfxArch = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF.Trim().ToLower()
+        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+        substep "gfx arch forwarded by the installer: $script:ROCmGfxArch" "Cyan"
     }
     # Capture ROCm version early for display and wheel selection.
     # Run whenever the HIP SDK binary is present, not just when the device is accessible --

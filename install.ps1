@@ -3311,9 +3311,19 @@ exit 0
         }
         if (-not $HasROCm) {
             try {
-                $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match "AMD|Radeon" } |
-                    Select-Object -First 1
+                # ConfigManagerErrorCode 0 is "working properly". Filter on it exactly as
+                # setup.ps1's scan does: taking a card setup discards names an arch for a GPU
+                # that is not the active one, and since a mapped arch installs ROCm wheels right
+                # here, a disabled Radeon listed ahead of a healthy one bought wheels for the
+                # dead card while the live one went unserved.
+                # If the filter leaves none, keep the full list: code 45 ("not connected") is
+                # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
+                # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
+                $amdAdapters = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match "AMD|Radeon" })
+                $healthyAdapters = @($amdAdapters | Where-Object {
+                    ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+                $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
                 if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
             } catch {}
         }
@@ -4696,6 +4706,24 @@ exit 0
     # installer looked, and there is none".
     $env:_UNSLOTH_PS_PROXY_DEFAULTS =
         if ($UnslothProxyHandoffJson) { $UnslothProxyHandoffJson } else { '{}' }
+    # Forward the arch this run resolved. Both scripts scan WMI, so a scan that answers here but
+    # not there leaves setup expecting cpu torch against the ROCm wheels just installed: it
+    # reports "needs repair", the installer rolls back, and the app retries that forever.
+    #
+    # PRIVATE, not UNSLOTH_ROCM_GFX_ARCH: install_llama_prebuilt.py reads that one back as
+    # _manual to decide whether a forwarded --rocm-gfx outranks its own probe, and this scan is
+    # the weaker of the two anyway (first AMD adapter, no visible-device mask, no shadowing-iGPU
+    # repick, all of which setup.ps1 applies). So setup consumes it only after its own probes
+    # come up empty, and nested installers never see it.
+    $previousRocmGfxHandoff = $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF
+    $hadPreviousRocmGfxHandoff = ($null -ne $previousRocmGfxHandoff)
+    if ($ROCmGfxArch) {
+        $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $ROCmGfxArch
+    } else {
+        # Cleared, not left alone: an inherited value from an outer process is not this run's
+        # answer, and handing it down would forward an arch nothing here detected.
+        Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
+    }
     try {
         & $UnslothExe @studioArgs
         $setupExit = $LASTEXITCODE
@@ -4714,6 +4742,11 @@ exit 0
             $env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF = $previousSetupRuntimeGateHandoff
         } else {
             Remove-Item Env:_UNSLOTH_STUDIO_RUNTIME_GATE_HANDOFF -ErrorAction SilentlyContinue
+        }
+        if ($hadPreviousRocmGfxHandoff) {
+            $env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF = $previousRocmGfxHandoff
+        } else {
+            Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
         if ($hadPreviousProxyHandoff) {
             $env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff
