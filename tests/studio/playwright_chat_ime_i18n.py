@@ -10,6 +10,7 @@ playwright_chat_ui.py: BASE_URL, STUDIO_NEW_PW, PW_ART_DIR, STUDIO_UI_STRICT.
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -119,11 +120,35 @@ with sync_playwright() as p:
     console_errors: list[str] = []
     expected_probe_cancel_500s = [0]
 
+    # A send answers "does this thread / message row exist yet" with a GET that
+    # 404s until the row lands (#8136 replaced a full listing with that read),
+    # and the browser logs every 404 as a console.error with no URL in its text.
+    # Those two reads are expected traffic on a healthy send, so they are matched
+    # on the failing resource's URL -- taken from the console message's location,
+    # not its text -- and nothing else is exempted.
+    EXPECTED_404_URL_RES = (
+        re.compile(r"/api/chat/threads/[^/?#]+$"),
+        re.compile(r"/api/chat/threads/[^/?#]+/messages/[^/?#]+$"),
+    )
+
+    def _is_expected_send_404(text: str, url: str) -> bool:
+        if "status of 404" not in text:
+            return False
+        return any(pattern.search(url) for pattern in EXPECTED_404_URL_RES)
+
     def _on_console(m):
         if m.type != "error":
             return
         try:
-            console_errors.append(m.text)
+            text = m.text
+            url = ""
+            try:
+                url = (m.location or {}).get("url", "") or ""
+            except Exception:
+                url = ""
+            if _is_expected_send_404(text, url):
+                return
+            console_errors.append(text)
         except Exception:
             return
 
@@ -572,6 +597,17 @@ with sync_playwright() as p:
     )
     # Second watchdog cycle: requestSubmit() after the re-armed window must be
     # allowed; the buggy build stays gated forever.
+    #
+    # The flush has to be read off the composer that is on screen when the
+    # submit settles, not off the node captured before it. A send in a new chat
+    # swaps the empty-thread view for the thread view, so React unmounts the
+    # textarea this step composed into and mounts a fresh one. Since #8136
+    # rendered the send without waiting on persistence, that swap lands inside
+    # the 250ms settle window, and the detached node keeps '你好' forever --
+    # which reads as "Send never unlocked" on a build that sent the message
+    # correctly. `sent` is the corroboration that the flush came from a real
+    # send and not from the composer being replaced: a blocked submit leaves
+    # the text in the live composer and adds no user message.
     rearm_probe = page.evaluate(
         """async (selector) => {
             const ta = document.querySelector(selector);
@@ -580,25 +616,46 @@ with sync_playwright() as p:
             const before = ta.value;
             // Wait past the 2500ms watchdog + slack so the re-armed timer
             // fires. If the fix is missing this still resolves but the
-            // submit will not flush the textarea.
+            // submit will not flush the composer.
             await new Promise(r => setTimeout(r, 3500));
             try { form.requestSubmit(); } catch (e) {}
-            // Give the submit handler a tick to flush state.
-            await new Promise(r => setTimeout(r, 250));
-            return {ok: true, before, after: ta.value};
+            // Give the submit handler a tick to flush state, then re-read the
+            // live composer (see above; `ta` may be detached by now).
+            let live = null;
+            let sent = false;
+            for (let i = 0; i < 12; i++) {
+                await new Promise(r => setTimeout(r, 250));
+                live = document.querySelector(selector);
+                sent = Array.from(
+                    document.querySelectorAll('.aui-user-message-root')
+                ).some((n) => (n.innerText || '').includes(before));
+                if (sent && live && live.value !== before) break;
+            }
+            return {
+                ok: true,
+                before,
+                after: live ? live.value : null,
+                sent,
+                detached: !ta.isConnected,
+            };
         }""",
         'textarea[aria-label="Message input"]',
     )
-    if rearm_probe.get("ok") and rearm_probe.get("after") == rearm_probe.get("before"):
+    if rearm_probe.get("ok") and (
+        rearm_probe.get("after") == rearm_probe.get("before") or not rearm_probe.get("sent")
+    ):
         shoot("06d-keydown-rearm-FAIL")
         fail(
             "After the keydown re-pin the watchdog never re-armed; Send "
             "stayed permanently locked on the WSL+Chrome stuck-end path "
-            "(#5546 follow-up regression)."
+            "(#5546 follow-up regression). Live composer still "
+            f"{rearm_probe.get('after')!r}, message delivered="
+            f"{rearm_probe.get('sent')}."
         )
     info(
-        "watchdog re-armed after keydown re-pin: textarea flushed from "
-        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r}"
+        "watchdog re-armed after keydown re-pin: composer flushed from "
+        f"{rearm_probe.get('before')!r} to {rearm_probe.get('after')!r} "
+        f"(message delivered; composer node swapped={rearm_probe.get('detached')})"
     )
     shoot("06d-keydown-rearm")
     info("keydown re-pin re-arm PASS")
