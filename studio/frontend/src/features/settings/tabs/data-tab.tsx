@@ -19,7 +19,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { FEATURE_TRAIN } from "@/config/disabled-features";
+import {
+  FEATURE_RECIPES,
+  FEATURE_TRAIN,
+} from "@/config/disabled-features";
 import { usePlatformStore } from "@/config/env";
 import {
   EXPORT_FORMATS_LIST,
@@ -116,7 +119,10 @@ export function DataTab() {
     : "export";
   // derived, not corrected: a stored "train" returns when chat-only flips off.
   const fineTuneAction =
-    trainUnavailable && restoredAction === "train" ? "export" : restoredAction;
+    (trainUnavailable && restoredAction === "train") ||
+    (!FEATURE_RECIPES && restoredAction === "recipes")
+      ? "export"
+      : restoredAction;
   // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
   // Requests can arrive after Data is already mounted (for example from the
@@ -493,7 +499,9 @@ export function DataTab() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 {FINE_TUNE_ACTIONS.filter(
-                  (action) => action !== "train" || FEATURE_TRAIN,
+                  (action) =>
+                    (action !== "train" || FEATURE_TRAIN) &&
+                    (action !== "recipes" || FEATURE_RECIPES),
                 ).map((action) => (
                   <DropdownMenuItem
                     key={action}

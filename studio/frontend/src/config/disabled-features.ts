@@ -7,3 +7,8 @@
  */
 export const FEATURE_IMAGES = false;
 export const FEATURE_TRAIN = false;
+export const FEATURE_PROJECTS = false;
+export const FEATURE_VIDEO = false;
+export const FEATURE_RECIPES = false;
+export const FEATURE_EXPORT = false;
+export const FEATURE_API_MONITOR = false;

@@ -1,7 +1,11 @@
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { FEATURE_IMAGES } from "@/config/disabled-features";
+import {
+  FEATURE_API_MONITOR,
+  FEATURE_IMAGES,
+  FEATURE_VIDEO,
+} from "@/config/disabled-features";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { hasAuthToken } from "@/features/auth";
@@ -200,12 +204,12 @@ function RootLayout() {
   const shouldMountImages = FEATURE_IMAGES && (isImagesRoute || imagesMounted);
 
   // Same persistent mount for /video so a long generation keeps running off-tab. Mounts lazily on first visit, then stays mounted, hidden+inert while off-route.
-  const isVideoRoute = pathname === "/video";
+  const isVideoRoute = FEATURE_VIDEO && pathname === "/video";
   const [videoMounted, setVideoMounted] = useState(isVideoRoute);
   if (isVideoRoute && !videoMounted) {
     setVideoMounted(true);
   }
-  const shouldMountVideo = isVideoRoute || videoMounted;
+  const shouldMountVideo = FEATURE_VIDEO && (isVideoRoute || videoMounted);
   // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
   const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
@@ -294,7 +298,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       {!isAuthFlowRoute && <SettingsDialog />}
       {/* Opens itself when API traffic arrives; hides on the full monitor page. */}
-      {!isAuthFlowRoute && <ApiMonitorOverlay />}
+      {!isAuthFlowRoute && FEATURE_API_MONITOR && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />

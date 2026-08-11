@@ -1,5 +1,13 @@
 import { Switch } from "@/components/ui/switch";
-import { FEATURE_IMAGES, FEATURE_TRAIN } from "@/config/disabled-features";
+import {
+  FEATURE_API_MONITOR,
+  FEATURE_EXPORT,
+  FEATURE_IMAGES,
+  FEATURE_PROJECTS,
+  FEATURE_RECIPES,
+  FEATURE_TRAIN,
+  FEATURE_VIDEO,
+} from "@/config/disabled-features";
 import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -119,8 +127,13 @@ export function SidebarNavCustomizer() {
   // untouched and reappended on reorder, so flipping a flag back restores them.
   const visibleNav = sidebarNav.filter(
     (item) =>
+      (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
-      (item.id !== "train" || FEATURE_TRAIN),
+      (item.id !== "train" || FEATURE_TRAIN) &&
+      (item.id !== "video" || FEATURE_VIDEO) &&
+      (item.id !== "recipes" || FEATURE_RECIPES) &&
+      (item.id !== "export" || FEATURE_EXPORT) &&
+      (item.id !== "api" || FEATURE_API_MONITOR),
   );
   const hiddenNav = sidebarNav.filter((item) => !visibleNav.includes(item));
   const unpinnedCount = visibleNav.filter((item) => !item.pinned).length;

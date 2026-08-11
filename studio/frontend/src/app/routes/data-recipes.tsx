@@ -1,7 +1,12 @@
 
 
 
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { FEATURE_RECIPES } from "@/config/disabled-features";
+import {
+  createRoute,
+  lazyRouteComponent,
+  redirect,
+} from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -14,6 +19,11 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/data-recipes",
   staticData: { title: "Data Recipes" },
-  beforeLoad: () => requireAuth(),
+  beforeLoad: () => {
+    if (!FEATURE_RECIPES) {
+      throw redirect({ to: "/chat" });
+    }
+    return requireAuth();
+  },
   component: DataRecipesPage,
 });

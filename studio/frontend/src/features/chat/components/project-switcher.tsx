@@ -8,6 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { FEATURE_PROJECTS } from "@/config/disabled-features";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -116,10 +117,14 @@ export function ProjectSwitcher({
             </DropdownMenuItem>
           );
         })}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onViewAllProjects}>
-          View all projects
-        </DropdownMenuItem>
+        {FEATURE_PROJECTS && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onViewAllProjects}>
+              View all projects
+            </DropdownMenuItem>
+          </>
+        )}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

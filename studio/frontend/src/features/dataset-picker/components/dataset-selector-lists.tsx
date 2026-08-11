@@ -12,6 +12,7 @@ import { resolvePickerDeviceListState } from "@/components/resource-picker/picke
 import { SelectablePickerItem } from "@/components/resource-picker/selectable-picker-item";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { FEATURE_RECIPES } from "@/config/disabled-features";
 import { cacheLocalPathMatchesSelection } from "@/features/training";
 import { useT } from "@/i18n";
 import type { Ref } from "react";
@@ -108,14 +109,16 @@ export function DatasetDeviceList({
         <p className="text-xs text-muted-foreground">
           {t("studio.datasetPicker.noLocalDatasets")}
         </p>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={onOpenDataRecipes}
-        >
-          {t("studio.datasetPicker.openDataRecipes")}
-        </Button>
+        {FEATURE_RECIPES && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onOpenDataRecipes}
+          >
+            {t("studio.datasetPicker.openDataRecipes")}
+          </Button>
+        )}
       </div>
     );
   }

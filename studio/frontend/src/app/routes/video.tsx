@@ -1,7 +1,8 @@
 
 
 
-import { createRoute } from "@tanstack/react-router";
+import { FEATURE_VIDEO } from "@/config/disabled-features";
+import { createRoute, redirect } from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -21,6 +22,11 @@ export const Route = createRoute({
       ? { ggufQuant: search.ggufQuant }
       : {}),
   }),
-  beforeLoad: () => requireAuth(),
+  beforeLoad: () => {
+    if (!FEATURE_VIDEO) {
+      throw redirect({ to: "/chat" });
+    }
+    return requireAuth();
+  },
   component: () => null,
 });

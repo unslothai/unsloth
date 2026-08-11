@@ -1,7 +1,12 @@
 
 
 
-import { createRoute, lazyRouteComponent } from "@tanstack/react-router";
+import { FEATURE_EXPORT } from "@/config/disabled-features";
+import {
+  createRoute,
+  lazyRouteComponent,
+  redirect,
+} from "@tanstack/react-router";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -20,7 +25,12 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/export",
   staticData: { title: "Export" },
-  beforeLoad: () => requireAuth(),
+  beforeLoad: () => {
+    if (!FEATURE_EXPORT) {
+      throw redirect({ to: "/chat" });
+    }
+    return requireAuth();
+  },
   validateSearch: (search: Record<string, unknown>): ExportSearch => ({
     run: typeof search.run === "string" ? search.run : undefined,
   }),

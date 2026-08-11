@@ -1,7 +1,8 @@
 
 
 
-import { createRoute } from "@tanstack/react-router";
+import { FEATURE_RECIPES } from "@/config/disabled-features";
+import { createRoute, redirect } from "@tanstack/react-router";
 import type { ReactElement } from "react";
 import { lazy } from "react";
 import { requireAuth } from "../auth-guards";
@@ -17,7 +18,12 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/data-recipes/$recipeId",
   staticData: { title: "Data Recipes" },
-  beforeLoad: () => requireAuth(),
+  beforeLoad: () => {
+    if (!FEATURE_RECIPES) {
+      throw redirect({ to: "/chat" });
+    }
+    return requireAuth();
+  },
   component: DataRecipeEditorRoute,
 });
 

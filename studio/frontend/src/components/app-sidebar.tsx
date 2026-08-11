@@ -50,7 +50,15 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { FEATURE_IMAGES, FEATURE_TRAIN } from "@/config/disabled-features";
+import {
+  FEATURE_API_MONITOR,
+  FEATURE_EXPORT,
+  FEATURE_IMAGES,
+  FEATURE_PROJECTS,
+  FEATURE_RECIPES,
+  FEATURE_TRAIN,
+  FEATURE_VIDEO,
+} from "@/config/disabled-features";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import {
@@ -1204,8 +1212,13 @@ export function AppSidebar() {
   // Switched-off destinations drop out of both the inline rows and "More" (see config/disabled-features).
   const enabledNav = sidebarNav.filter(
     (item) =>
+      (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
-      (item.id !== "train" || FEATURE_TRAIN),
+      (item.id !== "train" || FEATURE_TRAIN) &&
+      (item.id !== "video" || FEATURE_VIDEO) &&
+      (item.id !== "recipes" || FEATURE_RECIPES) &&
+      (item.id !== "export" || FEATURE_EXPORT) &&
+      (item.id !== "api" || FEATURE_API_MONITOR),
   );
   const unpinnedNavIds = enabledNav
     .filter((item) => !item.pinned)

@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { FEATURE_API_MONITOR } from "@/config/disabled-features";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
@@ -171,7 +172,7 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <MonitorLink />
+      {FEATURE_API_MONITOR && <MonitorLink />}
 
       <RemoteAccessSection />
 
