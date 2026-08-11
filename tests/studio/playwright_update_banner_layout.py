@@ -157,11 +157,29 @@ ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
 # Windows laptop; 900x600 is the desktop app's own minimum window; the rest are
 # ordinary small windows down to a phone in portrait.
 RESIZE_SWEEP = [
-    (3840, 2160), (2560, 1440), (1920, 1080), (1680, 1050), (1600, 900),
-    (1512, 982), (1440, 900), (1366, 768), (1280, 800), (1280, 720),
-    (1152, 720), (1024, 768), (1024, 600), (960, 640), (900, 600),
-    (800, 600), (768, 500), (720, 480), (640, 480), (430, 932),
-    (390, 844), (360, 640), (320, 568),
+    (3840, 2160),
+    (2560, 1440),
+    (1920, 1080),
+    (1680, 1050),
+    (1600, 900),
+    (1512, 982),
+    (1440, 900),
+    (1366, 768),
+    (1280, 800),
+    (1280, 720),
+    (1152, 720),
+    (1024, 768),
+    (1024, 600),
+    (960, 640),
+    (900, 600),
+    (800, 600),
+    (768, 500),
+    (720, 480),
+    (640, 480),
+    (430, 932),
+    (390, 844),
+    (360, 640),
+    (320, 568),
 ]
 
 # What a resize needs before it has settled: the ResizeObserver, the placement
@@ -532,7 +550,7 @@ def main() -> int:
         browser = getattr(p, PLAYWRIGHT_BROWSER).launch(**launch_kwargs)
 
         llama_payload = [LLAMA_STATUS]
-        for width, height in (VIEWPORTS[2:5] if SPOT else VIEWPORTS):
+        for width, height in VIEWPORTS[2:5] if SPOT else VIEWPORTS:
             context = browser.new_context(
                 viewport = {"width": width, "height": height},
                 reduced_motion = "reduce",
@@ -563,7 +581,7 @@ def main() -> int:
                 ),
             )
             page = context.new_page()
-            for name, path in (ROUTES[:1] if SPOT else ROUTES):
+            for name, path in ROUTES[:1] if SPOT else ROUTES:
                 size = f"{width}x{height}"
                 boot(page, path)
                 if path == "/":
@@ -657,7 +675,8 @@ def main() -> int:
                 a, b = restored[name], fresh[name]
                 check(
                     f"{back_w}x{back_h}: the {name} restores to where a fresh load puts it",
-                    a is not None and b is not None
+                    a is not None
+                    and b is not None
                     and abs(a["top"] - b["top"]) <= 1.0
                     and abs(a["height"] - b["height"]) <= 1.0,
                     f"restored={a} fresh={b}",
@@ -699,9 +718,7 @@ def main() -> int:
                     f"--ui-font-scale={scale!r}, so the rest of this pass proves nothing",
                 )
                 measure(page, f"{width}x{height} at {UI_FONT_SIZE_MAX}px")
-                page.screenshot(
-                    path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png")
-                )
+                page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
                 context.close()
         finally:
             set_ui_font_size(session["access_token"], None)
