@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The direct VC++ runtime download must negotiate TLS 1.2 on legacy protocol defaults."""
+"""Security checks on the direct VC++ runtime download in studio/setup.ps1."""
 
 from __future__ import annotations
 
@@ -25,6 +25,18 @@ def _download_block() -> str:
     start = source.index(_START)
     end = source.index(_END, start) + len(_END)
     return source[start:end]
+
+
+def test_the_download_is_verified_as_microsoft_signed_before_it_runs():
+    # The evergreen aka.ms URL cannot be hash-pinned, so Authenticode is the only integrity
+    # check available, and it is worthless unless it happens before Start-Process.
+    block = _download_block()
+    download = block.index("Invoke-WebRequest")
+    verify = block.index("Get-AuthenticodeSignature", download)
+    execute = block.index("Start-Process", verify)
+    assert download < verify < execute
+    assert "SignatureStatus]::Valid" in block
+    assert "Microsoft Corporation" in block
 
 
 def _script(starting_protocol: str) -> str:

@@ -1514,6 +1514,17 @@ function Ensure-VCRedist {
         } catch { $_prevProtocol = $null }
         try {
             Invoke-WebRequest -Uri $url -OutFile $dst -UseBasicParsing -TimeoutSec 300
+            # HTTPS only protects the transfer; the executable is a separate trust boundary,
+            # and the evergreen URL cannot be hash-pinned the way the uv archive is. Make
+            # Windows validate the Authenticode chain and confirm Microsoft signed it before
+            # running it with this process's privileges. A failure here throws into the catch
+            # below, which is the same non-fatal path a failed download already takes.
+            $_sig = Get-AuthenticodeSignature -LiteralPath $dst
+            if ($_sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+                $null -eq $_sig.SignerCertificate -or
+                $_sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Microsoft Corporation"?(,|$)') {
+                throw "the downloaded VC++ runtime is not validly signed by Microsoft (status: $($_sig.Status))"
+            }
             $p = Start-Process -FilePath $dst -ArgumentList '/quiet', '/norestart' -Wait -PassThru
             # 3010 = success, reboot required; usable either way.
             if ($p.ExitCode -notin @(0, 3010)) {
