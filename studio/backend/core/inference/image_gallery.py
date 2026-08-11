@@ -223,9 +223,7 @@ def set_flags(
         path = owned_image_path(image_id)
         if path is None:
             return None
-        gallery_flags.set_flags_locked(
-            gallery_dir(), image_id, pinned = pinned, archived = archived
-        )
+        gallery_flags.set_flags_locked(gallery_dir(), image_id, pinned = pinned, archived = archived)
         meta = _read_meta(path)
     if meta is None:  # raced a delete between the guard and the read
         return None

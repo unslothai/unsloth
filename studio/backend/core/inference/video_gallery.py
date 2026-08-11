@@ -377,9 +377,7 @@ def set_flags(
     with gallery_flags.exclusive(gallery_dir()):
         if owned_video_path(video_id) is None:
             return None
-        gallery_flags.set_flags_locked(
-            gallery_dir(), video_id, pinned = pinned, archived = archived
-        )
+        gallery_flags.set_flags_locked(gallery_dir(), video_id, pinned = pinned, archived = archived)
         meta = _read_meta(_sidecar_path(video_id))
     if meta is None:  # raced a delete between the guard and the read
         return None
