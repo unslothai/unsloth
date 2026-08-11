@@ -142,9 +142,13 @@ def _render_registered_vlm_prompt(
         # foreign model type into an unrelated renderer. Registry keys are ASCII.
         folded = _ascii_registry_key(model_type)
         matches = (
-            [key for key in model_config
-             if isinstance(key, str) and _ascii_registry_key(key) == folded]
-            if folded is not None else []
+            [
+                key
+                for key in model_config
+                if isinstance(key, str) and _ascii_registry_key(key) == folded
+            ]
+            if folded is not None
+            else []
         )
         # An ambiguous fold is not evidence: stay fail-closed rather than pick
         # whichever key the registry happened to insert first.

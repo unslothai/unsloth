@@ -1728,11 +1728,11 @@ def test_mlx_registered_renderer_accepts_published_nemotron_model_type_case():
 @pytest.mark.parametrize(
     ("published", "resolves"),
     [
-        ("NemotronH_Nano_Omni_Reasoning_V3", True),   # the real published case
-        ("SMOLVLM", True),                            # ordinary ASCII case shift
-        ("smolvlm", True),                            # already canonical
-        ("ſmolvlm", False),                      # casefold("ſ") == "s"
-        ("smolvlẞ", False),                      # casefold("ẞ") == "ss"
+        ("NemotronH_Nano_Omni_Reasoning_V3", True),  # the real published case
+        ("SMOLVLM", True),  # ordinary ASCII case shift
+        ("smolvlm", True),  # already canonical
+        ("ſmolvlm", False),  # casefold("ſ") == "s"
+        ("smolvlẞ", False),  # casefold("ẞ") == "ss"
         ("no_such_renderer_anywhere", False),
     ],
 )
@@ -1761,7 +1761,10 @@ def test_mlx_renderer_canonicalization_is_ascii_only(monkeypatch, published, res
 
     model = SimpleNamespace(config = {"model_type": published})
     out = _render_registered_vlm_prompt(
-        None, model, [{"role": "user", "content": "hi"}], num_images = 0,
+        None,
+        model,
+        [{"role": "user", "content": "hi"}],
+        num_images = 0,
     )
 
     if resolves:
@@ -1785,9 +1788,15 @@ def test_mlx_renderer_refuses_ambiguous_case_insensitive_registry(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_vlm.prompt_utils", prompt_utils)
 
     model = SimpleNamespace(config = {"model_type": "DUPE_MODEL"})
-    assert _render_registered_vlm_prompt(
-        None, model, [{"role": "user", "content": "hi"}], num_images = 0,
-    ) is None
+    assert (
+        _render_registered_vlm_prompt(
+            None,
+            model,
+            [{"role": "user", "content": "hi"}],
+            num_images = 0,
+        )
+        is None
+    )
 
 
 def test_mlx_generate_audio_input_deltas_and_reject(monkeypatch):
