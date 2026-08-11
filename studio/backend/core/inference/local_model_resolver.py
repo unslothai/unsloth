@@ -380,11 +380,8 @@ def invalidate_index(*, additions_only: bool = False) -> None:
         # fresh timestamp paired with already-revoked trust.
         stamp = -now if additions_only and _snapshot_is_trusted(timestamp, now) else 0.0
         _scan = (stamp, retained)
-    # _index() holds _lock for the whole scan. If this invalidation waited for an
-    # active warmer to publish, that worker may still own the warm slot even though
-    # the snapshot it just built is stale again. Preserve a second pass before the
-    # worker can retire. A later warm_index_soon() call starts a worker normally if
-    # the previous one won the race and already released the slot.
+    # This may have waited out a scan on _lock, so the warmer that just published can
+    # still own the slot with a snapshot that is stale again. See _warm_pending.
     with _warm_lock:
         if _warming:
             _warm_pending = True
