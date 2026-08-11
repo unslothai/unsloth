@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from utils.models.model_config import _AUDIO_TOKEN_PATTERNS, is_audio_input_type
 
 
@@ -219,3 +221,97 @@ def test_an_online_transient_failure_still_retries_immediately(monkeypatch):
     for _ in range(3):
         model_config.detect_audio_type_checked("org/gated", local_files_only = False)
     assert len(probes) == 3, probes
+
+
+def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
+    """The marker list is what lets a large text tokenizer_config be settled without
+    parsing it. It cannot be derived from the patterns, which are lambdas, so a codec
+    added there without a marker here would silently stop being detected."""
+    from utils.models.model_config import (
+        _AUDIO_TOKEN_MARKERS,
+        _AUDIO_TOKEN_PATTERNS,
+        _may_hold_audio_tokens,
+    )
+
+    # Fails when a codec is added, which is the point: add its marker too.
+    assert set(_AUDIO_TOKEN_PATTERNS) == {
+        "csm", "whisper", "bicodec", "dac", "snac", "audio_vlm",
+    }
+
+    # Whatever each pattern matches, the marker scan must let it through to the parse.
+    samples = {
+        "csm": ["<|AUDIO|>", "<|audio_eos|>"],
+        "whisper": ["<|startoftranscript|>"],
+        "bicodec": ["<|bicodec_semantic_0|>"],
+        "dac": ["<|audio_start|>", "<|audio_end|>", "<|text_start|>", "<|text_end|>"],
+        "snac": [f"<custom_token_{i}>" for i in range(10001)],
+        "audio_vlm": ["<audio_soft_token>"],
+    }
+    for audio_type, tokens in samples.items():
+        assert _classify(tokens) == audio_type, audio_type
+        assert _may_hold_audio_tokens(json.dumps(tokens)), audio_type
+    assert _may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
+
+    # And an ordinary text tokenizer is settled without a parse.
+    assert not _may_hold_audio_tokens(
+        json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
+    )
+    assert all(marker in "".join(_AUDIO_TOKEN_MARKERS) for marker in _AUDIO_TOKEN_MARKERS)
+
+
+def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
+    """The saving, pinned: an ordinary checkpoint's tokenizer_config is read but never
+    handed to json.loads, which was the bulk of a cold /loras scan."""
+    import json as json_module
+
+    from utils.models import model_config
+
+    config = {
+        "added_tokens_decoder": {
+            str(i): {"content": f"<|extra_token_{i}|>", "special": True}
+            for i in range(5000)
+        }
+    }
+    checkpoint = tmp_path / "run"
+    checkpoint.mkdir()
+    (checkpoint / "tokenizer_config.json").write_text(json_module.dumps(config))
+
+    parsed = []
+    real_loads = model_config.json.loads
+    monkeypatch.setattr(
+        model_config.json,
+        "loads",
+        lambda raw, *a, **kw: (parsed.append(len(raw)), real_loads(raw, *a, **kw))[1],
+    )
+
+    result, definitive = model_config._detect_audio_from_tokenizer(
+        str(checkpoint), local_files_only = True
+    )
+
+    assert result is None
+    # Read successfully, so "not audio" is a definitive answer, not an unknown.
+    assert definitive is True
+    assert parsed == [], parsed
+
+
+def test_a_half_written_tokenizer_stays_unknown(tmp_path):
+    """The skip-the-parse path must not turn a training run's part-written tokenizer into
+    a definitive "not audio", which would be cached for the life of the process. It stays
+    unknown, exactly as it did when json.loads raised on the truncated text."""
+    from utils.models import model_config
+
+    checkpoint = tmp_path / "mid_write"
+    checkpoint.mkdir()
+    whole = json.dumps({"added_tokens_decoder": {"0": {"content": "<|plain|>"}}})
+    (checkpoint / "tokenizer_config.json").write_text(whole[: len(whole) // 2])
+
+    result, definitive = model_config._detect_audio_from_tokenizer(
+        str(checkpoint), local_files_only = True
+    )
+    assert result is None
+    assert definitive is False
+
+    (checkpoint / "tokenizer_config.json").write_text(whole)
+    assert model_config._detect_audio_from_tokenizer(
+        str(checkpoint), local_files_only = True
+    ) == (None, True)

@@ -1116,6 +1116,22 @@ _audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 _AUDIO_OFFLINE_MISS_TTL_S = 60.0
 _audio_offline_miss_cache: Dict[_CapabilityCacheKey, float] = {}
 
+
+def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
+    """Whether more than ``threshold`` tokens start with ``prefix``.
+
+    Equivalent to ``sum(...) > threshold`` but stops at the answer. Summing counted every
+    one of Orpheus's 28k codes to decide a question settled by the first 10,001.
+    """
+    count = 0
+    for token in tokens:
+        if token.startswith(prefix):
+            count += 1
+            if count > threshold:
+                return True
+    return False
+
+
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
 # ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
 # generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
@@ -1130,11 +1146,38 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_start|>" in tokens
         and "<|text_end|>" in tokens
     ),
-    "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
     # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
     # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
+# Every substring a pattern above needs. A tokenizer_config whose text contains NONE of
+# these cannot match any pattern, whatever it holds, so the answer is settled without
+# parsing it. That matters because an ordinary text checkpoint carries a large
+# tokenizer_config and json.loads of it was the bulk of a cold /loras scan.
+# MUST cover every pattern: _AUDIO_TOKEN_PATTERNS is lambdas, so this cannot be derived
+# from them, and a codec added there without its marker here would silently stop being
+# detected. test_audio_token_detection.py fails if the two drift.
+_AUDIO_TOKEN_MARKERS = (
+    "<|AUDIO|>",            # csm
+    "<|startoftranscript|>",  # whisper
+    "<|bicodec_",           # bicodec
+    "<|audio_start|>",      # dac
+    "<custom_token_",       # snac
+    "<audio_soft_token>",   # audio_vlm (Gemma 3n)
+    "<|audio|>",            # audio_vlm (Gemma 4)
+)
+
+
+def _may_hold_audio_tokens(raw: str) -> bool:
+    """Whether a tokenizer_config's raw text is worth parsing.
+
+    Conservative: a false True only costs the parse that would have happened anyway.
+    A false False would misclassify, which is why the markers are pinned by a test.
+    """
+    return any(marker in raw for marker in _AUDIO_TOKEN_MARKERS)
+
+
 _AUDIO_TOKENIZER_CONFIG_PATHS = (
     "tokenizer_config.json",
     "LLM/tokenizer_config.json",
@@ -1309,7 +1352,17 @@ def _detect_audio_from_tokenizer(
                 try:
                     if not tok_file.is_file():
                         continue
-                    tok_config = json.loads(tok_file.read_text(encoding = "utf-8-sig"))
+                    raw = tok_file.read_text(encoding = "utf-8-sig")
+                    if not _may_hold_audio_tokens(raw):
+                        # No marker anywhere, so no pattern can match. Counted as read
+                        # only when the file looks whole: a training run part-way through
+                        # writing its tokenizer would otherwise be a definitive "not
+                        # audio" and cached for the life of the process. A truncated file
+                        # stays unknown, exactly as it did when json.loads raised on it.
+                        if raw.rstrip().endswith("}"):
+                            read_any = True
+                        continue
+                    tok_config = json.loads(raw)
                     read_any = True
                     result = _check_token_patterns(tok_config)
                     if result:
