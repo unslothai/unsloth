@@ -107,6 +107,49 @@ def render(report: dict) -> list[str]:
     return lines
 
 
+SENTINELS = ("KAGGLE_T4_CI_DRIVER", "KAGGLE_T4_CI_PAYLOAD", "Error",
+             "error:", "Traceback", "SystemExit", "papermill.exceptions")
+
+
+def kernel_log_text(evidence: Path) -> str:
+    """The kernel log as flat text, whichever shape Kaggle returned it in.
+
+    Kaggle's `kernels/output` hands the log back as a JSON array of
+    ``{stream_name, time, data}`` records rather than as text, so reading the
+    file directly shows a wall of JSON with one word of the actual message
+    per line.
+    """
+    path = evidence / "kernel.log"
+    if not path.exists():
+        return ""
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        records = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if not isinstance(records, list):
+        return raw
+    return "".join(r.get("data", "") for r in records
+                   if isinstance(r, dict))
+
+
+def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
+    """The lines of the kernel log worth putting in front of a human.
+
+    A kernel that finished but reported nothing is the hardest outcome to
+    read, because the summary has no metrics to show and the cause is buried
+    in an artifact nobody downloads. Both real instances of it so far -- a
+    dependency probe that mis-ordered its imports, and a generated cell with
+    a syntax error -- were one grep away in this log.
+    """
+    text = kernel_log_text(evidence)
+    if not text:
+        return []
+    hits = [line.rstrip() for line in text.splitlines()
+            if any(s in line for s in SENTINELS)]
+    return hits[-limit:]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", required=True)
@@ -142,6 +185,12 @@ def main() -> int:
         lines.append("")
     for report in reports:
         lines += render(report)
+
+    if verdict in ("infra", "partial") and len(reports) < args.expect:
+        hits = diagnostic_lines(evidence)
+        if hits:
+            lines += ["<details><summary>Kernel log, filtered</summary>", "",
+                      "```"] + hits + ["```", "", "</details>", ""]
 
     if verdict == "infra":
         lines += [
