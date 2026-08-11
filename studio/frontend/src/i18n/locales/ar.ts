@@ -83,6 +83,7 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      audio: "الصوت",
       trainChecking: "جارٍ التحقق من دعم هذا الجهاز للتدريب...",
       videoChecking: "جارٍ التحقق من دعم هذا الجهاز للفيديو...",
       more: "المزيد",

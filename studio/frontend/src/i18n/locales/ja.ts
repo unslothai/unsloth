@@ -85,6 +85,7 @@ export const ja = {
       recipes: "レシピ",
       images: "画像",
       video: "動画",
+      audio: "音声",
       trainChecking: "このマシンのトレーニング対応を確認しています...",
       videoChecking: "このマシンの動画生成対応を確認しています...",
       more: "その他",

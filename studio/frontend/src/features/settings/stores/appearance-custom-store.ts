@@ -92,8 +92,9 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "hub",
   "projects",
   "images",
-  // Video sits directly under Images: the two media tabs read as one pair.
+  // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
+  "audio",
   "train",
   "recipes",
   "export",
@@ -115,6 +116,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   images: true,
   // Under "More" until a user pins it.
   video: false,
+  audio: false,
   train: true,
   recipes: false,
   export: false,
@@ -123,7 +125,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
- *  v5 put Video back under "More". */
+ *  v5 put Video back under "More" and later added API before Audio shipped. */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -151,6 +153,16 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
     { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
   ],
 ];
 
@@ -475,14 +487,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 5,
+      version: 6,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          5,
+          6,
         );
         return { customization } as AppearanceCustomState;
       },

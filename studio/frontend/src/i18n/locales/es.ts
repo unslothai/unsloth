@@ -85,6 +85,7 @@ export const es = {
       recipes: "Recetas",
       images: "Imágenes",
       video: "Vídeo",
+      audio: "Audio",
       trainChecking: "Comprobando si este equipo admite entrenamiento...",
       videoChecking: "Comprobando si este equipo admite vídeo...",
       more: "Más",

@@ -52,6 +52,7 @@ export const it = {
       recipes: "Ricette",
       images: "Immagini",
       video: "Video",
+      audio: "Audio",
       trainChecking: "Verifica del supporto all'addestramento su questa macchina...",
       videoChecking: "Verifica del supporto video su questa macchina...",
       more: "Altro",
