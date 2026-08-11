@@ -379,6 +379,13 @@ jobs:
               echo "::add-mask::$STUDIO_OLD_PW"
               echo "::add-mask::$STUDIO_NEW_PW"
               export STUDIO_OLD_PW STUDIO_NEW_PW
+              # Out of this shell as well as into it. The retry deleted the auth
+              # directory and bootstrapped a new password, so the values every
+              # LATER step reads from GITHUB_ENV are now the credentials of a
+              # server that no longer exists, and the next step to log in fails
+              # a job whose retry had otherwise just succeeded.
+              echo "STUDIO_EXTRA_OLD_PW=$STUDIO_OLD_PW" >> "$GITHUB_ENV"
+              echo "STUDIO_EXTRA_NEW_PW=$STUDIO_NEW_PW" >> "$GITHUB_ENV"
               attempt=$((attempt + 1))
               sleep 3
               continue

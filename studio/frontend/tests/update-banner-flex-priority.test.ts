@@ -63,18 +63,24 @@ for (const [name, source] of CARDS) {
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // The floor is the card with its notes closed. It has to be written
-    // against --ui-font-scale, not measured once at the default type size:
+    // The floor is the header and the action row. It has to follow
+    // --ui-font-scale, not be measured once at the default type size:
     // Settings > Appearance goes to 20px, where the action row wraps at every
-    // card width and a 128px floor cuts the buttons in half.
+    // card width and a 128px floor cuts the buttons in half. A fixed part plus
+    // a scaled one, since only some of the card moves with the setting, and
+    // scaling the whole box asked 256px where 209 was needed.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
     );
     assert.match(
       source,
-      /min-h-\[calc\(12rem\*var\(--ui-font-scale,1\)\/0\.9375\)\]/,
-      "the floor is a fixed height, so it is wrong at every other type size",
+      /min-h-\[calc\(\d+px\+\d+px\*var\(--ui-font-scale,1\)\)\]/,
+      "the floor does not track the type size in the shape index.css uses",
+    );
+    assert.ok(
+      !/12rem\*var\(--ui-font-scale/.test(source),
+      "the whole box is being scaled again, which over-reserves the floor",
     );
     assert.ok(
       !/min-h-48|min-h-32/.test(source),
@@ -88,7 +94,7 @@ test("the desktop failure card does not shrink at all", () => {
   // only clips the diagnostics and the retry button.
   assert.match(
     TAURI,
-    /showFailure \? "shrink-0" : "min-h-\[calc\(12rem/,
+    /showFailure\s*\n?\s*\? "shrink-0"/,
     "the failure card shares the notes-bearing card's floor, which is too low",
   );
 });
@@ -142,13 +148,26 @@ test("the two update cards do not drift apart", () => {
 // and the download panel deliberately do not carry it: they are the last
 // children, so they are what would land on Send.
 test("only the dismissible cards licence covering the composer", () => {
-  for (const [name, source] of [...CARDS, ["llama", LLAMA] as const]) {
+  for (const [name, source] of CARDS) {
     assert.match(
       source,
       /data-overlay-dismissible="true"/,
       `the ${name} card lost its dismissible marker, so the stack will never cover`,
     );
   }
+  // The llama.cpp card carries the licence CONDITIONALLY: its dismiss button
+  // goes away for the length of an update, and a card that cannot be got rid
+  // of must not be one the stack parks on Send.
+  assert.match(
+    LLAMA,
+    /data-overlay-dismissible=\{applying \? undefined : "true"\}/,
+    "the llama card licences covering the composer while it is mid-update",
+  );
+  assert.match(
+    LLAMA,
+    /\{applying \? null : \(\s*\n\s*<button/,
+    "the dismiss button is no longer the thing the licence is tied to",
+  );
   const indicator = read("features/loaded-models/loaded-models-indicator.tsx");
   const downloads = read(
     "features/hub/download-manager/download-manager-panel.tsx",

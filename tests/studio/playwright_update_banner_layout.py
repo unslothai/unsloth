@@ -338,6 +338,12 @@ def api(
         return json.loads(response.read().decode())
 
 
+def read_ui_font_size(token: str) -> int | None:
+    """The Appearance type size this install is on before the suite touches it."""
+    current = api("/api/settings/personalization", token = token)
+    return current["appearance"]["customization"].get("uiFontSize")
+
+
 def set_ui_font_size(token: str, size: int | None) -> None:
     """Set, or clear, the Appearance type size on the SERVER.
 
@@ -875,6 +881,10 @@ def main() -> int:
         # Set on the server and put back in a finally, because the appearance
         # store syncs up: leaving it at 20px hands every later suite in this job
         # a Studio whose type is not the default, and they will not notice.
+        # Put BACK what was there, which is not always the default: run this
+        # against your own Studio and an unconditional reset would take your
+        # Appearance setting with it.
+        was = read_ui_font_size(session["access_token"])
         set_ui_font_size(session["access_token"], UI_FONT_SIZE_MAX)
         try:
             for width, height in FONT_SCALE_VIEWPORTS:
@@ -904,7 +914,7 @@ def main() -> int:
                 page.screenshot(path = str(ART / f"{width}x{height}-font{UI_FONT_SIZE_MAX}.png"))
                 context.close()
         finally:
-            set_ui_font_size(session["access_token"], None)
+            set_ui_font_size(session["access_token"], was)
         browser.close()
 
     info(f"{checks[0]} checks, {len(failures)} failed")

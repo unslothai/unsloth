@@ -85,15 +85,22 @@ export function WebUpdateBanner({
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : // Floor = this card with its notes closed. Written against
-                // --ui-font-scale so it tracks Settings > Appearance: at the
-                // 20px maximum the action row wraps at every card width and
-                // the notes-closed card is 209px, well over the 128px a
-                // default-font measurement would have pinned. Under the floor
-                // a capped rail takes the height out of the notes, which clip;
-                // min-height:auto would instead be the whole card, so this one
-                // would yield nothing and clip the banner below it.
-                "pointer-events-auto flex min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)] w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              : // Floor = the header and the action row, the parts of this card
+                // that cannot give up height. Under it a capped rail takes the
+                // height out of the notes, which clip; min-height:auto would
+                // instead be the whole card, so this one would yield nothing
+                // and clip the banner below it.
+                //
+                // A fixed part plus a font-scaled part, the shape index.css
+                // already uses for --picker-control-h, because only some of the
+                // card moves with Settings > Appearance. Measured, not guessed:
+                // the action row wraps between 17px and 18px, and above that
+                // wrap the need is exactly linear (199px at scale 1.125, 204 at
+                // 1.1875, 209 at 1.25), which this reproduces. Below the wrap it
+                // over-reserves by about 40px, the safe direction. Scaling the
+                // whole 12rem box instead asked 256px where 209 was needed, and
+                // a floor nothing can meet covers the composer for no gain.
+                "pointer-events-auto flex min-h-[calc(109px+80px*var(--ui-font-scale,1))] w-[calc(100vw-2rem)] max-w-[448px] flex-col",
           )}
           // Dismissible, so the stack may cover the composer to show it
           // whole. See useStackGeometry: a card that cannot be got rid of

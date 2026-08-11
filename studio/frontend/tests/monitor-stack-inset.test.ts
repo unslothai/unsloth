@@ -364,7 +364,12 @@ test("no measured height leaves the stack overlapping a box", () => {
   const composer = { left: 412, top: 664, right: 1148, bottom: 814 };
   for (const needed of [0, 40, 80, 120, 200, 320]) {
     for (let bottom = 60; bottom <= CHAT_H - 16; bottom += 4) {
-      const box = { left: 996, top: Math.max(0, bottom - 180), right: 1264, bottom };
+      const box = {
+        left: 996,
+        top: Math.max(0, bottom - 180),
+        right: 1264,
+        bottom,
+      };
       for (const boxes of [[box], [box, composer]]) {
         const geometry = stackGeometry(boxes, CHAT_W, CHAT_H, needed);
         const label = `needed=${needed} bottom=${bottom} n=${boxes.length}`;
@@ -388,7 +393,13 @@ test("no measured height leaves the stack overlapping a box", () => {
 test("a stack that cannot fit above the composer covers it rather than clipping", () => {
   // 534px tall, the size from the report, with the welcome composer centred.
   const H = 534;
-  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const composer = {
+    left: 236,
+    top: 300,
+    right: 684,
+    bottom: 420,
+    coverable: true,
+  };
   const needed = 339;
   const covered = stackGeometry(composer, 921, H, needed);
   assert.equal(covered.bottom, 16, "the stack left the corner");
@@ -399,7 +410,8 @@ test("a stack that cannot fit above the composer covers it rather than clipping"
   // The same box that has to be dodged when dodging it costs nothing.
   const roomy = stackGeometry(composer, 921, 1200, needed);
   assert.ok(
-    1200 - roomy.bottom <= composer.top || roomy.maxHeight <= 1200 - 16 - composer.bottom,
+    1200 - roomy.bottom <= composer.top ||
+      roomy.maxHeight <= 1200 - 16 - composer.bottom,
     "a composer that could have been dodged was covered anyway",
   );
 });
@@ -413,7 +425,10 @@ test("a box that never said it may be covered is still never covered", () => {
   const stackTop = H - geometry.bottom - geometry.maxHeight;
   const clearsAbove = H - geometry.bottom <= monitor.top;
   const clearsBelow = stackTop >= monitor.bottom;
-  assert.ok(clearsAbove || clearsBelow, "the stack was allowed over the monitor");
+  assert.ok(
+    clearsAbove || clearsBelow,
+    "the stack was allowed over the monitor",
+  );
 });
 
 // The fallback drops the coverable boxes and places against what is left, so
@@ -422,12 +437,23 @@ test("a box that never said it may be covered is still never covered", () => {
 // clear a monitor either, and the claim here is that the composer's permission
 // is not inherited, not that the monitor is always dodged.
 test("a coverable composer does not licence covering the monitor beside it", () => {
-  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const composer = {
+    left: 236,
+    top: 300,
+    right: 684,
+    bottom: 420,
+    coverable: true,
+  };
   const monitor = { left: 640, top: 60, right: 905, bottom: 250 };
   for (const height of [534, 700, 900, 1200]) {
     for (const needed of [56, 200, 339, 600]) {
       const alone = stackGeometry(monitor, 921, height, needed);
-      const withComposer = stackGeometry([composer, monitor], 921, height, needed);
+      const withComposer = stackGeometry(
+        [composer, monitor],
+        921,
+        height,
+        needed,
+      );
       const clearance = (g: { bottom: number; maxHeight: number }) => ({
         edge: height - g.bottom,
         top: height - g.bottom - g.maxHeight,
@@ -450,7 +476,13 @@ test("a coverable composer does not licence covering the monitor beside it", () 
 // the stack off a dodge that fitted and put it over the composer.
 test("a placement that fits the cards at their floor is not given up on", () => {
   const H = 830;
-  const composer = { left: 416, top: 415, right: 864, bottom: 530, coverable: true };
+  const composer = {
+    left: 416,
+    top: 415,
+    right: 864,
+    bottom: 530,
+    coverable: true,
+  };
   const natural = 394;
   const floor = 339;
   const geometry = stackGeometry(composer, 1280, H, natural, floor);
@@ -469,7 +501,13 @@ test("a persistent card that would land on the composer stops the cover", () => 
   const H = 534;
   // Docked under a thread: it sits on the bottom edge, so the corner is where
   // the persistent tail would go and the tail would land on Send.
-  const docked = { left: 236, top: 380, right: 684, bottom: 518, coverable: true };
+  const docked = {
+    left: 236,
+    top: 380,
+    right: 684,
+    bottom: 518,
+    coverable: true,
+  };
   const dodging = stackGeometry(docked, 921, H, 460, 420, 60);
   assert.ok(
     H - dodging.bottom <= docked.top,
@@ -482,14 +520,87 @@ test("a persistent card clear of the composer does not stop the cover", () => {
   // The welcome composer, centred. The corner underneath it is free, so the
   // cards that reach it are the dismissible ones and there is nothing to
   // protect: covering is still the right answer.
-  const welcome = { left: 236, top: 275, right: 684, bottom: 387, coverable: true };
+  const welcome = {
+    left: 236,
+    top: 275,
+    right: 684,
+    bottom: 387,
+    coverable: true,
+  };
   const covering = stackGeometry(welcome, 921, H, 460, 420, 60);
   assert.equal(covering.bottom, 16, "it gave up a cover that was safe");
   assert.ok(covering.maxHeight >= 460, "and the cards are whole");
 });
 
+test("covering is refused when it still cannot show the cards", () => {
+  // A short window with a monitor across the top: dropping the composer buys a
+  // few pixels and still leaves the rail under its floor. The rail scrolls
+  // either way, so paying the composer for those pixels buys nothing.
+  const H = 400;
+  const monitor = { left: 473, top: 0, right: 921, bottom: 200 };
+  const composer = {
+    left: 236,
+    top: 250,
+    right: 684,
+    bottom: 384,
+    coverable: true,
+  };
+  const both = stackGeometry([monitor, composer], 921, H, 460, 192, 0);
+  const dodging = stackGeometry([monitor, composer], 921, H, 460, 10_000, 0);
+  assert.deepEqual(
+    both,
+    dodging,
+    "it covered the composer for a placement that is still under the floor",
+  );
+});
+
+test("covering is taken when it does reach the floor", () => {
+  // The same shape with room above the composer once it is dropped: now the
+  // cover earns its price and the cards come out whole.
+  const H = 534;
+  const composer = {
+    left: 236,
+    top: 275,
+    right: 684,
+    bottom: 500,
+    coverable: true,
+  };
+  const covering = stackGeometry(composer, 921, H, 460, 300, 0);
+  // 16, the corner inset: the stack took the corner and the composer with it.
+  assert.equal(covering.bottom, 16, "it refused a cover that fits");
+  assert.ok(covering.maxHeight >= 300, "and the cards are whole");
+});
+
+test("the persistent tail is judged where the fallback actually lands", () => {
+  // Dropping the composer does not always leave the stack at the corner: an
+  // uncoverable monitor at the bottom still lifts it, and the lift carries the
+  // tail up onto the composer that the corner-based reading had just cleared.
+  const H = 800;
+  const monitor = { left: 473, top: 600, right: 921, bottom: 800 };
+  // Well above the corner, so a corner-based check calls covering safe.
+  const composer = {
+    left: 236,
+    top: 380,
+    right: 684,
+    bottom: 560,
+    coverable: true,
+  };
+  const placement = stackGeometry([monitor, composer], 921, H, 700, 240, 80);
+  const railBottom = H - placement.bottom;
+  assert.ok(
+    railBottom - 80 >= composer.bottom || railBottom <= composer.top,
+    `the persistent tail landed on the composer (rail bottom ${railBottom})`,
+  );
+});
+
 test("no persistent tail means the old answer", () => {
-  const composer = { left: 236, top: 300, right: 684, bottom: 420, coverable: true };
+  const composer = {
+    left: 236,
+    top: 300,
+    right: 684,
+    bottom: 420,
+    coverable: true,
+  };
   const withZero = stackGeometry(composer, 921, 534, 420, 420, 0);
   const withoutArg = stackGeometry(composer, 921, 534, 420, 420);
   assert.deepEqual(withoutArg, withZero);
@@ -498,7 +609,13 @@ test("no persistent tail means the old answer", () => {
 // One number means the strict reading of it, so nothing that knows only the
 // natural height silently starts covering things.
 test("a caller that passes one height gets the stricter answer", () => {
-  const composer = { left: 416, top: 415, right: 864, bottom: 530, coverable: true };
+  const composer = {
+    left: 416,
+    top: 415,
+    right: 864,
+    bottom: 530,
+    coverable: true,
+  };
   const one = stackGeometry(composer, 1280, 830, 394);
   const two = stackGeometry(composer, 1280, 830, 394, 394);
   assert.deepEqual(one, two);
@@ -597,7 +714,9 @@ test("every box inside the stack is observed, not just the stack", async () => {
     ),
     "utf8",
   );
-  const wiring = source.slice(source.indexOf("const observer = new ResizeObserver"));
+  const wiring = source.slice(
+    source.indexOf("const observer = new ResizeObserver"),
+  );
   assert.ok(
     !/observer\.observe\(node\)/.test(wiring),
     "the root alone is observed, so an intrinsic descendant resize is missed",
@@ -609,7 +728,11 @@ test("every box inside the stack is observed, not just the stack", async () => {
   );
   // A changed subtree has to be re-observed, or a banner arriving after mount is missed.
   const onMutation = wiring.slice(wiring.indexOf("new MutationObserver"));
-  assert.match(onMutation, /syncObserved\(\)/, "the observed set is not resynced");
+  assert.match(
+    onMutation,
+    /syncObserved\(\)/,
+    "the observed set is not resynced",
+  );
   // And unobserved on the way out, or a detached node keeps the observer alive.
   assert.match(wiring, /observer\.unobserve\(/, "nothing is ever unobserved");
 });

@@ -111,19 +111,25 @@ export function UpdateBanner({
               ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
               : cn(
                   "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[448px] flex-col",
-                  // Floor = this card with its notes closed. Written against
-                  // --ui-font-scale so it tracks Settings > Appearance: at the
-                  // 20px maximum the action row wraps at every card width and
-                  // the notes-closed card is 209px, well over the 128px a
-                  // default-font measurement would have pinned. Under the floor
-                  // a capped rail takes the height out of the notes, which
-                  // clip; min-height:auto would instead be the whole card, so
-                  // this one would yield nothing and clip the banner below it.
+                  // Floor = the header and the action row, the parts of this
+                  // card that cannot give up height. Under it a capped rail
+                  // takes the height out of the notes, which clip;
+                  // min-height:auto would instead be the whole card, so this
+                  // one would yield nothing and clip the banner below it.
+                  //
+                  // Its own constants, not the browser card's: this card
+                  // carries one more status line under the version, worth 19px
+                  // at the default type size and 24px at the largest. Measured
+                  // the same way and exact above the wrap (221px at scale
+                  // 1.125, 227 at 1.1875, 233 at 1.25). See web/update-banner
+                  // for why the floor is split into a fixed and a scaled part.
                   //
                   // The failure card has no notes to give up, so shrinking it
                   // could only clip the diagnostics and the retry button. It
                   // holds its height and the rail scrolls instead.
-                  showFailure ? "shrink-0" : "min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)]",
+                  showFailure
+                    ? "shrink-0"
+                    : "min-h-[calc(113px+96px*var(--ui-font-scale,1))]",
                 ),
           )}
           // See the browser card: dismissible, so it may cover the composer.

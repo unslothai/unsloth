@@ -1115,10 +1115,14 @@ def test_code_span_closers_ignore_backslashes():
     assert body.count("escaped(text") == 1, "only an opener can be escaped"
 
 
-# The card's notes-closed height, written against Settings > Appearance rather
-# than measured once at the default 15px: at the 20px maximum the action row
-# wraps at every card width and a fixed 128px floor cuts the buttons in half.
-_SCALED_FLOOR = "min-h-[calc(12rem*var(--ui-font-scale,1)/0.9375)]"
+# The card's incompressible height, a fixed part plus a part that follows
+# Settings > Appearance rather than one number measured at the default 15px: at
+# the 20px maximum the action row wraps at every card width. The two cards have
+# their own constants because the desktop one carries an extra status line;
+# scaling one whole box for both asked 256px where 209 was needed, and a floor
+# nothing can meet makes the stack cover the composer for no gain.
+_SCALED_FLOOR_WEB = "min-h-[calc(109px+80px*var(--ui-font-scale,1))]"
+_SCALED_FLOOR_TAURI = "min-h-[calc(113px+96px*var(--ui-font-scale,1))]"
 
 
 def _overlay_stacks(provider: str) -> int:
@@ -1145,7 +1149,7 @@ def test_the_overlay_stack_fits_the_viewport():
     # The update card cannot: its header and buttons are fixed and only its
     # notes yield, so it floors instead and the stack scrolls past it.
     web = WEB_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR in web, "the floor is fixed, so it is wrong at other type sizes"
+    assert _SCALED_FLOOR_WEB in web, "the floor is fixed, so it is wrong at other type sizes"
     assert provider.count("overflow-y-auto") >= stacks, "a capped stack clips its cards"
 
 
@@ -1156,7 +1160,9 @@ def test_the_desktop_stack_is_capped_like_the_browser_one():
     assert provider.count("useStackGeometry()") == 2, "both stacks measure themselves"
     assert provider.count("maxHeight: stack.maxHeight") == 2, "both stacks are capped"
     tauri = TAURI_BANNER.read_text(encoding = "utf-8")
-    assert _SCALED_FLOOR in tauri, "the floor is fixed, so it is wrong at other type sizes"
+    assert _SCALED_FLOOR_TAURI in tauri, (
+        "the floor is fixed, so it is wrong at other type sizes"
+    )
 
 
 def test_the_stack_geometry_is_checked_numerically():

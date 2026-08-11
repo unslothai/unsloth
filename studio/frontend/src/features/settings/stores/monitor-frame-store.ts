@@ -269,16 +269,7 @@ export function stackGeometry(
 ): StackGeometry {
   const list = frames === null ? [] : Array.isArray(frames) ? frames : [frames];
   const placed = place(list, viewportWidth, viewportHeight, neededRoom);
-  // What the persistent run would occupy if the stack took the corner.
-  const tailTop = viewportHeight - STACK_INSET - persistentTail;
-  const safeToCover = list.every(
-    (frame) => !frame.coverable || frame.bottom <= tailTop,
-  );
-  if (
-    placed.maxHeight >= floorRoom ||
-    !safeToCover ||
-    !list.some((f) => f.coverable)
-  ) {
+  if (placed.maxHeight >= floorRoom || !list.some((f) => f.coverable)) {
     return placed;
   }
   // Nowhere to put the stack even at its floor while dodging everything. Drop
@@ -299,6 +290,22 @@ export function stackGeometry(
     viewportHeight,
     neededRoom,
   );
+  // Where the run the reader cannot dismiss would actually land, measured from
+  // the placement being considered rather than from the corner. Dropping the
+  // composer does not always leave the stack at the bottom: an uncoverable
+  // monitor can still lift it, which carries the tail up onto the very box the
+  // corner-based reading had just cleared.
+  const tailTop = viewportHeight - covering.bottom - persistentTail;
+  const safeToCover = list.every(
+    (frame) => !frame.coverable || frame.bottom <= tailTop,
+  );
+  // Covering has to buy the thing it is for. A placement that takes the
+  // composer and STILL cannot show the cards at their floor has paid the whole
+  // price for nothing: the rail scrolls either way, so the one that leaves Send
+  // reachable is the better of two bad answers.
+  if (!safeToCover || covering.maxHeight < floorRoom) {
+    return placed;
+  }
   return covering.maxHeight > placed.maxHeight ? covering : placed;
 }
 
@@ -418,6 +425,19 @@ export function useStackGeometry(): StackPlacement {
       const eased = node.style.transition;
       node.style.transition = "none";
       const capped = node.style.maxHeight;
+      // The rail's own scroll position is not the only one at stake. Uncapping
+      // it grows every scroller inside it, which shortens their scrollable
+      // range and clamps any that were scrolled past the new end: read the
+      // release notes to the bottom, let a download tick, and the list the
+      // reader was in jumps. The rail's cap comes back, but a clamped
+      // descendant does not come back with it, so each one is noted here and
+      // put back below.
+      const scrollers: Array<[Element, number]> = [];
+      for (const child of node.querySelectorAll("*")) {
+        if (child.scrollTop > 0) {
+          scrollers.push([child, child.scrollTop]);
+        }
+      }
       const scrolled = node.scrollTop;
       node.style.maxHeight = "none";
       const natural = node.scrollHeight;
@@ -431,6 +451,11 @@ export function useStackGeometry(): StackPlacement {
       node.style.maxHeight = capped;
       if (node.scrollTop !== scrolled) {
         node.scrollTop = scrolled;
+      }
+      for (const [child, top] of scrollers) {
+        if (child.scrollTop !== top) {
+          child.scrollTop = top;
+        }
       }
       // Flush the restore under the suppression, or putting `transition` back
       // hands the pending max-height change to a transition after all.
