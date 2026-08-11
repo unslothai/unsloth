@@ -1571,6 +1571,68 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         # An explicit DFlash request is not the Auto race and still pays for it.
         self.assertEqual(_companion_bytes(both, include_dflash = True), 400)
 
+    def test_extras_owning_the_spec_type_are_not_charged_the_repo_sidecar(self):
+        """A caller who sets --spec-type ends _build_speculative_flags before any
+        mode branch, so no repository sidecar of any kind is fetched or launched.
+        Only the drafter their --model-draft names becomes resident, and that is
+        charged separately; billing the repo's on top is a 409 for a load that fits."""
+        import utils.models.model_config as mc
+
+        cfg = SimpleNamespace(
+            gguf_file = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+            gguf_hf_repo = "org/repo",
+            gguf_variant = "Q4_K_M",
+        )
+        variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+        for extras in (
+            ["--spec-type", "draft-dflash", "--model-draft", "/tmp/d.gguf"],
+            ["--spec-type", "draft-dspark", "--model-draft", "/tmp/d.gguf"],
+        ):
+            with (
+                patch.object(
+                    mc, "list_gguf_variants", lambda repo, hf_token = None: ([variant], False)
+                ),
+                patch.object(self.route, "_remote_gguf_companion_bytes", return_value = 0) as comp,
+                self._dflash_capable(),
+            ):
+                self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "auto", llama_extra_args = extras
+                )
+                self.assertFalse(comp.call_args.kwargs["include_dflash"], extras)
+                self.assertFalse(comp.call_args.kwargs["include_dspark"], extras)
+                self.assertFalse(comp.call_args.kwargs["include_mtp"], extras)
+
+    def test_a_partial_dflash_shard_set_is_not_charged(self):
+        """The fetch refuses a family whose encoded shard count is short, so a
+        listing caught mid-publication must not be billed for its listed half:
+        the DSpark path already filters on this, and the two have to agree."""
+        partial = [
+            SimpleNamespace(rfilename = "dflash-kquant-00001-of-00002.gguf", size = 400),
+        ]
+        whole = partial + [
+            SimpleNamespace(rfilename = "dflash-kquant-00002-of-00002.gguf", size = 300),
+        ]
+
+        def _companion_bytes(siblings):
+            with patch(
+                "huggingface_hub.model_info",
+                return_value = SimpleNamespace(siblings = siblings),
+            ):
+                return self.route._remote_gguf_companion_bytes(
+                    "org/repo",
+                    hf_token = None,
+                    include_mmproj = False,
+                    include_mtp = False,
+                    include_dflash = True,
+                )
+
+        self.assertEqual(_companion_bytes(partial), 0)
+        self.assertEqual(_companion_bytes(whole), 700)
+
     def test_auto_tells_the_companion_sizing_that_dspark_comes_first(self):
         """The remote branch is where both kinds can be asked for at once, so it
         is the caller that has to pass the loader's Auto rule down."""

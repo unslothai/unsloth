@@ -5863,12 +5863,24 @@ def _estimate_gguf_required_gb(
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
+        # Extras that own --spec-type AND name their own --model-draft end
+        # _build_speculative_flags before any mode branch, so Studio's sidecar is
+        # neither fetched nor launched: the drafter that becomes resident is theirs,
+        # already charged below as _extras_bytes, and billing both refuses a load that
+        # fits. Both halves matter. Owning the spec type alone keeps the conservative
+        # charge, since the guard protects a running training job and a drafter can
+        # still arrive by a route this cannot see. Applies to every kind, hence one flag.
+        _extras_own_drafter = bool(
+            _extra_args_own_spec and _extra_args_mtp_draft_path(llama_extra_args, env = {})
+        )
         _forced_dspark = bool(
-            _spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {})
+            (_spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {}))
+            and not _extras_own_drafter
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        _auto_dspark = _spec_mode == "auto"
+        _auto_dspark = _spec_mode == "auto" and not _extras_own_drafter
         _dspark_capable = True
         if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -5892,13 +5904,12 @@ def _estimate_gguf_required_gb(
         # DFlash: same shape as DSpark above, and Auto sizes it for the same
         # reason. The sidecar is ~1.5 GiB rather than ~11 GB, but a guard that
         # protects a running training job still has to charge for it.
-        # Extra args owning --spec-type end _build_speculative_flags before any mode
-        # branch, so neither forced nor Auto reaches the sidecar and charging it refuses
-        # a load for nothing. Extras asking for draft-dflash themselves still pay.
-        _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
         _forced_dflash = bool(
-            _extra_args_requests_dflash(llama_extra_args, env = {})
-            or (_spec_mode == "dflash" and not _extra_args_own_spec)
+            (
+                _extra_args_requests_dflash(llama_extra_args, env = {})
+                or (_spec_mode == "dflash" and not _extra_args_own_spec)
+            )
+            and not _extras_own_drafter
         )
         _auto_dflash = _spec_mode == "auto" and not _extra_args_own_spec
         _dflash_capable = True
@@ -5919,8 +5930,10 @@ def _estimate_gguf_required_gb(
         # which loads no drafter at all, so charging the MTP one would refuse a load
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
         # its charge.
-        _charge_no_drafter = (_forced_dspark and not _dspark_capable) or (
-            _forced_dflash and not _dflash_capable
+        _charge_no_drafter = (
+            _extras_own_drafter
+            or (_forced_dspark and not _dspark_capable)
+            or (_forced_dflash and not _dflash_capable)
         )
 
         def _same_file_key(p: str) -> str:
