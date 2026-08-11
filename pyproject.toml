@@ -69,6 +69,9 @@ studio = [
     "backend/plugins/**/*",
     "backend/assets/**/*.jinja",
     "backend/assets/**/*.html",
+    # Swagger UI / ReDoc, served from this origin instead of a CDN. Without these the
+    # /docs and /redoc pages render blank in an installed Studio.
+    "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
 ]
