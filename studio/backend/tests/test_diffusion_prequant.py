@@ -648,6 +648,40 @@ def test_a_malicious_checkpoint_is_refused_before_it_executes():
         assert not os.path.exists(marker)
 
 
+def test_the_scheme_probe_does_not_execute_the_checkpoint_either(tmp_path, monkeypatch):
+    """The probe is the WIDER reach of the two, so it gets its own test.
+
+    ``local_prequant_scheme`` runs during download PLANNING, not only during a load:
+    ``usable_prequant_source`` asks it for any allowlisted override that exists, and the plan
+    route reaches that for a request that never loads anything and may go on to reject the file
+    for its scheme. An unreadable checkpoint is "unknown", which is what the caller already
+    handles, and nothing in it runs."""
+    import os
+
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch.serialization, "safe_globals"):
+        pytest.skip("torch < 2.6 has no safe_globals")
+    marker = tmp_path / "executed"
+
+    class _Payload:
+        def __reduce__(self):
+            return (os.mkdir, (str(marker),))
+
+    ckpt = tmp_path / "malicious.pt"
+    torch.save(
+        {"format": PREQUANT_FORMAT, "metadata": {"scheme": "fp8"}, "payload": _Payload()}, ckpt
+    )
+    monkeypatch.setattr(pq, "_allowed_prequant_roots", lambda: [os.path.realpath(str(tmp_path))])
+
+    assert pq.local_prequant_scheme(str(ckpt)) is None
+    assert not marker.exists()
+    # And the planning entry point that calls it declines the override, as it does for every
+    # checkpoint whose scheme it cannot read.
+    fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"),))
+    assert pq.usable_prequant_source(fam, "fp8", path_override = str(ckpt)) is None
+    assert not marker.exists()
+
+
 def test_a_torch_without_safe_globals_refuses_rather_than_reopening_the_pickle(monkeypatch):
     """No allowlist support means no load. Falling back to an unrestricted one would put the
     sink back on exactly the installs least able to defend it."""
