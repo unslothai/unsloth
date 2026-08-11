@@ -1,7 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Push the kernel to Kaggle, wait for it, and bring the evidence back.
+"""Push the kernels to Kaggle, wait for them, and bring the evidence back.
+
+One invocation handles every kernel of the run. They are pushed FIRST, all of
+them, and only then waited on: pushing one, waiting for it and pushing the
+next would serialise two sessions that Kaggle is happy to run at once and
+double the wall clock of the job for nothing. It also matters for the
+control/canary pair, whose whole value is that they ran at the same time on
+the same account.
+
+A kernel that could not be pushed does not stop the others. The verdict is
+computed from the reports that came back against the number expected, so a
+half-launched run reports as ``partial`` -- which is a warning, not a failure,
+because half a comparison is not evidence of a regression.
+
 
 Failure semantics are the whole point of this file, so they are stated up
 front. It distinguishes two kinds of bad outcome and exits differently for
@@ -361,7 +374,9 @@ def extract_reports(outdir: Path) -> list[dict]:
             seen.add(key)
             reports.append(parsed)
 
-    for nb_path in sorted(outdir.glob(f"*{OUTPUT_SUFFIX}")):
+    # rglob, not glob: each kernel of a run collects into its own
+    # subdirectory so two kernels cannot overwrite each other's kernel.log.
+    for nb_path in sorted(outdir.rglob(f"*{OUTPUT_SUFFIX}")):
         try:
             nb = json.loads(nb_path.read_text(encoding = "utf-8", errors = "replace"))
         except Exception:  # noqa: BLE001
@@ -372,15 +387,16 @@ def extract_reports(outdir: Path) -> list[dict]:
                 if isinstance(text, list):
                     text = "".join(text)
                 _consume(text)
-    log_path = outdir / "kernel.log"
-    if log_path.exists():
+    for log_path in sorted(outdir.rglob("kernel.log")):
         _consume(log_path.read_text(encoding = "utf-8", errors = "replace"))
     return reports
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--notebook", required = True)
+    ap.add_argument("--notebook", required = True, action = "append",
+                    help = "kernel notebook to push. Repeatable: all of them "
+                           "are pushed before any of them is waited on")
     ap.add_argument("--user", required = True)
     ap.add_argument("--outdir", required = True)
     ap.add_argument(
@@ -427,27 +443,55 @@ def main() -> int:
         result["reason"] = f"kaggle auth failed: {type(exc).__name__}"
         return finish()
 
-    _log(f"pushing {args.notebook} (kernel ceiling " f"{args.kernel_timeout_sec}s)")
-    pushed = push(Path(args.notebook), args.user, args.kernel_timeout_sec)
-    if not pushed["ok"]:
-        result["reason"] = f"{pushed['reason']}: {pushed.get('detail', '')}"
+    # Push everything first. See this file's docstring: waiting between
+    # pushes would serialise sessions Kaggle runs happily in parallel, and
+    # would put an hour between the control leg and the canary leg.
+    kernels: list[dict] = []
+    for notebook in args.notebook:
+        _log(f"pushing {notebook} (kernel ceiling {args.kernel_timeout_sec}s)")
+        pushed = push(Path(notebook), args.user, args.kernel_timeout_sec)
+        entry = {"notebook": notebook, "slug": pushed.get("slug"),
+                 "state": None,
+                 "push_error": None if pushed["ok"] else
+                 f"{pushed['reason']}: {pushed.get('detail', '')}"}
+        kernels.append(entry)
+        if pushed["ok"]:
+            _log(f"pushed as {pushed['slug']}")
+        else:
+            _log(f"push failed for {notebook}: {entry['push_error']}")
+    result["kernels"] = kernels
+
+    live = [k for k in kernels if k["slug"]]
+    if not live:
+        result["reason"] = "; ".join(
+            k["push_error"] for k in kernels if k["push_error"])
         return finish()
+    # Kept for the summary and for anything reading the previous single-kernel
+    # shape of this file.
+    result["slug"] = live[0]["slug"]
 
-    slug = pushed["slug"]
-    result["slug"] = slug
-    _log(f"pushed as {slug}")
+    # One deadline for the whole run, not one per kernel. They are running
+    # concurrently, so consuming the ceiling once per kernel would let a
+    # two-kernel run wait twice as long as its own stated bound.
+    deadline = time.time() + args.max_wait
+    for entry in live:
+        remaining = max(0, int(deadline - time.time()))
+        entry["state"] = wait(api, entry["slug"], args.poll_every, remaining)
+        _log(f"{entry['slug']} terminal state: {entry['state']}")
+    result["kernel_state"] = ",".join(k["state"] or "?" for k in live)
 
-    state = wait(api, slug, args.poll_every, args.max_wait)
-    result["kernel_state"] = state
-    _log(f"terminal state: {state}")
-
-    try:
-        evidence = fetch_evidence(slug, outdir)
-        result["evidence"] = evidence
-        _log(f"collected: {evidence}")
-    except Exception as exc:  # noqa: BLE001
-        result["reason"] = f"could not collect evidence: {type(exc).__name__}"
-        return finish()
+    for entry in live:
+        # Each kernel gets its own directory. Kaggle names the executed
+        # notebooks after the payloads, and two kernels of the same run
+        # would otherwise overwrite each other's kernel.log.
+        try:
+            entry["evidence"] = fetch_evidence(
+                entry["slug"], outdir / entry["slug"].rsplit("/", 1)[-1])
+            _log(f"collected {entry['slug']}: {entry['evidence']}")
+        except Exception as exc:  # noqa: BLE001
+            entry["evidence"] = None
+            entry["collect_error"] = type(exc).__name__
+            _log(f"could not collect {entry['slug']}: {type(exc).__name__}")
 
     reports = extract_reports(outdir)
     result["reports"] = reports
@@ -455,8 +499,8 @@ def main() -> int:
 
     if not reports:
         result["reason"] = (
-            f"kernel ended {state} but produced no payload report; nothing "
-            f"was learned about the code under test"
+            f"kernel(s) ended {result['kernel_state']} but produced no payload "
+            f"report; nothing was learned about the code under test"
         )
         return finish()
 
@@ -474,22 +518,24 @@ def main() -> int:
         result["verdict"] = "partial"
         result["reason"] = (
             f"only {len(reports)} of {args.expect} payload(s) reported back "
-            f"(kernel state {state}); the ones that did, passed"
+            f"(kernel state {result['kernel_state']}); the ones that did, "
+            f"passed"
         )
     else:
         result["verdict"] = "pass"
         result["reason"] = f"all {len(reports)} payload(s) passed"
 
     if not args.keep_kernel:
-        try:
-            subprocess.run(
-                ["kaggle", "kernels", "delete", slug, "-y"],
-                capture_output = True,
-                text = True,
-                timeout = 120,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        for entry in live:
+            try:
+                subprocess.run(
+                    ["kaggle", "kernels", "delete", entry["slug"], "-y"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 120,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     return finish()
 

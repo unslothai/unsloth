@@ -4,6 +4,30 @@ Each file here is a per-step `loss` / `grad_norm` trace captured from one
 real run, on one named GPU, with one named library set. `run_t4_smoke.py
 --reference <file>` compares a fresh run against it.
 
+## Which leg this applies to, and which it must not
+
+Only the **control** leg. It installs the pinned library set in
+`../pins/control.txt`, which is the set the committed trace was captured
+with, so a band comparison against it is a comparison of one environment
+with itself.
+
+The **canary** leg runs the identical payload on the newest library set
+Unsloth's constraints allow, and it is deliberately given **no reference at
+all** (`legs.py`, `LEGS["canary"].reference == ""`). Two library versions do
+not produce one fp16 trajectory: kernel selection moves with every one of
+them, and a single moved gradient-scaler skip shifts every later step. A
+band check there would go red on ordinary cross-version drift, which is
+exactly the kind of red that gets a check switched off before the day it is
+right.
+
+So the canary asserts what does not depend on versions, and all of it is
+already in the payload: run-to-run bitwise equality between its own two
+fresh processes, the exact canary string, that the optimizer applied
+updates at all, and that nothing raised. The one thing it adds over the
+control is the resolved version of every watched package, recorded in its
+report so that "canary red, control green" is a bisect and not an
+investigation.
+
 ## What this comparison is, and is not
 
 It is a **band**, not an equality. Bitwise agreement across environments is

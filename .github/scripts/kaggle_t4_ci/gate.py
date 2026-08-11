@@ -19,13 +19,15 @@ a "yes" through four independent checks, in this order:
    the worst case this invocation could cost, plus a reserve so the account
    is never drained to zero by CI.
 4. **Concurrency.** Kaggle caps concurrent batch GPU kernels at 2, and that
-   cap is per ACCOUNT, not per workflow. If anything of this account's is
-   already QUEUED or RUNNING, this invocation stands down rather than
-   queueing behind it or failing on a push rejection. That is stricter than
-   the cap requires and the tradeoff is spelled out on
-   ALLOWED_IN_FLIGHT_KERNELS, which is the knob for it. The search for such
-   a kernel is bounded by how long a session is allowed to last rather than
-   by a kernel count, which is what makes it exhaustive; see LOOKBACK_HOURS.
+   cap is per ACCOUNT, not per workflow. The survey therefore separates
+   kernels this workflow pushed from everything else, because the two call
+   for opposite answers: a FOREIGN kernel means a human is using the shared
+   account and this invocation stands down entirely, while this workflow's
+   own two kernels are what it is here to launch. Both still occupy slots,
+   so the gate also refuses when fewer than KERNELS_PER_INVOCATION of them
+   are free. The search for an in-flight kernel is bounded by how long a
+   session is allowed to last rather than by a kernel count, which is what
+   makes it exhaustive; see LOOKBACK_HOURS.
 
 Every negative answer is a SKIP, and a skip exits 0. Not spending quota is
 the designed behaviour, not a fault, and must never colour a pull request
@@ -51,32 +53,54 @@ from datetime import datetime, timedelta, timezone
 # "Maximum batch GPU session count of 2 reached."
 MAX_CONCURRENT_GPU_KERNELS = 2
 
-# How many kernels of this account may already be in flight and this job
-# still launch. ZERO IS DELIBERATE, and it is a policy choice rather than a
-# technical limit, so it is named here instead of being implied by the code.
+# How many FOREIGN kernels of this account may already be in flight and this
+# job still launch. ZERO IS DELIBERATE, and it is a policy choice rather than
+# a technical limit, so it is named here instead of being implied by the code.
 #
-# The tension, stated plainly. Kaggle would allow 2 concurrent batch GPU
-# kernels, each with 2 T4s, so the theoretical ceiling is 4 payloads at once
-# and this gate uses a quarter of it. Raising this to 1 would let CI launch
-# alongside one other session and roughly double the throughput of the
-# workflow on a busy day.
+# The cap is per ACCOUNT and the account is shared with human use. A person
+# who starts a notebook and finds the push rejected has no way to tell that
+# CI took the slot, and CI has no way to give it back. The cost of standing
+# down is a few minutes until the next commit draws again -- the sampling
+# gate means this job has no deadline of its own -- and the cost of being
+# wrong is somebody else's session. Yielding is cheap here and expensive
+# there, so a single foreign kernel stands this job down entirely, whatever
+# the arithmetic below would otherwise allow.
+ALLOWED_IN_FLIGHT_FOREIGN_KERNELS = 0
+
+# How many kernels one invocation of this workflow pushes. Both of Kaggle's
+# concurrency slots, which is a change from the single kernel this workflow
+# used to run, and the reasoning for taking the second one is narrow:
 #
-# It stays at 0 because the second slot is not ours to take. The cap is per
-# ACCOUNT and the account is shared with human use; a person who starts a
-# notebook and finds the push rejected has no way to tell that CI took the
-# slot, and CI has no way to give it back. The cost of standing down is a
-# few minutes until the next commit draws again -- the sampling gate means
-# this job has no deadline of its own -- and the cost of being wrong is
-# somebody else's session. Yielding is cheap here and expensive there.
+# The second slot is not "spare capacity to be grabbed", it is capacity this
+# job takes only when the account is otherwise IDLE, which the survey
+# establishes immediately beforehand. What changed is not the willingness to
+# compete with a human -- that is still zero -- but the payload: four legs
+# are now worth running and two kernels x two T4s is the only shape that
+# fits them. Legs that were split across two sessions would be compared
+# across two images and two hours, and for the control/canary pair that
+# comparison is the entire instrument.
 #
-# Raise it only with a specific reason to believe the account is otherwise
-# idle, and never to or above MAX_CONCURRENT_GPU_KERNELS: this survey is a
-# snapshot, and leaving no headroom means racing anything that starts
-# between the survey and the push.
-ALLOWED_IN_FLIGHT_KERNELS = 0
+# The residual risk is a foreign kernel that starts BETWEEN the survey and
+# the push. That is not new and it is already handled where it lands: the
+# launcher recognises Kaggle's capacity rejection (CAPACITY_MARKERS) and
+# reports it as infra, exiting 0. A human's push is never the one rejected,
+# because ours is the one that arrives second.
+KERNELS_PER_INVOCATION = 2
 
 # Kernel states that mean a session is occupying one of those slots.
 BUSY_STATES = {"QUEUED", "RUNNING"}
+
+# How this job recognises its own kernels. `launch.py` pushes every kernel as
+# `<user>/<OWN_KERNEL_PREFIX><8 hex>`, a fresh slug per attempt, and nothing
+# else on the account uses that prefix.
+#
+# The distinction matters because "the account is busy" and "this workflow is
+# busy" call for opposite answers. A foreign kernel means a human is using
+# the account and this job must yield. One of our own means a previous run of
+# this workflow is still in flight, which the job-level concurrency group is
+# supposed to prevent; it is reported separately rather than being counted as
+# a human, and it still occupies a slot, so it still blocks.
+OWN_KERNEL_PREFIX = "unsloth-t4-ci-"
 
 # How far back the in-flight survey has to look, and why that bound is
 # COMPLETE rather than merely convenient.
@@ -187,9 +211,14 @@ def survey_kernels(api, now: datetime | None = None,
     first one that started longer ago than any session is allowed to last.
     See LOOKBACK_HOURS for why that makes the walk exhaustive.
 
-    Returns the busy refs plus enough bookkeeping for the caller to tell
-    "nothing is running" from "the question could not be answered":
+    Returns the busy refs, split by ownership, plus enough bookkeeping for
+    the caller to tell "nothing is running" from "the question could not be
+    answered":
 
+    ``busy`` / ``own`` / ``foreign``
+        every in-flight kernel, and the two disjoint halves of that list.
+        A kernel is ours when its slug carries OWN_KERNEL_PREFIX, which is
+        what ``launch.py`` pushes under and nothing else uses.
     ``complete``
         the walk either ran off the end of the listing or reached an entry
         outside the window. False means the page cap was hit first and some
@@ -204,6 +233,8 @@ def survey_kernels(api, now: datetime | None = None,
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     cutoff = now - timedelta(hours=lookback_hours)
     busy: list[str] = []
+    own: list[str] = []
+    foreign: list[str] = []
     surveyed = 0
     unreadable = 0
     complete = False
@@ -233,7 +264,14 @@ def survey_kernels(api, now: datetime | None = None,
                 continue
             state = status.rsplit(".", 1)[-1].upper()
             if state in BUSY_STATES:
-                busy.append(f"{ref} ({state})")
+                entry = f"{ref} ({state})"
+                busy.append(entry)
+                # Ownership is read off the SLUG, which is the part after the
+                # username: a foreign kernel on this account belongs to the
+                # same user, so the user half says nothing.
+                slug = ref.rsplit("/", 1)[-1]
+                (own if slug.startswith(OWN_KERNEL_PREFIX)
+                 else foreign).append(entry)
         if complete:
             break
         if len(kernels) < page_size:
@@ -242,20 +280,32 @@ def survey_kernels(api, now: datetime | None = None,
             complete = True
             break
 
-    return {"busy": busy, "surveyed": surveyed, "unreadable": unreadable,
+    return {"busy": busy, "own": own, "foreign": foreign,
+            "surveyed": surveyed, "unreadable": unreadable,
             "complete": complete,
             "window_hours": lookback_hours}
 
 
 def concurrency_verdict(survey: dict,
-                        allowed_in_flight: int = ALLOWED_IN_FLIGHT_KERNELS
+                        kernels_needed: int = KERNELS_PER_INVOCATION,
+                        allowed_foreign: int = ALLOWED_IN_FLIGHT_FOREIGN_KERNELS
                         ) -> tuple[bool, str]:
     """Is the account idle enough? Returns (clear_to_launch, why not).
 
-    ``allowed_in_flight`` is how many kernels of this account may already be
-    running and this job still launch. The default is 0 -- stand down if
-    anything at all is in flight -- and the reasoning for that being well
-    below Kaggle's cap of 2 is on ALLOWED_IN_FLIGHT_KERNELS.
+    Two separate questions, in this order, because they have different
+    answers and conflating them is how a workflow ends up either competing
+    with a human or refusing to use capacity nobody wants.
+
+    1. **Is anyone else using the account?** Any foreign kernel at all and
+       this job stands down, whatever the slot arithmetic says. That is
+       stricter than Kaggle's cap requires and it is the policy; see
+       ALLOWED_IN_FLIGHT_FOREIGN_KERNELS.
+    2. **Are there enough free slots for the kernels this job pushes?** It
+       pushes ``kernels_needed`` of them and the account cap is
+       MAX_CONCURRENT_GPU_KERNELS, so its own leftovers count against it
+       exactly as a stranger's would. A run that launched half its kernels
+       would report half its legs and the control/canary comparison, which
+       is the whole point of the pairing, would have nothing to compare.
 
     "No busy kernel was found" is only worth acting on if the search could
     actually have found one. An unanswerable question is a skip here, never
@@ -263,20 +313,24 @@ def concurrency_verdict(survey: dict,
     commit draws again, and the cost of guessing wrong is a push rejected at
     the capacity cap.
     """
-    # Never hand out the last slot, whatever the caller asked for.
-    ceiling = MAX_CONCURRENT_GPU_KERNELS - 1
-    if allowed_in_flight > ceiling:
-        print(f"[gate] --allow-in-flight {allowed_in_flight} exceeds the "
-              f"{MAX_CONCURRENT_GPU_KERNELS}-kernel account cap; clamped to "
-              f"{ceiling}", flush=True)
-        allowed_in_flight = ceiling
-    busy = survey["busy"]
-    if len(busy) > allowed_in_flight:
+    foreign = survey.get("foreign", survey["busy"])
+    own = survey.get("own", [])
+    if len(foreign) > allowed_foreign:
         return False, (
-            f"the Kaggle account already has {len(busy)} kernel(s) in flight, "
-            f"this job tolerates {allowed_in_flight} and the account cap is "
-            f"{MAX_CONCURRENT_GPU_KERNELS}: {', '.join(busy)}. Standing down "
-            f"rather than queueing.")
+            f"the Kaggle account has {len(foreign)} kernel(s) in flight that "
+            f"are not this workflow's, and this job tolerates "
+            f"{allowed_foreign}: {', '.join(foreign)}. The account is shared "
+            f"with human use and CI yields to it; standing down rather than "
+            f"queueing.")
+    free = MAX_CONCURRENT_GPU_KERNELS - len(foreign) - len(own)
+    if free < kernels_needed:
+        return False, (
+            f"this job pushes {kernels_needed} kernel(s) and only {free} of "
+            f"the account's {MAX_CONCURRENT_GPU_KERNELS} slot(s) are free "
+            f"({len(own)} already held by this workflow, {len(foreign)} by "
+            f"something else). A partial launch would report a subset of the "
+            f"legs, and the control and canary legs are only worth anything "
+            f"as a pair.")
     if not survey["complete"]:
         return False, (
             "the in-flight survey did not reach the end of its "
@@ -307,12 +361,16 @@ def main() -> int:
                     help="worst-case GPU hours this invocation can spend")
     ap.add_argument("--reserve-hours", type=float, default=6.0,
                     help="quota CI refuses to dip into, left for humans")
-    ap.add_argument("--allow-in-flight", type=int,
-                    default=ALLOWED_IN_FLIGHT_KERNELS,
-                    help="kernels of this account that may already be running "
-                         "and this job still launch. Default 0: stand down if "
-                         "the account is doing anything at all. See "
-                         "ALLOWED_IN_FLIGHT_KERNELS before raising it")
+    ap.add_argument("--kernels", type=int, default=KERNELS_PER_INVOCATION,
+                    help="how many Kaggle kernels this invocation will push. "
+                         "The gate refuses unless that many slots are free")
+    ap.add_argument("--allow-foreign-in-flight", type=int,
+                    default=ALLOWED_IN_FLIGHT_FOREIGN_KERNELS,
+                    help="kernels NOT belonging to this workflow that may "
+                         "already be running and this job still launch. "
+                         "Default 0: the account is shared with human use and "
+                         "CI yields to it. See "
+                         "ALLOWED_IN_FLIGHT_FOREIGN_KERNELS before raising it")
     ap.add_argument("--soft-fail", action="store_true", default=True,
                     help="treat a gate error as a skip rather than a failure")
     ap.add_argument("--no-soft-fail", dest="soft_fail", action="store_false")
@@ -383,17 +441,21 @@ def main() -> int:
                               f"({type(exc).__name__}), so concurrency cannot "
                               "be established")
     print("[gate] concurrency " + json.dumps(
-        {k: v for k, v in survey.items() if k != "busy"}
-        | {"busy": len(survey["busy"])}), flush=True)
+        {k: v for k, v in survey.items()
+         if k not in ("busy", "own", "foreign")}
+        | {"busy": len(survey["busy"]), "own": len(survey["own"]),
+           "foreign": len(survey["foreign"])}), flush=True)
 
-    clear, why_not = concurrency_verdict(survey, args.allow_in_flight)
+    clear, why_not = concurrency_verdict(survey, args.kernels,
+                                         args.allow_foreign_in_flight)
     if not clear:
         return _decide(False, why_not)
 
     why = "forced by override" if override else \
         f"sampled in (draw {draw} of 100, threshold {args.percent})"
     return _decide(True, f"{why}; {quota['remaining_hours']}h of GPU quota "
-                         f"remaining and no kernel of this account is running")
+                         f"remaining and {args.kernels} of the account's "
+                         f"{MAX_CONCURRENT_GPU_KERNELS} kernel slots are free")
 
 
 if __name__ == "__main__":

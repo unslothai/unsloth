@@ -83,6 +83,13 @@ from determinism import (  # noqa: E402
     set_all_seeds_fast,
     set_deterministic_algorithms,
 )
+from versions import (  # noqa: E402
+    GOAL_PACKAGES,
+    flatten_versions,
+    load_pins,
+    pin_failures,
+    resolved_versions,
+)
 
 # MUST run before torch is imported anywhere: CUBLAS_WORKSPACE_CONFIG is read
 # when cuBLAS initialises, and setting it afterwards is silently ignored.
@@ -410,6 +417,13 @@ def environment_fingerprint() -> dict:
         info["unsloth"] = getattr(unsloth, "__version__", "unknown")
     except Exception:  # noqa: BLE001
         pass
+    # Every package this CI watches, read from the installed distributions.
+    # This is the line that makes a canary-leg failure attributable: the
+    # control leg and the canary leg run the same payload, so the diff of
+    # these two blocks is the entire difference between a green run and a
+    # red one. The keys above are kept as they were, because the committed
+    # reference carries them and the summary renderer reads them.
+    info["resolved"] = flatten_versions(resolved_versions(GOAL_PACKAGES))
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
         info["gpu_name"] = props.name
@@ -652,6 +666,12 @@ def main() -> int:
                     help="use_deterministic_algorithms(warn_only=False)")
     ap.add_argument("--reference", default="",
                     help="committed reference JSON to band-check against")
+    ap.add_argument("--pins", default="",
+                    help="a name==version pin file this run must have "
+                         "resolved to exactly. The control leg passes it; a "
+                         "pin that did not hold means the leg is not a "
+                         "control and its comparison against the canary is "
+                         "worthless, so it is a failure rather than a note")
     ap.add_argument("--rel-tol", type=float, default=0.10)
     ap.add_argument("--abs-floor", type=float, default=0.05,
                     help="denominator floor so a near-zero reference value "
@@ -746,6 +766,15 @@ def main() -> int:
     }
 
     failures: list[str] = []
+
+    # 0. the pins, if this leg claims to be a control
+    if args.pins:
+        resolved = resolved_versions(GOAL_PACKAGES)
+        pins = load_pins(args.pins)
+        broken = pin_failures(pins, resolved)
+        report["pins"] = {"file": args.pins, "requested": pins,
+                          "failures": broken}
+        failures += broken
 
     # 1. bitwise run-to-run
     if len(runs) > 1:

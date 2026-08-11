@@ -51,9 +51,58 @@ def _fmt_metric(value) -> str:
     return str(value)
 
 
+def resolved_versions(report: dict) -> dict:
+    """The installed version of every watched package, whichever leg wrote it.
+
+    The SFT payload nests it under ``environment.resolved`` because its
+    environment block predates this and the committed reference carries that
+    shape; the gpt-oss and GRPO payloads write ``versions_flat`` at the top
+    level. Both are read here so the summary does not have to care.
+    """
+    flat = report.get("versions_flat")
+    if isinstance(flat, dict):
+        return flat
+    nested = (report.get("environment") or {}).get("resolved")
+    return nested if isinstance(nested, dict) else {}
+
+
+def version_table(reports: list) -> list[str]:
+    """Every leg's library set side by side, with what differs called out.
+
+    This is the payoff of running a pinned control next to a canary. When
+    the canary is the only red leg, the answer to "which bump did it" is
+    already on the summary page, and nobody has to download an artifact or
+    reconstruct an install log to bisect it.
+    """
+    columns = [(r.get("label", "?"), resolved_versions(r)) for r in reports]
+    columns = [(label, versions) for label, versions in columns if versions]
+    if len(columns) < 2:
+        return []
+    packages = sorted({p for _, versions in columns for p in versions})
+    differing = [p for p in packages
+                 if len({str(versions.get(p)) for _, versions in columns}) > 1]
+    lines = ["<details><summary>Resolved library versions per leg"
+             + (f" ({len(differing)} differ)" if differing else
+                " (identical across legs)") + "</summary>", ""]
+    lines.append("| package | " + " | ".join(l for l, _ in columns) + " |")
+    lines.append("| --- |" + " --- |" * len(columns))
+    for package in packages:
+        cells = [str(versions.get(package) or "-") for _, versions in columns]
+        name = f"**{package}**" if package in differing else package
+        lines.append(f"| {name} | " + " | ".join(cells) + " |")
+    lines += ["", "</details>", ""]
+    if differing:
+        lines += [f"Legs differ in: {', '.join(differing)}.", ""]
+    return lines
+
+
 def render(report: dict) -> list[str]:
     lines = [f"#### payload `{report.get('label', '?')}`  "
              f"model `{report.get('model', '?')}`", ""]
+    if report.get("probe"):
+        lines += ["This payload ran in **probe mode**: everything is "
+                  "recorded and nothing is asserted, so `passed` says only "
+                  "that it reported back. Read `observed_failures`.", ""]
     env = report.get("environment", {})
     if env:
         lines.append(
@@ -126,6 +175,59 @@ def render(report: dict) -> list[str]:
             lines.append(f"Reference band: **{status}** - {ref.get('deviations')}")
         lines.append("")
 
+    pins = report.get("pins")
+    if pins:
+        lines.append(
+            "Pins: " + ("held" if not pins.get("failures") else
+                        "**DID NOT HOLD** - " + "; ".join(pins["failures"]))
+            + f" ({len(pins.get('requested', {}))} pinned).")
+        lines.append("")
+
+    compiled = report.get("compile")
+    if compiled:
+        if not compiled.get("available"):
+            lines.append(f"torch.compile: **unreadable** - "
+                         f"{compiled.get('error')}")
+        else:
+            lines.append(
+                f"torch.compile: {compiled.get('unique_graphs')} unique "
+                f"graph(s), {compiled.get('calls_captured')} calls captured, "
+                f"{compiled.get('graph_breaks_total')} graph break(s)."
+                + ("" if compiled.get("unique_graphs") else
+                   " **Zero graphs means the run was entirely eager.**"))
+        lines.append("")
+
+    memory = report.get("memory_peak") or report.get("memory_after_train")
+    if memory:
+        lines.append(
+            f"Peak VRAM: {memory.get('peak_reserved_gb')} GB reserved / "
+            f"{memory.get('peak_allocated_gb')} GB allocated of "
+            f"{memory.get('total_gb')} GB.")
+        lines.append("")
+
+    history = report.get("log_history")
+    if history:
+        # GRPO. The loss is ~0 by construction at num_iterations=1 and
+        # beta=0, so reward and reward_std are what is worth showing.
+        lines += ["| step | reward | reward_std |", "| --- | --- | --- |"]
+        for entry in history:
+            if entry.get("reward") is None:
+                continue
+            lines.append(f"| {entry.get('step')} | "
+                         f"{_fmt_metric(entry.get('reward'))} | "
+                         f"{_fmt_metric(entry.get('reward_std'))} |")
+        lines.append("")
+        sample = [t for group in (report.get("completions") or [])
+                  for t in group if t.strip()]
+        if sample:
+            lines.append(f"First completion: `{sample[0][:200]}`")
+            lines.append("")
+
+    if report.get("observed_failures") and not report.get("failures"):
+        lines.append("Observed (not asserted, this is a probe):")
+        lines += [f"- {f}" for f in report["observed_failures"]]
+        lines.append("")
+
     if report.get("failures"):
         lines.append("Failures:")
         lines += [f"- {f}" for f in report["failures"]]
@@ -145,18 +247,22 @@ def kernel_log_text(evidence: Path) -> str:
     file directly shows a wall of JSON with one word of the actual message
     per line.
     """
-    path = evidence / "kernel.log"
-    if not path.exists():
-        return ""
-    raw = path.read_text(encoding="utf-8", errors="replace")
-    try:
-        records = json.loads(raw)
-    except json.JSONDecodeError:
-        return raw
-    if not isinstance(records, list):
-        return raw
-    return "".join(r.get("data", "") for r in records
-                   if isinstance(r, dict))
+    chunks = []
+    # rglob: a run is several kernels now and each collects into its own
+    # directory, so there is no single kernel.log any more.
+    for path in sorted(evidence.rglob("kernel.log")):
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            records = json.loads(raw)
+        except json.JSONDecodeError:
+            chunks.append(raw)
+            continue
+        if not isinstance(records, list):
+            chunks.append(raw)
+            continue
+        chunks.append("".join(r.get("data", "") for r in records
+                              if isinstance(r, dict)))
+    return "".join(chunks)
 
 
 def diagnostic_lines(evidence: Path, limit: int = 40) -> list[str]:
@@ -205,10 +311,19 @@ def main() -> int:
     }.get(verdict, "### Kaggle T4 smoke")
 
     lines = [header, "", reason, ""]
-    if result.get("slug"):
+    for kernel in result.get("kernels") or []:
+        if kernel.get("slug"):
+            lines.append(f"Kernel: `{kernel['slug']}` (private), terminal "
+                         f"state `{kernel.get('state')}`.")
+        else:
+            lines.append(f"Kernel from `{kernel.get('notebook')}` was never "
+                         f"pushed: {kernel.get('push_error')}")
+    if not result.get("kernels") and result.get("slug"):
         lines.append(f"Kernel: `{result['slug']}` (private), terminal state "
                      f"`{result.get('kernel_state')}`.")
-        lines.append("")
+    lines.append("")
+
+    lines += version_table(reports)
     for report in reports:
         lines += render(report)
 

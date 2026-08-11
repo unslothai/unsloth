@@ -267,44 +267,99 @@ def test_some_unreadable_statuses_do_not_block_a_readable_idle_account():
     assert concurrency_verdict(survey) == (True, "")
 
 
-def test_standing_down_while_the_account_is_busy_is_the_default():
-    """The documented policy: one kernel in flight and this job yields.
+def _busy(*refs) -> dict:
+    """A survey with the given refs in flight, split the way the gate does."""
+    from gate import OWN_KERNEL_PREFIX
 
-    Kaggle would allow a second (2 kernels x 2 T4s = 4 payloads) and this
-    deliberately does not take it. The knob is ALLOWED_IN_FLIGHT_KERNELS;
-    the default being 0 rather than 1 is the decision under test.
+    busy = [f"{ref} (RUNNING)" for ref in refs]
+    own = [b for b in busy
+           if b.split("/", 1)[-1].startswith(OWN_KERNEL_PREFIX)]
+    return {"busy": busy, "own": own,
+            "foreign": [b for b in busy if b not in own],
+            "complete": True, "surveyed": len(busy), "unreadable": 0,
+            "window_hours": 13.0}
+
+
+def test_the_gate_knows_its_own_kernels_from_a_strangers():
+    """The whole refinement rests on this classification being right."""
+    from gate import survey_kernels
+
+    api = _FakeApi([_FakeKernel("danielhanchen/unsloth-t4-ci-deadbeef", _ago(1)),
+                    _FakeKernel("danielhanchen/my-own-notebook", _ago(2))],
+                   statuses={"danielhanchen/unsloth-t4-ci-deadbeef": "RUNNING",
+                             "danielhanchen/my-own-notebook": "RUNNING"})
+    survey = survey_kernels(api, now=_now())
+    assert survey["own"] == ["danielhanchen/unsloth-t4-ci-deadbeef (RUNNING)"]
+    assert survey["foreign"] == ["danielhanchen/my-own-notebook (RUNNING)"]
+
+
+def test_the_prefix_the_gate_looks_for_is_the_one_the_launcher_pushes():
+    """Two files name the same string and only one of them creates it.
+
+    If they ever disagree, the gate silently reclassifies every kernel this
+    workflow launches as somebody else's, and the job stands down forever
+    for a reason no log would explain.
     """
-    from gate import ALLOWED_IN_FLIGHT_KERNELS, concurrency_verdict
+    import launch
+    from gate import OWN_KERNEL_PREFIX
 
-    assert ALLOWED_IN_FLIGHT_KERNELS == 0
-    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
-              "unreadable": 0, "window_hours": 13.0}
-    clear, why = concurrency_verdict(survey)
+    assert launch._slugify("unsloth t4 ci")[:32] + "-" == OWN_KERNEL_PREFIX
+
+
+def test_a_single_foreign_kernel_stands_the_job_down():
+    """The policy: the account is shared with human use and CI yields.
+
+    Kaggle would allow a second concurrent kernel and this deliberately does
+    not take it while a stranger holds the first. The knob is
+    ALLOWED_IN_FLIGHT_FOREIGN_KERNELS and its default being 0 is the
+    decision under test.
+    """
+    from gate import ALLOWED_IN_FLIGHT_FOREIGN_KERNELS, concurrency_verdict
+
+    assert ALLOWED_IN_FLIGHT_FOREIGN_KERNELS == 0
+    clear, why = concurrency_verdict(_busy("danielhanchen/somebody-else"))
     assert clear is False
-    assert "1 kernel(s) in flight" in why and "tolerates 0" in why
+    assert "not this workflow's" in why and "yields" in why
 
 
-def test_the_in_flight_tolerance_is_a_knob_and_not_a_constant():
-    """Raising it is a one-argument change, which is what makes the default
-    a policy rather than an accident of the implementation."""
+def test_a_foreign_kernel_blocks_even_when_a_slot_is_free():
+    """One foreign kernel leaves one slot, which the arithmetic alone would
+    happily hand to a one-kernel run. The policy overrides the arithmetic."""
     from gate import concurrency_verdict
 
-    survey = {"busy": ["u/a (RUNNING)"], "complete": True, "surveyed": 1,
-              "unreadable": 0, "window_hours": 13.0}
-    assert concurrency_verdict(survey, 1) == (True, "")
-    assert concurrency_verdict(survey, 0)[0] is False
+    clear, why = concurrency_verdict(_busy("danielhanchen/somebody-else"),
+                                     kernels_needed=1)
+    assert clear is False and "not this workflow's" in why
 
 
-def test_the_tolerance_can_never_be_raised_to_the_account_cap():
-    """Leaving no headroom races anything that starts after the survey."""
-    from gate import MAX_CONCURRENT_GPU_KERNELS, concurrency_verdict
+def test_this_workflows_own_leftovers_still_occupy_slots():
+    """A previous run of this workflow is not a stranger, and is not free
+    either. Launching alongside it would push past Kaggle's cap and get one
+    of the two kernels rejected, reporting half the legs."""
+    from gate import concurrency_verdict
 
-    survey = {"busy": [f"u/k{i} (RUNNING)" for i in
-                       range(MAX_CONCURRENT_GPU_KERNELS)],
-              "complete": True, "surveyed": 2, "unreadable": 0,
-              "window_hours": 13.0}
-    clear, why = concurrency_verdict(survey, MAX_CONCURRENT_GPU_KERNELS)
-    assert clear is False and "Standing down" in why
+    clear, why = concurrency_verdict(_busy("danielhanchen/unsloth-t4-ci-abc"))
+    assert clear is False
+    assert "only 1" in why and "already held by this workflow" in why
+    # ...but a run that only needs one slot may take the remaining one.
+    assert concurrency_verdict(_busy("danielhanchen/unsloth-t4-ci-abc"),
+                               kernels_needed=1) == (True, "")
+
+
+def test_an_idle_account_clears_both_kernels():
+    """The change this refinement exists for: 2 kernels x 2 T4s = 4 legs."""
+    from gate import KERNELS_PER_INVOCATION, concurrency_verdict
+
+    assert KERNELS_PER_INVOCATION == 2
+    survey = {"busy": [], "own": [], "foreign": [], "complete": True,
+              "surveyed": 0, "unreadable": 0, "window_hours": 13.0}
+    assert concurrency_verdict(survey) == (True, "")
+    # And it can never ask for more slots than the account has.
+    from gate import MAX_CONCURRENT_GPU_KERNELS
+
+    assert KERNELS_PER_INVOCATION <= MAX_CONCURRENT_GPU_KERNELS
+    assert concurrency_verdict(
+        survey, MAX_CONCURRENT_GPU_KERNELS + 1)[0] is False
 
 
 def test_an_account_with_no_kernels_at_all_is_clear():
@@ -918,88 +973,19 @@ def test_every_setting_the_child_needs_is_forwarded_to_it():
 
 # ------------------------------------------------------------ kernel build
 
-def test_built_kernel_is_valid_notebook_json_with_gpu_requested(tmp_path):
+LEG_NAMES = ("control", "canary", "gptoss", "grpo")
+
+
+def _build(tmp_path, legs: str = "control,canary", *extra,
+           payload_dir: Path = SMOKE_DIR) -> dict:
     out = tmp_path / "kernel.ipynb"
+    out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(SMOKE_DIR), "--out", str(out),
-         "--count", "2", "--unsloth-ref", "main", "--zoo-ref", "main"],
-        check=True, capture_output=True)
-    nb = json.loads(out.read_text())
-    assert nb["nbformat"] == 4
-    assert nb["metadata"]["accelerator"] == "GPU"
-    assert len(nb["metadata"]["kaggle_t4_ci"]["payloads"]) == 2
-    for cell in nb["cells"]:
-        assert cell["cell_type"] == "code"
-
-    # The token must never be capable of reaching the kernel: nothing in the
-    # notebook may reference a credential environment variable.
-    blob = out.read_text()
-    for forbidden in ("KAGGLE_API_TOKEN", "KAGGLE_KEY", "KAGGLE_USERNAME",
-                      "KAGGLE_ACCESS_TOKEN_GH"):
-        assert forbidden not in blob, f"{forbidden} leaked into the kernel"
-
-
-def test_built_kernel_pins_one_gpu_per_payload_and_isolates_installs(tmp_path):
-    """The three details that previous sweeps proved are load-bearing."""
-    out = tmp_path / "kernel.ipynb"
-    subprocess.run(
-        [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(SMOKE_DIR), "--out", str(out), "--count", "2"],
-        check=True, capture_output=True)
-    source = "".join("".join(c["source"]) for c in
-                     json.loads(out.read_text())["cells"])
-    assert 'env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)' in source
-    assert "--seed" in source and "--system-site-packages" in source
-    assert 'env["UV_SYSTEM_PYTHON"] = "0"' in source
-
-
-def _build(tmp_path, *extra, payload_dir: Path = SMOKE_DIR) -> dict:
-    out = tmp_path / "kernel.ipynb"
-    subprocess.run(
-        [sys.executable, str(CI_DIR / "build_kernel.py"),
-         "--payload-dir", str(payload_dir), "--out", str(out), "--count", "2",
-         *extra],
+         "--payload-dir", str(payload_dir), "--out", str(out),
+         "--legs", legs, *extra],
         check=True, capture_output=True)
     return json.loads(out.read_text())
-
-
-# The argument list .github/workflows/kaggle-t4-notebook-ci.yml actually
-# passes. Tested verbatim rather than approximated: the SyntaxError that cost
-# a Kaggle session lived only on the --reference branch, which is the branch
-# the workflow always takes and the one no local build had ever exercised.
-WORKFLOW_ARGS = ("--unsloth-ref", "main", "--zoo-ref", "main",
-                 "--reference", "t4_qwen2.5-0.5b.json",
-                 "--smoke-args", "--max-steps 3",
-                 "--per-run-timeout", "2100")
-
-
-def _payload_dir(tmp_path, name: str, *, with_reference: bool) -> Path:
-    """A copy of the payload directory, with or without a reference file.
-
-    Both worlds are built explicitly rather than inherited from whatever
-    happens to be committed. When a reference exists it is inlined into the
-    payload notebook as a fourth carried file, under a key with a directory
-    separator in it, which is a different build path from the empty
-    directory -- and each of them has, at some point, been the live one.
-    Deriving the two cases from the repo would mean one of them silently
-    stopped being covered the day the reference landed.
-    """
-    import shutil
-
-    dest = tmp_path / name
-    shutil.copytree(SMOKE_DIR, dest,
-                    ignore=shutil.ignore_patterns("__pycache__"))
-    refs = dest / "references"
-    refs.mkdir(exist_ok=True)
-    for stale in refs.glob("*.json"):
-        stale.unlink()
-    if with_reference:
-        (refs / "t4_qwen2.5-0.5b.json").write_text(json.dumps({
-            "metrics": [{"step": 1, "loss": 10.3, "grad_norm": float("nan")},
-                        {"step": 2, "loss": 0.14, "grad_norm": 13.8}],
-            "environment": {"gpu_name": "Tesla T4"}}, indent=2))
-    return dest
 
 
 def _payload_notebooks(driver: dict) -> dict:
@@ -1014,62 +1000,196 @@ def _payload_notebooks(driver: dict) -> dict:
             for name, data in json.loads(blob).items()}
 
 
-def _every_generated_cell(driver: dict):
-    """(notebook name, cell index, source) for the driver and both payloads.
+def _cell(payload: dict, index: int) -> str:
+    return "".join(payload["cells"][index]["source"])
 
-    The payloads are the point. They are not files on disk anywhere; they
-    exist only gzipped and base64'd inside the driver's first cell, so
-    nothing that inspects the built kernel as a notebook can see them, and
-    that is precisely where both generated-code defects have landed so far.
+
+def test_built_kernel_is_valid_notebook_json_with_gpu_requested(tmp_path):
+    nb = _build(tmp_path)
+    assert nb["nbformat"] == 4
+    assert nb["metadata"]["accelerator"] == "GPU"
+    assert nb["metadata"]["kaggle_t4_ci"]["payloads"] == [
+        "t4_canary.ipynb", "t4_control.ipynb"]
+    for cell in nb["cells"]:
+        assert cell["cell_type"] == "code"
+
+    # The token must never be capable of reaching the kernel: nothing in the
+    # notebook may reference a credential environment variable.
+    blob = json.dumps(nb)
+    for forbidden in ("KAGGLE_API_TOKEN", "KAGGLE_KEY", "KAGGLE_USERNAME",
+                      "KAGGLE_ACCESS_TOKEN_GH"):
+        assert forbidden not in blob, f"{forbidden} leaked into the kernel"
+
+
+def test_built_kernel_pins_one_gpu_per_payload_and_isolates_installs(tmp_path):
+    """The three details that previous sweeps proved are load-bearing.
+
+    The venv isolation matters more now than it did: the legs deliberately
+    install DIFFERENT library sets into the same session, so a shared
+    site-packages would not merely risk corruption, it would silently make
+    the control leg and the canary leg the same experiment.
     """
-    for name, nb in {"driver": driver, **_payload_notebooks(driver)}.items():
-        for index, cell in enumerate(nb["cells"]):
-            yield name, index, "".join(cell["source"])
+    source = "".join("".join(c["source"]) for c in _build(tmp_path)["cells"])
+    assert 'env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)' in source
+    assert "--seed" in source and "--system-site-packages" in source
+    assert 'env["UV_SYSTEM_PYTHON"] = "0"' in source
 
+
+def test_an_unknown_leg_fails_at_build_time(tmp_path):
+    """A typo in a workflow input must cost a runner second, not a session."""
+    proc = subprocess.run(
+        [sys.executable, str(CI_DIR / "build_kernel.py"),
+         "--payload-dir", str(SMOKE_DIR), "--out", str(tmp_path / "k.ipynb"),
+         "--legs", "control,typo"], capture_output=True, text=True)
+    assert proc.returncode != 0
+    assert "unknown leg" in proc.stderr and "typo" in proc.stderr
+
+
+# ---------------------------------------------- the control / canary pairing
+#
+# The two legs are an instrument, and the instrument works only while the
+# ONLY difference between them is the installed versions. Everything below
+# derives that from the built notebooks rather than trusting the registry.
+
+def test_the_control_and_canary_legs_differ_only_in_what_they_install(
+        tmp_path):
+    payloads = _payload_notebooks(_build(tmp_path, "control,canary"))
+    control = payloads["t4_control.ipynb"]
+    canary = payloads["t4_canary.ipynb"]
+
+    control_run, canary_run = _cell(control, 3), _cell(canary, 3)
+    assert "run_t4_smoke.py" in control_run and "run_t4_smoke.py" in canary_run
+    # Anything that changes the TRAINING must be absent from both or present
+    # in both. The seed, the dataset and the step count are payload defaults
+    # and neither leg overrides them, so neither may name them here.
+    for knob in ("--max-steps", "--learning-rate", "--batch-size",
+                 "--lora-r", "--optim", "--model", "--dataset"):
+        assert (knob in control_run) == (knob in canary_run), knob
+    # The differences that ARE allowed are assertions about the pinning, not
+    # changes to the run.
+    assert "--pins" in control_run and "--pins" not in canary_run
+    assert "--reference" in control_run and "--reference" not in canary_run
+
+    # And the install cell, which is the difference the pair exists for.
+    assert _cell(control, 1) != _cell(canary, 1)
+
+
+def test_the_control_leg_installs_the_committed_pins_verbatim(tmp_path):
+    """The pin file is expanded at BUILD time, so the notebook states it.
+
+    Reading the file on the kernel instead would mean the built notebook
+    could not be checked without executing it, and the versions a control
+    leg installs are exactly the thing worth checking without executing.
+    """
+    from legs import _read_pins
+
+    pins = _read_pins(SMOKE_DIR / "pins" / "control.txt")
+    assert pins, "the control pin file names no versions"
+    install = _cell(_payload_notebooks(_build(tmp_path))["t4_control.ipynb"], 1)
+    for pin in pins:
+        assert "==" in pin, pin
+        assert json.dumps(pin) in install, pin
+
+
+def test_the_canary_leg_upgrades_in_one_resolution_with_the_zoo_requirement(
+        tmp_path):
+    """Upgrading separately would let pip install a version zoo forbids.
+
+    pip warns about that and installs anyway, so the canary would be
+    measuring an environment Unsloth never claimed to support and its
+    failures would say nothing about a release.
+    """
+    import re
+
+    from legs import CANARY_UPGRADES
+
+    install = _cell(_payload_notebooks(_build(tmp_path))["t4_canary.ipynb"], 1)
+    groups = json.loads(re.search(r"^GROUPS = (\[.*?\])$", install,
+                                  re.M | re.S).group(1))
+    upgrade = [g for g in groups if "--upgrade" in g]
+    assert len(upgrade) == 1, groups
+    assert any("unsloth-zoo" in item for item in upgrade[0]), upgrade
+    for package in CANARY_UPGRADES:
+        assert package in upgrade[0], package
+
+
+def test_the_canary_leg_band_checks_against_nothing(tmp_path):
+    """Two library sets do not produce one fp16 trajectory.
+
+    Band-checking the canary against the control's committed trace would go
+    red on ordinary cross-version drift, which is precisely the noise that
+    gets a check disabled. What the canary asserts instead is everything
+    that does not depend on the versions, and those assertions live in the
+    payload rather than here.
+    """
+    from legs import LEGS
+
+    assert LEGS["canary"].reference == ""
+    assert LEGS["control"].reference == "t4_qwen2.5-0.5b.json"
+    canary = _payload_notebooks(_build(tmp_path))["t4_canary.ipynb"]
+    assert "--reference" not in _cell(canary, 3)
+
+
+def test_every_leg_carries_the_version_recorder(tmp_path):
+    """A red leg that cannot name its library set is unactionable."""
+    from legs import COMMON_FILES, LEGS
+
+    assert "versions.py" in COMMON_FILES
+    for name in LEGS:
+        payload = _payload_notebooks(
+            _build(tmp_path / name, name))[f"t4_{name}.ipynb"]
+        assert "versions.py" in _cell(payload, 0)
+        assert "versions.flatten_versions" in _cell(payload, 2)
+
+
+def test_every_registered_leg_is_carried_by_exactly_one_kernel():
+    """A leg nobody runs is dead code; a leg run twice halves the session."""
+    from legs import KERNELS, LEGS, MAX_LEGS_PER_KERNEL
+
+    carried = [name for kernel in KERNELS for name in kernel]
+    assert sorted(carried) == sorted(LEGS)
+    assert len(carried) == len(set(carried))
+    for kernel in KERNELS:
+        assert 1 <= len(kernel) <= MAX_LEGS_PER_KERNEL, kernel
+
+
+# --------------------------------------------------- generated cell hygiene
 
 def _build_all_paths(tmp_path):
-    """Every code path build_kernel.py has, keyed by name."""
-    return {
-        # No band check at all.
-        "no-reference": _build(tmp_path / "a"),
-        # --reference named but the file not present: what the workflow did
-        # before a green T4 run supplied one, and what it does again for any
-        # configuration that has no reference yet.
-        "workflow-reference-absent": _build(
-            tmp_path / "b", *WORKFLOW_ARGS,
-            payload_dir=_payload_dir(tmp_path, "empty", with_reference=False)),
-        # --reference named and present: the reference is carried inline as a
-        # fourth file, under a key with a directory separator in it.
-        "workflow-reference-present": _build(
-            tmp_path / "c", *WORKFLOW_ARGS,
-            payload_dir=_payload_dir(tmp_path, "full", with_reference=True)),
-    }
+    """Every leg, plus the reference-off branch of the build."""
+    paths = {name: _build(tmp_path / name, name) for name in LEG_NAMES}
+    # The band check turned off, which is how a reference recapture is
+    # dispatched and is a different code path from every entry above.
+    paths["control-no-reference"] = _build(
+        tmp_path / "noref", "control", "--skip-reference")
+    return paths
 
 
 def test_generated_cells_compile(tmp_path):
     """Every generated cell must parse as Python, on every code path.
 
-    This is not hypothetical. The reference argument was generated as a
+    This is not hypothetical. The reference argument was once generated as a
     shell fragment (' --reference "..."') and spliced into the middle of a
     Python list literal, so the payload's run cell was a SyntaxError. It was
     on the path the workflow always takes, and it cost a real Kaggle session
     to find, because nothing between writing the cell and executing it on a
-    T4 ever tried to parse it. The bug lived only in the branch that was
-    never built locally, which is why all three branches are built here and
-    why the workflow's own argument list is used verbatim.
+    T4 ever tried to parse it.
     """
     seen = 0
     for path, driver in _build_all_paths(tmp_path).items():
-        for name, index, source in _every_generated_cell(driver):
-            compile(source, f"{path}/{name}#cell{index}", "exec")
-            seen += 1
-    # 3 paths x (3 driver cells + 2 payloads x 4 cells). Asserted so a
-    # refactor that stops reaching the payloads cannot leave this test
-    # passing while compiling nothing that matters.
-    assert seen == 33, seen
+        for name, nb in {"driver": driver,
+                         **_payload_notebooks(driver)}.items():
+            for index, cell in enumerate(nb["cells"]):
+                compile("".join(cell["source"]),
+                        f"{path}/{name}#cell{index}", "exec")
+                seen += 1
+    # 5 builds x (3 driver cells + 4 payload cells). Asserted so a refactor
+    # that stops reaching the payloads cannot leave this test passing while
+    # compiling nothing that matters.
+    assert seen == 5 * 7, seen
 
 
-def _undefined_names(source: str, already_bound: set[str]) -> tuple[set, set]:
+def _undefined_names(source: str, already_bound: set) -> tuple:
     """Names a cell reads without binding, and the names it binds.
 
     Deliberately scope-blind: every binding anywhere in the cell counts as
@@ -1082,7 +1202,7 @@ def _undefined_names(source: str, already_bound: set[str]) -> tuple[set, set]:
 
     tree = ast.parse(source)
     bound = set(already_bound) | set(dir(builtins))
-    read: set[str] = set()
+    read: set = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             (bound if isinstance(node.ctx, (ast.Store, ast.Del))
@@ -1114,7 +1234,7 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
     for path, driver in _build_all_paths(tmp_path).items():
         for nb_name, nb in {"driver": driver,
                             **_payload_notebooks(driver)}.items():
-            carried: set[str] = set()
+            carried: set = set()
             for index, cell in enumerate(nb["cells"]):
                 missing, bound = _undefined_names("".join(cell["source"]),
                                                   carried)
@@ -1122,6 +1242,18 @@ def test_no_generated_cell_reads_a_name_nothing_defines(tmp_path):
                     f"{path}/{nb_name} cell {index} reads undefined "
                     f"{sorted(missing)}")
                 carried = bound
+
+
+def test_the_sources_are_materialised_before_the_first_install(tmp_path):
+    """The control leg installs from a pin file carried inside the notebook.
+
+    Materialising last, as an earlier version did, wrote that file after the
+    install that needed it. Cheap to assert here, and forty minutes into a
+    Kaggle session everywhere else.
+    """
+    payload = _payload_notebooks(_build(tmp_path))["t4_control.ipynb"]
+    assert "FILES = {" in _cell(payload, 0)
+    assert "pip(group)" in _cell(payload, 1)
 
 
 def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
@@ -1137,35 +1269,32 @@ def test_the_files_the_payload_carries_are_byte_identical_to_the_repo(
     import gzip
     import re
 
-    payload_dir = _payload_dir(tmp_path, "full", with_reference=True)
-    driver = _build(tmp_path / "c", *WORKFLOW_ARGS, payload_dir=payload_dir)
-    payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
-    materialise = "".join(payload["cells"][2]["source"])
-    blob = re.search(r"^FILES = (\{.*?\})$", materialise, re.M | re.S).group(1)
+    payload = _payload_notebooks(_build(tmp_path))["t4_control.ipynb"]
+    blob = re.search(r"^FILES = (\{.*?\})$", _cell(payload, 0),
+                     re.M | re.S).group(1)
     files = json.loads(blob)
-    assert set(files) == {"run_t4_smoke.py", "determinism.py",
-                          "canary_dataset.jsonl",
+    assert set(files) == {"versions.py", "canary_dataset.jsonl",
+                          "run_t4_smoke.py", "determinism.py",
+                          "pins/control.txt",
                           "references/t4_qwen2.5-0.5b.json"}, sorted(files)
     for name, data in files.items():
         assert gzip.decompress(base64.b64decode(data)) == \
-            (payload_dir / name).read_bytes(), name
+            (SMOKE_DIR / name).read_bytes(), name
 
 
-def test_the_reference_path_the_payload_builds_is_the_one_that_is_shipped(
+def test_runtime_paths_are_assembled_from_root_rather_than_interpolated(
         tmp_path):
-    """The runtime path must be assembled from ROOT, not left as a literal.
+    """The runtime path must be built from ROOT, not left as a literal.
 
     The first version emitted a doubled-brace "{ROOT}/references/..." inside
     an ordinary string, so even had it parsed, the child would have been
     handed a path with a literal brace in it and reported the reference
     absent -- a band check that silently checks nothing.
     """
-    driver = _build(tmp_path, "--reference", "t4_qwen2.5-0.5b.json")
-    payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
-    run_cell = "".join(payload["cells"][-1]["source"])
-    assert ('cmd += ["--reference", str(ROOT / "references" / '
-            '"t4_qwen2.5-0.5b.json")]') in run_cell
-    assert "{ROOT}" not in run_cell
+    run = _cell(_payload_notebooks(_build(tmp_path))["t4_control.ipynb"], 3)
+    assert 'str(ROOT / "references" / "t4_qwen2.5-0.5b.json")' in run
+    assert 'str(ROOT / "pins" / "control.txt")' in run
+    assert "{ROOT}" not in run
 
 
 def test_the_dependency_probe_imports_unsloth_before_unsloth_zoo(tmp_path):
@@ -1176,13 +1305,36 @@ def test_the_dependency_probe_imports_unsloth_before_unsloth_zoo(tmp_path):
     imported cleanly a moment later. Probing zoo first therefore reported a
     dependency missing that was not missing, and killed the payload.
     """
-    driver = _build(tmp_path)
-    payload = _payload_notebooks(driver)["t4_smoke_gpu0.ipynb"]
-    verify = "".join(payload["cells"][1]["source"])
-    assert "importlib.invalidate_caches()" in verify
-    modules = verify.split("for mod in (", 1)[1].split("):", 1)[0]
-    assert modules.index('"unsloth"') < modules.index('"unsloth_zoo"')
+    from legs import LEGS
 
+    verify = _cell(_payload_notebooks(_build(tmp_path))["t4_control.ipynb"], 2)
+    assert "importlib.invalidate_caches()" in verify
+    for leg in LEGS.values():
+        assert leg.imports.index("unsloth") < leg.imports.index("unsloth_zoo")
+
+
+def test_the_grpo_leg_probes_vllm_before_it_spends_the_session(tmp_path):
+    """vLLM installs cleanly on hardware whose kernels it does not carry.
+
+    The failure is at import or at engine construction, tens of gigabytes of
+    download later. Naming it in the fail-fast probe turns that into one
+    line in the driver log.
+    """
+    from legs import LEGS
+
+    assert "vllm" in LEGS["grpo"].imports
+    verify = _cell(_payload_notebooks(_build(tmp_path / "g", "grpo"))
+                   ["t4_grpo.ipynb"], 2)
+    assert '"vllm"' in verify
+
+
+def test_the_grpo_leg_installs_vllm_before_anything_pulls_torch(tmp_path):
+    """vLLM pins torch. Resolving it last walks torch backwards under a
+    stack that is already installed against the newer one."""
+    from legs import LEGS
+
+    groups = LEGS["grpo"].install
+    assert any("vllm" in item for item in groups[0]), groups
 
 # --------------------------------------------------------------- workflow
 
@@ -1216,13 +1368,31 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
 
 
 def test_the_band_check_is_on_unless_a_dispatch_turns_it_off():
-    """The one way to run without a band check is explicit and it warns."""
+    """The one way to run without a band check is explicit and it warns.
+
+    The reference itself is now named by the control leg rather than by the
+    workflow, so what this asserts is the OFF switch: that there is exactly
+    one, that it is a dispatch input, and that it announces itself.
+    """
     source = WORKFLOW.read_text()
-    assert "REFERENCE='t4_qwen2.5-0.5b.json'" in source
     assert 'if [ "$SKIP_BAND" = "true" ]' in source
     assert "::warning title=Reference band check disabled" in source
-    # And nothing else may blank it.
-    assert source.count("REFERENCE=''") == 1
+    assert source.count("SKIP='--skip-reference'") == 1
+    assert source.count("$SKIP") == 2  # the assignment guard and the use
+
+
+def test_the_workflow_takes_its_kernel_plan_from_the_leg_registry():
+    """Restating the plan in YAML is how the two drift apart.
+
+    The build emits the launcher's --notebook arguments and the expected
+    payload count, so a leg added to legs.py is launched and counted without
+    this file being touched. A hardcoded --expect would silently report
+    "partial" forever after the next leg lands.
+    """
+    source = WORKFLOW.read_text()
+    assert "--all-kernels" in source
+    assert "${{ steps.build.outputs.notebooks }}" in source
+    assert "steps.build.outputs.payloads" in source
 
 
 def test_the_workflow_is_never_preempted_by_the_capacity_sweeper():
@@ -1333,3 +1503,356 @@ def test_missing_launch_result_is_reported_but_not_red(tmp_path):
         capture_output=True, text=True)
     assert proc.returncode == 0
     assert "NOT RUN" in proc.stdout or "did not run" in proc.stdout
+
+
+# ------------------------------------------------------- resolved versions
+#
+# The version canary is only worth running if a red run can be attributed to
+# a package. Everything below is that attribution path, checked without a
+# GPU: what gets recorded, what a broken pin looks like, and whether the
+# summary a reader actually sees names the difference.
+
+def test_the_goal_packages_are_the_ones_this_ci_exists_to_watch():
+    """The requested list, asserted so a refactor cannot quietly drop one."""
+    from versions import GOAL_PACKAGES
+
+    for package in ("trl", "transformers", "accelerate", "peft",
+                    "bitsandbytes", "torch", "vllm"):
+        assert package in GOAL_PACKAGES, package
+
+
+def test_a_distribution_whose_name_is_not_its_import_name_is_still_found():
+    """`unsloth_zoo` installs as `unsloth-zoo`, and asking for the wrong one
+    records "not installed" for a package that is."""
+    from versions import _DISTRIBUTION
+
+    assert _DISTRIBUTION["unsloth_zoo"] == "unsloth-zoo"
+
+
+def test_a_package_that_is_installed_and_unimportable_is_not_read_as_fine():
+    """vLLM on a card its wheel has no kernels for is exactly this state.
+
+    It has a metadata version and raises on import, and a summary that
+    printed the version alone would say the environment is healthy.
+    """
+    from versions import flatten_versions
+
+    flat = flatten_versions({
+        "vllm": {"installed": "0.11.2",
+                 "imported": "IMPORT FAILED: ImportError: libcusparseLt.so.0"},
+        "torch": {"installed": "2.10.0"}})
+    assert flat["torch"] == "2.10.0"
+    assert "IMPORT FAILED" in flat["vllm"] and "0.11.2" in flat["vllm"]
+
+
+def test_a_pin_that_did_not_hold_is_a_failure():
+    """A control whose pins were overridden is not a control, and every
+    comparison drawn against it is wrong with nothing else showing it."""
+    from versions import pin_failures
+
+    resolved = {"transformers": {"installed": "5.6.0"},
+                "trl": {"installed": "0.24.0"},
+                "peft": {"installed": None}}
+    failures = pin_failures({"transformers": "5.5.0", "trl": "0.24.0",
+                             "peft": "0.19.1"}, resolved)
+    assert len(failures) == 2
+    assert any("5.5.0" in f and "5.6.0" in f for f in failures)
+    assert any("peft" in f and "not installed" in f for f in failures)
+    assert pin_failures({"trl": "0.24.0"}, resolved) == []
+
+
+def test_the_committed_pin_file_parses_and_names_the_canary_set():
+    """The pin file and the canary's upgrade list have to be the same set.
+
+    If they are not, the two legs differ in a package the control does not
+    pin, so a canary failure could come from a version the control never
+    fixed -- and the whole "the only difference is the versions" claim goes
+    with it.
+    """
+    sys.path.insert(0, str(CI_DIR))
+    from legs import CANARY_UPGRADES
+    from versions import load_pins
+
+    pins = load_pins(SMOKE_DIR / "pins" / "control.txt")
+    assert set(pins) == set(CANARY_UPGRADES), (sorted(pins),
+                                               sorted(CANARY_UPGRADES))
+    assert all(v and v[0].isdigit() for v in pins.values()), pins
+
+
+def test_a_pin_file_line_that_is_not_a_pin_is_refused(tmp_path):
+    """`transformers>=5.5` is not a pin, and silently accepting it would
+    make the control leg float without saying so."""
+    from versions import load_pins
+
+    path = tmp_path / "pins.txt"
+    path.write_text("transformers>=5.5.0\n")
+    with pytest.raises(ValueError):
+        load_pins(path)
+
+
+def test_the_summary_puts_the_two_legs_library_sets_side_by_side():
+    """The payoff of the pairing: the bisect is on the summary page."""
+    sys.path.insert(0, str(CI_DIR))
+    from report import version_table
+
+    lines = version_table([
+        {"label": "control", "environment": {"resolved": {
+            "transformers": "5.5.0", "trl": "0.24.0", "torch": "2.10.0"}}},
+        {"label": "canary", "versions_flat": {
+            "transformers": "5.6.0", "trl": "0.24.0", "torch": "2.10.0"}}])
+    text = "\n".join(lines)
+    assert "**transformers**" in text, text
+    assert "Legs differ in: transformers." in text
+    # trl and torch agreed, so they must not be advertised as differing.
+    assert "**trl**" not in text and "**torch**" not in text
+
+
+def test_the_summary_says_so_when_the_legs_agree():
+    sys.path.insert(0, str(CI_DIR))
+    from report import version_table
+
+    same = {"transformers": "5.5.0"}
+    text = "\n".join(version_table([{"label": "control", "versions_flat": same},
+                                    {"label": "canary", "versions_flat": same}]))
+    assert "identical across legs" in text
+    assert "Legs differ in" not in text
+
+
+def test_one_leg_alone_produces_no_comparison_table():
+    """A table with one column is not a comparison and reads like one."""
+    sys.path.insert(0, str(CI_DIR))
+    from report import version_table
+
+    assert version_table([{"label": "control",
+                           "versions_flat": {"trl": "0.24.0"}}]) == []
+
+
+# ------------------------------------------------------------ the gpt-oss leg
+#
+# The pass/fail rule for a leg that costs a Kaggle session has to be
+# checkable without one.
+
+class _Args:
+    def __init__(self, **kw):
+        self.max_steps = 3
+        self.require_compile = True
+        self.__dict__.update(kw)
+
+
+def _gptoss_ok() -> dict:
+    """A report shaped like the one the probe actually produced."""
+    return {
+        "metrics": [{"step": 1, "loss": 5.76}, {"step": 2, "loss": 4.78},
+                    {"step": 3, "loss": 4.03}],
+        "compile": {"available": True, "unique_graphs": 32,
+                    "calls_captured": 779, "graph_breaks_total": 2},
+        "generated": "analysis... assistantfinal 4",
+    }
+
+
+def test_the_gptoss_leg_passes_on_what_the_probe_measured():
+    """The floor under every negative case below."""
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    assert failures_for(_gptoss_ok(), _Args()) == []
+
+
+def test_a_gptoss_run_that_never_compiled_is_a_failure():
+    """The silent fallback this leg exists to catch.
+
+    Zero captured graphs leaves the loss finite, the model saveable and
+    generation working, so nothing else in the report moves. Without this
+    the leg would report green while covering the eager path only.
+    """
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    report = _gptoss_ok()
+    report["compile"] = {"available": True, "unique_graphs": 0,
+                         "calls_captured": 0, "graph_breaks_total": 0}
+    failures = failures_for(report, _Args())
+    assert any("zero graphs" in f for f in failures), failures
+    # And it is a knob, so a future leg can cover something else.
+    assert failures_for(report, _Args(require_compile=False)) == []
+
+
+def test_unreadable_compile_counters_are_not_read_as_success():
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    report = _gptoss_ok()
+    report["compile"] = {"available": False, "error": "AttributeError"}
+    assert any("could not be established" in f
+               for f in failures_for(report, _Args()))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [(lambda r: r.update(generated="   "), "unusable"),
+     (lambda r: r.update(generated=None), "did not run"),
+     (lambda r: r.update(metrics=r["metrics"][:1]), "logged steps"),
+     (lambda r: r.update(metrics=[{"step": 1, "loss": float("nan")},
+                                  {"step": 2, "loss": 1.0},
+                                  {"step": 3, "loss": 1.0}]), "non-finite")],
+)
+def test_the_other_gptoss_assertions_fire(mutate, expected):
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_gptoss_t4 import failures_for
+
+    report = _gptoss_ok()
+    mutate(report)
+    assert any(expected in f for f in failures_for(report, _Args())), report
+
+
+# --------------------------------------------------------------- the GRPO leg
+#
+# With num_iterations=1 and beta=0 the TRL GRPO loss is zero by construction
+# on a HEALTHY run, so nothing here may assert on it. reward_std is the
+# instrument: zero across a group means every completion scored the same,
+# the advantage is exactly zero, and the run trained on nothing while
+# reporting a perfectly ordinary loss.
+
+class _GrpoArgs:
+    max_steps = 2
+
+
+def _grpo_ok() -> dict:
+    return {
+        "log_history": [{"step": 1, "reward": 1.4, "reward_std": 0.35},
+                        {"step": 2, "reward": 1.6, "reward_std": 0.21}],
+        "metrics": [{"step": 1, "loss": 0.0}, {"step": 2, "loss": 0.0}],
+        "completions": [["forty two", "42", "about 42", "no idea"]],
+        "fast_generate": "the square root of 101 is about 10.05",
+    }
+
+
+def test_the_grpo_leg_passes_a_healthy_run_whose_loss_is_zero():
+    """Loss 0.0 on every step is the HEALTHY case here, not a failure."""
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import failures_for
+
+    assert failures_for(_grpo_ok(), _GrpoArgs()) == []
+
+
+def test_a_group_with_no_reward_spread_is_the_failure_that_matters():
+    """reward_std == 0 across every step: identical completions.
+
+    The GRPO advantage is exactly zero in that state, so the optimizer
+    applies nothing while the loss, the step count and the adapter all look
+    ordinary. It is the one bug on this path that nothing else would show.
+    """
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import failures_for
+
+    report = _grpo_ok()
+    for entry in report["log_history"]:
+        entry["reward_std"] = 0.0
+    failures = failures_for(report, _GrpoArgs())
+    assert any("zero on every step" in f for f in failures), failures
+    # One step with spread is enough: a single degenerate group is normal.
+    report["log_history"][0]["reward_std"] = 0.4
+    assert failures_for(report, _GrpoArgs()) == []
+
+
+def test_completions_that_are_all_empty_are_caught_even_when_rewards_agree():
+    """N empty strings score identically, so the reward checks alone would
+    call an engine that produced nothing a clean run."""
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import failures_for
+
+    report = _grpo_ok()
+    report["completions"] = [["", "", "", ""]]
+    assert any("every one of the 4 completions was empty" in f
+               for f in failures_for(report, _GrpoArgs()))
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    [(lambda r: r.update(log_history=[{"step": 1}]), "no reward was logged"),
+     (lambda r: [e.pop("reward_std") for e in r["log_history"]],
+      "never logged"),
+     (lambda r: r.update(fast_generate=None, fast_generate_error="boom"),
+      "fast_generate"),
+     (lambda r: r.update(metrics=[]), "logged steps")],
+)
+def test_the_other_grpo_assertions_fire(mutate, expected):
+    sys.path.insert(0, str(SMOKE_DIR))
+    from run_grpo_t4 import failures_for
+
+    report = _grpo_ok()
+    mutate(report)
+    assert any(expected in f for f in failures_for(report, _GrpoArgs())), report
+
+
+def test_probe_mode_reports_rather_than_judges():
+    """A feasibility probe must come back with evidence, not an exit code.
+
+    Both new payloads take --probe, and it must move the failures into
+    `observed_failures` rather than suppressing them: a probe that hid what
+    it found would be worse than no probe.
+    """
+    import ast
+
+    for name in ("run_gptoss_t4.py", "run_grpo_t4.py"):
+        tree = ast.parse((SMOKE_DIR / name).read_text())
+        source = (SMOKE_DIR / name).read_text()
+        assert 'report["observed_failures"] = failures' in source, name
+        assert "--probe" in source, name
+        assert any(isinstance(n, ast.FunctionDef) and n.name == "failures_for"
+                   for n in ast.walk(tree)), name
+
+
+# ------------------------------------------------------ the multi-kernel launch
+
+def test_the_launcher_takes_one_notebook_per_kernel():
+    """A run is two kernels now, and they have to be pushed before either is
+    waited on: waiting between pushes serialises two sessions Kaggle runs
+    happily in parallel, and puts an hour between the control leg and the
+    canary leg."""
+    import inspect
+
+    import launch
+
+    source = inspect.getsource(launch.main)
+    assert 'action = "append"' in source
+    # Pushes first, waits second. Asserted on order of appearance because
+    # the cost of getting it wrong is a doubled wall clock that no single
+    # run looks wrong.
+    assert source.index("pushed = push(") < source.index('entry["state"] = wait(')
+
+
+def test_the_reports_of_every_kernel_are_gathered(tmp_path):
+    """Each kernel collects into its own directory so two cannot overwrite
+    each other's kernel.log; the extraction has to walk into them."""
+    import launch
+
+    (tmp_path / "k1").mkdir()
+    (tmp_path / "k2").mkdir()
+    (tmp_path / "k1" / "kernel.log").write_text(
+        'T4_SMOKE_REPORT {"label": "control", "model": "m", "passed": true}\n')
+    (tmp_path / "k2" / "kernel.log").write_text(
+        'T4_SMOKE_REPORT {"label": "grpo", "model": "q", "passed": false}\n')
+    reports = launch.extract_reports(tmp_path)
+    assert sorted(r["label"] for r in reports) == ["control", "grpo"]
+
+
+def test_a_kernel_that_could_not_be_pushed_does_not_lose_the_other(tmp_path):
+    """Half a run is a warning, not a failure: half a comparison is not
+    evidence of a regression."""
+    sys.path.insert(0, str(CI_DIR))
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "launch_result.json").write_text(json.dumps({
+        "verdict": "partial", "reason": "only 2 of 4 payload(s) reported back",
+        "kernels": [{"notebook": "kernel1.ipynb", "slug": "u/a",
+                     "state": "COMPLETE"},
+                    {"notebook": "kernel2.ipynb", "slug": None,
+                     "push_error": "at_capacity: session count of 2 reached"}],
+        "reports": []}))
+    proc = subprocess.run(
+        [sys.executable, str(CI_DIR / "report.py"), "--evidence",
+         str(evidence), "--expect", "4"], capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert "was never pushed" in proc.stdout
+    assert "at_capacity" in proc.stdout

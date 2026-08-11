@@ -1,20 +1,44 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Deterministic notebook training smoke test on real Kaggle T4 hardware.
+# Notebook regression tests on real Kaggle T4 hardware.
 #
 # Why T4 and why not a GitHub runner: every other GPU-adjacent job in this
 # repo either has no GPU at all or has one nobody's free Colab session has.
 # T4 is the card the notebooks are written against -- sm_75, no bf16, no
 # flash-attention 2, 16GB. A regression that only appears there is invisible
-# to the rest of CI. Kaggle gives us that card for free, two per session.
+# to the rest of CI. Kaggle gives us that card for free, two per session,
+# and allows two sessions at once: four payloads.
 #
-# What runs: tests/kaggle/t4_smoke/run_t4_smoke.py, one instance per T4.
-# 4-bit load of a tiny model, a few LoRA steps on an in-repo canary dataset,
-# adapter save, greedy inference. It asserts run-to-run bitwise equality of
-# per-step loss and grad_norm, exact emission of the canary string, and
-# per-step metrics inside a band around a committed reference. See that
-# file's docstring for what each assertion is worth.
+# ---------------------------------------------------------------------
+# WHAT RUNS: four legs, two kernels, one per T4. See
+# .github/scripts/kaggle_t4_ci/legs.py, which is the single source of truth
+# for the leg-to-kernel plan; this file does not restate it.
+# ---------------------------------------------------------------------
+#
+#   kernel 1   control   tiny Qwen2.5-0.5B SFT, PINNED library set
+#              canary    the same run on the newest permitted library set
+#   kernel 2   gptoss    gpt-oss-20b LoRA: torch.compile and float32 on sm_75
+#              grpo      Qwen3-4B GRPO through a vLLM engine on the same card
+#
+# **control and canary are one instrument, not two tests.** They run the
+# same payload, seed, dataset and step count on the two cards of the same
+# session, and differ ONLY in the version of transformers, trl, peft,
+# accelerate and bitsandbytes that gets installed. So:
+#
+#   canary red, control green -> a library RELEASE broke Unsloth, and the
+#     job summary already names the versions that differ between the two
+#     legs. This is the signal the whole workflow is built around.
+#   both red                  -> not a version bump. The base image, the
+#     model download, Kaggle, or Unsloth's own code.
+#   control red, canary green -> the pins stopped resolving. A maintenance
+#     signal for tests/kaggle/t4_smoke/pins/control.txt, not a regression.
+#
+# Determinism and the committed reference band apply to the CONTROL leg
+# only. Bitwise agreement across library versions is not achievable and is
+# not claimed, so the canary asserts what does not depend on versions: the
+# canary string, that the optimizer actually applied updates, that two fresh
+# processes agreed bitwise WITH EACH OTHER, and that nothing raised.
 #
 # The band check compares against a reference captured at ONE step count and
 # refuses, as a failure, to compare against one captured at another. That
@@ -27,10 +51,9 @@
 # halves on each overflow, and skips the step it overflowed on. The
 # reference records grad_norm NaN at steps 1, 2 and 3 and a finite value
 # from step 4: a run of three steps applies ZERO optimizer updates, never
-# learns the canary, and asserts nothing about training. Nor would it save
-# meaningful quota, since a launch costs about 0.08h and that is dominated
-# by pip install, not by training. Anything under about five steps needs
-# --init-loss-scale AND a reference recaptured with it.
+# learns the canary, and asserts nothing about training. Anything under
+# about five steps needs --init-loss-scale AND a reference recaptured with
+# it.
 #
 # ---------------------------------------------------------------------
 # BUDGET. Read this before changing any trigger.
@@ -38,59 +61,73 @@
 # The Kaggle account behind KAGGLE_ACCESS_TOKEN_GH has a WEEKLY accelerator
 # budget (60h on this account at time of writing; Kaggle's documented
 # baseline is 30h and the surplus is a discretionary "floating" allowance
-# that can be withdrawn). It is shared with every other use of that account,
-# so this workflow is built to be a minority consumer of it, in four
-# independent layers:
+# that can be withdrawn). This workflow is allotted 40 GPU-h/week of it and
+# is held to that in four independent layers:
 #
-#   1. paths filters. Measured over one week of this repo: 444 commits
-#      landed on main and 517 pull requests were opened, but only 9.9% of
-#      those commits and 7.5% of a 40-PR sample touched unsloth/ at all.
-#      The filter is what turns a four-figure event count into a low
-#      three-figure one.
-#   2. A ~10% sampling gate (.github/scripts/kaggle_t4_ci/gate.py), derived
-#      from the run id so a re-run cannot reroll the dice.
+#   1. paths filters, which turn a four-figure event count into a
+#      two-figure one.
+#   2. A sampling gate (.github/scripts/kaggle_t4_ci/gate.py), derived from
+#      the run id so a re-run cannot reroll the dice.
 #   3. A quota floor. The gate reads Kaggle's own accelerator-quota API and
 #      refuses to start unless what remains covers this run's worst case
-#      PLUS a large reserve. The reserve is the real ceiling on what CI can
-#      consume in a week and is deliberately set so CI yields to human use
-#      of the same account rather than competing with it.
+#      PLUS a 20h reserve. Against a 60h account that reserve is what makes
+#      the 40h allowance a HARD ceiling rather than an average: CI cannot
+#      spend the last 20h whatever the sampling rate turns out to be.
 #   4. A concurrency check. Kaggle caps concurrent batch GPU kernels at 2
-#      per ACCOUNT, and that cap is not workflow-aware. If anything of this
-#      account's is already in flight, this job stands down. That is
-#      stricter than the cap requires -- 2 kernels x 2 T4s is 4 payloads and
-#      this uses one -- and it is deliberate: the second slot belongs to
-#      whoever else is using the account, and a person whose notebook push
-#      is rejected has no way to know CI took it. The knob is
-#      ALLOWED_IN_FLIGHT_KERNELS in gate.py (`--allow-in-flight`), which
-#      carries the full argument; the default of 0 is the policy.
+#      per ACCOUNT. This job uses both, and only when the account is
+#      otherwise idle: a single kernel belonging to anyone else stands it
+#      down entirely. See ALLOWED_IN_FLIGHT_FOREIGN_KERNELS in gate.py.
 #
-# ARITHMETIC, at the current settings.
+# ARITHMETIC, recomputed from live numbers on 2026-08-11. Everything below
+# is measured on unslothai/unsloth over the preceding 7 days, not estimated.
 #
-#   eligible invocations         150-200 / week (paths filters, measured)
-#   x sampling rate              0.10          (--percent 10)
-#   = launches                   15-20 / week
-#   x cost of one launch         0.08 h        (measured, and it is almost
-#                                              all pip install; the training
-#                                              itself is seconds)
-#   = EXPECTED SPEND             1.2-1.6 GPU-h / week, call it 1.4
+#   commits on main                                479
+#     ... touching the paths filter below            45   (9.4%)
+#   pull requests opened                            567
+#     ... touching the paths filter                7.5%   (9 of a 120 sample)
+#     = pull requests that can trigger this          43
+#     commits carried by those, measured           4.33 each
 #
-# Against a 60.0 h weekly account budget that is roughly 2.3%. A dual-T4
-# session bills wall clock ONCE rather than per card, so running both
-# payloads costs the same as running one; the second T4 is free.
+#   ELIGIBLE INVOCATIONS PER WEEK
+#     push to main                                   45
+#     pull_request opened                            43
+#     pull_request synchronize                  0 .. 143  (one per push after
+#                                                          the first; bounded
+#                                                          above by the
+#                                                          commit count)
+#     TOTAL                                    88 .. 231
 #
-# Worst case, if every sampled launch somehow ran to the 45-minute kernel
-# ceiling: 20 x 0.75 = 15 GPU-h/week, which the 20 h reserve in the gate
-# still keeps clear of the last third of the budget. See
-# plans/kaggle_t4_notebook_ci.md for the full arithmetic.
+#   COST OF ONE INVOCATION. Two kernels, and a session bills its wall clock
+#   ONCE rather than per card, so the second T4 of each is free. Measured on
+#   the feasibility probe kernels of 2026-08-11:
+#     kernel 1 (control + canary)                 ~0.12 h
+#     kernel 2 (gptoss + grpo)                    ~0.35 h
+#     TOTAL, expected                             ~0.47 h
+#
+#   SAMPLING RATE. Solving for the pessimistic end of the eligible range,
+#   and targeting 30h rather than the full 40 so an unusually busy week does
+#   not spend the allowance before the quota floor has to intervene:
+#     231 x r x 0.47 h = 30 h   ->   r = 0.276, set to 25% (--percent 25)
+#
+#   EXPECTED SPEND at that rate:
+#     quiet week   88 x 0.25 x 0.47 =  10.3 GPU-h
+#     busy week   231 x 0.25 x 0.47 =  27.1 GPU-h
+#   against the 40 GPU-h allowance, which is 17% to 45% of the 60h account.
+#
+#   WORST CASE, if every sampled launch ran to both kernel ceilings
+#   (0.75h + 1.0h = 1.75h), is far above the allowance -- and is not the
+#   control. Layer 3 is: the 20h reserve stops CI at 40h spent, whatever the
+#   arithmetic above turns out to have got wrong. The sampling rate sets the
+#   EXPECTED spend; the reserve sets the ceiling.
 #
 # ---------------------------------------------------------------------
 # FAILURE SEMANTICS
 # ---------------------------------------------------------------------
-# Red ONLY when the payload ran on a T4 and its assertions failed. Every
-# other outcome -- not sampled, no quota, account busy, push throttled,
-# kernel died on Kaggle's side, evidence would not download -- is a SKIP or
-# a warning and exits 0. Nothing was learned about the code in those cases,
-# so nothing should block a merge.
+# Red ONLY when a payload ran on a T4 and its assertions failed. Every other
+# outcome -- not sampled, no quota, account busy, push throttled, kernel
+# died on Kaggle's side, evidence would not download -- is a SKIP or a
+# warning and exits 0. Nothing was learned about the code in those cases, so
+# nothing should block a merge.
 #
 # This job is NOT intended to be a required check. It runs on a minority of
 # commits by design, so requiring it would block every commit it declined
@@ -127,12 +164,8 @@ on:
         description: 'Bypass the sampling gate (quota and concurrency still apply)'
         type: boolean
         default: true
-      payloads:
-        description: 'Payloads per kernel (2 uses both T4s of one session)'
-        type: string
-        default: '2'
       max_steps:
-        description: 'Training steps per payload'
+        description: 'Training steps for the control and canary legs'
         type: string
         default: '10'
       skip_reference_band:
@@ -151,11 +184,11 @@ permissions:
 #
 # The repo idiom is `cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`,
 # and it is wrong for this one workflow. A cancelled runner cannot stop the
-# Kaggle kernel it has already pushed, and an orphaned kernel bills quota to
-# its own 45-minute ceiling with nobody left to read the result. Superseded
-# runs that have not STARTED are still discarded (GitHub keeps only the most
-# recent pending run per group), which is where the saving was anyway; only
-# a run that is already spending is left alone.
+# Kaggle kernels it has already pushed, and an orphaned kernel bills quota to
+# its own ceiling with nobody left to read the result. Superseded runs that
+# have not STARTED are still discarded (GitHub keeps only the most recent
+# pending run per group), which is where the saving was anyway; only a run
+# that is already spending is left alone.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -190,17 +223,13 @@ jobs:
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==1.7.4.5'
 
-      # budget-hours is the worst case ONE invocation can cost: the kernel
-      # ceiling set below (45 min), rounded up.
+      # budget-hours is the worst case ONE invocation can cost: both kernel
+      # ceilings set below (45 + 60 min), rounded up.
       #
-      # reserve-hours is a backstop, not the primary control. The primary
-      # control is the sampling rate, which bounds EXPECTED spend to roughly
-      # 1.4 GPU-hours a week (see the arithmetic at the top of this file).
-      # The reserve exists for the case where that estimate is wrong, or
-      # where another consumer of the same account has already spent most of
-      # the week: at 20h it guarantees CI never touches the last third of
-      # the budget, while still leaving normal weeks unaffected.
-      #
+      # reserve-hours is what turns the 40 GPU-h/week allowance into a hard
+      # ceiling. The account budget is 60h, so refusing to start below 20h
+      # remaining means CI can never have spent more than 40h in a week,
+      # whatever the sampling estimate at the top of this file got wrong.
       # Raise it to throttle CI harder. Do not raise it above roughly 45 or
       # CI will never run at all on a week with any other usage.
       - name: Decide
@@ -209,11 +238,12 @@ jobs:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
-            --percent 10 \
+            --percent 25 \
             --force '${{ inputs.force || 'false' }}' \
             --labels '${{ join(github.event.pull_request.labels.*.name, ',') }}' \
             --label-name kaggle-t4-ci \
-            --budget-hours 1 \
+            --kernels 2 \
+            --budget-hours 2 \
             --reserve-hours 20
 
   t4-smoke:
@@ -221,14 +251,16 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
-    # 90 min: the kernel ceiling is 45 and collection of the executed
-    # notebooks adds a few, so this only fires if the launcher itself wedged.
-    timeout-minutes: 90
+    # 120 min: the kernel ceilings are 45 and 60, the two run concurrently,
+    # and collection of the executed notebooks adds a few. This only fires
+    # if the launcher itself wedged.
+    timeout-minutes: 120
     # Deliberately NOT keyed on the ref. The Kaggle account is one global
-    # resource with a 2-kernel cap, so two runs of this workflow on
-    # different branches must not overlap. cancel-in-progress is false: a
-    # cancelled run cannot stop the kernel it already pushed, and an
-    # orphaned kernel burns quota to its own ceiling with nobody watching.
+    # resource with a 2-kernel cap and this job takes both, so two runs of
+    # this workflow on different branches must not overlap.
+    # cancel-in-progress is false: a cancelled run cannot stop the kernels it
+    # already pushed, and an orphaned kernel burns quota to its own ceiling
+    # with nobody watching.
     concurrency:
       group: kaggle-t4-notebook-ci-account
       cancel-in-progress: false
@@ -249,10 +281,10 @@ jobs:
       - name: Install the Kaggle client
         run: python -m pip install --quiet 'kaggle==1.7.4.5'
 
-      # The ref the kernel installs and tests. For a pull request that is
-      # the head SHA, so the kernel exercises the proposed code and not the
-      # merge base. Pinned to a SHA rather than a branch name so a push
-      # landing mid-run cannot change what was tested.
+      # The ref the kernels install and test. For a pull request that is
+      # the head SHA, so they exercise the proposed code and not the merge
+      # base. Pinned to a SHA rather than a branch name so a push landing
+      # mid-run cannot change what was tested.
       - name: Resolve the ref under test
         id: ref
         run: |
@@ -263,47 +295,58 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "testing unslothai/unsloth@$REF"
 
-      # The reference is captured at ONE step count and is only comparable to
-      # a run of that same count -- the payload refuses the comparison
+      # --all-kernels builds every kernel in legs.KERNELS and emits the
+      # launcher's --notebook arguments and the expected payload count, so
+      # the leg-to-kernel plan is stated once, in legs.py, rather than here
+      # as well.
+      #
+      # The reference is captured at ONE step count and is only comparable
+      # to a run of that same count -- the payload refuses the comparison
       # otherwise rather than quietly reporting a pass. So the run that
       # RECAPTURES a reference after a config change has to be dispatched
       # with skip_reference_band, and it is the only run that should be.
       # See tests/kaggle/t4_smoke/references/README.md.
-      - name: Build the kernel notebook
+      - name: Build the kernel notebooks
+        id: build
         env:
           SKIP_BAND: ${{ inputs.skip_reference_band }}
         run: |
-          REFERENCE='t4_qwen2.5-0.5b.json'
+          SKIP=''
           if [ "$SKIP_BAND" = "true" ]; then
-            REFERENCE=''
-            echo "::warning title=Reference band check disabled::this run was dispatched with skip_reference_band, so its metrics are compared against nothing. Only a reference-recapture run should look like this."
+            SKIP='--skip-reference'
+            echo "::warning title=Reference band check disabled::this run was dispatched with skip_reference_band, so the control leg's metrics are compared against nothing. Only a reference-recapture run should look like this."
           fi
           python .github/scripts/kaggle_t4_ci/build_kernel.py \
             --payload-dir tests/kaggle/t4_smoke \
-            --out kernel.ipynb \
-            --count '${{ inputs.payloads || 2 }}' \
+            --out kernel \
+            --all-kernels \
             --unsloth-ref '${{ steps.ref.outputs.ref }}' \
             --zoo-ref main \
-            --reference "$REFERENCE" \
             --smoke-args "--max-steps ${{ inputs.max_steps || 10 }}" \
-            --per-run-timeout 2100
+            --per-run-timeout 3300 \
+            $SKIP
 
       # kernel-timeout-sec is the load-bearing budget control: Kaggle itself
-      # kills the session at that point. A runner that is cancelled cannot
+      # kills a session at that point. A runner that is cancelled cannot
       # clean up after itself, so the ceiling has to be enforced on Kaggle's
       # side rather than here.
+      #
+      # It is one value for both kernels because Kaggle takes it per push,
+      # and the larger of the two requirements wins: kernel 2 downloads a
+      # 12GB gpt-oss checkpoint and an 8GB Qwen3 one before it trains
+      # anything.
       - name: Launch on Kaggle and collect
         id: launch
         env:
           KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_ACCESS_TOKEN_GH }}
         run: |
           python .github/scripts/kaggle_t4_ci/launch.py \
-            --notebook kernel.ipynb \
+            ${{ steps.build.outputs.notebooks }} \
             --user danielhanchen \
             --outdir kaggle_evidence \
-            --expect '${{ inputs.payloads || 2 }}' \
-            --kernel-timeout-sec 2700 \
-            --max-wait 3600 \
+            --expect '${{ steps.build.outputs.payloads }}' \
+            --kernel-timeout-sec 3600 \
+            --max-wait 5400 \
             --poll-every 60
 
       # always(): the evidence is most valuable exactly when something went
@@ -315,7 +358,7 @@ jobs:
           name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
-            kernel.ipynb
+            kernel*.ipynb
           # 14 rather than the repo's usual 7. This job runs on a minority of
           # commits, so two consecutive samples of it can be a fortnight
           # apart, and comparing them is the main reason to keep the evidence
@@ -328,4 +371,4 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
-            --expect '${{ inputs.payloads || 2 }}'
+            --expect '${{ steps.build.outputs.payloads || 4 }}'
