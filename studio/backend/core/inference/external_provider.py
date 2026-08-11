@@ -77,10 +77,9 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
-_OPENAI_RESPONSES_STREAMING_UNSUPPORTED = re.compile(
-    r"^gpt-5\.5-pro(?:[-.]|$)",
-    re.IGNORECASE,
-)
+# Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
+_GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
+_GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
 _OPENAI_REASONING_STATUSES = {"in_progress", "completed", "incomplete"}
 
 
@@ -97,11 +96,6 @@ def _anthropic_sampling_params_removed(model: str) -> bool:
     family = match.group("family")
     version = (int(match.group("major")), int(match.group("minor") or 0))
     return version[0] >= 5 or (family == "opus" and version >= (4, 7))
-
-
-def _openai_responses_requires_non_streaming(model: str) -> bool:
-    """Whether ``model`` rejects ``stream=true`` on the Responses API."""
-    return bool(_OPENAI_RESPONSES_STREAMING_UNSUPPORTED.match(model.strip()))
 
 
 def _openai_response_error_message(event: Any) -> str:
@@ -135,78 +129,6 @@ def _openai_response_error_message(event: Any) -> str:
     response_id = response.get("id")
     suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
     return f"OpenAI response failed without error details{suffix}."
-
-
-def _openai_non_streaming_response_sse_lines(response: dict[str, Any]) -> list[str]:
-    """Convert one non-streaming Responses object into synthetic SSE lines."""
-    response_id = response.get("id")
-    response_id = response_id if isinstance(response_id, str) else None
-    lines: list[str] = []
-
-    def add(event: dict[str, Any]) -> None:
-        if response_id:
-            event.setdefault("response_id", response_id)
-        lines.append(f"data: {_json.dumps(event)}")
-
-    output = response.get("output")
-    if isinstance(output, list):
-        for output_index, item in enumerate(output):
-            if not isinstance(item, dict):
-                continue
-            add(
-                {
-                    "type": "response.output_item.added",
-                    "output_index": output_index,
-                    "item": item,
-                }
-            )
-            if item.get("type") == "message":
-                content = item.get("content")
-                if isinstance(content, list):
-                    for content_index, part in enumerate(content):
-                        if not isinstance(part, dict):
-                            continue
-                        part_type = part.get("type")
-                        text = (
-                            part.get("text")
-                            if part_type in ("output_text", "text")
-                            else part.get("refusal")
-                            if part_type == "refusal"
-                            else None
-                        )
-                        if isinstance(text, str) and text:
-                            add(
-                                {
-                                    "type": "response.output_text.delta",
-                                    "output_index": output_index,
-                                    "content_index": content_index,
-                                    "delta": text,
-                                    "annotations": part.get("annotations") or [],
-                                }
-                            )
-            add(
-                {
-                    "type": "response.output_item.done",
-                    "output_index": output_index,
-                    "item": item,
-                }
-            )
-
-    status = response.get("status")
-    if status == "incomplete":
-        terminal_type = "response.incomplete"
-    elif status in ("failed", "cancelled") or response.get("error"):
-        terminal_type = "response.failed"
-    else:
-        terminal_type = "response.completed"
-    add({"type": terminal_type, "response": response})
-    lines.append("data: [DONE]")
-    return lines
-
-
-async def _aiter_static_lines(lines: list[str]) -> AsyncGenerator[str, None]:
-    for line in lines:
-        yield line
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -3736,23 +3658,21 @@ class ExternalProviderClient:
         # thinkingBudget (int). Gemini 3 has no full-off; minimum is
         # "minimal" on Flash, "low" on Pro.
         # https://ai.google.dev/gemini-api/docs/thinking
-        _GEMINI3_THINKING_PREFIXES = (
-            "gemini-3.5-",
-            "gemini-3.1-",
-            "gemini-3-",
+        # Match the 3.x family by pattern, not by enumerating minors: a new
+        # `gemini-3.6-*` would otherwise fall through to the 2.5 branch and get
+        # an int budget, which Gemini 3 rejects (400 on thinkingBudget=0).
+        _GEMINI3_ALIASES = (
             "gemini-pro-latest",
             "gemini-flash-latest",
             "gemini-flash-lite-latest",
         )
-        _GEMINI3_PRO_PREFIXES = (
-            "gemini-3.5-pro",
-            "gemini-3.1-pro",
-            "gemini-3-pro",
-            "gemini-pro-latest",
-        )
         _PRO_THINKING_PREFIXES = ("gemini-2.5-pro",)
-        is_gemini3_thinking = any(model_lc.startswith(p) for p in _GEMINI3_THINKING_PREFIXES)
-        is_gemini3_pro = any(model_lc.startswith(p) for p in _GEMINI3_PRO_PREFIXES)
+        is_gemini3_thinking = bool(_GEMINI3_FAMILY.match(model_lc)) or model_lc.startswith(
+            _GEMINI3_ALIASES
+        )
+        is_gemini3_pro = bool(_GEMINI3_PRO.match(model_lc)) or model_lc.startswith(
+            "gemini-pro-latest"
+        )
         _is_pro_thinking_only = any(
             model_lc == p or model_lc.startswith(p + "-") for p in _PRO_THINKING_PREFIXES
         )
@@ -3771,9 +3691,8 @@ class ExternalProviderClient:
                 level = "high"
             elif effort_lc in _G3_LEVELS:
                 # Coerce legacy 3-Pro (low/high only) inputs.
-                _is_legacy_gemini3_pro = model_lc.startswith(
-                    ("gemini-3-pro-preview", "gemini-3-pro")
-                ) and not model_lc.startswith(("gemini-3.1-pro", "gemini-3.5-pro"))
+                # Undotted `gemini-3-pro` only; any dotted minor is 3.1+.
+                _is_legacy_gemini3_pro = model_lc.startswith("gemini-3-pro")
                 if is_gemini3_pro and effort_lc == "minimal":
                     level = "low"
                 elif _is_legacy_gemini3_pro and effort_lc == "medium":
@@ -5013,11 +4932,10 @@ class ExternalProviderClient:
         # so never forward sampling knobs.
         del temperature, top_p  # accepted for API symmetry, not forwarded.
 
-        upstream_stream = not _openai_responses_requires_non_streaming(model)
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "stream": upstream_stream,
+            "stream": True,
         }
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
@@ -5251,32 +5169,9 @@ class ExternalProviderClient:
                         yield _error_sse_line(response.status_code, error_text, self.provider_type)
                         return
 
-                    # GPT-5.5 Pro rejects Responses streaming. Convert its one
-                    # JSON object into synthetic events so the translator below
-                    # remains the single output path.
-                    if upstream_stream:
-                        lines_gen = response.aiter_lines().__aiter__()
-                    else:
-                        response_body = await response.aread()
-                        try:
-                            response_payload = _json.loads(response_body)
-                        except (_json.JSONDecodeError, UnicodeDecodeError):
-                            yield _error_sse_line(
-                                502,
-                                "OpenAI returned an invalid non-streaming response.",
-                                self.provider_type,
-                            )
-                            return
-                        if not isinstance(response_payload, dict):
-                            yield _error_sse_line(
-                                502,
-                                "OpenAI returned an invalid non-streaming response object.",
-                                self.provider_type,
-                            )
-                            return
-                        lines_gen = _aiter_static_lines(
-                            _openai_non_streaming_response_sse_lines(response_payload)
-                        ).__aiter__()
+                    # NOTE: same manual __anext__ loop as stream_chat_completion --
+                    # see comment there for the GeneratorExit / aclose ordering.
+                    lines_gen = response.aiter_lines().__aiter__()
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
