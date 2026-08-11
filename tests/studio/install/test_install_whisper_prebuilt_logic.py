@@ -304,7 +304,8 @@ def test_install_produces_colocated_layout_and_marker(tmp_path, monkeypatch):
 
     server = install_dir / "build" / "bin" / "whisper-server"
     assert server.is_file()
-    assert server.stat().st_mode & 0o111  # +x set on unix
+    if sys.platform != "win32":
+        assert server.stat().st_mode & 0o111  # +x, POSIX only
     # every shared lib from the archive is co-located next to the server
     assert (install_dir / "build" / "bin" / "libwhisper.so").is_file()
     assert (install_dir / "build" / "bin" / "libggml-base.so").is_file()
@@ -552,6 +553,8 @@ def _cuda_host() -> HostInfo:
 def test_installed_llama_runtime_reads_marker(tmp_path):
     root = tmp_path / "llama.cpp"
     bin_dir = root / "build" / "bin"
+    if sys.platform == "win32":
+        bin_dir = bin_dir / "Release"  # the layout installed_llama_runtime resolves on nt
     bin_dir.mkdir(parents = True)
     (root / "UNSLOTH_PREBUILT_INFO.json").write_text(
         json.dumps({"release_tag": SLIM_LLAMA_TAG, "bundle_profile": "cuda13-newer"})
@@ -1255,6 +1258,10 @@ def test_rocm_runtime_catalog_copy_fallback(tmp_path, monkeypatch):
         assert (whisper_bin / directory / "kernel.dat").read_bytes() == directory.encode()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
+)
 def test_existing_install_requires_executable_server(tmp_path, monkeypatch):
     # A marker-matching install with a non-executable server must reinstall:
     # the sidecar refuses it via os.access(X_OK), so "already matches" would
