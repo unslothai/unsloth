@@ -1745,6 +1745,28 @@ def test_high_risk_dispatcher_non_terminal():
             "import yaml\nSafe = yaml.SafeLoader\nSafe = yaml.Loader\nyaml.load(s, Loader=Safe)",
             True,
         ),
+        # A loop/with/walrus target rebinds too, and none of them are assignments.
+        (
+            "import yaml\nSafe = yaml.SafeLoader\nfor Safe in [yaml.Loader]: pass\n"
+            "yaml.load(s, Loader=Safe)",
+            True,
+        ),
+        ("import yaml\nfor p in ['a.yml']: print(yaml.safe_load(open(p)))", False),
+        # Naming a constructor registry at all withdraws the exemption, however
+        # the registration is spelled.
+        (
+            "import yaml\nreg = yaml.SafeLoader.add_constructor\nreg('!e', h)\n"
+            "yaml.load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),
+        (
+            "import yaml\nyaml.SafeLoader.yaml_constructors.update({'!e': h})\n"
+            "yaml.load(s, Loader=yaml.SafeLoader)",
+            True,
+        ),
+        ("import yaml\ndef run(y=yaml): y.unsafe_load(s)\nrun()", True),  # module as default
+        ("import yaml\nclass H:\n    loader = yaml.unsafe_load\nH.loader(s)", True),  # class body
+        ("class H:\n    name = 'x'\nprint(H.name)", False),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),

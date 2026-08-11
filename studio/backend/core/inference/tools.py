@@ -3657,6 +3657,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             )
         return False
 
+    def _rebindable(name: str, allowed_assigns: int = 0) -> bool:
+        # Whether anything in the snippet could point this name somewhere else:
+        # more assignments than the binding we are trusting, or a loop / with /
+        # comprehension / walrus / def / class target.
+        return assign_counts.get(name, 0) > allowed_assigns or name in rebindable_names
+
     def _is_load_module(node) -> bool:
         # The receiver of a loader: a tracked module name, or a submodule path
         # under one (yaml.loader.Loader, so the chain is walked to its root).
@@ -3773,21 +3779,44 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     multi_assigned_names = {name for name, count in assign_counts.items() if count > 1}
     # A registered constructor is a callback the YAML tags choose, so a loader
     # that has one is no longer the stock safe loader and loses the exemption.
-    _register_names = {"add_constructor", "add_multi_constructor"}
+    # Naming any of these at all is enough. A registration can be spelled as a
+    # call, an alias (reg = SafeLoader.add_constructor) or a direct write to the
+    # registry, and chasing each spelling is a losing game; snippets that mention
+    # them are rare, so the exemption simply steps aside.
+    _register_names = {
+        "add_constructor",
+        "add_multi_constructor",
+        "yaml_constructors",
+        "yaml_multi_constructors",
+    }
     for _n in ast.walk(tree):
-        # from yaml import add_constructor [as ac] binds the registrar to a name.
         if isinstance(_n, ast.ImportFrom):
             for _al in _n.names:
                 if _al.name in _register_names:
                     _register_names.add(_al.asname or _al.name)
     registers_constructor = any(
-        isinstance(n, ast.Call)
-        and (
-            (isinstance(n.func, ast.Attribute) and n.func.attr in _register_names)
-            or (isinstance(n.func, ast.Name) and n.func.id in _register_names)
-        )
+        (isinstance(n, ast.Attribute) and n.attr in _register_names)
+        or (isinstance(n, ast.Name) and n.id in _register_names)
         for n in ast.walk(tree)
     )
+    # Binding forms that assign_counts does not see (for x in ..., with ... as x,
+    # a comprehension target, a walrus). A safe-loader alias touched by one of
+    # these could point anywhere, so it never earns the exemption.
+    rebindable_names: "set[str]" = set()
+    for node in ast.walk(tree):
+        _rebound = []
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            _rebound = [node.target]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            _rebound = [i.optional_vars for i in node.items if i.optional_vars is not None]
+        elif isinstance(node, ast.NamedExpr):
+            _rebound = [node.target]
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            rebindable_names.add(node.name)
+        for target in _rebound:
+            for sub in ast.walk(target):
+                if isinstance(sub, ast.Name):
+                    rebindable_names.add(sub.id)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -3852,9 +3881,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     # spelling; record it so Loader=SafeLoader stays auto-approved.
                     # An import is not an assignment, so any later binding of the
                     # name could point it at an unsafe loader: skip those.
-                    elif (
-                        alias.name in _AUTO_SAFE_PY_LOAD_CLASSES
-                        and (alias.asname or alias.name) not in assign_counts
+                    elif alias.name in _AUTO_SAFE_PY_LOAD_CLASSES and not _rebindable(
+                        alias.asname or alias.name
                     ):
                         safe_loader_aliases.add(alias.asname or alias.name)
                     else:
@@ -4004,7 +4032,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             if _is_safe_loader(value):
                 # Safe = yaml.SafeLoader factors out a provably safe read, so keep
                 # the exemption, but only for a name bound exactly once here.
-                safe_loader_aliases.update(t for t in targets if assign_counts.get(t) == 1)
+                safe_loader_aliases.update(
+                    t for t in targets if assign_counts.get(t) == 1 and not _rebindable(t, 1)
+                )
             if isinstance(value, (ast.Tuple, ast.List)):
                 # Destructuring binds each element like a single assignment, so an
                 # aliased callable (f, _ = (open, print)) AND a string / path
@@ -4064,6 +4094,22 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     and (base.id in load_class_aliases or base.id in load_func_aliases)
                 ):
                     load_class_aliases.add(node.name)
+            # A loader in the class body is reached as an attribute of the class
+            # (class H: loader = yaml.unsafe_load, then H.loader(payload)), so the
+            # bare target name here is really an attribute binding.
+            for stmt in node.body:
+                if not isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+                    continue
+                _val = stmt.value
+                _tgts = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+                if _val is not None and (
+                    _is_loader_attr(_val)
+                    or (
+                        isinstance(_val, ast.Name)
+                        and (_val.id in load_func_aliases or _val.id in load_class_aliases)
+                    )
+                ):
+                    attr_load_aliases.update(t.id for t in _tgts if isinstance(t, ast.Name))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             # A callable captured as a parameter default (def f(o=open): o('x','w'))
             # binds that parameter to the same alias set, so a later call through
@@ -4099,6 +4145,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         load_func_aliases.add(_param.arg)
                     elif _did in load_class_aliases:
                         load_class_aliases.add(_param.arg)
+                    elif _did in load_module_aliases:
+                        load_module_aliases.add(_param.arg)  # def run(y=yaml)
                 elif _is_loader_attr(_default):
                     # def run(loader=yaml.unsafe_load): loader(payload)
                     if _default.attr in _AUTO_UNSAFE_PY_LOAD_FUNCS:
