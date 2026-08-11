@@ -3168,13 +3168,12 @@ class LlamaCppBackend:
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
-        # Set when THIS load ran against a capability probe that did not answer, as
-        # opposed to one that answered "no". An inconclusive probe reports every
-        # capability as absent, so it silently degrades whatever depends on one:
-        # speculative decoding, the DSpark sidecar, and the --kv-unified parallel-slot
-        # clamp. Kept apart from _spec_fallback_reason, which drives a UI banner that
-        # stays suppressed for a probe that simply has not resolved yet, so that
-        # _runtime_matches_intent can still tell a reload is worth retrying (#8317).
+        # Whether THIS load ran against a probe that did not answer, rather than one
+        # that answered "no". An inconclusive probe reports every capability absent, so it
+        # silently degrades speculative decoding, the DSpark sidecar and the --kv-unified
+        # slot clamp alike. Separate from _spec_fallback_reason, whose UI banner stays
+        # suppressed for an unresolved probe, so a reload can still be judged worth
+        # retrying (#8317).
         self._capability_probe_inconclusive: bool = False
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
@@ -3984,20 +3983,14 @@ class LlamaCppBackend:
             and not spec_owned_by_extra_args
         ):
             return False
-        # A runtime degraded by a probe that never answered has to be retried once the
-        # probe starts answering (#8317). The retry window lets the probe recover, but
-        # that is worth nothing if Apply keeps deduping against the degraded runtime:
-        # nothing would re-probe, so the degradation would outlive its cause for the life
-        # of the process, which is the symptom the window exists to end. Not just
-        # speculative decoding -- an inconclusive probe reports every capability absent,
-        # so it also drops the DSpark sidecar and clamps the parallel slots, and
-        # _requested_n_parallel deliberately stores the ASK, so the clamp compares equal
-        # and would never be revisited.
-        #
-        # One reload, not a loop: the reload records the now-conclusive probe, clearing
-        # this flag, so a build that really lacks these capabilities re-derives the same
-        # degraded runtime and dedupes from then on. Cheap: the probe is cached, and this
-        # only runs after an inconclusive one.
+        # Retry a runtime the probe degraded, once the probe starts answering (#8317).
+        # The retry window is worth nothing if Apply keeps deduping against the degraded
+        # runtime, since nothing would re-probe. The slot clamp is the trap:
+        # _requested_n_parallel stores the ASK, so a clamped runtime compares equal and
+        # would never be revisited. One reload, not a loop -- it records the conclusive
+        # probe and clears this flag, so a build that really lacks the capability
+        # re-derives the same runtime and dedupes after. The probe is cached, so it is
+        # free on the only path that reaches it.
         if (
             self._capability_probe_inconclusive
             and not self._is_diffusion
@@ -9490,12 +9483,10 @@ class LlamaCppBackend:
             # GGUF uses the diffusion runner, and its arch is only known after the header.
             binary = self._find_llama_server_binary()
 
-            # Every capability answer that shapes this launch, remembering whether any of
-            # them was a guess rather than a read. Accumulated rather than sampled: the
-            # decisions are spread across the whole load (the slot clamp before an HF
-            # download, the command build after it), the retry window is 30s, and a long
-            # download or startup between two of them means a later successful probe would
-            # otherwise erase the fact that an earlier one had already degraded the launch.
+            # Every capability answer shaping this launch, latching whether any was a
+            # guess. Accumulated, not sampled: the decisions straddle the whole load (slot
+            # clamp before an HF download, command build after), and with a 30s window a
+            # later success would otherwise erase an earlier one that already degraded it.
             _launch_probe_inconclusive = False
 
             def _launch_caps(bin_path):
@@ -12665,12 +12656,10 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
-                # Commit the launch's own capability snapshot with the rest of the
-                # known-good state. Only a launch that got this far replaced the runtime,
-                # so a rejected preflight leaves the old marker intact for a runtime that
-                # is still degraded, and the diffusion runner returns long before the
-                # snapshot is taken without consuming -- or paying for -- any
-                # llama-server capability.
+                # Commit with the rest of the known-good state: only a launch that got
+                # this far replaced the runtime, so a rejected preflight leaves the old
+                # marker intact, and the diffusion runner returns well before it without
+                # consuming, or paying for, any llama-server capability.
                 self._capability_probe_inconclusive = _launch_probe_inconclusive
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
