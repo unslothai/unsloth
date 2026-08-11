@@ -1843,6 +1843,25 @@ def test_high_risk_dispatcher_non_terminal():
             "    case SafeLoader: pass\nyaml.load(s, Loader=SafeLoader)",
             True,
         ),
+        ("import yaml\ndef run(m): m.unsafe_load(s)\nrun((yaml,)[0])", True),  # subscripted
+        ("def run(x): return x\nprint(run((1, 2)[0]))", False),
+        ("import yaml\nclass H:\n    mod = yaml\nH.mod.unsafe_load(s)", True),  # module field
+        ("import json\nclass H:\n    mod = json\nprint(H.mod.dumps({}))", False),
+        (
+            "from yaml import SafeLoader\nSafeLoader.add_constructor('!e', cb)\n"
+            "SafeLoader(s).get_data()",
+            True,
+        ),  # bare class alias, tainted
+        # Capturing yaml.load keeps its origin, so the safe loader still exempts,
+        # while capturing torch.load never gains it.
+        ("import yaml\nf = yaml.load\nprint(f(open('c.yml'), Loader=yaml.SafeLoader))", False),
+        ("import torch, yaml\nf = torch.load\nf(p, Loader=yaml.SafeLoader)", True),
+        # Aliases are resolved to a fixed point, so definition order cannot hide one.
+        (
+            "import yaml\ndef run():\n    f = g\n    f(s)\ndef setg():\n    global g\n"
+            "    g = yaml.unsafe_load\nsetg()\nrun()",
+            True,
+        ),
         ("import yaml\nfor d in yaml.load_all(s, Loader=yaml.Loader): print(d)", True),
         ("import yaml\nprint(yaml.safe_load(open('c.yml')))", False),  # safe loader
         ("from yaml import safe_load\nprint(safe_load(open('c.yml')))", False),
