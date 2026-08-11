@@ -776,6 +776,13 @@ def _h3_auto_denoiser_scheme(
         # Asked per (scheme, PARTITION): a partition with no hosted checkpoint has no fallback, and
         # serving the other partition's would generate the wrong thing.
         return None
+    from .diffusion_prequant import restricted_prequant_load_supported
+
+    if not restricted_prequant_load_supported(H3_AUTO_FALLBACK_SCHEME):
+        # An install that cannot restrict the deserialization cannot open a checkpoint at all, and
+        # this runs BEFORE the download plan: choosing one would drop the dense denoiser shards
+        # for an artifact the loader is going to refuse.
+        return None
     # And the replacement has to fit BEFORE it is chosen. A torchao denoiser cannot ride the offload
     # rotation at all (it does not survive the mid-block move), so taking it means pinning it, which
     # turns the memory floor from a max into a sum: 20.3 GB resident PLUS whatever runs beside it.
@@ -1860,6 +1867,18 @@ class VideoBackend:
         Same rule as ``_h3_te_quant_scheme_verified`` next door, and the same fail-closed
         direction: unanswerable keeps the dense shards."""
         if not self._denoiser_prequant_covered(fam, transformer_quant, base, h3_task):
+            return False
+        from .diffusion_prequant import restricted_prequant_load_supported
+
+        if not restricted_prequant_load_supported(transformer_quant):
+            # An install that cannot open a checkpoint keeps the dense shards. This is the
+            # decision that COMMITS (it drops 66 GB from the pull) and it runs for an EXPLICIT
+            # request too, which the auto selector's gate never sees.
+            logger.info(
+                "video.denoiser_prequant: this install cannot deserialize a pre-quantized "
+                "checkpoint, so the %s request keeps its dense denoiser shards",
+                transformer_quant,
+            )
             return False
         try:
             from huggingface_hub import HfApi

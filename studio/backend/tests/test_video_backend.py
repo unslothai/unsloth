@@ -28,6 +28,15 @@ from core.inference.video import (
 from core.inference.video_families import VIDEO_CANCELLED_MSG, VIDEO_NOT_LOADED_MSG
 
 
+@pytest.fixture(autouse = True)
+def _assume_the_restricted_load_is_available(monkeypatch):
+    """A checkpoint only deserializes where torchao is importable, which here it may not be. These
+    tests are about the load/plan decisions; the capability is covered in
+    test_diffusion_prequant.py."""
+    import core.inference.diffusion_prequant as _pq
+    monkeypatch.setattr(_pq, "restricted_prequant_load_supported", lambda scheme = None: True)
+
+
 class _FakeDtype:
     def __init__(self, name: str) -> None:
         self._name = name
