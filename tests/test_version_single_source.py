@@ -36,6 +36,7 @@ import pytest
 def _raise_not_found(name):
     raise _PackageNotFoundError(name)
 
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _VERSION_FILE = _REPO_ROOT / "unsloth" / "_version.py"
 
