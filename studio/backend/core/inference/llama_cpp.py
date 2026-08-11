@@ -75,13 +75,7 @@ from core.inference.llama_server_args import (
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
     _GEMMA_BARE_TC_RE,
-    _TOOL_ALL_PATS as _PARSER_TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS as _PARSER_TOOL_CLOSED_PATS,
     _balanced_brace_end,
-    _strip_function_xml_calls,
-    _strip_gemma_wrapperless_calls,
-    _strip_glm_calls,
-    _strip_mistral_closed_calls,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -92,14 +86,8 @@ from core.inference.tool_call_parser import (
     strip_tool_markup as _shared_strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the GGUF streaming strip stays aligned with the parser.
-from core.tool_healing import (
-    _REHEARSAL_TAIL_STRIP_RE,
-    _strip_bracket_tag_calls,
-    apply_tool_strip_patterns,
-    strip_outside_think,
-)
+# The bracket-tag and rehearsal arms this module used to borrow now run inside the
+# parser's ``strip_segment``; only think-block splitting is still the healer's.
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
@@ -146,12 +134,10 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
-# Deliberately NOT ``slots=True``. It was measured (no benefit: the intent is built a
-# handful of times per load, not in any hot loop) and then tried, and it breaks callers
-# that reflect over the instance: ``slots=True`` removes ``__dict__``, so ``vars(intent)``
-# raises TypeError. That is not hypothetical -- it took out every GGUF load through
-# ``routes/inference.py`` and the MTP crash-recovery path in ``test_tensor_parallel.py``.
-# Reflection over this dataclass is part of how it is used; keep the ``__dict__``.
+# Deliberately NOT ``slots=True``: no benefit (built a few times per load, never in a hot
+# loop) and it drops ``__dict__``, so ``vars(intent)`` raises TypeError. That broke every
+# GGUF load via ``routes/inference.py`` and the MTP recovery path in
+# ``test_tensor_parallel.py``. Reflection over this dataclass is part of how it is used.
 @dataclass(frozen = True)
 class GgufLoadIntent:
     """Immutable caller intent replayed by retries and recovery."""
@@ -3045,8 +3031,8 @@ def _llama_lib_dir(binary: str) -> Path:
 
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
-# Names the staged CPU-only runtime must not carry over. Constant, so it is compiled once
-# here rather than rebuilt inside _cpu_isolated_binary.
+# Backend names the staged CPU-only runtime must not carry over. Module level so it is
+# compiled once, not on every _cpu_isolated_binary call.
 _GGML_GPU_BACKEND_RE = re.compile(
     r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
 )

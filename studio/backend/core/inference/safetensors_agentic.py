@@ -43,8 +43,6 @@ from core.inference.tool_call_parser import (
     strip_tool_markup,
 )
 
-# The healer owns the bracket-tag + rehearsal strip helpers and their name-gated
-# pattern lists, so the safetensors streaming strip stays aligned with the parser.
 from core.tool_healing import (
     _THINK_CLOSE_RE,
     _think_spans_outside_tool_markup,
@@ -263,11 +261,10 @@ def strip_tool_markup_streaming(
     text = _strip_mistral_reasoning(text)
 
     def _seg(segment: str, is_last: bool) -> str:
-        # The scan order lives in the parser's ``strip_segment`` (seg_final -> is_last), so
-        # this path, the GGUF streaming path and ``strip_tool_markup`` cannot drift apart:
-        # balanced strips first, then the guarded function-XML / GLM scans, then the regex
-        # arms (DeepSeek / Kimi / closed forms). EOS-anchored tail arms run only on the last
-        # segment (a bare ``foo[ARGS]`` before <think> is prose).
+        # Scan order lives in the parser's ``strip_segment`` (seg_final -> is_last) so this
+        # path, the GGUF streaming path and ``strip_tool_markup`` cannot drift apart. Its
+        # end-of-turn arms run only on the last segment (a bare ``foo[ARGS]`` before
+        # <think> is prose).
         return _parser_strip_segment(
             segment, seg_final = is_last, enabled_tool_names = enabled_tool_names
         )

@@ -37,6 +37,7 @@ import json
 import random
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -56,17 +57,17 @@ GUARDED_MODULES = {
     ),
 }
 
-# Modules whose behaviour is pinned by golden outputs. Importing these must not pull
-# in the inference stack, so llama_cpp is deliberately absent: its strip closure is
-# exercised through the streaming replay in test_refactor_guard.py instead.
+# Modules whose behaviour is pinned by golden outputs. Importing these must not pull in
+# the inference stack, so llama_cpp is deliberately absent: its strip closure is covered
+# by the streaming replay in test_refactor_guard.py.
 BEHAVIOUR_MODULES = ("core.tool_healing", "core.inference.tool_call_parser")
 
 
 # ─────────────────────────── 1. AST inventory ───────────────────────────
 
 
-# Every ``re`` entry point that carries a pattern, not just ``compile``. An inline
-# ``re.match(r"...")`` is as load-bearing as a compiled constant and was invisible here.
+# Every ``re`` entry point carrying a pattern, not just ``compile``: an inline
+# ``re.match(r"...")`` is as load-bearing as a compiled constant.
 _RE_CALLS = frozenset(
     {"compile", "match", "search", "fullmatch", "sub", "subn", "split", "findall", "finditer"}
 )
@@ -140,9 +141,8 @@ def ast_inventory() -> dict:
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             symbols[target.id] = {"kind": "assign"}
-                # An annotated global (``_SWA_CACHE: Optional[dict] = None``) is an
-                # AnnAssign, not an Assign, and would otherwise be missing from the
-                # inventory entirely.
+                # An annotated global is an AnnAssign, not an Assign, so it needs its
+                # own arm or it is missing from the inventory entirely.
                 elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                     symbols[node.target.id] = {"kind": "assign"}
                 continue
@@ -198,9 +198,9 @@ def runtime_inventory() -> dict:
 
 # ─────────────────────────── 2. Corpus + golden outputs ───────────────────────────
 
-# Literal fragments spliced by the fuzzer. Every serialization the parsers claim to
-# handle appears here, plus the shapes that historically broke them: markup nested in
-# an argument value, a rehearsal inside a fenced code block, truncated tails.
+# Literal fragments spliced by the fuzzer: every serialization the parsers claim to handle,
+# plus the shapes that historically broke them (markup nested in an argument value, a
+# rehearsal inside a fenced code block, truncated tails).
 _FRAGMENTS = (
     '<tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>',
     '<tool_call>{"name": "search", "arguments": {"q": "</tool_call> literal"}}</tool_call>',
@@ -231,10 +231,9 @@ _FRAGMENTS = (
     '<|tool_call_argument_begin|>{"city": "Paris"}<|tool_call_end|>'
     "<|tool_calls_section_end|>",
     "<tool_call>get_weather\n<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n</tool_call>",
-    # One format's markup sitting inside another format's argument value. Concatenating
-    # whole calls never reaches the arm-order question: which scan runs first only shows
-    # up when an earlier arm can consume a later arm's opener. A swap of two arms inside
-    # ``strip_segment`` is invisible without these.
+    # One format's markup inside another's argument value. Concatenating whole calls never
+    # reaches the arm-order question, so a swap of two arms inside ``strip_segment`` is
+    # invisible without these.
     "<function=x><tool_call> txt <arg_key>c</arg_key></function><parameter=p>",
     '<tool_call>{"name": "search", "arguments": {"q": "<function=get_weather>"}}</tool_call>',
     '<tool_call>{"name": "search", "arguments": {"q": "[TOOL_CALLS]other[ARGS]{}"}}</tool_call>',
@@ -279,10 +278,9 @@ def build_corpus(seed: int = 20260811, count: int = 600) -> list:
     return list(dict.fromkeys(corpus))
 
 
-# One fixture per required positional parameter the guarded functions take beyond the
-# text. Offsets are derived from the text rather than fixed at 0 so the balanced scanners
-# start on a real delimiter. Without these the driver returns a ``<undrivable>`` sentinel,
-# and a digest over one constant string is not coverage, it only looks like it.
+# One fixture per required positional parameter beyond the text. Offsets are derived from
+# the text, not fixed at 0, so the balanced scanners start on a real delimiter. Without
+# these the driver returns ``<undrivable>`` and the digest pins nothing.
 _ARG_FIXTURES = {
     "brace_start": lambda text: max(text.find("{"), 0),
     "brace_pos": lambda text: max(text.find("{"), 0),
@@ -310,10 +308,9 @@ _ARG_FIXTURES = {
 }
 
 
-# Offsets a predicate is asked about. One offset is not coverage for a function whose
-# whole job is to answer differently at different positions: driving
-# ``_inside_open_parameter`` only at the end of the text gave it two distinct values over
-# the entire corpus, and it is one of the functions this refactor rewrites.
+# Offsets a predicate is asked about. One offset is not coverage for a function whose job
+# is to answer differently at different positions: at end-of-text only,
+# ``_inside_open_parameter`` had two distinct values over the entire corpus.
 _SWEEP_PARAMS = frozenset({"pos"})
 
 # Marks a driver result that holds one entry per boolean variant.
@@ -375,12 +372,9 @@ def _drive(func, text: str):
     kwargs = {}
     if "enabled_tool_names" in params:
         kwargs["enabled_tool_names"] = set(_ENABLED_NAMES)
-    # These are keyword-only and mostly required, so the positional loop below skips
-    # them. Supplying them is what keeps the strip and parse entry points drivable at
-    # all: without it they raise ``TypeError`` on every input. Each is driven at BOTH
-    # values, because half a boolean contract is not a contract -- pinning ``final =
-    # True`` says nothing about what the streaming path (``final = False``) does, and
-    # the streaming path is most of what these functions are for.
+    # Keyword-only and mostly required, so the positional loop below skips them; without
+    # them the strip and parse entry points raise ``TypeError`` on every input. Driven at
+    # BOTH values: pinning ``final = True`` says nothing about the streaming path.
     combos = [{}]
     for flag in _BOTH_WAYS:
         if flag in params:
@@ -388,13 +382,11 @@ def _drive(func, text: str):
     if "id_offset" in params:
         kwargs["id_offset"] = 0
 
-    # A few functions take something derived from the text rather than the text: handing
-    # them a whole corpus entry only pins the exception it raises.
+    # A few take something derived from the text; a whole corpus entry only pins a raise.
     adapter = _TEXT_ADAPTERS.get(getattr(func, "__name__", ""))
     args = [adapter(text) if adapter else text]
     sweep = None
-    # Positional index arguments (``brace_start``, ``start``, ``pos``, ``brace_pos``)
-    # are driven from the first plausible offset in the text rather than 0, so the
+    # Positional index arguments come from the first plausible offset, not 0, so the
     # balanced scanners are exercised on a real opening delimiter.
     for extra in names[1:]:
         if extra in kwargs or params[extra].kind == inspect.Parameter.KEYWORD_ONLY:
@@ -431,8 +423,7 @@ def _drive(func, text: str):
         return _jsonable(outcome)
 
     if len(combos) > 1:
-        # Tagged, because plenty of guarded functions return a dict of their own and the
-        # two must not be confused.
+        # Tagged: plenty of guarded functions return a dict of their own.
         return {_VARIANTS_KEY: {json.dumps(c, sort_keys = True): _call(c) for c in combos}}
     return _call(combos[0])
 
@@ -447,8 +438,7 @@ def _jsonable(value):
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if inspect.isgenerator(value):
-        # A generator's repr carries its address, which is not reproducible. The
-        # yielded values are the behaviour worth pinning.
+        # A generator's repr carries its address; the yielded values are the behaviour.
         try:
             return [_jsonable(item) for item in value]
         except Exception as exc:  # noqa: BLE001 - raising mid-iteration is pinned too
@@ -530,16 +520,23 @@ def idempotence_failures(corpus) -> list:
     failures = []
     for mod_name in BEHAVIOUR_MODULES:
         for name, func in _guarded_functions(mod_name):
-            # Only the strip family is meant to be a text -> text projection. Feeding a
-            # parser's output (a tool name, a JSON blob) back into it proves nothing.
+            # Only the strip family is a text -> text projection; feeding a parser's
+            # output back into it proves nothing.
             if "strip" not in name or "parse" in name:
                 continue
-            witnessed = False
+            witnessed = set()
+            labels = None
             for text in corpus:
-                # A stripper with a boolean contract is driven at both values, so the
-                # driver hands back one result per variant. Skipping non-strings here
-                # would skip exactly the centralized strippers this check is for.
-                for variant, once in _variants(_drive(func, text)):
+                # Driven at both values, so the result is one entry per variant; skipping
+                # non-strings here would skip the centralized strippers this check is for.
+                results = _variants(_drive(func, text))
+                if labels is None:
+                    labels = {variant for variant, _ in results}
+                for variant, once in results:
+                    # One witness per (function, variant): a failure at ``final = True``
+                    # must not stand in for the streaming path.
+                    if variant in witnessed:
+                        continue
                     if not isinstance(once, str) or once.startswith("<raised "):
                         continue
                     twice = dict(_variants(_drive(func, once))).get(variant)
@@ -554,17 +551,19 @@ def idempotence_failures(corpus) -> list:
                                 "twice": twice,
                             }
                         )
-                        witnessed = True
-                        break
-                if witnessed:
-                    break  # one witness per function is enough to fail the check
+                        witnessed.add(variant)
+                if labels is not None and witnessed >= labels:
+                    break  # every variant already has a witness
     return failures
 
 
 # ─────────────────────────── 3. Patch-target routing ───────────────────────────
 
+# Every first-party top-level package. The earlier list stopped at core/routes/utils/state
+# and silently skipped 32 live targets under hub, storage and picker.
 _PATCH_TARGET_RE = re.compile(
-    r"""(?:mock\.)?(?:patch|monkeypatch\.setattr)\(\s*["']((?:core|routes|utils|state)\.[\w.]+)["']"""
+    r"""(?:mock\.)?(?:patch|monkeypatch\.setattr)\(\s*"""
+    r"""["']((?:core|routes|utils|state|hub|storage|picker)\.[\w.]+)["']"""
 )
 
 
@@ -575,7 +574,9 @@ def patch_targets(tests_dir = None) -> dict:
     for path in sorted(tests_dir.rglob("test_*.py")):
         for match in _PATCH_TARGET_RE.finditer(path.read_text(encoding = "utf-8", errors = "ignore")):
             dotted = match.group(1)
-            targets.setdefault(dotted, []).append(str(path.relative_to(BACKEND_ROOT)))
+            # ``as_posix``, not ``str``: the native form gives backslashes on Windows, so
+            # an identical checkout would read as a changed inventory.
+            targets.setdefault(dotted, []).append(path.relative_to(BACKEND_ROOT).as_posix())
     return targets
 
 
@@ -590,30 +591,47 @@ def unresolvable_patch_targets(targets = None) -> list:
     for dotted, users in sorted(targets.items()):
         parts = dotted.split(".")
         obj = None
+        last_error = None
         for split in range(len(parts) - 1, 0, -1):
             try:
                 obj = importlib.import_module(".".join(parts[:split]))
-            except Exception:  # noqa: BLE001 - an unimportable prefix is just not the module
+            except Exception as exc:  # noqa: BLE001 - an unimportable prefix is not the module
+                last_error = exc
                 continue
             rest = parts[split:]
             break
         else:
-            broken.append(
-                {"target": dotted, "reason": "no importable module prefix", "tests": users}
+            # Nothing imported, and *why* decides what this is. A package whose
+            # ``__init__`` pulls in an optional dependency makes every prefix raise, and
+            # discarding the exception reported four live targets as dead in a slim
+            # environment. So: a ModuleNotFoundError naming a prefix of the target means
+            # the module is gone; naming anything else means a dependency is absent here.
+            environment = not (
+                isinstance(last_error, ModuleNotFoundError)
+                and last_error.name in {".".join(parts[:i]) for i in range(1, len(parts))}
             )
+            entry = {
+                "target": dotted,
+                "reason": (
+                    f"no importable module prefix, unimportable here: {last_error!r}"
+                    if environment
+                    else "no importable module prefix"
+                ),
+                "tests": users,
+            }
+            if environment:
+                entry["environment"] = True
+            broken.append(entry)
             continue
         for attr in rest:
-            # ``core.inference`` resolves attributes through a PEP 562 ``__getattr__``
-            # that imports a submodule, so a missing optional dependency surfaces here
-            # as an ImportError rather than an AttributeError. That is an environment
-            # gap, not a broken target: record it separately so a genuinely missing
-            # attribute is never hidden behind it.
+            # ``core.inference`` resolves attributes through a PEP 562 ``__getattr__``, so
+            # a missing optional dependency surfaces as ImportError, not AttributeError.
+            # Record that separately so a genuinely missing attribute is not hidden.
             try:
                 found = hasattr(obj, attr)
             except Exception as exc:  # noqa: BLE001
-                # An AttributeError is the lazy loader saying the name is not exported,
-                # which is a dead target. Only a failure to import a dependency is an
-                # environment gap, and ``__getattr__`` surfaces that as an ImportError.
+                # AttributeError = the lazy loader says the name is not exported, a dead
+                # target. Only the ImportError case is an environment gap.
                 environment = not isinstance(exc, AttributeError)
                 entry = {
                     "target": dotted,
@@ -629,10 +647,8 @@ def unresolvable_patch_targets(targets = None) -> list:
                 broken.append(entry)
                 break
             if not found:
-                # A missing name on a package is ambiguous: the symbol may genuinely be
-                # gone, or the submodule that defines it may just be unimportable here
-                # (an optional dependency). Importing it directly tells the two apart, so
-                # a real break is never written off as an environment gap.
+                # A missing name on a package is ambiguous: gone, or defined in a
+                # submodule that is unimportable here. Import it directly to tell apart.
                 reason = f"missing attribute {attr!r}"
                 environment = False
                 if inspect.ismodule(obj) and hasattr(obj, "__path__"):
@@ -640,10 +656,8 @@ def unresolvable_patch_targets(targets = None) -> list:
                     try:
                         importlib.import_module(candidate)
                     except ModuleNotFoundError as exc:
-                        # Only a failure to import something *else* is environmental. If
-                        # the candidate itself is what is missing, the name is genuinely
-                        # gone and the patch target is dead, which is the whole point of
-                        # this check.
+                        # Only a failure to import something *else* is environmental; a
+                        # missing candidate means the patch target is dead.
                         if exc.name and exc.name != candidate:
                             reason = f"submodule {attr!r} needs {exc.name!r}, absent here"
                             environment = True
@@ -666,9 +680,8 @@ def unresolvable_patch_targets(targets = None) -> list:
 
 # ─────────────────────────── twins ───────────────────────────
 
-# Names defined in both modules. Unifying them is the point of the refactor; this
-# reports where they actually disagree on real input, so the choice of which body
-# survives is made against evidence rather than against the diff.
+# Names defined in both modules. Unifying them is the point of the refactor; this reports
+# where they actually disagree on real input, so the choice is made against evidence.
 TWIN_NAMES = (
     "_balanced_brace_end",
     "_balanced_bracket_end",
@@ -693,8 +706,8 @@ def twin_divergence(corpus) -> dict:
         examples = []
         for text in corpus:
             h_out, p_out = _drive(h_func, text), _drive(p_func, text)
-            # -1 and None are the two sentinels for "no match"; treat them as equal so
-            # the report shows real disagreement rather than the known convention split.
+            # -1 and None are both "no match"; equate them so the report shows real
+            # disagreement rather than the known convention split.
             if (h_out in (-1, None)) and (p_out in (-1, None)):
                 continue
             if h_out != p_out:
@@ -764,11 +777,21 @@ def _diff(
         and isinstance(new, list)
         and all(isinstance(v, str) for v in old + new)
     ):
-        # A name list (``dir()``): report what joined or left, not both full lists.
-        for name in sorted(set(new) - set(old)) if additions_matter else ():
-            problems.append(f"{label}: added {name!r}")
-        for name in sorted(set(old) - set(new)):
-            problems.append(f"{label}: REMOVED {name!r}")
+        # A name list (``dir()``) or an occurrence list: report what joined or left, not
+        # both full lists. Counted rather than set-compared, so dropping one of several
+        # identical entries is not read as "unchanged" -- that partial repoint is exactly
+        # what this check exists to catch.
+        old_counts, new_counts = Counter(old), Counter(new)
+        for name in sorted(set(old) | set(new)):
+            delta = new_counts[name] - old_counts[name]
+            if delta > 0:
+                if additions_matter:
+                    problems.append(f"{label}: added {name!r}")
+            elif delta < 0:
+                if new_counts[name]:
+                    problems.append(f"{label}: {old_counts[name]} -> {new_counts[name]} x {name!r}")
+                else:
+                    problems.append(f"{label}: REMOVED {name!r}")
     else:
         problems.append(f"{label}: {old!r} -> {new!r}")
     return problems
@@ -812,27 +835,30 @@ def verify() -> int:
     problems += _diff("runtime", _read("runtime_inventory.json"), runtime_inventory())
     problems += _diff("golden", _read("golden_outputs.json"), golden_outputs(corpus))
 
+    # Keyed by variant too: a failure at ``final = True`` is no licence for a new one on
+    # the ``final = False`` streaming path.
     baseline_idempotence = {
-        (f["module"], f["function"]) for f in _read("idempotence_baseline.json")
+        (f["module"], f["function"], f.get("variant", ""))
+        for f in _read("idempotence_baseline.json")
     }
     for failure in idempotence_failures(corpus):
-        if (failure["module"], failure["function"]) not in baseline_idempotence:
+        key = (failure["module"], failure["function"], failure["variant"])
+        if key not in baseline_idempotence:
             problems.append(
-                f"idempotence.{failure['module']}.{failure['function']}: "
+                f"idempotence.{failure['module']}.{failure['function']}"
+                f"{'[' + failure['variant'] + ']' if failure['variant'] else ''}: "
                 f"f(f(x)) != f(x) for {failure['input']!r}"
             )
 
-    # The recorded set matters as much as the live one. A patch string edited to a
-    # different but still resolvable namespace, or a patch dropped during the refactor,
-    # resolves fine and would otherwise pass while the routing silently moved.
+    # The recorded set matters as much as the live one: a patch repointed at a different
+    # but still resolvable namespace, or dropped, resolves fine and would otherwise pass.
     recorded = {target: sorted(tests) for target, tests in _read("patch_targets.json").items()}
     live = {target: sorted(tests) for target, tests in patch_targets().items()}
     problems += _diff("patch-targets", recorded, live, additions_matter = False)
 
     for broken in unresolvable_patch_targets(live):
-        # An optional backend that is not installed here is not a broken target, and the
-        # documented ``verify`` command has to stay usable in a slim environment. The
-        # pytest check filters these the same way.
+        # An uninstalled optional backend is not a broken target: ``verify`` has to stay
+        # usable in a slim environment. The pytest check filters these the same way.
         if not broken.get("environment"):
             problems.append(
                 f"patch-target {broken['target']}: {broken['reason']} ({broken['tests'][0]})"

@@ -613,6 +613,111 @@
     "tests/test_training_provenance.py",
     "tests/test_training_provenance.py"
   ],
+  "hub.services.models.deletion.delete_cached_model_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.downloads.get_download_progress_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.downloads.get_gguf_download_progress_response": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.services.models.gguf_variants.iter_hf_cache_snapshots": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.dataset_cache.latest_cached_dataset_path": [
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.dataset_cache.load_cached_hf_dataset": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.dataset_cache.training_dataset_cache_pin": [
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py",
+    "tests/test_training_cached_start.py"
+  ],
+  "hub.utils.download_manifest.build_variant_state_index": [
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.download_registry.existing_blob_bytes": [
+    "tests/test_openai_auto_download.py"
+  ],
+  "hub.utils.download_registry.get_models_registry": [
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py",
+    "tests/test_gguf_load_cache_reuse.py"
+  ],
+  "hub.utils.download_registry.prepare_cache_for_transport": [
+    "tests/test_hf_xet_fallback.py",
+    "tests/test_hf_xet_fallback.py"
+  ],
+  "hub.utils.gguf.iter_hf_cache_snapshots": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.hf_cache_root": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.hf_cache_roots": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.iter_repo_cache_dirs": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py"
+  ],
+  "hub.utils.hf_cache_state.latest_snapshot_from_cache_path": [
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "hub.utils.inventory_scan.invalidate_hf_cache_scans": [
+    "tests/test_hf_cache_settings.py"
+  ],
+  "hub.utils.paths.hf_default_cache_dir": [
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "hub.utils.paths.legacy_hf_cache_dir": [
+    "tests/test_models_get_model_config_case_resolution.py",
+    "tests/test_models_get_model_config_case_resolution.py"
+  ],
+  "picker.service._build_browse_allowlist": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.active_hf_hub_cache": [
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.iter_snapshots_preferring_whole": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.read_gguf_chat_template": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
+  "picker.service.resolve_cached_repo_id_case": [
+    "tests/test_picker_service.py",
+    "tests/test_picker_service.py"
+  ],
   "routes.inference.get_llama_cpp_backend": [
     "tests/test_consent_gate.py"
   ],
@@ -626,6 +731,65 @@
   "routes.training_vram.summarize_resident_chat": [
     "tests/test_gpu_selection.py",
     "tests/test_gpu_selection.py"
+  ],
+  "storage.studio_db.add_scan_folder_with_status": [
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.finish_run": [
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py"
+  ],
+  "storage.studio_db.get_app_setting": [
+    "tests/test_hf_cache_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py"
+  ],
+  "storage.studio_db.list_scan_folders": [
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_cached_gguf_routes.py",
+    "tests/test_mtp_drafter_companion.py",
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.mark_run_cancel_requested": [
+    "tests/test_training_status_terminal.py"
+  ],
+  "storage.studio_db.remove_scan_folder": [
+    "tests/test_openai_auto_switch.py",
+    "tests/test_openai_auto_switch.py",
+    "tests/test_openai_auto_switch.py"
+  ],
+  "storage.studio_db.update_run_config_json": [
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py",
+    "tests/test_training_provenance.py"
+  ],
+  "storage.studio_db.upsert_app_settings": [
+    "tests/test_hf_cache_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_model_memory_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py",
+    "tests/test_personalization_settings.py"
   ],
   "utils.coding_agents.shutil.which": [
     "tests/test_coding_agents.py",
