@@ -784,11 +784,13 @@ export function SharedComposer({
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
-  // Disable only when a loaded model can't run it; with no model the toggle
-  // can still be pre-selected, matching Web search/Code/MCP.
-  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
-  const showRagPill = !isExternalModel;
+  // Codex subscription models use Studio's local search_knowledge_base loop.
+  // Other external providers still cannot use local document retrieval.
+  const codexUsesStudioTools =
+    selectedExternalProvider?.providerType === "openai_codex";
+  const ragDisabled =
+    modelLoaded && ((!codexUsesStudioTools && isExternalModel) || !supportsTools);
+  const showRagPill = !isExternalModel || codexUsesStudioTools;
   // Above 4 pills, collapse to icons only. Compare, Search, Code, and
   // permissions always show; the rest are conditional. Narrow viewports
   // collapse too: the labelled row is wider than a phone-width composer.

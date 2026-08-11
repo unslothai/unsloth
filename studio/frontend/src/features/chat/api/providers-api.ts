@@ -5,6 +5,13 @@ import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
+
+export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
+export type ProviderAuthStatus =
+  | "disconnected"
+  | "connected"
+  | "reauthorization_required";
+
 export interface ProviderRegistryEntry {
   provider_type: string;
   display_name: string;
@@ -15,6 +22,10 @@ export interface ProviderRegistryEntry {
   supports_tool_calling: boolean;
   /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
   model_list_mode?: "remote" | "curated";
+
+  auth_kind?: ProviderAuthKind;
+  base_url_editable?: boolean;
+  model_ids_editable?: boolean;
 }
 
 export interface ProviderConfig {
@@ -25,6 +36,9 @@ export interface ProviderConfig {
   is_enabled: boolean;
 
   has_api_key: boolean;
+
+  auth_kind?: ProviderAuthKind;
+  auth_status?: ProviderAuthStatus;
   models?: string[];
   available_models?: string[];
   created_at: string;
@@ -278,4 +292,70 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
+}
+
+
+export interface CodexOAuthFlow {
+  flow_id: string;
+  method: "browser" | "device";
+  status: "pending" | "connected" | "error" | "cancelled";
+  expires_at: number;
+  authorization_url?: string | null;
+  verification_url?: string | null;
+  user_code?: string | null;
+  message?: string | null;
+}
+
+export async function startCodexOAuth(
+  providerId: string,
+  method: "browser" | "device",
+): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method }),
+  });
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function getCodexOAuthFlow(providerId: string, flowId: string): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/flows/${flowId}`);
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function completeCodexOAuth(
+  providerId: string,
+  flowId: string,
+  callbackUrl: string,
+): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/flows/${flowId}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_url: callbackUrl }),
+  });
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function cancelCodexOAuthFlow(
+  providerId: string,
+  flowId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/api/providers/${providerId}/oauth/flows/${flowId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+}
+
+
+
+export async function disconnectCodexOAuth(providerId: string): Promise<void> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth`, { method: "DELETE" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
 }

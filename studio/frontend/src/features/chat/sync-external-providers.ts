@@ -226,6 +226,9 @@ export async function syncExternalProvidersFromBackend(
         availableModels: resolvedAvailableModels,
 
         hasApiKey: config.has_api_key,
+
+        authKind: config.auth_kind,
+        authStatus: config.auth_status,
         enablePromptCaching: supportsProviderPromptCaching(uiProviderType)
           ? (existing?.enablePromptCaching ?? true)
           : undefined,

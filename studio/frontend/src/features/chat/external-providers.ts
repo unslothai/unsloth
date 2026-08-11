@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type {
+  ProviderAuthKind,
+  ProviderAuthStatus,
+} from "./api/providers-api";
+
 export interface ExternalProviderConfig {
   id: string;
   /** Backend provider type (e.g. openai, mistral, gemini). */
@@ -16,6 +21,10 @@ export interface ExternalProviderConfig {
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
+
+  /** Sanitized backend-owned authorization state; never contains OAuth material. */
+  authKind?: ProviderAuthKind;
+  authStatus?: ProviderAuthStatus;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
   /**

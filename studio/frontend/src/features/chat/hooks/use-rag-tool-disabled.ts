@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { parseExternalModelId } from "../external-providers";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 // Pre-select gate for the RAG toggle, mirroring Web search/Code/MCP: armable
@@ -13,7 +14,12 @@ export function useRagToolDisabled(): boolean {
   );
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  return (
-    modelLoaded && (parseExternalModelId(checkpoint) !== null || !supportsTools)
-  );
+  const externalSelection = parseExternalModelId(checkpoint);
+  const providers = useExternalProvidersStore((s) => s.providers);
+  const externalProvider = externalSelection
+    ? providers.find((provider) => provider.id === externalSelection.providerId)
+    : undefined;
+  const externalWithoutStudioTools =
+    externalSelection !== null && externalProvider?.providerType !== "openai_codex";
+  return modelLoaded && (externalWithoutStudioTools || !supportsTools);
 }

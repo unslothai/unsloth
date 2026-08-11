@@ -149,7 +149,11 @@ export function getExternalMaxOutputTokens(
   const effectiveProvider =
     providerType === "openrouter"
       ? _inferProviderFromOpenrouterId(normalized) ?? providerType
-      : providerType;
+      : providerType === "openai_codex"
+        ? "openai_codex"
+        : providerType;
+  if (effectiveProvider === "openai_codex") return 128000;
+
   for (const entry of EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL) {
     if (entry.providerType !== effectiveProvider) continue;
     if (entry.prefixes.some((prefix) => stripped.startsWith(prefix))) {
@@ -220,6 +224,7 @@ export function providerSupportsBuiltinWebSearch(
   }
   return (
     providerType === "openai" ||
+    providerType === "openai_codex" ||
     providerType === "anthropic" ||
     providerType === "openrouter" ||
     providerType === "kimi"
@@ -345,6 +350,10 @@ export function providerSupportsBuiltinCodeExecution(
       normalized.startsWith(prefix),
     );
   }
+  // Every curated Codex model can emit function calls; Studio executes the
+  // python/terminal functions locally rather than requesting hosted shell.
+  if (providerType === "openai_codex") return true;
+
   if (providerType === "openai") {
     if (!isOpenAICloudBaseUrl(baseUrl)) return false;
     return OPENAI_CODE_EXECUTION_MODEL_PREFIXES.some((prefix) =>
@@ -504,6 +513,15 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // models served via /v1/responses, which rejects temperature, top_p, and
   // presence/frequency penalty. See backend
   // external_provider._stream_openai_responses for the proxy.
+  openai_codex: {
+    temperature: false,
+    topP: false,
+    topK: false,
+    minP: false,
+    repetitionPenalty: false,
+    presencePenalty: false,
+  },
+
   openai: {
     temperature: false,
     topP: false,
@@ -953,7 +971,8 @@ export function getExternalReasoningCapabilities(
       ? normalizedModel.split("/").at(-1) ?? normalizedModel
       : normalizedModel;
 
-  const isOpenAIProvider = normalizedProvider === "openai";
+  const isOpenAIProvider =
+    normalizedProvider === "openai" || normalizedProvider === "openai_codex";
   const isAnthropicProvider = normalizedProvider === "anthropic";
   const isKimiProvider = normalizedProvider === "kimi";
   const isMistralProvider = normalizedProvider === "mistral";

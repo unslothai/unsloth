@@ -3545,18 +3545,43 @@ export function createOpenAIStreamAdapter(
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
         await persistResolvedQueuedModel(params.checkpoint);
-        const model = params.checkpoint.trim();
-        if (!model || parseExternalModelId(model)) {
-          throw new Error("Deep research requires a selected local model.");
+        const selectedCheckpoint = params.checkpoint.trim();
+        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalProvider = researchExternalSelection
+          ? loadExternalProviders().find(
+              (provider) => provider.id === researchExternalSelection.providerId,
+            )
+          : null;
+        if (
+          !selectedCheckpoint ||
+          (researchExternalSelection &&
+            researchExternalProvider?.providerType !== "openai_codex")
+        ) {
+          throw new Error(
+            "Deep research requires a selected local model or ChatGPT/Codex subscription.",
+          );
         }
+        const model = researchExternalSelection?.modelId ?? selectedCheckpoint;
         const inferenceRequest: {
           model: string;
+          providerId?: string;
+          providerType?: "openai_codex";
+          externalModel?: string;
           temperature?: number;
           topP?: number;
           maxTokens?: number;
           enableThinking?: boolean;
           reasoningEffort?: string;
-        } = { model };
+        } = {
+          model,
+          ...(researchExternalSelection && researchExternalProvider
+            ? {
+                providerId: researchExternalProvider.id,
+                providerType: "openai_codex" as const,
+                externalModel: researchExternalSelection.modelId,
+              }
+            : {}),
+        };
         if (
           Number.isFinite(params.temperature) &&
           params.temperature >= 0 &&
@@ -3937,6 +3962,9 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+
+      const codexUsesStudioTools =
+        externalProvider?.providerType === "openai_codex";
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -3961,10 +3989,15 @@ export function createOpenAIStreamAdapter(
           externalProvider.providerType === "gemini" &&
           isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
       );
+      const externalProviderUsesOAuth =
+        externalProvider?.authKind === "chatgpt_oauth";
+
       if (
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
+
+        !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -4728,9 +4761,12 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              (!isExternalRequest || codexUsesStudioTools) &&
+              supportsTools &&
+              mcpEnabledForChat,
             docs:
-              !isExternalRequest &&
+              (!isExternalRequest || codexUsesStudioTools) &&
               supportsTools &&
               (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
@@ -4935,24 +4971,86 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
-              ...(webSearchEnabledForThisTurn ||
-              webFetchEnabledForThisTurn ||
-              codeExecEnabledForThisTurn ||
-              imageGenerationEnabledForThisTurn
+              // ChatGPT/Codex function calls are executed by Studio. Other
+              // external providers keep their provider-hosted tool envelope.
+              ...(codexUsesStudioTools &&
+              supportsTools &&
+              (toolsEnabled ||
+                codeToolsEnabled ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
-                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
-                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
-                      ...(imageGenerationEnabledForThisTurn
-                        ? ["image_generation"]
+                      ...(ragEnabled || projectRagEnabled
+                        ? ["search_knowledge_base"]
                         : []),
+                      ...(toolsEnabled ? ["web_search"] : []),
+                      ...(codeToolsEnabled ? ["python", "terminal"] : []),
                     ],
+                    mcp_enabled: mcpEnabledForChat,
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
+                    tool_call_timeout:
+                      runtime.toolCallTimeout >= 9999
+                        ? 9999
+                        : runtime.toolCallTimeout * 60,
+                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(ragEnabled || projectRagEnabled
+                      ? {
+                          rag_scope: {
+                            ...(ragEnabled && ragSource.type === "kb"
+                              ? { kb_id: ragSource.kbId }
+                              : {
+                                  ...(ragEnabled && resolvedThreadId
+                                    ? { thread_id: resolvedThreadId }
+                                    : {}),
+                                  ...(projectRagEnabled && ragProjectId
+                                    ? { project_id: ragProjectId }
+                                    : {}),
+                                }),
+                            default_top_k: ragTopK,
+                            mode: ragMode,
+                            autoinject: resolveAutoInject(
+                              ragAutoInject,
+                              params.checkpoint,
+                            ),
+                            autoinject_min_score: ragAutoInjectMinScore,
+                            ...(ragAutoInject === "off"
+                              ? { whole_doc: false }
+                              : {}),
+                            context_length:
+                              runtime.ggufContextLength ??
+                              params.maxSeqLength ??
+                              undefined,
+                          },
+                        }
+                      : {}),
                   }
-                : {}),
+                : webSearchEnabledForThisTurn ||
+                    webFetchEnabledForThisTurn ||
+                    codeExecEnabledForThisTurn ||
+                    imageGenerationEnabledForThisTurn
+                  ? {
+                      enable_tools: true,
+                      enabled_tools: [
+                        ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
+                        ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                        ...(codeExecEnabledForThisTurn
+                          ? ["code_execution"]
+                          : []),
+                        ...(imageGenerationEnabledForThisTurn
+                          ? ["image_generation"]
+                          : []),
+                      ],
+                    }
+                  : {}),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
