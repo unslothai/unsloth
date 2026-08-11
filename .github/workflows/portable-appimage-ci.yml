@@ -187,6 +187,56 @@ jobs:
           done
           echo "AppImage verified self-contained."
 
+      # Self-contained is necessary but not sufficient. AppRun exports
+      # LD_LIBRARY_PATH="$libdir" ahead of everything, so host libraries loaded
+      # AFTERWARDS -- including the GL/EGL/DRM stack this bundle deliberately does not
+      # ship -- resolve THEIR dependencies out of the 22.04 bundle. That is exactly how
+      # #7953 happened, and it cannot be seen from the build host: these probes pass on
+      # 22.04 and fail on 24.04, which is Linux Mint 22 Wilma's base, where #7953 was
+      # reported. Run them in a noble container rather than a second runner so no
+      # ~150MB artifact has to cross a job boundary.
+      - name: Host libraries under AppRun's library path (Ubuntu 24.04)
+        shell: bash
+        env:
+          APPIMAGE: ${{ steps.build.outputs.appimage }}
+        run: |
+          set -euo pipefail
+          workdir="$RUNNER_TEMP/noble"
+          rm -rf "$workdir"; mkdir -p "$workdir"
+          cp "$APPIMAGE" "$workdir/app.AppImage"
+          ( cd "$workdir" && chmod +x app.AppImage && ./app.AppImage --appimage-extract >/dev/null )
+          cat > "$workdir/probe.sh" <<'SH'
+          set -u
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq >/dev/null
+          apt-get install -y -qq gcc libcurl3-gnutls libgl1 libegl1 libglx-mesa0 >/dev/null
+          cat > /tmp/probe.c <<'C'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          int main(int argc, char **argv) {
+            if (!dlopen(argv[1], RTLD_NOW)) { printf("FAILED: %s\n", dlerror()); return 1; }
+            printf("ok\n"); return 0;
+          }
+          C
+          gcc -o /tmp/probe /tmp/probe.c
+          libdir=/work/squashfs-root/usr/lib/unsloth
+          rc=0
+          for lib in libcurl-gnutls.so.4 libGLX_mesa.so.0 libGL.so.1 libEGL.so.1; do
+            p=$(find /usr/lib/x86_64-linux-gnu -maxdepth 2 -name "$lib" | head -1)
+            [ -n "$p" ] || { printf '%-22s absent\n' "$lib"; continue; }
+            printf '%-22s host: ' "$lib"; /tmp/probe "$p"
+            printf '%-22s bundle-first: ' "$lib"
+            out=$(LD_LIBRARY_PATH="$libdir" /tmp/probe "$p"); echo "$out"
+            case "$out" in FAILED*) rc=1 ;; esac
+          done
+          exit $rc
+          SH
+          if ! docker run --rm -v "$workdir":/work -w /work ubuntu:24.04 \
+               bash /work/probe.sh; then
+            echo "::error::a host library cannot load under AppRun's LD_LIBRARY_PATH on Ubuntu 24.04 -- this is the #7953 class of failure (undefined symbol / GLIBCXX)"
+            exit 1
+          fi
+
       # Storage is the one Actions resource that is not free on public repos, and
       # this file is ~150MB. PR runs prove the build still works and keep nothing;
       # a manual dispatch is how you get a copy to actually launch.
