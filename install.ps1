@@ -55,6 +55,16 @@ function Install-UnslothStudio {
     # shadows the caller's table for this scope and below only.
     $PSDefaultParameterValues = $_UnslothKeptDefaults
 
+    # Windows PowerShell 5.1 redraws the Invoke-WebRequest progress bar on every read, and the
+    # redraw dominates the transfer: on a windows-latest runner the same 43 MB file took 70.79s
+    # with the bar on and 0.34s with it off, a 208x difference on a link that was never the
+    # limit. That is the multi-minute "slow download" users report, and it hits every
+    # Invoke-WebRequest below -- the Python installer (~28 MB) and the uv archive. -UseBasicParsing
+    # does NOT avoid it; only this preference does. PowerShell 7 is unaffected, so this is a no-op
+    # there. Same scoping rule as the table above: no scope qualifier, so the caller's own
+    # preference is untouched once the install returns.
+    $ProgressPreference = 'SilentlyContinue'
+
     # The kept proxies travel to studio/setup.ps1 (launched -NoProfile by unsloth_cli, and it
     # downloads the VC++ runtime and the uv installer) as JSON in _UNSLOTH_PS_PROXY_DEFAULTS,
     # since a PowerShell variable does not cross a process boundary. Credentials do not travel:
